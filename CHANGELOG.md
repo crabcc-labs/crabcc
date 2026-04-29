@@ -35,6 +35,14 @@ All notable changes to crabcc are documented here. Format follows
 - `SymbolKind::Macro` added (Rust). Round-trips through SQLite (`store.rs`
   `kind_str` / `kind_from_str`) and Tantivy (`fts.rs::kind_str`).
 
+## [1.0.1] — 2026-04-30
+
+Hotfix: drop `x86_64-apple-darwin` from the release matrix. The v1.0.0 release
+workflow sat queued for 60+ minutes on the macOS-13 (Intel) runner pool, which
+GitHub is in the process of deprecating. Intel-Mac users can `cargo install
+--path crates/crabcc-cli` from source until we move to a self-hosted runner.
+arm64 macOS, x86_64 Linux, and aarch64 Linux all still ship binaries.
+
 ### Docs
 - `STORAGE_RESEARCH.md` → `docs/RESEARCH-storage.md` (alongside the other research docs).
 - README: bench numbers reconciled with `bench/results/REPORT.md`
