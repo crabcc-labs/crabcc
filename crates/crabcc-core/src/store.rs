@@ -222,6 +222,7 @@ fn kind_str(k: SymbolKind) -> &'static str {
         SymbolKind::Const => "const",
         SymbolKind::Var => "var",
         SymbolKind::Type => "type",
+        SymbolKind::Macro => "macro",
     }
 }
 
@@ -236,6 +237,7 @@ fn kind_from_str(s: &str) -> SymbolKind {
         "const" => SymbolKind::Const,
         "var" => SymbolKind::Var,
         "type" => SymbolKind::Type,
+        "macro" => SymbolKind::Macro,
         _ => SymbolKind::Function,
     }
 }
@@ -405,5 +407,79 @@ mod tests {
         })
         .join()
         .unwrap();
+    }
+
+    #[test]
+    fn macro_kind_round_trips_through_sqlite() {
+        // The Macro variant is new in v1.1 — it must survive the
+        // SymbolKind -> "macro" -> SymbolKind path through the store.
+        let (_dir, store) = tmp_store();
+        let fid = store.upsert_file("log.rs", "h", 0, "rust").unwrap();
+        store
+            .replace_symbols(fid, &[sym("info", SymbolKind::Macro, None)])
+            .unwrap();
+        let hits = store.find_by_name("info").unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(matches!(hits[0].kind, SymbolKind::Macro), "{:?}", hits[0]);
+    }
+
+    #[test]
+    fn all_symbol_kinds_round_trip_through_sqlite() {
+        // Belt-and-braces: every variant of SymbolKind must survive
+        // serialize-via-store-roundtrip. Catches missing arms in
+        // `kind_str` / `kind_from_str` if anyone adds a new variant.
+        let (_dir, store) = tmp_store();
+        let kinds = [
+            ("f1", SymbolKind::Function),
+            ("m1", SymbolKind::Method),
+            ("c1", SymbolKind::Class),
+            ("s1", SymbolKind::Struct),
+            ("e1", SymbolKind::Enum),
+            ("t1", SymbolKind::Trait),
+            ("i1", SymbolKind::Interface),
+            ("k1", SymbolKind::Const),
+            ("v1", SymbolKind::Var),
+            ("y1", SymbolKind::Type),
+            ("r1", SymbolKind::Macro),
+        ];
+        let fid = store.upsert_file("a.rs", "h", 0, "rust").unwrap();
+        let symbols: Vec<Symbol> = kinds.iter().map(|(n, k)| sym(n, *k, None)).collect();
+        store.replace_symbols(fid, &symbols).unwrap();
+        let listed = store.iter_all_symbols().unwrap();
+        for (name, expect_kind) in kinds {
+            let s = listed
+                .iter()
+                .find(|s| s.name == name)
+                .unwrap_or_else(|| panic!("missing {name}"));
+            assert_eq!(s.kind, expect_kind, "kind mismatch for {name}: {s:?}");
+        }
+    }
+
+    #[test]
+    fn upsert_file_replaces_old_symbols_on_change() {
+        // Re-indexing (refresh) calls upsert_file with the same path but a
+        // new sha256. The old symbols for that path must be cleared before
+        // new ones land — otherwise `find_by_name` returns stale hits.
+        let (_dir, store) = tmp_store();
+        let fid = store.upsert_file("a.rs", "h1", 1, "rust").unwrap();
+        store
+            .replace_symbols(fid, &[sym("old_name", SymbolKind::Function, None)])
+            .unwrap();
+        // Re-upsert with new content + new symbol set.
+        let fid2 = store.upsert_file("a.rs", "h2", 2, "rust").unwrap();
+        store
+            .replace_symbols(fid2, &[sym("new_name", SymbolKind::Function, None)])
+            .unwrap();
+        assert!(store.find_by_name("old_name").unwrap().is_empty());
+        assert_eq!(store.find_by_name("new_name").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn find_by_name_returns_empty_for_unknown_name() {
+        // Defensive: empty result, not an error, when the name doesn't exist.
+        let (_dir, store) = tmp_store();
+        let _fid = store.upsert_file("a.rs", "h", 0, "rust").unwrap();
+        let hits = store.find_by_name("does_not_exist").unwrap();
+        assert!(hits.is_empty());
     }
 }

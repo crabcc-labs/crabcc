@@ -17,6 +17,9 @@ pub fn lang_for(s: &str) -> Option<SupportLang> {
         "tsx" => SupportLang::Tsx,
         "javascript" => SupportLang::JavaScript,
         "ruby" => SupportLang::Ruby,
+        "rust" => SupportLang::Rust,
+        "go" => SupportLang::Go,
+        "python" => SupportLang::Python,
         _ => return None,
     })
 }
@@ -94,6 +97,9 @@ mod tests {
             Some(SupportLang::TypeScript)
         ));
         assert!(matches!(lang_for("ruby"), Some(SupportLang::Ruby)));
+        assert!(matches!(lang_for("rust"), Some(SupportLang::Rust)));
+        assert!(matches!(lang_for("go"), Some(SupportLang::Go)));
+        assert!(matches!(lang_for("python"), Some(SupportLang::Python)));
         assert!(lang_for("klingon").is_none());
     }
 
@@ -139,6 +145,46 @@ greet("there");
     }
 
     #[test]
+    fn smoke_rust_parses() {
+        smoke(SupportLang::Rust, "fn x() {}").unwrap();
+    }
+
+    #[test]
+    fn callers_rust_bare_and_method() {
+        let src = "fn greet(n: &str) {}\nfn main() { greet(\"world\"); foo.greet(\"there\"); }\n";
+        let hits = find_callers(src, SupportLang::Rust, "greet");
+        assert!(hits.len() >= 2, "expected ≥2 greet calls, got: {hits:?}");
+    }
+
+    #[test]
+    fn smoke_go_parses() {
+        smoke(SupportLang::Go, "package x\nfunc x() {}").unwrap();
+    }
+
+    #[test]
+    fn callers_go_bare_call() {
+        // Go bare-call detection works through the same `name($$$)` pattern as
+        // every other lang. Receiver-form calls (`u.Greet(...)`) currently only
+        // match in some grammars; we don't assert on those for Go (tracked in
+        // the v2.0 epic — improving cross-language pattern coverage).
+        let src = "package x\nfunc Greet(n string) {}\nfunc main() {\n  Greet(\"world\")\n  Greet(\"again\")\n}\n";
+        let hits = find_callers(src, SupportLang::Go, "Greet");
+        assert!(hits.len() >= 2, "expected ≥2 Greet calls, got: {hits:?}");
+    }
+
+    #[test]
+    fn smoke_python_parses() {
+        smoke(SupportLang::Python, "def x():\n    pass\n").unwrap();
+    }
+
+    #[test]
+    fn callers_python_bare_and_method() {
+        let src = "def greet(n):\n    pass\n\ngreet('world')\nuser.greet('there')\n";
+        let hits = find_callers(src, SupportLang::Python, "greet");
+        assert!(hits.len() >= 2, "expected ≥2 greet calls, got: {hits:?}");
+    }
+
+    #[test]
     fn callers_typescript_method_call() {
         let src = "obj.greet('hi'); other.greet('there');";
         let hits = find_callers(src, SupportLang::TypeScript, "greet");
@@ -149,6 +195,39 @@ greet("there");
     fn callers_rejects_invalid_name() {
         let hits = find_callers("foo()", SupportLang::TypeScript, "x-y");
         assert_eq!(hits.len(), 0);
+    }
+
+    #[test]
+    fn callers_rejects_empty_name() {
+        // Boundary: empty needle should not panic and should return zero hits
+        // (an empty identifier never matches a real call site).
+        let hits = find_callers("foo()", SupportLang::TypeScript, "");
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn callers_dedups_overlapping_pattern_matches() {
+        // The bare `name($$$)` and `$RECV.name($$$)` patterns can both fire on
+        // the same syntax position depending on how ast-grep walks the tree.
+        // We dedup by (line, col) — verify a bare call doesn't double-count.
+        let src = "function greet(){} greet();";
+        let hits = find_callers(src, SupportLang::TypeScript, "greet");
+        assert_eq!(hits.len(), 1, "expected exactly 1 hit, got: {hits:?}");
+    }
+
+    #[test]
+    fn callers_returns_sorted_hits() {
+        // Result ordering matters for `--limit N` to be deterministic across
+        // runs. We sort by (line, col) at the end of find_callers.
+        let src = "function f(){}\nf();\nf();\nf();\n";
+        let hits = find_callers(src, SupportLang::TypeScript, "f");
+        assert!(hits.len() >= 2);
+        for w in hits.windows(2) {
+            assert!(
+                (w[0].line, w[0].col) <= (w[1].line, w[1].col),
+                "hits not sorted: {hits:?}"
+            );
+        }
     }
 
     #[test]
