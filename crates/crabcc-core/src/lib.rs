@@ -1,3 +1,5 @@
+#[cfg(feature = "compress")]
+pub mod compress;
 pub mod extract;
 pub mod fts;
 pub mod graph;

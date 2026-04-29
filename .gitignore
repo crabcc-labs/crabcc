@@ -5,10 +5,14 @@ Cargo.lock
 .DS_Store
 
 # Bench raw transcripts are noisy + reproducible; keep only the rendered report.
-bench/results/
+# Pattern is `*` not `/` so `!` re-includes work — git refuses to re-include a
+# file whose parent directory is excluded with the trailing-slash form.
+bench/results/*
 !bench/results/REPORT.md
 !bench/results/*.png
+!bench/results/fsst-gate.md
 
 # Research artifacts produced by sub-agents — not source.
 STORAGE_RESEARCH.md
 DB_*.md
+crates/crabcc-core/fuzz/target/

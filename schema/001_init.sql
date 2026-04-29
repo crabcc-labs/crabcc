@@ -23,7 +23,9 @@ CREATE TABLE IF NOT EXISTS symbols (
     parent     TEXT,                        -- enclosing symbol name (nullable)
     line_start INTEGER NOT NULL,
     line_end   INTEGER NOT NULL,
-    visibility TEXT                         -- pub|priv|pkg (lang-dependent)
+    visibility TEXT,                        -- pub|priv|pkg (lang-dependent)
+    -- 0 = plain UTF-8, 1 = FSST-encoded (see crates/crabcc-core/src/compress.rs)
+    signature_enc INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_symbols_name        ON symbols(name);

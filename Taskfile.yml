@@ -110,6 +110,33 @@ tasks:
       - "{{.CRABCC}} --root /tmp/crabcc-smoke callers hello --count | jq -e '.count >= 1'"
       - rm -rf /tmp/crabcc-smoke
 
+  compress:
+    desc: Train FSST symbol table on the current index + re-encode all rows + report stats
+    deps: [build]
+    cmds:
+      - "{{.CRABCC}} compress"
+      - "{{.CRABCC}} compress --rebuild"
+      - "{{.CRABCC}} compress --stats"
+
+  bench-compress:
+    desc: Run the FSST off-vs-on gate bench against REPO_FIXTURE (single trial)
+    deps: [build]
+    cmds:
+      - 'python3 bench/compress-bench.py --repo {{.REPO_FIXTURE}} --crabcc target/release/crabcc --trials 1 --decode-calls 2000'
+      - 'echo "" && cat bench/results/fsst-gate.md'
+
+  verify-gate:
+    desc: Local re-run of the v2.0.0-alpha release gate (lint + test + bench-compress)
+    cmds:
+      - task: lint
+      - task: test
+      - task: bench-compress
+
+  fuzz-check:
+    desc: Compile-check the cargo-fuzz target (full run requires nightly + cargo-fuzz)
+    cmds:
+      - "(cd crates/crabcc-core/fuzz && {{.CARGO}} check)"
+
   ci:
     desc: Local CI dry-run — fmt + clippy + test + smoke
     cmds:

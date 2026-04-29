@@ -1,6 +1,6 @@
 use crate::types::{Symbol, SymbolKind};
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 
 const SCHEMA: &str = include_str!("../../../schema/001_init.sql");
@@ -11,6 +11,12 @@ const SCHEMA: &str = include_str!("../../../schema/001_init.sql");
 /// keeps readers from blocking writers if anyone wants concurrent reads.
 pub struct Store {
     conn: Connection,
+    /// Optional FSST codec, loaded from a sibling `fsst.symbols` file at
+    /// `Store::open` time. When `Some`, writes encode `signature` and reads
+    /// decode it transparently. When `None` (or feature disabled), behavior
+    /// is byte-identical to the pre-FSST path.
+    #[cfg(feature = "compress")]
+    codec: Option<crate::compress::Codec>,
 }
 
 // Connection is `Send` since rusqlite 0.20; assert at compile time so a future
@@ -21,7 +27,18 @@ const _: fn() = || {
 };
 
 impl Store {
+    /// Open the index and (when the `compress` feature is built in) auto-load
+    /// the FSST codec at `<index_dir>/fsst.symbols` if present. Equivalent to
+    /// `open_with_compress(path, true)`.
     pub fn open(path: &Path) -> Result<Self> {
+        Self::open_with_compress(path, true)
+    }
+
+    /// Like `open`, but the caller controls whether the FSST codec is loaded.
+    /// `compress=false` skips codec discovery entirely — encoded rows on disk
+    /// stay correct, but reads of `signature_enc=1` rows return `None` until
+    /// the codec is re-enabled. New writes go down the plain path.
+    pub fn open_with_compress(path: &Path, compress: bool) -> Result<Self> {
         let conn = Connection::open(path).context("open sqlite")?;
         // WAL = concurrent readers + faster writes. NORMAL sync = "fast but
         // still durable on power loss". foreign_keys ON makes our ON DELETE
@@ -45,11 +62,71 @@ impl Store {
         conn.pragma_update(None, "cache_size", -16_000_i64).ok();
         conn.busy_timeout(std::time::Duration::from_millis(2_000))?;
         conn.execute_batch(SCHEMA).context("apply schema")?;
+        // Idempotent migration: pre-FSST DBs lack `symbols.signature_enc`. The
+        // schema above declares it for new DBs; for older indexes we ALTER
+        // TABLE in place. PRAGMA table_info is the standard "does this column
+        // exist?" probe — cheap and read-only.
+        let has_enc: bool = conn
+            .query_row(
+                "SELECT 1 FROM pragma_table_info('symbols') WHERE name = 'signature_enc'",
+                [],
+                |_| Ok(true),
+            )
+            .optional()
+            .unwrap_or(None)
+            .is_some();
+        if !has_enc {
+            conn.execute(
+                "ALTER TABLE symbols ADD COLUMN signature_enc INTEGER NOT NULL DEFAULT 0",
+                [],
+            )
+            .context("migrate: add symbols.signature_enc")?;
+        }
         // PRAGMA optimize is a no-op until the query planner has stats; it
         // becomes useful after ANALYZE. Run it whenever we open — sqlite
         // makes the call cheap when nothing's changed.
         let _ = conn.execute_batch("PRAGMA optimize;");
-        Ok(Self { conn })
+
+        // Codec discovery (FSST). The DB path is typically `.crabcc/index.db`;
+        // the symbol table lives next to it as `.crabcc/fsst.symbols`. If the
+        // file is absent we run uncompressed — matching default-feature builds.
+        // When `compress=false`, skip discovery entirely so the runtime flag
+        // (`crabcc --compress=false`) can force plain-text mode even when the
+        // symbol table is on disk.
+        #[cfg(feature = "compress")]
+        let codec = if !compress {
+            None
+        } else {
+            let symbols_path = path
+                .parent()
+                .map(|p| p.join("fsst.symbols"))
+                .unwrap_or_else(|| std::path::PathBuf::from("fsst.symbols"));
+            if symbols_path.exists() {
+                Some(
+                    crate::compress::Codec::load(&symbols_path)
+                        .context("load fsst symbol table")?,
+                )
+            } else {
+                None
+            }
+        };
+        #[cfg(not(feature = "compress"))]
+        let _ = compress; // silence unused-arg warning when feature is off
+
+        #[cfg(feature = "compress")]
+        {
+            Ok(Self { conn, codec })
+        }
+        #[cfg(not(feature = "compress"))]
+        {
+            Ok(Self { conn })
+        }
+    }
+
+    /// Test-only accessor: did we pick up an FSST symbol table at open?
+    #[cfg(feature = "compress")]
+    pub fn has_codec(&self) -> bool {
+        self.codec.is_some()
     }
 
     /// Refresh query-planner statistics. Call after a full reindex if you want
@@ -83,11 +160,33 @@ impl Store {
     pub fn replace_symbols(&self, file_id: i64, symbols: &[Symbol]) -> Result<()> {
         self.conn
             .execute("DELETE FROM symbols WHERE file_id = ?1", params![file_id])?;
+        // We always bind `signature_enc` explicitly so the row reflects the
+        // encoding actually used (no reliance on the schema DEFAULT).
         let mut stmt = self.conn.prepare(
-            "INSERT INTO symbols(file_id, name, kind, signature, parent, line_start, line_end, visibility)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO symbols(file_id, name, kind, signature, parent, line_start, line_end, visibility, signature_enc)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         )?;
         for s in symbols {
+            // SQLite type-affinity: BLOB stored in a TEXT column. `signature_enc=1` is the source of truth on encoding.
+            #[cfg(feature = "compress")]
+            {
+                if let (Some(codec), Some(plain)) = (self.codec.as_ref(), s.signature.as_ref()) {
+                    let encoded: Vec<u8> = codec.compress(plain.as_bytes());
+                    stmt.execute(params![
+                        file_id,
+                        s.name,
+                        kind_str(s.kind),
+                        encoded,
+                        s.parent,
+                        s.line_start,
+                        s.line_end,
+                        s.visibility,
+                        1_i64,
+                    ])?;
+                    continue;
+                }
+            }
+            // Plain path: no codec loaded, feature disabled, or signature is None.
             stmt.execute(params![
                 file_id,
                 s.name,
@@ -96,7 +195,8 @@ impl Store {
                 s.parent,
                 s.line_start,
                 s.line_end,
-                s.visibility
+                s.visibility,
+                0_i64,
             ])?;
         }
         Ok(())
@@ -146,16 +246,62 @@ impl Store {
         Ok(())
     }
 
+    /// Decode a row's `signature` column, honoring `signature_enc`. Centralized
+    /// so all three read paths share identical semantics — the alternative was
+    /// copy-pasting the same branch into every `query_map` callback.
+    fn signature_from_row(
+        &self,
+        row: &rusqlite::Row,
+        sig_idx: usize,
+        enc_idx: usize,
+    ) -> rusqlite::Result<Option<String>> {
+        // `signature_enc` is non-null with default 0; older databases that
+        // somehow lack the column are migrated at open time. Treat read errors
+        // as "not encoded" rather than failing the row.
+        let enc: i64 = row.get::<_, i64>(enc_idx).unwrap_or(0);
+
+        #[cfg(feature = "compress")]
+        {
+            if enc == 1 {
+                if let Some(codec) = self.codec.as_ref() {
+                    // Encoded: read raw bytes, decompress, parse as UTF-8.
+                    let bytes: Option<Vec<u8>> = row.get(sig_idx)?;
+                    return Ok(match bytes {
+                        None => None,
+                        Some(b) if b.is_empty() => Some(String::new()),
+                        Some(b) => {
+                            let plain = codec.decompress(&b);
+                            Some(String::from_utf8(plain).map_err(|e| {
+                                rusqlite::Error::FromSqlConversionFailure(
+                                    sig_idx,
+                                    rusqlite::types::Type::Text,
+                                    Box::new(e),
+                                )
+                            })?)
+                        }
+                    });
+                }
+                // enc=1 but no codec: row is opaque. Return None to avoid
+                // surfacing garbage; this path means the symbols file was
+                // deleted out from under us.
+                return Ok(None);
+            }
+        }
+        // Plain path (covers feature-disabled builds and enc=0 rows).
+        let _ = enc; // silence unused-var warning when feature is off
+        row.get::<_, Option<String>>(sig_idx)
+    }
+
     pub fn iter_all_symbols(&self) -> Result<Vec<Symbol>> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.name, s.kind, s.signature, s.parent, f.path, s.line_start, s.line_end, s.visibility
+            "SELECT s.name, s.kind, s.signature, s.parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
              FROM symbols s JOIN files f ON s.file_id = f.id",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(Symbol {
                 name: row.get(0)?,
                 kind: kind_from_str(&row.get::<_, String>(1)?),
-                signature: row.get(2)?,
+                signature: self.signature_from_row(row, 2, 8)?,
                 parent: row.get(3)?,
                 file: row.get(4)?,
                 line_start: row.get(5)?,
@@ -168,7 +314,7 @@ impl Store {
 
     pub fn symbols_in_file(&self, file: &str) -> Result<Vec<Symbol>> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.name, s.kind, s.signature, s.parent, f.path, s.line_start, s.line_end, s.visibility
+            "SELECT s.name, s.kind, s.signature, s.parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
              FROM symbols s JOIN files f ON s.file_id = f.id
              WHERE f.path = ?1
              ORDER BY s.line_start",
@@ -177,7 +323,7 @@ impl Store {
             Ok(Symbol {
                 name: row.get(0)?,
                 kind: kind_from_str(&row.get::<_, String>(1)?),
-                signature: row.get(2)?,
+                signature: self.signature_from_row(row, 2, 8)?,
                 parent: row.get(3)?,
                 file: row.get(4)?,
                 line_start: row.get(5)?,
@@ -190,7 +336,7 @@ impl Store {
 
     pub fn find_by_name(&self, name: &str) -> Result<Vec<Symbol>> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.name, s.kind, s.signature, s.parent, f.path, s.line_start, s.line_end, s.visibility
+            "SELECT s.name, s.kind, s.signature, s.parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
              FROM symbols s JOIN files f ON s.file_id = f.id
              WHERE s.name = ?1",
         )?;
@@ -198,7 +344,7 @@ impl Store {
             Ok(Symbol {
                 name: row.get(0)?,
                 kind: kind_from_str(&row.get::<_, String>(1)?),
-                signature: row.get(2)?,
+                signature: self.signature_from_row(row, 2, 8)?,
                 parent: row.get(3)?,
                 file: row.get(4)?,
                 line_start: row.get(5)?,

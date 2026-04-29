@@ -1,0 +1,11 @@
+# rustfmt config. The defaults are good; we only nail down a few things that
+# diverge between toolchains so CI and local runs always agree.
+# Run with stable rustfmt (`cargo fmt --all`).
+
+edition = "2021"
+max_width = 100
+hard_tabs = false
+tab_spaces = 4
+newline_style = "Unix"
+use_field_init_shorthand = true
+use_try_shorthand = true
