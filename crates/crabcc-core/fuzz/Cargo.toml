@@ -1,0 +1,35 @@
+# cargo-fuzz crate for the FSST + SQLite roundtrip target.
+#
+# Standalone workspace (note the empty `[workspace]` table below) so it does
+# not get pulled into the parent `crabcc` workspace's default build set —
+# cargo-fuzz wants its own target dir and lock file, and we don't want
+# `cargo check` at the repo root to require nightly.
+#
+# Build with `cargo +nightly fuzz build` (or, for a quick API-surface check
+# without cargo-fuzz installed, just `cargo check`).
+
+[package]
+name = "crabcc-core-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MIT"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+# Empty intentionally — keeps this crate out of the parent workspace.
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+crabcc-core = { path = "..", features = ["compress"] }
+
+[[bin]]
+name = "fsst_sqlite_roundtrip"
+path = "fuzz_targets/fsst_sqlite_roundtrip.rs"
+test = false
+doc = false
+bench = false
