@@ -17,17 +17,8 @@
   <a href="https://github.com/peterlodri-sec/crabcc/releases/latest">
     <img src="https://img.shields.io/github/v/release/peterlodri-sec/crabcc?label=release&style=flat-square&include_prereleases" alt="latest release"/>
   </a>
-  <a href="https://github.com/peterlodri-sec/crabcc/blob/main/LICENSE">
-    <img src="https://img.shields.io/github/license/peterlodri-sec/crabcc?style=flat-square" alt="MIT licensed"/>
-  </a>
-  <a href="https://github.com/peterlodri-sec/crabcc/stargazers">
-    <img src="https://img.shields.io/github/stars/peterlodri-sec/crabcc?style=flat-square" alt="stars"/>
-  </a>
   <a href="https://github.com/peterlodri-sec/crabcc/issues">
     <img src="https://img.shields.io/github/issues/peterlodri-sec/crabcc?style=flat-square" alt="open issues"/>
-  </a>
-  <a href="https://github.com/peterlodri-sec/crabcc/milestone/1">
-    <img src="https://img.shields.io/github/milestones/progress/peterlodri-sec/crabcc/1?label=v2.0&style=flat-square" alt="v2.0 progress"/>
   </a>
   <img src="https://img.shields.io/badge/rust-1.86%2B-orange?style=flat-square&logo=rust" alt="rust version"/>
   <img src="https://img.shields.io/badge/MCP-server-7057ff?style=flat-square" alt="MCP server"/>
