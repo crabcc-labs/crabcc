@@ -4,6 +4,7 @@ members = [
     "crates/crabcc-cli",
     "crates/crabcc-core",
     "crates/crabcc-mcp",
+    "crates/crabcc-memory",
 ]
 
 [workspace.package]
@@ -15,6 +16,7 @@ repository = "https://github.com/peterlodri-sec/crabcc"
 [workspace.dependencies]
 crabcc-core = { path = "crates/crabcc-core" }
 crabcc-mcp = { path = "crates/crabcc-mcp" }
+crabcc-memory = { path = "crates/crabcc-memory" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
