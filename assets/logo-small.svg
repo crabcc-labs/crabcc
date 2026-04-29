@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  crabcc — favicon-style. 64×64. Stripped-down geometry: body + claws + cc-eyes.
+  No legs, no shell dimples, no smile. Reads cleanly at 16×16 in a tab.
+-->
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="0 0 64 64"
+     width="64" height="64"
+     role="img" aria-label="crabcc favicon">
+  <title>crabcc</title>
+  <defs>
+    <linearGradient id="b" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%"   stop-color="#e88a6a"/>
+      <stop offset="100%" stop-color="#c25c3f"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Left claw — angle bracket pinch -->
+  <path d="M 14 30
+           Q 4 26  4 34
+           Q 4 42 16 38 Z"
+        fill="url(#b)" stroke="#7d3520" stroke-width="1.5"/>
+  <!-- Right claw -->
+  <path d="M 50 30
+           Q 60 26  60 34
+           Q 60 42 48 38 Z"
+        fill="url(#b)" stroke="#7d3520" stroke-width="1.5"/>
+
+  <!-- Body -->
+  <path d="M 14 36
+           C 14 22  24 16 32 16
+           C 40 16  50 22 50 36
+           C 50 46  40 52 32 52
+           C 24 52  14 46 14 36 Z"
+        fill="url(#b)" stroke="#7d3520" stroke-width="2"/>
+
+  <!-- Two eyes shaped as `c` letterforms (the cc of crabcc) -->
+  <circle cx="25" cy="29" r="4.5" fill="#fff7f1" stroke="#7d3520" stroke-width="1.5"/>
+  <path d="M 27 27 A 2.5 2.5 0 1 0 27 31"
+        fill="none" stroke="#1a1a1a" stroke-width="1.5" stroke-linecap="round"/>
+  <circle cx="39" cy="29" r="4.5" fill="#fff7f1" stroke="#7d3520" stroke-width="1.5"/>
+  <path d="M 41 27 A 2.5 2.5 0 1 0 41 31"
+        fill="none" stroke="#1a1a1a" stroke-width="1.5" stroke-linecap="round"/>
+</svg>

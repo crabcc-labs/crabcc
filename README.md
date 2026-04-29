@@ -1,8 +1,39 @@
-# crabcc
+<h1 align="center">
+  <img src="./assets/logo.svg" alt="crabcc logo" width="160" /><br/>
+  crabcc
+</h1>
 
-> **Symbol index for AI coding agents.** Returns compact JSON, not file dumps.
-> **47–4400× faster than `grep -rn`** on monorepos. **5–100× faster than `ripgrep`** on whole-repo lookups.
-> **85% fewer bytes** sent to the LLM in aggregate.
+<p align="center">
+  <em>Symbol index for AI coding agents.</em><br/>
+  <strong>47–4400× faster than <code>grep -rn</code></strong> on monorepos &nbsp;·&nbsp;
+  <strong>5–100× faster than ripgrep</strong> on whole-repo lookups &nbsp;·&nbsp;
+  <strong>85% fewer bytes</strong> sent to the LLM
+</p>
+
+<p align="center">
+  <a href="https://github.com/peterlodri-sec/crabcc/actions/workflows/ci.yml">
+    <img src="https://img.shields.io/github/actions/workflow/status/peterlodri-sec/crabcc/ci.yml?branch=main&label=CI&style=flat-square" alt="CI status"/>
+  </a>
+  <a href="https://github.com/peterlodri-sec/crabcc/releases/latest">
+    <img src="https://img.shields.io/github/v/release/peterlodri-sec/crabcc?label=release&style=flat-square&include_prereleases" alt="latest release"/>
+  </a>
+  <a href="https://github.com/peterlodri-sec/crabcc/blob/main/LICENSE">
+    <img src="https://img.shields.io/github/license/peterlodri-sec/crabcc?style=flat-square" alt="MIT licensed"/>
+  </a>
+  <a href="https://github.com/peterlodri-sec/crabcc/stargazers">
+    <img src="https://img.shields.io/github/stars/peterlodri-sec/crabcc?style=flat-square" alt="stars"/>
+  </a>
+  <a href="https://github.com/peterlodri-sec/crabcc/issues">
+    <img src="https://img.shields.io/github/issues/peterlodri-sec/crabcc?style=flat-square" alt="open issues"/>
+  </a>
+  <a href="https://github.com/peterlodri-sec/crabcc/milestone/1">
+    <img src="https://img.shields.io/github/milestones/progress/peterlodri-sec/crabcc/1?label=v2.0&style=flat-square" alt="v2.0 progress"/>
+  </a>
+  <img src="https://img.shields.io/badge/rust-1.86%2B-orange?style=flat-square&logo=rust" alt="rust version"/>
+  <img src="https://img.shields.io/badge/MCP-server-7057ff?style=flat-square" alt="MCP server"/>
+</p>
+
+---
 
 A small Rust CLI + MCP server that indexes your repo's symbols (functions, classes,
 methods, etc.) into a SQLite store and exposes them via four primitives an agent
@@ -12,6 +43,34 @@ tokens when the question only needs a number or a deduped file list.
 
 Languages today: TypeScript, TSX, JavaScript, Ruby. Adding a language is a tree-sitter
 grammar plus an extractor.
+
+```text
+$ crabcc sym Assessment
+[{"name":"Assessment","kind":"class","signature":"class Assessment < ApplicationRecord",
+  "file":"app/models/assessment.rb","line_start":1,"line_end":991, ... }]
+
+$ crabcc callers find_by --count
+{"count":475}
+
+$ crabcc refs Assessment --files-only --limit 10
+{"files":["app/builders/.../part_builder.rb", ...]}      ← 253 bytes vs 62,541
+                                                          (–99.6%)
+```
+
+<details>
+<summary>📚 Table of contents</summary>
+
+- [Why](#why)
+- [Install](#install)
+- [Usage](#usage)
+- [Token-shaping flags](#token-shaping-flags)
+- [Bench results](#bench-results-mc-mothership-13k-indexed-files)
+- [Architecture](#architecture)
+- [When NOT to use crabcc](#when-not-to-use-crabcc)
+- [Status & roadmap](#status)
+
+Deep dives: [`ARCHITECTURE.md`](./ARCHITECTURE.md) · [`docs/RESEARCH-mempalace.md`](./docs/RESEARCH-mempalace.md) · [`docs/RESEARCH-fsst.md`](./docs/RESEARCH-fsst.md) · [`examples/`](./examples/) · [`man/crabcc.1`](./man/crabcc.1)
+</details>
 
 ---
 
@@ -33,9 +92,17 @@ text.
 ## Install
 
 ```bash
+# One-liner (Linux + macOS, x86_64 + aarch64)
+curl -fsSL https://raw.githubusercontent.com/peterlodri-sec/crabcc/main/install.sh | bash
+
+# Or from source
 cargo install --path crates/crabcc-cli
+```
+
+```bash
 crabcc index            # one-time, ~5–30s on a 13k-file repo
 crabcc refresh          # incremental, ~250ms no-op (mtime + sha256 keyed)
+crabcc watch            # auto-refresh on file changes (Ctrl-C to exit)
 ```
 
 The index lives at `.crabcc/index.db` per repo. Add `.crabcc/` to `.gitignore`.
@@ -182,10 +249,24 @@ and runbooks for adding features, see [`ARCHITECTURE.md`](./ARCHITECTURE.md).
 
 ## Status
 
-Pre-v1. Languages: TS/TSX/JS/Ruby. Tests: 60 (53 core + 7 MCP). License: MIT.
+v0.1 → v2.0 in flight. Languages: TS/TSX/JS/Ruby (Go/Python/Rust queued for v2.0).
+**102 tests** (85 core + 17 MCP). License: MIT. CI matrix: Linux + macOS x86_64 + macOS aarch64.
 
-Roadmap (open):
-- Edges table populated from extractor → call graph queries from SQL only
-- `crabcc grep` with enclosing-symbol annotation (currently a TODO stub)
-- More languages (Go, Python, Rust)
-- crabcc loses on small single-file ops: should add `outline --compact` for tighter JSON
+### Roadmap
+
+| Milestone | Status | Tracked |
+|---|---|---|
+| Token-shaping flags + `crabcc files` | ✅ shipped | — |
+| Watch + Graph sidecars | ✅ shipped | — |
+| SQLite tuning + +14 coverage tests | ✅ shipped | — |
+| CI: nextest + JUnit XML artifact | ✅ shipped | — |
+| ARCHITECTURE.md + install.sh + brew formula | ✅ shipped | — |
+| **`crabcc memory` MVP** (MemPalace port) | 📋 v2.0 | [#2](https://github.com/peterlodri-sec/crabcc/issues/2) |
+| **Edges-at-extract** (graph build O(n²)→O(n)) | 📋 v2.0 | [#3](https://github.com/peterlodri-sec/crabcc/issues/3) |
+| **Languages: Go, Python, Rust** | 📋 v2.0 | [#4](https://github.com/peterlodri-sec/crabcc/issues/4) |
+| **Distribution: brew tap, mdBook, demos** | 📋 v2.0 | [#5](https://github.com/peterlodri-sec/crabcc/issues/5) |
+| **CI optimizations** (sccache, smarter cache) | 📋 v2.0 | [#6](https://github.com/peterlodri-sec/crabcc/issues/6) |
+| **FSST string compression** | 📋 v2.0 | [#1](https://github.com/peterlodri-sec/crabcc/issues/1) |
+
+Sprint plan: [`task-items/crabcc/.tasks`](../../task-items/crabcc/.tasks) (4-dev × 2-week).
+Full v2.0 milestone: <https://github.com/peterlodri-sec/crabcc/milestone/1>.
