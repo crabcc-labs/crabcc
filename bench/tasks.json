@@ -1,0 +1,22 @@
+[
+  {
+    "id": "sym-User",
+    "prompt": "Find where the User class (or model) is defined in this repo. Output exactly one line: <file_path>:<line_number>. No other text."
+  },
+  {
+    "id": "sym-Assessment",
+    "prompt": "Find where the Assessment class is primarily defined in this repo (the main model file, not test or subclass). Output exactly one line: <file_path>:<line_number>. No other text."
+  },
+  {
+    "id": "callers-find_by",
+    "prompt": "Count how many times the method `find_by` is called anywhere in this repo (any receiver, any args). Output a single integer count and nothing else."
+  },
+  {
+    "id": "refs-Assessment",
+    "prompt": "List the first 10 files that reference the symbol `Assessment` anywhere in their code (definition or usage). Output a JSON array of file paths, nothing else."
+  },
+  {
+    "id": "outline-assessment-rb",
+    "prompt": "Open the file app/models/assessment.rb (if it exists) and list the names of its top-level methods (def ... at class scope) as a JSON array. No method bodies, no other text."
+  }
+]
