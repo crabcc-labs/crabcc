@@ -1,3 +1,6 @@
+//! Public data types: `Drawer`, `Wing`, `Query`, `Session`, `DrawerHit`, etc.
+//! All `Serialize + Deserialize` for MCP and CLI JSON I/O.
+
 use serde::{Deserialize, Serialize};
 
 pub type DrawerId = i64;

@@ -1,3 +1,19 @@
+//! File-backed `Backend` — pure rusqlite, brute-force cosine over an
+//! `f32` blob column. Default at M0.
+//!
+//! Connection setup mirrors `crabcc_core::store::Store::open` (WAL, mmap,
+//! busy_timeout) so `.crabcc/memory.db` and `.crabcc/index.db` share
+//! durability/perf characteristics.
+//!
+//! Query path: full table scan filtered by wing/room → cosine in Rust →
+//! top-K. Fine for ≤ ~10k drawers (M0 scale target). M0.5 swaps the inner
+//! query for a `sqlite-vec` virtual table `MATCH` while keeping the same
+//! schema and `Backend` impl signature.
+//!
+//! Insert path: idempotent on `(source_id, sha256(body))` via a UNIQUE
+//! constraint — re-adding an unchanged drawer returns its existing id.
+//! Wing/room rows are auto-created within the same transaction.
+
 use crate::backend::{cosine, Backend};
 use crate::types::*;
 use anyhow::{anyhow, Context, Result};
@@ -8,12 +24,6 @@ use std::sync::Mutex;
 
 const SCHEMA: &str = include_str!("../../schema/001_init.sql");
 
-/// File-backed brute-force backend. Mirrors `crabcc_core::store::Store`'s
-/// connection setup (WAL, mmap, busy_timeout, ANALYZE on demand).
-///
-/// Query path = full table scan + cosine. Fine for the M0 scale target
-/// (≤ ~10k drawers). M0.5 will introduce `SqliteVecBackend` reading the
-/// same schema with a `sqlite-vec` virtual table for ANN.
 pub struct SqliteBackend {
     conn: Mutex<Connection>,
 }
@@ -399,5 +409,177 @@ mod tests {
         let dir = tempdir().unwrap();
         let b = SqliteBackend::open(&dir.path().join("memory.db")).unwrap();
         assert_eq!(b.health(), HealthStatus::Ok);
+    }
+
+    #[test]
+    fn add_empty_is_noop() {
+        let dir = tempdir().unwrap();
+        let b = SqliteBackend::open(&dir.path().join("memory.db")).unwrap();
+        assert!(b.add(&[]).unwrap().is_empty());
+        assert_eq!(b.count().unwrap(), 0);
+    }
+
+    #[test]
+    fn query_limit_zero_returns_empty() {
+        let dir = tempdir().unwrap();
+        let b = SqliteBackend::open(&dir.path().join("memory.db")).unwrap();
+        let e = HashEmbedder::new();
+        b.add(&[ins(&e, "1", "alpha", "d")]).unwrap();
+        let q = Query {
+            embedding: e.embed_one("alpha").unwrap(),
+            limit: 0,
+            wing: None,
+            room: None,
+        };
+        assert!(b.query(&q).unwrap().hits.is_empty());
+    }
+
+    #[test]
+    fn query_with_room_filter() {
+        let dir = tempdir().unwrap();
+        let b = SqliteBackend::open(&dir.path().join("memory.db")).unwrap();
+        let e = HashEmbedder::new();
+        let mut a = ins(&e, "1", "alpha", "w");
+        a.room = Some("room-a".into());
+        let mut beta = ins(&e, "2", "beta", "w");
+        beta.room = Some("room-b".into());
+        b.add(&[a, beta]).unwrap();
+        let q = Query {
+            embedding: e.embed_one("alpha").unwrap(),
+            limit: 10,
+            wing: None,
+            room: Some("room-b".into()),
+        };
+        let r = b.query(&q).unwrap();
+        assert_eq!(r.hits.len(), 1);
+        assert_eq!(r.hits[0].room.as_deref(), Some("room-b"));
+    }
+
+    #[test]
+    fn delete_drawer_cascades_embedding_row() {
+        // FK CASCADE on drawer_embeddings(drawer_id) — verify the embedding
+        // row vanishes when its drawer is deleted. Open a sibling read
+        // connection to inspect the embeddings table directly.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("memory.db");
+        let b = SqliteBackend::open(&path).unwrap();
+        let e = HashEmbedder::new();
+        let id = b.add(&[ins(&e, "x", "body", "d")]).unwrap()[0];
+
+        let probe = Connection::open(&path).unwrap();
+        let before: i64 = probe
+            .query_row(
+                "SELECT COUNT(*) FROM drawer_embeddings WHERE drawer_id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(before, 1);
+
+        b.delete(&DeleteSel::ById(vec![id])).unwrap();
+
+        let after: i64 = probe
+            .query_row(
+                "SELECT COUNT(*) FROM drawer_embeddings WHERE drawer_id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(after, 0);
+    }
+
+    #[test]
+    fn delete_wing_cascades_drawers() {
+        // FK CASCADE on drawers(wing_id) — deleting a wing wipes its drawers.
+        // No public wing-delete API at M0; test via a sibling connection
+        // with foreign_keys explicitly ON (default OFF for fresh connections).
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("memory.db");
+        let b = SqliteBackend::open(&path).unwrap();
+        let e = HashEmbedder::new();
+        b.add(&[
+            ins(&e, "1", "one", "wing-a"),
+            ins(&e, "2", "two", "wing-a"),
+            ins(&e, "3", "three", "wing-b"),
+        ])
+        .unwrap();
+        assert_eq!(b.count().unwrap(), 3);
+
+        let mutator = Connection::open(&path).unwrap();
+        mutator.pragma_update(None, "foreign_keys", "ON").unwrap();
+        mutator
+            .execute("DELETE FROM wings WHERE name = 'wing-a'", [])
+            .unwrap();
+
+        // Backend sees the cascade — wing-a's two drawers are gone.
+        assert_eq!(b.count().unwrap(), 1);
+    }
+
+    #[test]
+    fn concurrent_writes_via_arc() {
+        // SqliteBackend is Send and uses an inner Mutex<Connection>. Two
+        // threads each insert N drawers; final count must equal 2N and all
+        // calls must succeed.
+        use std::sync::Arc;
+        use std::thread;
+        let dir = tempdir().unwrap();
+        let b = Arc::new(SqliteBackend::open(&dir.path().join("memory.db")).unwrap());
+        let mut handles = Vec::new();
+        for t in 0..2 {
+            let bclone = b.clone();
+            handles.push(thread::spawn(move || {
+                let e = HashEmbedder::new();
+                for i in 0..25 {
+                    let body = format!("t{t}-doc{i}");
+                    bclone
+                        .add(&[DrawerInsert {
+                            wing: "default".into(),
+                            room: None,
+                            source_id: format!("t{t}-{i}"),
+                            body: body.clone(),
+                            embedding: e.embed_one(&body).unwrap(),
+                            session_id: None,
+                        }])
+                        .unwrap();
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(b.count().unwrap(), 50);
+    }
+
+    #[test]
+    fn session_upsert_idempotent_updates_metadata() {
+        let dir = tempdir().unwrap();
+        let b = SqliteBackend::open(&dir.path().join("memory.db")).unwrap();
+        b.upsert_session(&Session {
+            id: "term:abc".into(),
+            started_at: 100,
+            cwd: Some("/old".into()),
+            git_branch: None,
+            git_sha: None,
+        })
+        .unwrap();
+        b.upsert_session(&Session {
+            id: "term:abc".into(),
+            started_at: 100,
+            cwd: Some("/new".into()),
+            git_branch: Some("main".into()),
+            git_sha: Some("deadbeef".into()),
+        })
+        .unwrap();
+        // Verify only one session row exists with the latest metadata.
+        let probe = Connection::open(dir.path().join("memory.db")).unwrap();
+        let (cwd, branch): (String, String) = probe
+            .query_row(
+                "SELECT cwd, git_branch FROM sessions WHERE id = ?1",
+                params!["term:abc"],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(cwd, "/new");
+        assert_eq!(branch, "main");
     }
 }

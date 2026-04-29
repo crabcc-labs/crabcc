@@ -1,3 +1,19 @@
+//! Top-level memory facade + multi-project routing.
+//!
+//! `Palace::open(repo_root)` is idempotent: creates
+//! `<repo_root>/.crabcc/memory.db` if missing, reuses if present. Per-repo
+//! by design — the memory store is scoped to one git working tree, the
+//! same way `.crabcc/index.db` is for the symbol index.
+//!
+//! `PalaceRegistry` caches open palaces by canonical git root. Lets one
+//! long-running process (notably the MCP server) handle tool calls from
+//! multiple projects: each call carries a `cwd` arg, the registry walks
+//! up to find `.git`, and returns (or opens) the matching palace.
+//!
+//! `find_git_root(start)` is the standalone walk-up helper — public so
+//! callers building tool args can resolve the route deterministically
+//! before invoking the registry.
+
 use crate::backend::{sqlite::SqliteBackend, Backend};
 use crate::embed::{Embedder, HashEmbedder};
 use crate::types::*;
@@ -6,11 +22,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-/// Top-level memory facade. Owns one Backend + one Embedder.
-///
-/// `Palace::open(repo_root)` is idempotent: creates `<repo_root>/.crabcc/memory.db`
-/// if missing, reuses if present. Per-repo by design — the memory store
-/// is scoped to one git working tree (matches `.crabcc/index.db`).
 pub struct Palace {
     pub root: PathBuf,
     backend: Arc<dyn Backend>,
@@ -241,5 +252,55 @@ mod tests {
         let pb = reg.open_for(b.path()).unwrap();
         assert!(!Arc::ptr_eq(&pa, &pb));
         assert_eq!(reg.count(), 2);
+    }
+
+    #[test]
+    fn palace_search_with_no_drawers_is_empty() {
+        let dir = tempdir().unwrap();
+        let p = Palace::open(dir.path()).unwrap();
+        assert!(p.search("anything", 5).unwrap().hits.is_empty());
+    }
+
+    #[test]
+    fn registry_concurrent_open_for_same_root() {
+        // 4 threads race to open_for the same git root. Registry must
+        // hand out the same Arc to all of them and end with count == 1.
+        use std::thread;
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        let reg = Arc::new(PalaceRegistry::new());
+        let mut handles = Vec::new();
+        for _ in 0..4 {
+            let r = reg.clone();
+            let p = dir.path().to_path_buf();
+            handles.push(thread::spawn(move || r.open_for(&p).unwrap()));
+        }
+        let palaces: Vec<Arc<Palace>> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let first = palaces[0].clone();
+        for p in &palaces[1..] {
+            assert!(Arc::ptr_eq(&first, p), "all threads must get same Arc");
+        }
+        assert_eq!(reg.count(), 1);
+    }
+
+    #[test]
+    fn find_git_root_returns_none_outside_repo() {
+        // tempdir lives under /tmp or /var/folders — neither is inside a git
+        // repo on a normal system, so walk-up should exhaust to None.
+        let dir = tempdir().unwrap();
+        let result = find_git_root(dir.path());
+        assert!(
+            result.is_none(),
+            "tempdir unexpectedly inside a git repo at {result:?}"
+        );
+    }
+
+    #[test]
+    fn ephemeral_palaces_are_independent() {
+        let p1 = Palace::ephemeral();
+        let p2 = Palace::ephemeral();
+        p1.remember("d", None, "x", "hello").unwrap();
+        assert_eq!(p1.backend().count().unwrap(), 1);
+        assert_eq!(p2.backend().count().unwrap(), 0);
     }
 }

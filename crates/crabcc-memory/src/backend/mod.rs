@@ -1,12 +1,20 @@
+//! `Backend` trait + shared cosine helper.
+//!
+//! Two impls in this module:
+//! - `in_memory::InMemoryBackend` — `HashMap` + brute-force, for tests.
+//! - `sqlite::SqliteBackend`     — file-backed, brute-force over an
+//!   `f32` blob column (default at M0).
+//!
+//! M0.5 adds `sqlite_vec::SqliteVecBackend` reading the same schema with
+//! the `sqlite-vec` extension for ANN. The trait surface is stable across
+//! impls — callers only see lower latency on `query`.
+
 use crate::types::*;
 use anyhow::Result;
 
 pub mod in_memory;
 pub mod sqlite;
 
-/// Storage trait. M0.5 will add a `SqliteVecBackend` impl that uses
-/// the `sqlite-vec` extension for fast ANN; the trait surface stays the
-/// same, callers just see lower latency on `query`.
 pub trait Backend: Send + Sync {
     fn add(&self, drawers: &[DrawerInsert]) -> Result<Vec<DrawerId>>;
     fn query(&self, q: &Query) -> Result<QueryResult>;

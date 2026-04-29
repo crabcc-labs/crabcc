@@ -1,3 +1,9 @@
+//! `Embedder` trait + `HashEmbedder` (deterministic, test-only).
+//!
+//! M1 swaps in `FastEmbedEmbedder` (fastembed-rs / MiniLM-L6-v2) for
+//! semantically meaningful 384-dim vectors. The trait surface is stable
+//! so the `Backend` impls don't change when the real embedder lands.
+
 use anyhow::Result;
 
 pub trait Embedder: Send + Sync {
@@ -98,5 +104,14 @@ mod tests {
             HashEmbedder::with_dim(128).embed_one("x").unwrap().len(),
             128
         );
+    }
+
+    #[test]
+    fn batch_matches_one_by_one() {
+        let e = HashEmbedder::new();
+        let texts: Vec<&str> = vec!["alpha", "beta", "gamma"];
+        let by_one: Vec<Vec<f32>> = texts.iter().map(|t| e.embed_one(t).unwrap()).collect();
+        let by_batch = e.embed_batch(&texts).unwrap();
+        assert_eq!(by_one, by_batch);
     }
 }

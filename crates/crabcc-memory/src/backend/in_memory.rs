@@ -1,3 +1,10 @@
+//! In-memory `Backend` — `HashMap` + brute-force cosine.
+//!
+//! Use cases: unit tests of the trait surface, ephemeral palaces (see
+//! `Palace::ephemeral`). Not durable across process exits. Thread-safe via
+//! an inner `Mutex`. Dedup keyed on `(source_id, sha256(body))` — re-adding
+//! the same drawer returns its existing id rather than creating a duplicate.
+
 use crate::backend::{cosine, Backend};
 use crate::types::*;
 use anyhow::{anyhow, Result};
@@ -271,5 +278,38 @@ mod tests {
         let id = b.add(&[d]).unwrap()[0];
         let g = b.get(&[id]).unwrap();
         assert_eq!(g.drawers[0].session_id.as_deref(), Some("term:abc"));
+    }
+
+    #[test]
+    fn add_empty_returns_empty_vec() {
+        let b = InMemoryBackend::new();
+        assert!(b.add(&[]).unwrap().is_empty());
+        assert_eq!(b.count().unwrap(), 0);
+    }
+
+    #[test]
+    fn query_with_no_drawers_returns_empty() {
+        let e = HashEmbedder::new();
+        let b = InMemoryBackend::new();
+        let q = Query {
+            embedding: e.embed_one("anything").unwrap(),
+            limit: 5,
+            wing: None,
+            room: None,
+        };
+        assert!(b.query(&q).unwrap().hits.is_empty());
+    }
+
+    #[test]
+    fn delete_all_clears_dedup_index() {
+        let e = HashEmbedder::new();
+        let b = InMemoryBackend::new();
+        let id1 = b.add(&[ins(&e, "x", "body", "d")]).unwrap()[0];
+        b.delete(&DeleteSel::All).unwrap();
+        // After All, re-adding the "same" drawer must mint a NEW id — the
+        // sha index was wiped along with the rows.
+        let id2 = b.add(&[ins(&e, "x", "body", "d")]).unwrap()[0];
+        assert_ne!(id1, id2);
+        assert_eq!(b.count().unwrap(), 1);
     }
 }
