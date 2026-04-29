@@ -6,6 +6,12 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-04-30
+
+First production-quality release. The features below are stable; their
+storage formats (SQLite schema v1, Tantivy sidecar, graph.json, usage.log)
+are upgrade-safe via additive migrations.
+
 ### Added
 - **`crabcc watch [--debounce MS]`** — bulletproof FS watchdog sidecar. Worker
   thread (named `crabcc-watch`); debounced events (default 500ms) trigger
