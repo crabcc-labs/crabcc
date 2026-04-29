@@ -9,5 +9,6 @@ pub mod types;
 pub mod walker;
 
 pub mod refs;
+pub mod track;
 
 pub use types::{Edge, Hit, Symbol, SymbolKind};
