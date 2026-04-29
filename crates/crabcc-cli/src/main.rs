@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
 use crabcc_core::{query, store::Store};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(name = "crabcc", version, about = "Symbol index for AI coding agents")]
@@ -76,6 +76,26 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Watch the repo and auto-`refresh` on file changes (Ctrl-C to exit).
+    Watch {
+        /// Debounce window in milliseconds — events within this window
+        /// collapse into one refresh. Lower = more responsive, higher = less
+        /// thrash on burst events like `git checkout`.
+        #[arg(long, default_value_t = 500)]
+        debounce: u64,
+    },
+    /// Build the call-graph sidecar (.crabcc/graph.json).
+    GraphBuild,
+    /// Query the call-graph: who calls / what does this symbol call?
+    Graph {
+        name: String,
+        /// Direction: 'callers' (default) walks upward; 'callees' walks downward.
+        #[arg(long, default_value = "callers")]
+        dir: String,
+        /// BFS depth limit.
+        #[arg(long, default_value_t = 2)]
+        depth: usize,
+    },
 }
 
 /// Shaping flags for refs/callers. `--files-only` and `--count` are
@@ -99,15 +119,23 @@ impl ResultOpts {
         if self.count {
             query::Mode::Count
         } else if self.files_only {
-            query::Mode::FilesOnly { limit: opt(self.limit) }
+            query::Mode::FilesOnly {
+                limit: opt(self.limit),
+            }
         } else {
-            query::Mode::Hits { limit: opt(self.limit) }
+            query::Mode::Hits {
+                limit: opt(self.limit),
+            }
         }
     }
 }
 
 fn opt(n: usize) -> Option<usize> {
-    if n == 0 { None } else { Some(n) }
+    if n == 0 {
+        None
+    } else {
+        Some(n)
+    }
 }
 
 fn main() -> Result<()> {
@@ -162,7 +190,13 @@ fn main() -> Result<()> {
             let mode = opts.to_mode();
             let out = query::query_callers(&store, &root, &name, mode)?;
             let body = serde_json::to_string(&out)?;
-            crabcc_core::track::record("callers", &name, out.count(), &repo_label(&root), body.len());
+            crabcc_core::track::record(
+                "callers",
+                &name,
+                out.count(),
+                &repo_label(&root),
+                body.len(),
+            );
             println!("{body}");
         }
         Cmd::Outline { file } => {
@@ -172,10 +206,27 @@ fn main() -> Result<()> {
             crabcc_core::track::record("outline", &key, syms.len(), &repo_label(&root), body.len());
             println!("{body}");
         }
-        Cmd::Files { under, lang, ext, limit } => {
-            let files = list_files(&store, under.as_deref(), lang.as_deref(), ext.as_deref(), limit)?;
+        Cmd::Files {
+            under,
+            lang,
+            ext,
+            limit,
+        } => {
+            let files = list_files(
+                &store,
+                under.as_deref(),
+                lang.as_deref(),
+                ext.as_deref(),
+                limit,
+            )?;
             let body = serde_json::to_string(&files)?;
-            crabcc_core::track::record("files", "list", files.len(), &repo_label(&root), body.len());
+            crabcc_core::track::record(
+                "files",
+                "list",
+                files.len(),
+                &repo_label(&root),
+                body.len(),
+            );
             println!("{body}");
         }
         Cmd::Grep { pattern } => {
@@ -193,7 +244,13 @@ fn main() -> Result<()> {
             let fts = crabcc_core::fts::Fts::open(&fts_dir)?;
             let hits = fts.prefix(&query, limit)?;
             let body = serde_json::to_string(&hits)?;
-            crabcc_core::track::record("prefix", &query, hits.len(), &repo_label(&root), body.len());
+            crabcc_core::track::record(
+                "prefix",
+                &query,
+                hits.len(),
+                &repo_label(&root),
+                body.len(),
+            );
             println!("{body}");
         }
         Cmd::FtsRebuild => {
@@ -208,6 +265,45 @@ fn main() -> Result<()> {
             } else {
                 print_track_human(&r);
             }
+        }
+        Cmd::Watch { debounce } => {
+            let store = std::sync::Arc::new(std::sync::Mutex::new(store));
+            crabcc_core::watch::watch(&root, store, std::time::Duration::from_millis(debounce))?;
+        }
+        Cmd::GraphBuild => {
+            let g = crabcc_core::graph::CallGraph::build(&store, &root)?;
+            let path = root.join(".crabcc").join("graph.json");
+            g.save(&path)?;
+            println!(
+                "{}",
+                serde_json::to_string(&serde_json::json!({
+                    "edges":  g.edge_count,
+                    "callers": g.callers.len(),
+                    "callees": g.callees.len(),
+                    "path":   path.to_string_lossy(),
+                }))?
+            );
+        }
+        Cmd::Graph {
+            name,
+            dir: direction,
+            depth,
+        } => {
+            let path = root.join(".crabcc").join("graph.json");
+            let g = if path.exists() {
+                crabcc_core::graph::CallGraph::load(&path)?
+            } else {
+                // No cache: build on demand. Slower, but correct.
+                eprintln!("crabcc graph: no .crabcc/graph.json — building on the fly (run `crabcc graph-build` to cache)");
+                crabcc_core::graph::CallGraph::build(&store, &root)?
+            };
+            let hits = match direction.as_str() {
+                "callees" => g.outgoing(&name, depth),
+                _ => g.incoming(&name, depth),
+            };
+            let body = serde_json::to_string(&hits)?;
+            crabcc_core::track::record("graph", &name, hits.len(), &repo_label(&root), body.len());
+            println!("{body}");
         }
     }
     Ok(())
@@ -224,9 +320,9 @@ fn list_files(
     let mut out: Vec<String> = all
         .into_iter()
         .filter(|(p, l)| {
-            under.map_or(true, |u| p.starts_with(u))
-                && lang.map_or(true, |want| l == want)
-                && ext.map_or(true, |e| p.ends_with(&format!(".{e}")))
+            under.is_none_or(|u| p.starts_with(u))
+                && lang.is_none_or(|want| l == want)
+                && ext.is_none_or(|e| p.ends_with(&format!(".{e}")))
         })
         .map(|(p, _)| p)
         .collect();
@@ -250,7 +346,7 @@ fn reset_sigpipe() {
 #[cfg(not(unix))]
 fn reset_sigpipe() {}
 
-fn repo_label(root: &PathBuf) -> String {
+fn repo_label(root: &Path) -> String {
     root.file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("?")
@@ -265,7 +361,7 @@ fn print_track_human(r: &crabcc_core::track::Report) {
         );
     }
     println!("crabcc usage:");
-    line("session",  &r.session);
+    line("session", &r.session);
     line("last 24h", &r.last_24h);
     line("all-time", &r.all_time);
     if !r.by_op.is_empty() {

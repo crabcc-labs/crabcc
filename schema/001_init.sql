@@ -26,9 +26,17 @@ CREATE TABLE IF NOT EXISTS symbols (
     visibility TEXT                         -- pub|priv|pkg (lang-dependent)
 );
 
-CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);
-CREATE INDEX IF NOT EXISTS idx_symbols_file ON symbols(file_id);
-CREATE INDEX IF NOT EXISTS idx_symbols_kind ON symbols(kind);
+CREATE INDEX IF NOT EXISTS idx_symbols_name        ON symbols(name);
+CREATE INDEX IF NOT EXISTS idx_symbols_file        ON symbols(file_id);
+CREATE INDEX IF NOT EXISTS idx_symbols_kind        ON symbols(kind);
+-- Outline queries (`crabcc outline FILE`) join symbols→files on file_id and
+-- ORDER BY line_start. Covering this with a composite index avoids a sort.
+CREATE INDEX IF NOT EXISTS idx_symbols_file_line   ON symbols(file_id, line_start);
+-- Symbol-name + kind filter (used when `sym` may grow filter flags).
+CREATE INDEX IF NOT EXISTS idx_symbols_name_kind   ON symbols(name, kind);
+-- File listings filter by lang. Small table (~13k rows on mc-mothership)
+-- but the index makes `crabcc files --lang ruby` a constant-time SQL.
+CREATE INDEX IF NOT EXISTS idx_files_lang          ON files(lang);
 
 -- references / call edges. src_symbol may be null for top-level usage.
 CREATE TABLE IF NOT EXISTS edges (

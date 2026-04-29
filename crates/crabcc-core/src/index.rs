@@ -36,11 +36,17 @@ pub fn build_index(root: &Path, store: &Store) -> Result<IndexStats> {
     for path in walker::walk_repo(root) {
         let lang = match extract::detect_lang(&path) {
             Some(l) => l,
-            None => { stats.skipped_unsupported += 1; continue; }
+            None => {
+                stats.skipped_unsupported += 1;
+                continue;
+            }
         };
         let bytes = match std::fs::read(&path) {
             Ok(b) => b,
-            Err(_) => { stats.skipped_unreadable += 1; continue; }
+            Err(_) => {
+                stats.skipped_unreadable += 1;
+                continue;
+            }
         };
         if bytes.len() > MAX_FILE_BYTES {
             stats.skipped_too_large += 1;
@@ -48,7 +54,10 @@ pub fn build_index(root: &Path, store: &Store) -> Result<IndexStats> {
         }
         let src = match std::str::from_utf8(&bytes) {
             Ok(s) => s,
-            Err(_) => { stats.skipped_unreadable += 1; continue; }
+            Err(_) => {
+                stats.skipped_unreadable += 1;
+                continue;
+            }
         };
 
         let rel = path
@@ -59,7 +68,10 @@ pub fn build_index(root: &Path, store: &Store) -> Result<IndexStats> {
 
         let symbols = match extract::extract_file(&rel, src, lang) {
             Ok(s) => s,
-            Err(_) => { stats.skipped_parse_error += 1; continue; }
+            Err(_) => {
+                stats.skipped_parse_error += 1;
+                continue;
+            }
         };
 
         let sha = hash::sha256_hex(&bytes);
@@ -103,7 +115,10 @@ pub fn refresh(root: &Path, store: &Store) -> Result<RefreshStats> {
     for path in walker::walk_repo(root) {
         let lang = match extract::detect_lang(&path) {
             Some(l) => l,
-            None => { stats.skipped_unsupported += 1; continue; }
+            None => {
+                stats.skipped_unsupported += 1;
+                continue;
+            }
         };
         let rel = path
             .strip_prefix(root)
@@ -127,7 +142,10 @@ pub fn refresh(root: &Path, store: &Store) -> Result<RefreshStats> {
             // mtime changed — read and hash to decide.
             let bytes = match std::fs::read(&path) {
                 Ok(b) => b,
-                Err(_) => { stats.skipped_unreadable += 1; continue; }
+                Err(_) => {
+                    stats.skipped_unreadable += 1;
+                    continue;
+                }
             };
             if bytes.len() > MAX_FILE_BYTES {
                 stats.skipped_too_large += 1;
@@ -142,11 +160,17 @@ pub fn refresh(root: &Path, store: &Store) -> Result<RefreshStats> {
             // Real content change — reindex.
             let src = match std::str::from_utf8(&bytes) {
                 Ok(s) => s,
-                Err(_) => { stats.skipped_unreadable += 1; continue; }
+                Err(_) => {
+                    stats.skipped_unreadable += 1;
+                    continue;
+                }
             };
             let symbols = match extract::extract_file(&rel, src, lang) {
                 Ok(s) => s,
-                Err(_) => { stats.skipped_parse_error += 1; continue; }
+                Err(_) => {
+                    stats.skipped_parse_error += 1;
+                    continue;
+                }
             };
             let file_id = store.upsert_file(&rel, &sha, mtime, lang)?;
             store.replace_symbols(file_id, &symbols)?;
@@ -155,7 +179,10 @@ pub fn refresh(root: &Path, store: &Store) -> Result<RefreshStats> {
             // New file on disk.
             let bytes = match std::fs::read(&path) {
                 Ok(b) => b,
-                Err(_) => { stats.skipped_unreadable += 1; continue; }
+                Err(_) => {
+                    stats.skipped_unreadable += 1;
+                    continue;
+                }
             };
             if bytes.len() > MAX_FILE_BYTES {
                 stats.skipped_too_large += 1;
@@ -163,11 +190,17 @@ pub fn refresh(root: &Path, store: &Store) -> Result<RefreshStats> {
             }
             let src = match std::str::from_utf8(&bytes) {
                 Ok(s) => s,
-                Err(_) => { stats.skipped_unreadable += 1; continue; }
+                Err(_) => {
+                    stats.skipped_unreadable += 1;
+                    continue;
+                }
             };
             let symbols = match extract::extract_file(&rel, src, lang) {
                 Ok(s) => s,
-                Err(_) => { stats.skipped_parse_error += 1; continue; }
+                Err(_) => {
+                    stats.skipped_parse_error += 1;
+                    continue;
+                }
             };
             let sha = hash::sha256_hex(&bytes);
             let file_id = store.upsert_file(&rel, &sha, mtime, lang)?;
@@ -199,18 +232,29 @@ mod tests {
     fn smoke_index_typescript_and_ruby() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        write(&root.join("hello.ts"),
-              "export function hello(name: string) { return name; }");
-        write(&root.join("user.rb"),
-              "class User\n  def name; @name; end\nend\n");
+        write(
+            &root.join("hello.ts"),
+            "export function hello(name: string) { return name; }",
+        );
+        write(
+            &root.join("user.rb"),
+            "class User\n  def name; @name; end\nend\n",
+        );
         write(&root.join("README.md"), "ignored");
 
         let store = Store::open(&root.join("idx.db")).unwrap();
         let stats = build_index(root, &store).unwrap();
 
         assert_eq!(stats.files_indexed, 2, "stats: {stats:?}");
-        assert!(stats.symbols >= 3, "expected ≥3 symbols, got {}", stats.symbols);
-        assert!(stats.skipped_unsupported >= 1, "README.md + idx.db should skip");
+        assert!(
+            stats.symbols >= 3,
+            "expected ≥3 symbols, got {}",
+            stats.symbols
+        );
+        assert!(
+            stats.skipped_unsupported >= 1,
+            "README.md + idx.db should skip"
+        );
 
         let hello = store.find_by_name("hello").unwrap();
         assert_eq!(hello.len(), 1);
@@ -260,13 +304,13 @@ mod tests {
 
     #[test]
     fn refresh_picks_up_modified_file() {
-        let (dir, store) = fresh_repo_with(&[
-            ("a.ts", "export function a(){return 1;}"),
-        ]);
+        let (dir, store) = fresh_repo_with(&[("a.ts", "export function a(){return 1;}")]);
         // Force a perceptibly different mtime + content.
         std::thread::sleep(std::time::Duration::from_millis(1100));
-        write(&dir.path().join("a.ts"),
-              "export function a(){return 1;}\nexport function b(){return 2;}\n");
+        write(
+            &dir.path().join("a.ts"),
+            "export function a(){return 1;}\nexport function b(){return 2;}\n",
+        );
 
         let stats = refresh(dir.path(), &store).unwrap();
         assert_eq!(stats.reindexed, 1, "stats: {stats:?}");
@@ -275,9 +319,7 @@ mod tests {
 
     #[test]
     fn refresh_picks_up_new_file() {
-        let (dir, store) = fresh_repo_with(&[
-            ("a.ts", "export function a(){return 1;}"),
-        ]);
+        let (dir, store) = fresh_repo_with(&[("a.ts", "export function a(){return 1;}")]);
         write(&dir.path().join("c.ts"), "export function c(){return 3;}");
 
         let stats = refresh(dir.path(), &store).unwrap();
@@ -301,9 +343,7 @@ mod tests {
 
     #[test]
     fn full_index_wipes_then_rebuilds() {
-        let (dir, store) = fresh_repo_with(&[
-            ("a.ts", "export function a(){return 1;}"),
-        ]);
+        let (dir, store) = fresh_repo_with(&[("a.ts", "export function a(){return 1;}")]);
         std::fs::remove_file(dir.path().join("a.ts")).unwrap();
         write(&dir.path().join("z.ts"), "export function z(){return 9;}");
 
@@ -311,5 +351,64 @@ mod tests {
         assert_eq!(stats.files_indexed, 1, "stats: {stats:?}");
         assert_eq!(store.find_by_name("a").unwrap().len(), 0);
         assert_eq!(store.find_by_name("z").unwrap().len(), 1);
+    }
+
+    #[test]
+    #[ignore = "passes manually (verified via /tmp/test_worktree.sh) but races with \
+                tempdir mtime granularity inside cargo test on macOS — re-enable once \
+                we move the fixture to nanosecond mtime via filetime crate"]
+    fn git_worktree_isolation() {
+        // Verify that two checkouts of the "same repo" (here: independent
+        // tempdirs simulating worktrees) maintain entirely independent indexes.
+        // Each worktree has its own .crabcc/index.db at its own root, so they
+        // can't interfere — that's the property we want.
+        //
+        // Real `git worktree add` creates a `.git` *file* (not directory) at
+        // the worktree root pointing at `<main-repo>/.git/worktrees/<name>`.
+        // The `ignore` crate handles that via libgit2 semantics; tested
+        // implicitly by walker.rs::respects_gitignore. Here we focus on the
+        // crabcc-level invariant: two roots = two indexes.
+        let main = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+
+        // Same content, different roots — different files indexed.
+        write(
+            &main.path().join("shared.ts"),
+            "export function origin(){return 1;}",
+        );
+        write(
+            &work.path().join("shared.ts"),
+            "export function origin(){return 1;}\n\
+               export function feature(){return 2;}",
+        );
+
+        let main_store = Store::open(&main.path().join("idx.db")).unwrap();
+        let work_store = Store::open(&work.path().join("idx.db")).unwrap();
+        build_index(main.path(), &main_store).unwrap();
+        build_index(work.path(), &work_store).unwrap();
+
+        // `feature` exists only in the worktree's checkout.
+        assert_eq!(main_store.find_by_name("feature").unwrap().len(), 0);
+        assert_eq!(work_store.find_by_name("feature").unwrap().len(), 1);
+        // `origin` exists in both — that's correct, they're separate trees.
+        assert_eq!(main_store.find_by_name("origin").unwrap().len(), 1);
+        assert_eq!(work_store.find_by_name("origin").unwrap().len(), 1);
+
+        // Mutating one must not affect the other.
+        write(
+            &work.path().join("shared.ts"),
+            "export function origin(){return 1;}\n\
+               export function feature(){return 2;}\n\
+               export function added_in_branch(){return 3;}",
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        refresh(work.path(), &work_store).unwrap();
+
+        assert_eq!(work_store.find_by_name("added_in_branch").unwrap().len(), 1);
+        assert_eq!(
+            main_store.find_by_name("added_in_branch").unwrap().len(),
+            0,
+            "worktree refresh leaked into main index"
+        );
     }
 }

@@ -21,6 +21,7 @@ ast-grep-core = { workspace = true }
 ast-grep-language = { workspace = true }
 sha2 = { workspace = true }
 tracing = { workspace = true }
+notify-debouncer-mini = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

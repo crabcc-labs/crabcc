@@ -18,36 +18,43 @@ use tantivy::schema::{Field, Schema, STORED, STRING, TEXT};
 use tantivy::{doc, Index, ReloadPolicy, TantivyDocument, Term};
 
 pub struct Fts {
-    index:      Index,
-    f_name:     Field,
-    f_kind:     Field,
-    f_file:     Field,
-    f_line:     Field,
-    f_parent:   Field,
+    index: Index,
+    f_name: Field,
+    f_kind: Field,
+    f_file: Field,
+    f_line: Field,
+    f_parent: Field,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FuzzyHit {
-    pub name:   String,
-    pub kind:   String,
-    pub file:   String,
-    pub line:   u64,
+    pub name: String,
+    pub kind: String,
+    pub file: String,
+    pub line: u64,
     pub parent: Option<String>,
-    pub score:  f32,
+    pub score: f32,
 }
 
 impl Fts {
     pub fn open(dir: &Path) -> Result<Self> {
         let mut sb = Schema::builder();
-        let f_name   = sb.add_text_field("name",   TEXT | STORED);
-        let f_kind   = sb.add_text_field("kind",   STRING | STORED);
-        let f_file   = sb.add_text_field("file",   STRING | STORED);
-        let f_line   = sb.add_u64_field( "line",   STORED);
+        let f_name = sb.add_text_field("name", TEXT | STORED);
+        let f_kind = sb.add_text_field("kind", STRING | STORED);
+        let f_file = sb.add_text_field("file", STRING | STORED);
+        let f_line = sb.add_u64_field("line", STORED);
         let f_parent = sb.add_text_field("parent", STRING | STORED);
         let schema = sb.build();
         std::fs::create_dir_all(dir)?;
         let index = Index::open_or_create(MmapDirectory::open(dir)?, schema)?;
-        Ok(Self { index, f_name, f_kind, f_file, f_line, f_parent })
+        Ok(Self {
+            index,
+            f_name,
+            f_kind,
+            f_file,
+            f_line,
+            f_parent,
+        })
     }
 
     /// Drop everything and reindex from the current SQLite store.
@@ -113,11 +120,15 @@ impl Fts {
         }
         let parent = s(d.get_first(self.f_parent));
         FuzzyHit {
-            name:   s(d.get_first(self.f_name)),
-            kind:   s(d.get_first(self.f_kind)),
-            file:   s(d.get_first(self.f_file)),
-            line:   u(d.get_first(self.f_line)),
-            parent: if parent.is_empty() { None } else { Some(parent) },
+            name: s(d.get_first(self.f_name)),
+            kind: s(d.get_first(self.f_kind)),
+            file: s(d.get_first(self.f_file)),
+            line: u(d.get_first(self.f_line)),
+            parent: if parent.is_empty() {
+                None
+            } else {
+                Some(parent)
+            },
             score,
         }
     }
@@ -127,7 +138,9 @@ fn regex_escape(s: &str) -> String {
     const SPECIALS: &str = r".+*?^$|[](){}\";
     let mut out = String::with_capacity(s.len() * 2);
     for c in s.chars() {
-        if SPECIALS.contains(c) { out.push('\\'); }
+        if SPECIALS.contains(c) {
+            out.push('\\');
+        }
         out.push(c);
     }
     out
@@ -135,16 +148,16 @@ fn regex_escape(s: &str) -> String {
 
 fn kind_str(k: SymbolKind) -> &'static str {
     match k {
-        SymbolKind::Function  => "function",
-        SymbolKind::Method    => "method",
-        SymbolKind::Class     => "class",
-        SymbolKind::Struct    => "struct",
-        SymbolKind::Enum      => "enum",
-        SymbolKind::Trait     => "trait",
+        SymbolKind::Function => "function",
+        SymbolKind::Method => "method",
+        SymbolKind::Class => "class",
+        SymbolKind::Struct => "struct",
+        SymbolKind::Enum => "enum",
+        SymbolKind::Trait => "trait",
         SymbolKind::Interface => "interface",
-        SymbolKind::Const     => "const",
-        SymbolKind::Var       => "var",
-        SymbolKind::Type      => "type",
+        SymbolKind::Const => "const",
+        SymbolKind::Var => "var",
+        SymbolKind::Type => "type",
     }
 }
 
@@ -164,8 +177,11 @@ mod tests {
              export type Settings = {};\n",
         )
         .unwrap();
-        std::fs::write(root.join("b.rb"),
-            "class Authenticator\n  def authenticate; end\nend\n").unwrap();
+        std::fs::write(
+            root.join("b.rb"),
+            "class Authenticator\n  def authenticate; end\nend\n",
+        )
+        .unwrap();
         let store = Store::open(&root.join("idx.db")).unwrap();
         build_index(root, &store).unwrap();
         let fts_dir = root.join("tantivy");
@@ -180,8 +196,10 @@ mod tests {
         let (_dir, _store, fts) = fixture();
         let hits = fts.prefix("getUser", 10).unwrap();
         let names: Vec<&str> = hits.iter().map(|h| h.name.as_str()).collect();
-        assert!(names.iter().any(|n| n.starts_with("getUser")),
-                "got: {names:?}");
+        assert!(
+            names.iter().any(|n| n.starts_with("getUser")),
+            "got: {names:?}"
+        );
     }
 
     #[test]
@@ -190,8 +208,10 @@ mod tests {
         let (_dir, _store, fts) = fixture();
         let hits = fts.fuzzy("Authentcator", 10).unwrap();
         let names: Vec<&str> = hits.iter().map(|h| h.name.as_str()).collect();
-        assert!(names.iter().any(|n| n.contains("Authenticator")),
-                "fuzzy should match Authenticator, got: {names:?}");
+        assert!(
+            names.iter().any(|n| n.contains("Authenticator")),
+            "fuzzy should match Authenticator, got: {names:?}"
+        );
     }
 
     #[test]

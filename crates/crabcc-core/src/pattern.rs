@@ -5,6 +5,7 @@
 // tree-sitter walker in `refs.rs`.
 
 use crate::types::Hit;
+#[cfg(test)]
 use anyhow::Result;
 use ast_grep_core::{AstGrep, Pattern};
 use ast_grep_language::SupportLang;
@@ -13,15 +14,18 @@ use std::collections::HashSet;
 pub fn lang_for(s: &str) -> Option<SupportLang> {
     Some(match s {
         "typescript" => SupportLang::TypeScript,
-        "tsx"        => SupportLang::Tsx,
+        "tsx" => SupportLang::Tsx,
         "javascript" => SupportLang::JavaScript,
-        "ruby"       => SupportLang::Ruby,
+        "ruby" => SupportLang::Ruby,
         _ => return None,
     })
 }
 
-/// Smoke test that the ast-grep crates are wired correctly.
-pub fn smoke(lang: SupportLang, src: &str) -> Result<()> {
+/// Smoke test that the ast-grep crates are wired correctly. `pub(crate)` so
+/// other modules can call it during their own tests, but not part of the
+/// public surface.
+#[cfg(test)]
+pub(crate) fn smoke(lang: SupportLang, src: &str) -> Result<()> {
     let grep = AstGrep::new(src, lang);
     let _root = grep.root();
     Ok(())
@@ -35,7 +39,7 @@ pub fn find_callers(src: &str, lang: SupportLang, name: &str) -> Vec<Hit> {
     if !is_safe_identifier(name) {
         return Vec::new();
     }
-    let bare   = format!("{name}($$$)");
+    let bare = format!("{name}($$$)");
     let method = format!("$RECV.{name}($$$)");
     let grep = AstGrep::new(src, lang);
     let root = grep.root();
@@ -54,7 +58,7 @@ pub fn find_callers(src: &str, lang: SupportLang, name: &str) -> Vec<Hit> {
             out.push(Hit {
                 file: String::new(),
                 line: (line + 1) as u32,
-                col:  (col + 1) as u32,
+                col: (col + 1) as u32,
                 snippet: compact_snippet(n.text().as_ref()),
             });
         }
@@ -85,8 +89,11 @@ mod tests {
 
     #[test]
     fn lang_for_known() {
-        assert!(matches!(lang_for("typescript"), Some(SupportLang::TypeScript)));
-        assert!(matches!(lang_for("ruby"),       Some(SupportLang::Ruby)));
+        assert!(matches!(
+            lang_for("typescript"),
+            Some(SupportLang::TypeScript)
+        ));
+        assert!(matches!(lang_for("ruby"), Some(SupportLang::Ruby)));
         assert!(lang_for("klingon").is_none());
     }
 
@@ -125,7 +132,10 @@ greet("there");
         // which are the dominant Ruby/Rails shape.
         let src = "Foo.new.bar(1)\nFoo.new.bar(2)\n";
         let hits = find_callers(src, SupportLang::Ruby, "bar");
-        assert!(hits.len() >= 2, "expected ≥2 receiver bar() calls, got: {hits:?}");
+        assert!(
+            hits.len() >= 2,
+            "expected ≥2 receiver bar() calls, got: {hits:?}"
+        );
     }
 
     #[test]
@@ -167,7 +177,12 @@ greet("there");
         assert!(s.ends_with('…'), "got: {s:?}");
         // First 80 chars should be the truncated body.
         let body = s.trim_end_matches('…');
-        assert_eq!(body.chars().count(), 80, "body chars: {}", body.chars().count());
+        assert_eq!(
+            body.chars().count(),
+            80,
+            "body chars: {}",
+            body.chars().count()
+        );
     }
 
     #[test]

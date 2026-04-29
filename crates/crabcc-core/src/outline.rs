@@ -22,14 +22,17 @@ mod tests {
     fn outline_typescript_class_orders_by_line() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        write(&root.join("greet.ts"), r#"
+        write(
+            &root.join("greet.ts"),
+            r#"
 export function alpha(){return 1}
 export class Greeter {
   greet(n: string){ return n }
   bye(){ return "bye" }
 }
 export function omega(){return 2}
-"#);
+"#,
+        );
         let store = Store::open(&root.join("idx.db")).unwrap();
         build_index(root, &store).unwrap();
         let syms = outline(&store, "greet.ts").unwrap();
@@ -53,5 +56,42 @@ export function omega(){return 2}
         let store = Store::open(&dir.path().join("idx.db")).unwrap();
         let syms = outline(&store, "nope.ts").unwrap();
         assert_eq!(syms.len(), 0);
+    }
+
+    #[test]
+    fn outline_groups_methods_under_class_via_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(
+            &root.join("g.ts"),
+            r#"
+export class Greeter {
+  hello() { return 1 }
+  bye()   { return 2 }
+}
+export class Other {
+  ok() { return 3 }
+}
+"#,
+        );
+        let store = Store::open(&root.join("idx.db")).unwrap();
+        build_index(root, &store).unwrap();
+        let syms = outline(&store, "g.ts").unwrap();
+
+        let methods_in_greeter: Vec<_> = syms
+            .iter()
+            .filter(|s| {
+                s.parent.as_deref() == Some("Greeter")
+                    && matches!(s.kind, crate::SymbolKind::Method)
+            })
+            .map(|s| s.name.as_str())
+            .collect();
+        assert!(methods_in_greeter.contains(&"hello"));
+        assert!(methods_in_greeter.contains(&"bye"));
+        // Other.ok must not show up under Greeter.
+        assert!(
+            !methods_in_greeter.contains(&"ok"),
+            "ok should be under Other, not Greeter"
+        );
     }
 }

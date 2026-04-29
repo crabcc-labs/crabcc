@@ -174,6 +174,21 @@ pub fn tools_def() -> Vec<Value> {
             json!({"query": str_field("symbol-name prefix")}),
             &["query"],
         ),
+        tool_schema(
+            "graph",
+            "Walk the call-graph sidecar (.crabcc/graph.json). Returns BFS \
+             expansion of who calls (or is called by) `name`, capped at `depth`.",
+            json!({
+                "name":  str_field("symbol name to expand"),
+                "dir":   {
+                    "type": "string",
+                    "enum": ["callers", "callees"],
+                    "description": "Direction. 'callers' = who calls X (incoming). 'callees' = what X calls (outgoing). Default: callers.",
+                },
+                "depth": {"type": "integer", "description": "BFS depth limit (default 2)."},
+            }),
+            &["name"],
+        ),
     ]
 }
 
@@ -232,8 +247,8 @@ fn dispatch_tool(params: Option<&Value>, root: &Path) -> Result<String> {
         }
         "files" => {
             let under = args.get("under").and_then(|v| v.as_str());
-            let lang  = args.get("lang").and_then(|v| v.as_str());
-            let ext   = args.get("ext").and_then(|v| v.as_str());
+            let lang = args.get("lang").and_then(|v| v.as_str());
+            let ext = args.get("ext").and_then(|v| v.as_str());
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
             let r = list_indexed_files(&store, under, lang, ext, limit)?;
             Ok(serde_json::to_string(&r)?)
@@ -256,16 +271,39 @@ fn dispatch_tool(params: Option<&Value>, root: &Path) -> Result<String> {
             let r = fts.prefix(arg_str(&args, "query")?, 20)?;
             Ok(serde_json::to_string(&r)?)
         }
+        "graph" => {
+            let name = arg_str(&args, "name")?.to_string();
+            let dir = args
+                .get("dir")
+                .and_then(|v| v.as_str())
+                .unwrap_or("callers");
+            let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(2) as usize;
+            let path = root.join(".crabcc").join("graph.json");
+            let g = if path.exists() {
+                crabcc_core::graph::CallGraph::load(&path)?
+            } else {
+                crabcc_core::graph::CallGraph::build(&store, root)?
+            };
+            let hits = if dir == "callees" {
+                g.outgoing(&name, depth)
+            } else {
+                g.incoming(&name, depth)
+            };
+            Ok(serde_json::to_string(&hits)?)
+        }
         other => Err(anyhow::anyhow!("unknown tool: {other}")),
     }
 }
 
 fn parse_mode(args: &Value) -> query::Mode {
-    let limit = args.get("limit").and_then(|v| v.as_u64()).map(|n| n as usize);
+    let limit = args
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize);
     match args.get("mode").and_then(|v| v.as_str()) {
         Some("count") => query::Mode::Count,
         Some("files") => query::Mode::FilesOnly { limit },
-        _             => query::Mode::Hits      { limit },
+        _ => query::Mode::Hits { limit },
     }
 }
 
@@ -280,9 +318,9 @@ fn list_indexed_files(
         .list_files()?
         .into_iter()
         .filter(|(p, l)| {
-            under.map_or(true, |u| p.starts_with(u))
-                && lang.map_or(true, |want| l == want)
-                && ext.map_or(true, |e| p.ends_with(&format!(".{e}")))
+            under.is_none_or(|u| p.starts_with(u))
+                && lang.is_none_or(|want| l == want)
+                && ext.is_none_or(|e| p.ends_with(&format!(".{e}")))
         })
         .map(|(p, _)| p)
         .collect();
@@ -324,7 +362,10 @@ mod tests {
         let req = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize"});
         let resp = handle(&req, dir.path());
         assert_eq!(resp["id"], 1);
-        assert!(resp["result"]["serverInfo"]["name"].as_str().unwrap().contains("crabcc"));
+        assert!(resp["result"]["serverInfo"]["name"]
+            .as_str()
+            .unwrap()
+            .contains("crabcc"));
         assert!(resp["result"]["capabilities"]["tools"].is_object());
     }
 
@@ -335,7 +376,9 @@ mod tests {
         let resp = handle(&req, dir.path());
         let tools = resp["result"]["tools"].as_array().unwrap();
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
-        for expected in ["sym", "refs", "callers", "outline", "index", "refresh", "fuzzy", "prefix"] {
+        for expected in [
+            "sym", "refs", "callers", "outline", "index", "refresh", "fuzzy", "prefix",
+        ] {
             assert!(names.contains(&expected), "missing tool: {expected}");
         }
     }
@@ -377,7 +420,7 @@ mod tests {
         let resp = handle(&req, dir.path());
         let content = resp["result"]["content"][0]["text"].as_str().unwrap();
         let parsed: Value = serde_json::from_str(content).unwrap();
-        assert!(parsed.as_array().unwrap().len() >= 1);
+        assert!(!parsed.as_array().unwrap().is_empty());
     }
 
     #[test]
@@ -390,8 +433,10 @@ mod tests {
             "params": { "name": "sym", "arguments": {} }
         });
         let resp = handle(&req, dir.path());
-        assert!(resp["error"].is_object(),
-                "expected error response, got: {resp}");
+        assert!(
+            resp["error"].is_object(),
+            "expected error response, got: {resp}"
+        );
     }
 
     #[test]
@@ -455,7 +500,10 @@ mod tests {
         let resp = handle(&req, dir.path());
         let content = resp["result"]["content"][0]["text"].as_str().unwrap();
         let parsed: Value = serde_json::from_str(content).unwrap();
-        assert!(parsed.get("count").is_some(), "expected count field, got: {parsed}");
+        assert!(
+            parsed.get("count").is_some(),
+            "expected count field, got: {parsed}"
+        );
         assert!(parsed["count"].as_u64().unwrap() >= 1);
     }
 

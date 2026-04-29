@@ -68,23 +68,33 @@ pub fn find_refs(store: &Store, root: &Path, name: &str) -> Result<Vec<Hit>> {
 
 pub fn query_callers(store: &Store, root: &Path, name: &str, mode: Mode) -> Result<Output> {
     run(store, root, name, mode, |src, lang_str, file| {
-        let Some(lang) = pattern::lang_for(lang_str) else { return Vec::new() };
+        let Some(lang) = pattern::lang_for(lang_str) else {
+            return Vec::new();
+        };
         let mut hits = pattern::find_callers(src, lang, name);
-        for h in &mut hits { h.file = file.to_string(); }
+        for h in &mut hits {
+            h.file = file.to_string();
+        }
         hits
     })
 }
 
 pub fn query_refs(store: &Store, root: &Path, name: &str, mode: Mode) -> Result<Output> {
-    run(store, root, name, mode, |src, lang_str, file| {
-        match refs::find_refs(src, lang_str, name) {
+    run(
+        store,
+        root,
+        name,
+        mode,
+        |src, lang_str, file| match refs::find_refs(src, lang_str, name) {
             Ok(mut hits) => {
-                for h in &mut hits { h.file = file.to_string(); }
+                for h in &mut hits {
+                    h.file = file.to_string();
+                }
                 hits
             }
             Err(_) => Vec::new(),
-        }
-    })
+        },
+    )
 }
 
 fn run<F>(store: &Store, root: &Path, name: &str, mode: Mode, per_file: F) -> Result<Output>
@@ -98,7 +108,9 @@ where
     let mut count: usize = 0;
 
     for (rel_path, lang) in store.list_files()? {
-        if early_stop(&mode, hits.len(), files.len()) { break; }
+        if early_stop(&mode, hits.len(), files.len()) {
+            break;
+        }
 
         let full = root.join(&rel_path);
         let bytes = match std::fs::read(&full) {
@@ -122,39 +134,44 @@ where
                 let n = per_file(src, &lang, &rel_path).len();
                 if n > 0 && seen_files.insert(rel_path.clone()) {
                     files.push(rel_path);
-                    if let Some(l) = limit { if files.len() >= l { break; } }
+                    if let Some(l) = limit {
+                        if files.len() >= l {
+                            break;
+                        }
+                    }
                 }
             }
             Mode::Hits { limit } => {
                 let mut new_hits = per_file(src, &lang, &rel_path);
                 if let Some(l) = limit {
                     let room = l.saturating_sub(hits.len());
-                    if new_hits.len() > room { new_hits.truncate(room); }
+                    if new_hits.len() > room {
+                        new_hits.truncate(room);
+                    }
                 }
                 hits.extend(new_hits);
-                if let Some(l) = limit { if hits.len() >= l { break; } }
+                if let Some(l) = limit {
+                    if hits.len() >= l {
+                        break;
+                    }
+                }
             }
         }
     }
 
     Ok(match mode {
-        Mode::Hits { .. }      => Output::Hits(hits),
+        Mode::Hits { .. } => Output::Hits(hits),
         Mode::FilesOnly { .. } => Output::Files { files },
-        Mode::Count            => Output::Count { count },
+        Mode::Count => Output::Count { count },
     })
 }
 
 fn early_stop(mode: &Mode, hits_len: usize, files_len: usize) -> bool {
     match mode {
-        Mode::Hits { limit: Some(l) }      => hits_len >= *l,
+        Mode::Hits { limit: Some(l) } => hits_len >= *l,
         Mode::FilesOnly { limit: Some(l) } => files_len >= *l,
         _ => false,
     }
-}
-
-// TODO(crabcc/v1.1): callers from edges table once edges are populated.
-pub fn callers_via_edges(_store: &Store, _name: &str) -> Result<Vec<()>> {
-    Ok(Vec::new())
 }
 
 #[cfg(test)]
@@ -169,12 +186,18 @@ mod tests {
     fn fixture_repo() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        write(&root.join("a.ts"),
-              "export function greet(n: string){return n;}\nexport const x = greet(\"hi\");\n");
-        write(&root.join("b.ts"),
-              "import { greet } from './a';\ngreet('world');\nconst y = greet('again');\n");
-        write(&root.join("c.rb"),
-              "class User\nend\nUser.new\nUser.find(1)\n");
+        write(
+            &root.join("a.ts"),
+            "export function greet(n: string){return n;}\nexport const x = greet(\"hi\");\n",
+        );
+        write(
+            &root.join("b.ts"),
+            "import { greet } from './a';\ngreet('world');\nconst y = greet('again');\n",
+        );
+        write(
+            &root.join("c.rb"),
+            "class User\nend\nUser.new\nUser.find(1)\n",
+        );
         let store = Store::open(&root.join("idx.db")).unwrap();
         build_index(root, &store).unwrap();
         (dir, store)
@@ -242,7 +265,8 @@ mod tests {
     #[test]
     fn callers_limit_caps_results() {
         let (dir, store) = fixture_repo();
-        let out = query_callers(&store, dir.path(), "greet", Mode::Hits { limit: Some(1) }).unwrap();
+        let out =
+            query_callers(&store, dir.path(), "greet", Mode::Hits { limit: Some(1) }).unwrap();
         match out {
             Output::Hits(h) => assert_eq!(h.len(), 1),
             _ => panic!("expected Hits output"),
@@ -262,14 +286,17 @@ mod tests {
     #[test]
     fn callers_files_only_dedupes() {
         let (dir, store) = fixture_repo();
-        let out = query_callers(&store, dir.path(), "greet", Mode::FilesOnly { limit: None }).unwrap();
+        let out =
+            query_callers(&store, dir.path(), "greet", Mode::FilesOnly { limit: None }).unwrap();
         match out {
             Output::Files { files } => {
                 // greet has callers in both a.ts and b.ts.
                 assert!(files.contains(&"a.ts".to_string()) || files.contains(&"b.ts".to_string()));
                 // No duplicates per file.
                 let mut seen = std::collections::HashSet::new();
-                for f in &files { assert!(seen.insert(f.clone()), "duplicate file: {f}"); }
+                for f in &files {
+                    assert!(seen.insert(f.clone()), "duplicate file: {f}");
+                }
             }
             _ => panic!("expected Files output"),
         }
@@ -278,8 +305,13 @@ mod tests {
     #[test]
     fn files_only_limit_truncates() {
         let (dir, store) = fixture_repo();
-        let out = query_refs(&store, dir.path(), "greet",
-                             Mode::FilesOnly { limit: Some(1) }).unwrap();
+        let out = query_refs(
+            &store,
+            dir.path(),
+            "greet",
+            Mode::FilesOnly { limit: Some(1) },
+        )
+        .unwrap();
         match out {
             Output::Files { files } => assert_eq!(files.len(), 1),
             _ => panic!("expected Files output"),
@@ -290,8 +322,7 @@ mod tests {
     fn output_count_helper_matches_payload() {
         let (dir, store) = fixture_repo();
         let h = query_refs(&store, dir.path(), "greet", Mode::default()).unwrap();
-        let f = query_refs(&store, dir.path(), "greet",
-                           Mode::FilesOnly { limit: None }).unwrap();
+        let f = query_refs(&store, dir.path(), "greet", Mode::FilesOnly { limit: None }).unwrap();
         let c = query_refs(&store, dir.path(), "greet", Mode::Count).unwrap();
         match (&h, &f, &c) {
             (Output::Hits(hits), Output::Files { files }, Output::Count { count }) => {
@@ -307,8 +338,7 @@ mod tests {
     fn limit_zero_treated_as_unlimited_via_default() {
         // The CLI maps `--limit 0` → None; in core that means "no cap". Verify.
         let (dir, store) = fixture_repo();
-        let limited = query_refs(&store, dir.path(), "greet",
-                                 Mode::Hits { limit: None }).unwrap();
+        let limited = query_refs(&store, dir.path(), "greet", Mode::Hits { limit: None }).unwrap();
         let default = query_refs(&store, dir.path(), "greet", Mode::default()).unwrap();
         assert_eq!(limited.count(), default.count());
     }

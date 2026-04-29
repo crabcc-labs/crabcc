@@ -31,17 +31,17 @@ pub struct Entry {
 pub fn estimate_saved(op: &str, results: usize, used_tokens: usize) -> usize {
     let raw_estimate = match op {
         // grep finds the def, agent then Reads that file (~3-5k tokens).
-        "sym"     => 3_500,
+        "sym" => 3_500,
         // grep returns N hit lines (~2k for a big repo) plus selective file
         // Reads — assume agent Reads up to 30 unique files at ~1k tokens.
-        "refs"    => 2_000 + (results.min(100) * 300),
+        "refs" => 2_000 + (results.min(100) * 300),
         "callers" => 2_000 + (results.min(100) * 300),
         // outline replaces a full-file Read; large files get expensive.
         "outline" => 6_000,
         // Fuzzy / prefix replace either nothing-the-agent-could-have-done
         // or a brittle regex sweep; conservative flat estimate.
-        "fuzzy"   => 2_500,
-        "prefix"  => 1_500,
+        "fuzzy" => 2_500,
+        "prefix" => 1_500,
         _ => 0,
     };
     raw_estimate.saturating_sub(used_tokens)
@@ -78,7 +78,9 @@ pub fn record(op: &str, query: &str, results: usize, repo: &str, output_bytes: u
         saved_tokens: saved,
     };
     let Some(path) = log_path() else { return };
-    let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&path) else { return };
+    let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&path) else {
+        return;
+    };
     if let Ok(line) = serde_json::to_string(&entry) {
         let _ = writeln!(f, "{line}");
     }
@@ -93,19 +95,25 @@ pub struct Bucket {
 
 #[derive(Debug, Default, Serialize)]
 pub struct Report {
-    pub session:    Bucket,   // last 30 min
-    pub last_24h:   Bucket,
-    pub all_time:   Bucket,
-    pub by_op:      std::collections::BTreeMap<String, Bucket>,
+    pub session: Bucket, // last 30 min
+    pub last_24h: Bucket,
+    pub all_time: Bucket,
+    pub by_op: std::collections::BTreeMap<String, Bucket>,
 }
 
 pub fn read_log() -> Result<Vec<Entry>> {
-    let Some(path) = log_path() else { return Ok(Vec::new()) };
-    if !path.exists() { return Ok(Vec::new()); }
+    let Some(path) = log_path() else {
+        return Ok(Vec::new());
+    };
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
     let body = fs::read_to_string(&path)?;
     let mut out = Vec::new();
     for line in body.lines() {
-        if line.trim().is_empty() { continue; }
+        if line.trim().is_empty() {
+            continue;
+        }
         if let Ok(e) = serde_json::from_str::<Entry>(line) {
             out.push(e);
         }
@@ -115,16 +123,25 @@ pub fn read_log() -> Result<Vec<Entry>> {
 
 pub fn report() -> Result<Report> {
     let entries = read_log()?;
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     let session_cutoff = now.saturating_sub(30 * 60);
-    let day_cutoff     = now.saturating_sub(24 * 60 * 60);
+    let day_cutoff = now.saturating_sub(24 * 60 * 60);
 
     let mut r = Report::default();
     for e in &entries {
         let bumps = [&mut r.all_time];
-        for b in bumps { add(b, e); }
-        if e.ts >= day_cutoff { add(&mut r.last_24h, e); }
-        if e.ts >= session_cutoff { add(&mut r.session, e); }
+        for b in bumps {
+            add(b, e);
+        }
+        if e.ts >= day_cutoff {
+            add(&mut r.last_24h, e);
+        }
+        if e.ts >= session_cutoff {
+            add(&mut r.session, e);
+        }
         let op_b = r.by_op.entry(e.op.clone()).or_default();
         add(op_b, e);
     }
@@ -140,44 +157,119 @@ fn add(b: &mut Bucket, e: &Entry) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // Track tests mutate the process-wide $HOME to redirect ~/.crabcc/usage.log
+    // into a tempdir. cargo runs tests in parallel by default, and parallel
+    // mutation of $HOME means concurrent track-tests stomp each other's logs.
+    // Serialize them.
+    static HOME_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_isolated_home<F: FnOnce()>(f: F) {
+        let _guard = HOME_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let prev = std::env::var_os("HOME");
+        std::env::set_var("HOME", dir.path());
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        if let Some(prev) = prev {
+            std::env::set_var("HOME", prev);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        if let Err(e) = r {
+            std::panic::resume_unwind(e);
+        }
+        // dir is dropped after, which is fine — log isn't read once HOME flips back.
+    }
 
     #[test]
     fn estimate_saved_known_ops() {
         assert!(estimate_saved("sym", 1, 100) > 0);
         assert!(estimate_saved("refs", 50, 1000) > estimate_saved("refs", 1, 1000));
-        assert!(estimate_saved("callers", 0, 99_999) == 0,
-                "saved is non-negative when we use more than the raw estimate");
+        assert!(
+            estimate_saved("callers", 0, 99_999) == 0,
+            "saved is non-negative when we use more than the raw estimate"
+        );
         assert_eq!(estimate_saved("frobnicate", 1, 1), 0);
     }
 
     #[test]
     fn refs_caps_at_100_results() {
-        let a = estimate_saved("refs", 100,   0);
+        let a = estimate_saved("refs", 100, 0);
         let b = estimate_saved("refs", 5_000, 0);
         assert_eq!(a, b, "should cap at 100 results to avoid wild claims");
     }
 
     #[test]
     fn tokens_for_bytes_small_value() {
-        assert_eq!(tokens_for_bytes(0),  0);
+        assert_eq!(tokens_for_bytes(0), 0);
         assert_eq!(tokens_for_bytes(40), 10);
     }
 
     #[test]
     fn record_then_report_roundtrip() {
-        // Use a private log under HOME=tempdir so we don't pollute the user's log.
-        let dir = tempfile::tempdir().unwrap();
-        let prev = std::env::var_os("HOME");
-        // SAFETY: tests in this binary aren't run multi-threaded against this var
-        // on macOS by default for cargo test (parallel by file but not across HOME).
-        std::env::set_var("HOME", dir.path());
-        record("sym", "User", 3, "test_repo", 200);
-        record("refs", "Foo", 20, "test_repo", 1200);
-        let r = report().unwrap();
-        assert_eq!(r.all_time.queries, 2);
-        assert!(r.all_time.saved_tokens > 0);
-        assert!(r.by_op.contains_key("sym"));
-        assert!(r.by_op.contains_key("refs"));
-        if let Some(prev) = prev { std::env::set_var("HOME", prev); }
+        with_isolated_home(|| {
+            record("sym", "User", 3, "test_repo", 200);
+            record("refs", "Foo", 20, "test_repo", 1200);
+            let r = report().unwrap();
+            assert_eq!(r.all_time.queries, 2);
+            assert!(r.all_time.saved_tokens > 0);
+            assert!(r.by_op.contains_key("sym"));
+            assert!(r.by_op.contains_key("refs"));
+        });
+    }
+
+    #[test]
+    fn read_log_skips_malformed_lines() {
+        with_isolated_home(|| {
+            // Resolve the canonical log path via the same code path the lib uses,
+            // then write directly to it.
+            let p = log_path().expect("log_path");
+            std::fs::write(
+                &p,
+                concat!(
+                    "{\"ts\":1,\"op\":\"sym\",\"query\":\"X\",\"results\":1,",
+                    "\"repo\":\"r\",\"used_tokens\":10,\"saved_tokens\":100}\n",
+                    "this is not json\n",
+                    "{not even close to a valid Entry}\n",
+                    "\n",
+                ),
+            )
+            .unwrap();
+            let entries = read_log().unwrap();
+            assert_eq!(entries.len(), 1, "malformed lines must be skipped");
+            assert_eq!(entries[0].op, "sym");
+        });
+    }
+
+    #[test]
+    fn report_session_window_excludes_old_entries() {
+        with_isolated_home(|| {
+            let p = log_path().expect("log_path");
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            let two_h_ago = now - 2 * 3600;
+            let ten_s_ago = now - 10;
+            std::fs::write(&p, format!(
+                "{{\"ts\":{two_h_ago},\"op\":\"sym\",\"query\":\"old\",\"results\":1,\"repo\":\"r\",\"used_tokens\":1,\"saved_tokens\":1}}\n\
+                 {{\"ts\":{ten_s_ago},\"op\":\"sym\",\"query\":\"new\",\"results\":1,\"repo\":\"r\",\"used_tokens\":1,\"saved_tokens\":1}}\n"
+            )).unwrap();
+            let r = report().unwrap();
+            assert_eq!(r.all_time.queries, 2, "all_time should see both");
+            assert_eq!(r.last_24h.queries, 2, "last_24h should see both");
+            assert_eq!(
+                r.session.queries, 1,
+                "session window is 30 min — only the recent one"
+            );
+        });
+    }
+
+    #[test]
+    fn estimate_saved_caps_at_results_100_for_callers() {
+        let a = estimate_saved("callers", 100, 0);
+        let b = estimate_saved("callers", 5_000, 0);
+        assert_eq!(a, b, "callers should cap at 100 results, same as refs");
     }
 }

@@ -11,14 +11,18 @@ use tree_sitter::{Node, Parser};
 pub fn find_refs(src: &str, lang: &str, name: &str) -> Result<Vec<Hit>> {
     let ts_lang = match lang {
         "typescript" => tree_sitter_typescript::language_typescript(),
-        "tsx"        => tree_sitter_typescript::language_tsx(),
+        "tsx" => tree_sitter_typescript::language_tsx(),
         "javascript" => tree_sitter_javascript::language(),
-        "ruby"       => tree_sitter_ruby::language(),
+        "ruby" => tree_sitter_ruby::language(),
         _ => return Err(anyhow!("unsupported lang: {lang}")),
     };
     let mut parser = Parser::new();
-    parser.set_language(&ts_lang).map_err(|e| anyhow!("set_language: {e}"))?;
-    let tree = parser.parse(src, None).ok_or_else(|| anyhow!("parse failed"))?;
+    parser
+        .set_language(&ts_lang)
+        .map_err(|e| anyhow!("set_language: {e}"))?;
+    let tree = parser
+        .parse(src, None)
+        .ok_or_else(|| anyhow!("parse failed"))?;
 
     let mut out = Vec::new();
     walk(tree.root_node(), src.as_bytes(), src, name, lang, &mut out);
@@ -33,7 +37,7 @@ fn walk(node: Node, src_bytes: &[u8], src_full: &str, name: &str, lang: &str, ou
                 out.push(Hit {
                     file: String::new(),
                     line: (p.row + 1) as u32,
-                    col:  (p.column + 1) as u32,
+                    col: (p.column + 1) as u32,
                     snippet: line_at(src_full, p.row),
                 });
             }
