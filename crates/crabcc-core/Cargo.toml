@@ -5,10 +5,11 @@ edition.workspace = true
 license.workspace = true
 
 [features]
-default = []
+default = ["compress"]
 # `compress` pulls in fsst-rs (Apache-2.0) and gates `pub mod compress;` plus
-# the FSST-encoded symbol-store path. Off by default until the v2.0.0-alpha
-# release-gate criteria in docs/RESEARCH-fsst.md §6.2 are met.
+# the FSST-encoded symbol-store path. Default ON as of v2.0.0-alpha — disable
+# at build time with `--no-default-features`, or at runtime with the CLI
+# `--compress=false` flag which short-circuits codec loading in `Store::open`.
 compress = ["dep:fsst-rs"]
 
 [dependencies]
