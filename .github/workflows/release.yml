@@ -25,9 +25,12 @@ jobs:
             os: ubuntu-latest
             archive: tar.gz
             cross: true
-          - target: x86_64-apple-darwin
-            os: macos-13
-            archive: tar.gz
+          # x86_64-apple-darwin (macos-13 runner) was dropped in v1.0.1: the
+          # macos-13 GitHub-hosted runner pool is being deprecated and runner
+          # allocation routinely sat in the queue for 60+ minutes during the
+          # v1.0.0 tag push. Intel-Mac users can `cargo install --path
+          # crates/crabcc-cli` from source until we move to a self-hosted
+          # macOS-Intel runner. arm64 macOS still ships a binary.
           - target: aarch64-apple-darwin
             os: macos-latest
             archive: tar.gz

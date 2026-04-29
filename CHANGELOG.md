@@ -6,6 +6,43 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-04-30
+
+### Added — Language coverage (issue #4)
+- **Rust** (`.rs`) — `function_item`, `struct_item`, `enum_item`, `trait_item`,
+  `impl_item`, `mod_item`, `const_item`, `static_item`, `type_item`,
+  `macro_definition`. `impl Foo { ... }` and `impl Trait for Foo { ... }`
+  reattach inner methods with `parent="Foo"` (concrete type, generics stripped);
+  fns inside impl blocks get retagged from `Function` to `Method`.
+  Visibility: `pub` / `pub(crate)` / `pub(super)` / `pub(self)` preserved verbatim.
+  `macro_rules!` → new `SymbolKind::Macro`.
+- **Go** (`.go`) — `function_declaration`, `method_declaration`, `type_spec`,
+  `const_spec`, `var_spec`. Method receivers (`func (r *Repo) Save()`) extract
+  parent type with pointer + generics stripped (`*Repo[T]` → `Repo`).
+  Visibility derived from name capitalization (Go's own export rule).
+- **Python** (`.py`, `.pyi`) — `function_definition` (incl. `async def`),
+  `class_definition`. `decorated_definition` (e.g. `@dataclass`) is unwrapped
+  so the inner symbol carries the canonical name. Visibility: `_foo` and
+  `__foo` are private; dunders (`__init__`, `__repr__`, …) remain public.
+- `pattern.rs::lang_for` extended for Rust / Go / Python so `crabcc callers`
+  resolves on all three. (Go `$RECV.X(...)` receiver-form calls match
+  inconsistently across the Go grammar — bare-call form is reliable; tracked
+  as cross-language pattern-coverage follow-up.)
+- **+27 unit tests** (extract.rs +18, pattern.rs +9). Workspace total now
+  **130 tests** (up from 103). All passing under `cargo nextest --profile ci`.
+
+### Internal
+- `SymbolKind::Macro` added (Rust). Round-trips through SQLite (`store.rs`
+  `kind_str` / `kind_from_str`) and Tantivy (`fts.rs::kind_str`).
+
+## [1.0.1] — 2026-04-30
+
+Hotfix: drop `x86_64-apple-darwin` from the release matrix. The v1.0.0 release
+workflow sat queued for 60+ minutes on the macOS-13 (Intel) runner pool, which
+GitHub is in the process of deprecating. Intel-Mac users can `cargo install
+--path crates/crabcc-cli` from source until we move to a self-hosted runner.
+arm64 macOS, x86_64 Linux, and aarch64 Linux all still ship binaries.
+
 ### Docs
 - `STORAGE_RESEARCH.md` → `docs/RESEARCH-storage.md` (alongside the other research docs).
 - README: bench numbers reconciled with `bench/results/REPORT.md`

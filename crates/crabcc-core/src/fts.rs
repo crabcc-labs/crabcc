@@ -158,6 +158,7 @@ fn kind_str(k: SymbolKind) -> &'static str {
         SymbolKind::Const => "const",
         SymbolKind::Var => "var",
         SymbolKind::Type => "type",
+        SymbolKind::Macro => "macro",
     }
 }
 
