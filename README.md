@@ -175,6 +175,13 @@ crabcc callers find_by | jq 'group_by(.file) | map({file: .[0].file, n: length})
 CLI-vs-CLI, no Claude session involved. Measures only the bytes the LLM's stdout
 buffer would receive and wall-time.
 
+<p align="center">
+  <img src="./bench/results/savings.png" alt="Bytes per task — crabcc vs ripgrep vs grep" width="100%"/>
+</p>
+<p align="center">
+  <img src="./bench/results/speedup.png" alt="Wall-time speedup — crabcc vs ripgrep vs grep (log scale)" width="100%"/>
+</p>
+
 | Task                    | crabcc B | grep B    | crabcc | grep   | speedup |
 |-------------------------|---------:|----------:|-------:|-------:|--------:|
 | `sym User`              | 1.2k     | TIMEOUT⚠   | 68ms   | 60s ⚠  | **884×**|
@@ -190,6 +197,8 @@ aggregate wall-time**.
 Honest losses: single-file outline of a small file (where `grep -nE` is already
 trivial) and small directory listings. crabcc returns rich JSON, raw `grep` returns
 just the matching lines — when the question is small, raw wins on bytes.
+
+Full report (with ripgrep comparison): [`bench/results/REPORT.md`](./bench/results/REPORT.md).
 
 Full report: [`bench/results/REPORT.md`](./bench/results/REPORT.md). Re-run:
 
