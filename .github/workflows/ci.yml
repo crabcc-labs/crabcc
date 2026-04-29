@@ -52,14 +52,34 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+      # nextest compiles in test mode; the smoke step exercises the release
+      # binary so end-users hit the same path. Build it explicitly here.
+      - name: build release binary for smoke test
+        run: cargo build --release -p crabcc-cli
+
       - name: smoke — index + query a small fixture
         shell: bash
         run: |
-          mkdir -p /tmp/fixture && cd /tmp/fixture
+          set -e
+          FIXTURE=$(mktemp -d)
+          cd "$FIXTURE"
           cat > a.ts <<'EOF'
           export function hello(name: string) { return name; }
           hello("world");
           EOF
-          "$GITHUB_WORKSPACE/target/release/crabcc" index
-          "$GITHUB_WORKSPACE/target/release/crabcc" sym hello | jq -e '.[0].name == "hello"'
-          "$GITHUB_WORKSPACE/target/release/crabcc" callers hello --count | jq -e '.count >= 1'
+          BIN="$GITHUB_WORKSPACE/target/release/crabcc"
+          "$BIN" index
+          "$BIN" sym hello | jq -e '.[0].name == "hello"'
+          "$BIN" callers hello --count | jq -e '.count >= 1'
+          "$BIN" files --ext ts | jq -e 'length >= 1'
+          "$BIN" outline a.ts | jq -e 'length >= 1'
+          # Watch sidecar — start, write a file, give the debouncer a tick, stop.
+          "$BIN" watch --debounce 100 &
+          WATCH_PID=$!
+          sleep 0.5
+          echo 'export function added() { return 1; }' >> a.ts
+          sleep 1.5
+          kill $WATCH_PID 2>/dev/null || true
+          wait $WATCH_PID 2>/dev/null || true
+          # Fuzzy + prefix sidecar.
+          "$BIN" prefix hello | jq -e 'length >= 1'
