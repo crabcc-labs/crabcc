@@ -248,4 +248,68 @@ mod tests {
             _ => panic!("expected Hits output"),
         }
     }
+
+    #[test]
+    fn callers_count_mode_aggregates() {
+        let (dir, store) = fixture_repo();
+        let out = query_callers(&store, dir.path(), "greet", Mode::Count).unwrap();
+        match out {
+            Output::Count { count } => assert!(count >= 2, "got: {count}"),
+            _ => panic!("expected Count output"),
+        }
+    }
+
+    #[test]
+    fn callers_files_only_dedupes() {
+        let (dir, store) = fixture_repo();
+        let out = query_callers(&store, dir.path(), "greet", Mode::FilesOnly { limit: None }).unwrap();
+        match out {
+            Output::Files { files } => {
+                // greet has callers in both a.ts and b.ts.
+                assert!(files.contains(&"a.ts".to_string()) || files.contains(&"b.ts".to_string()));
+                // No duplicates per file.
+                let mut seen = std::collections::HashSet::new();
+                for f in &files { assert!(seen.insert(f.clone()), "duplicate file: {f}"); }
+            }
+            _ => panic!("expected Files output"),
+        }
+    }
+
+    #[test]
+    fn files_only_limit_truncates() {
+        let (dir, store) = fixture_repo();
+        let out = query_refs(&store, dir.path(), "greet",
+                             Mode::FilesOnly { limit: Some(1) }).unwrap();
+        match out {
+            Output::Files { files } => assert_eq!(files.len(), 1),
+            _ => panic!("expected Files output"),
+        }
+    }
+
+    #[test]
+    fn output_count_helper_matches_payload() {
+        let (dir, store) = fixture_repo();
+        let h = query_refs(&store, dir.path(), "greet", Mode::default()).unwrap();
+        let f = query_refs(&store, dir.path(), "greet",
+                           Mode::FilesOnly { limit: None }).unwrap();
+        let c = query_refs(&store, dir.path(), "greet", Mode::Count).unwrap();
+        match (&h, &f, &c) {
+            (Output::Hits(hits), Output::Files { files }, Output::Count { count }) => {
+                assert_eq!(h.count(), hits.len());
+                assert_eq!(f.count(), files.len());
+                assert_eq!(c.count(), *count);
+            }
+            _ => panic!("unexpected output combo"),
+        }
+    }
+
+    #[test]
+    fn limit_zero_treated_as_unlimited_via_default() {
+        // The CLI maps `--limit 0` → None; in core that means "no cap". Verify.
+        let (dir, store) = fixture_repo();
+        let limited = query_refs(&store, dir.path(), "greet",
+                                 Mode::Hits { limit: None }).unwrap();
+        let default = query_refs(&store, dir.path(), "greet", Mode::default()).unwrap();
+        assert_eq!(limited.count(), default.count());
+    }
 }

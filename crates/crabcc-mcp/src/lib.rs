@@ -406,4 +406,114 @@ mod tests {
         let resp = handle(&req, dir.path());
         assert!(resp["error"].is_object());
     }
+
+    #[test]
+    fn parse_mode_default_is_hits() {
+        let m = parse_mode(&json!({}));
+        assert!(matches!(m, query::Mode::Hits { limit: None }));
+    }
+
+    #[test]
+    fn parse_mode_count_overrides() {
+        let m = parse_mode(&json!({"mode": "count"}));
+        assert!(matches!(m, query::Mode::Count));
+    }
+
+    #[test]
+    fn parse_mode_files_with_limit() {
+        let m = parse_mode(&json!({"mode": "files", "limit": 7}));
+        match m {
+            query::Mode::FilesOnly { limit: Some(7) } => {}
+            other => panic!("expected FilesOnly{{Some(7)}}, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_mode_hits_with_limit() {
+        let m = parse_mode(&json!({"limit": 3}));
+        match m {
+            query::Mode::Hits { limit: Some(3) } => {}
+            other => panic!("expected Hits{{Some(3)}}, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_mode_unknown_mode_falls_back_to_hits() {
+        let m = parse_mode(&json!({"mode": "garbage"}));
+        assert!(matches!(m, query::Mode::Hits { .. }));
+    }
+
+    #[test]
+    fn handle_tools_call_refs_count_mode() {
+        let dir = fixture_root();
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 8,
+            "method": "tools/call",
+            "params": { "name": "refs", "arguments": { "name": "hello", "mode": "count" } }
+        });
+        let resp = handle(&req, dir.path());
+        let content = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(content).unwrap();
+        assert!(parsed.get("count").is_some(), "expected count field, got: {parsed}");
+        assert!(parsed["count"].as_u64().unwrap() >= 1);
+    }
+
+    #[test]
+    fn handle_tools_call_refs_files_only_mode() {
+        let dir = fixture_root();
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "tools/call",
+            "params": { "name": "refs", "arguments": { "name": "hello", "mode": "files" } }
+        });
+        let resp = handle(&req, dir.path());
+        let content = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(content).unwrap();
+        let files = parsed["files"].as_array().expect("files field");
+        assert!(files.iter().any(|v| v.as_str() == Some("hi.ts")));
+    }
+
+    #[test]
+    fn handle_tools_list_includes_files_tool() {
+        let dir = tempfile::tempdir().unwrap();
+        let req = json!({"jsonrpc": "2.0", "id": 10, "method": "tools/list"});
+        let resp = handle(&req, dir.path());
+        let tools = resp["result"]["tools"].as_array().unwrap();
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+        assert!(names.contains(&"files"), "tools missing 'files': {names:?}");
+    }
+
+    #[test]
+    fn handle_tools_call_files_filters_by_ext() {
+        let dir = fixture_root();
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 11,
+            "method": "tools/call",
+            "params": { "name": "files", "arguments": { "ext": "ts" } }
+        });
+        let resp = handle(&req, dir.path());
+        let content = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(content).unwrap();
+        let arr = parsed.as_array().unwrap();
+        assert!(arr.iter().any(|v| v.as_str() == Some("hi.ts")));
+        assert!(arr.iter().all(|v| v.as_str().unwrap().ends_with(".ts")));
+    }
+
+    #[test]
+    fn handle_tools_call_files_respects_limit() {
+        let dir = fixture_root();
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 12,
+            "method": "tools/call",
+            "params": { "name": "files", "arguments": { "limit": 1 } }
+        });
+        let resp = handle(&req, dir.path());
+        let content = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(content).unwrap();
+        assert_eq!(parsed.as_array().unwrap().len(), 1);
+    }
 }

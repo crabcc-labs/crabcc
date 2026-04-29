@@ -151,4 +151,28 @@ greet("there");
         assert!(!is_safe_identifier("foo-bar"));
         assert!(!is_safe_identifier("foo bar"));
     }
+
+    #[test]
+    fn snippet_under_80_chars_passes_through() {
+        let s = compact_snippet("hello world");
+        assert_eq!(s, "hello world");
+        assert!(!s.ends_with('…'));
+    }
+
+    #[test]
+    fn snippet_over_80_chars_truncates_with_ellipsis() {
+        let long = "a ".repeat(100); // 200 chars of "a a a …"
+        let s = compact_snippet(&long);
+        // We collapse whitespace then cap at 80 chars + "…".
+        assert!(s.ends_with('…'), "got: {s:?}");
+        // First 80 chars should be the truncated body.
+        let body = s.trim_end_matches('…');
+        assert_eq!(body.chars().count(), 80, "body chars: {}", body.chars().count());
+    }
+
+    #[test]
+    fn snippet_collapses_internal_whitespace() {
+        let s = compact_snippet("foo\n\tbar    baz");
+        assert_eq!(s, "foo bar baz");
+    }
 }
