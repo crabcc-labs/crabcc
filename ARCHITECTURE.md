@@ -391,8 +391,8 @@ Issue tracker: <https://github.com/peterlodri-sec/crabcc/issues>
 
 ## 11. 🔗 References
 
-- **Source-of-truth docs**: `docs/RESEARCH-mempalace.md` (1027 lines) for the v2.0 memory port; `docs/RESEARCH-fsst.md` (272 lines) for the v2.0 compression layer.
-- **Sprint plan**: external `task-items/crabcc/.tasks` (4-dev × 2-week sprint).
+- **Source-of-truth docs**: `docs/RESEARCH-mempalace.md` for the v2.0 memory port; `docs/RESEARCH-fsst.md` for the v2.0 compression layer; `docs/RESEARCH-storage.md` for the SQLite-vs-alternatives decision.
+- **Sprint plan + milestone**: <https://github.com/peterlodri-sec/crabcc/milestone/1>.
 - **API examples**: `examples/{indexing,sym,refs,callers,outline,files,fuzzy-prefix,jq-pipelines,track,mcp-setup,wire-protocol}.md` and the `CLI.md` / `MCP.md` cheatsheets.
 - **Manpage**: `man/crabcc.1` — `man ./man/crabcc.1` to render.
 - **Bench**: `bench/results/REPORT.md` + `bench/raw-bench.py` + `bench/visualize.py`.

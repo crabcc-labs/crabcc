@@ -6,6 +6,14 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+### Docs
+- `STORAGE_RESEARCH.md` → `docs/RESEARCH-storage.md` (alongside the other research docs).
+- README: bench numbers reconciled with `bench/results/REPORT.md`
+  (47–5500× vs grep, 5–68× vs rg, 206× aggregate, 414k tokens / batch).
+- README status reflects v1.0.0 ship + 103 tests (86 core + 17 MCP).
+- Removed broken `task-items/.tasks` link (file lives outside the repo);
+  v2.0 milestone is the source of truth.
+
 ## [1.0.0] — 2026-04-30
 
 First production-quality release. The features below are stable; their

@@ -5,8 +5,8 @@
 
 <p align="center">
   <em>Symbol index for AI coding agents.</em><br/>
-  <strong>47–4400× faster than <code>grep -rn</code></strong> on monorepos &nbsp;·&nbsp;
-  <strong>5–100× faster than ripgrep</strong> on whole-repo lookups &nbsp;·&nbsp;
+  <strong>47–5500× faster than <code>grep -rn</code></strong> on monorepos &nbsp;·&nbsp;
+  <strong>5–68× faster than ripgrep</strong> on whole-repo lookups &nbsp;·&nbsp;
   <strong>85% fewer bytes</strong> sent to the LLM
 </p>
 
@@ -69,7 +69,7 @@ $ crabcc refs Assessment --files-only --limit 10
 - [When NOT to use crabcc](#when-not-to-use-crabcc)
 - [Status & roadmap](#status)
 
-Deep dives: [`ARCHITECTURE.md`](./ARCHITECTURE.md) · [`docs/RESEARCH-mempalace.md`](./docs/RESEARCH-mempalace.md) · [`docs/RESEARCH-fsst.md`](./docs/RESEARCH-fsst.md) · [`examples/`](./examples/) · [`man/crabcc.1`](./man/crabcc.1)
+Deep dives: [`ARCHITECTURE.md`](./ARCHITECTURE.md) · [`docs/RESEARCH-mempalace.md`](./docs/RESEARCH-mempalace.md) · [`docs/RESEARCH-fsst.md`](./docs/RESEARCH-fsst.md) · [`docs/RESEARCH-storage.md`](./docs/RESEARCH-storage.md) · [`examples/`](./examples/) · [`man/crabcc.1`](./man/crabcc.1)
 </details>
 
 ---
@@ -182,25 +182,24 @@ buffer would receive and wall-time.
   <img src="./bench/results/speedup.png" alt="Wall-time speedup — crabcc vs ripgrep vs grep (log scale)" width="100%"/>
 </p>
 
-| Task                    | crabcc B | grep B    | crabcc | grep   | speedup |
-|-------------------------|---------:|----------:|-------:|-------:|--------:|
-| `sym User`              | 1.2k     | TIMEOUT⚠   | 68ms   | 60s ⚠  | **884×**|
-| `sym Assessment`        | 584      | TIMEOUT⚠   | 61ms   | 60s ⚠  | **982×**|
-| `callers --count find_by`| 14       | 9         | 1.06s  | 48.9s  | 46×     |
-| `refs --files-only Assessment` | 513 | 460     | 32ms   | 14.0s  | 436×    |
-| `files --ext rb` (whole repo)  | 244k| 1.9M     | 14ms   | 10.4s  | 757×    |
-| `callers --files-only find_by` | 821 | 831     | 56ms   | 47.0s  | **841×**|
+| Task                              | crabcc B | grep B  | crabcc  | grep   | speedup    |
+|-----------------------------------|---------:|--------:|--------:|-------:|-----------:|
+| `sym User`                        | 1.2k     | 14.1k   | 10.8ms  | 59.3s ⚠| **5493×**  |
+| `sym Assessment`                  | 584      | 569     | 11.3ms  | 58.7s ⚠| **5198×**  |
+| `callers --count find_by`         | 14       | 9       | 964ms   | 45.0s  | 47×        |
+| `refs --files-only Assessment`    | 513      | 460     | 38.1ms  | 13.2s  | 348×       |
+| `files --ext rb` (whole repo)     | 244k     | 1.9M    | 13.6ms  | 9.7s   | 713×       |
+| `callers --files-only find_by`    | 821      | 831     | 54.3ms  | 45.9s  | **845×**   |
 
-Aggregate: **85% fewer bytes** (≈ 411k input tokens saved per batch), **182× faster
-aggregate wall-time**.
+Aggregate: **85% fewer bytes** (≈ 414k input tokens saved per batch, ≈ \$1.24),
+**206× faster aggregate wall-time**.
 
 Honest losses: single-file outline of a small file (where `grep -nE` is already
 trivial) and small directory listings. crabcc returns rich JSON, raw `grep` returns
 just the matching lines — when the question is small, raw wins on bytes.
 
 Full report (with ripgrep comparison): [`bench/results/REPORT.md`](./bench/results/REPORT.md).
-
-Full report: [`bench/results/REPORT.md`](./bench/results/REPORT.md). Re-run:
+Re-run:
 
 ```bash
 cd bench && python3 raw-bench.py /path/to/your/repo && python3 visualize.py
@@ -258,8 +257,10 @@ and runbooks for adding features, see [`ARCHITECTURE.md`](./ARCHITECTURE.md).
 
 ## Status
 
-v0.1 → v2.0 in flight. Languages: TS/TSX/JS/Ruby (Go/Python/Rust queued for v2.0).
-**102 tests** (85 core + 17 MCP). License: MIT. CI matrix: Linux + macOS x86_64 + macOS aarch64.
+v1.0.0 shipped (2026-04-30); v2.0 in flight. Languages: TS/TSX/JS/Ruby
+(Go/Python/Rust queued for v2.0).
+**103 tests** (86 core + 17 MCP, 1 ignored FS-event-racy). License: MIT.
+CI matrix: Linux x86_64 + Linux aarch64 + macOS x86_64 + macOS aarch64.
 
 ### Roadmap
 
@@ -277,5 +278,4 @@ v0.1 → v2.0 in flight. Languages: TS/TSX/JS/Ruby (Go/Python/Rust queued for v2
 | **CI optimizations** (sccache, smarter cache) | 📋 v2.0 | [#6](https://github.com/peterlodri-sec/crabcc/issues/6) |
 | **FSST string compression** | 📋 v2.0 | [#1](https://github.com/peterlodri-sec/crabcc/issues/1) |
 
-Sprint plan: [`task-items/crabcc/.tasks`](../../task-items/crabcc/.tasks) (4-dev × 2-week).
 Full v2.0 milestone: <https://github.com/peterlodri-sec/crabcc/milestone/1>.
