@@ -4,3 +4,6 @@ Cargo.lock
 .crabcc/
 bench/results/
 .DS_Store
+# Research artifacts produced by sub-agents — not source.
+STORAGE_RESEARCH.md
+DB_*.md

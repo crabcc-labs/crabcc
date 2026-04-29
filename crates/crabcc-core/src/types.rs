@@ -35,3 +35,12 @@ pub struct Edge {
     pub kind: String,
     pub line: u32,
 }
+
+/// A location hit returned by `refs` / `callers` / pattern queries.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Hit {
+    pub file: String,
+    pub line: u32,
+    pub col: u32,
+    pub snippet: String,
+}

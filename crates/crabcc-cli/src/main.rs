@@ -66,11 +66,12 @@ async fn main() -> Result<()> {
             println!("{}", serde_json::to_string(&syms)?);
         }
         Cmd::Refs { name } => {
-            // TODO: graph edges + ripgrep fallback.
-            println!("{{\"status\":\"todo\",\"op\":\"refs\",\"name\":\"{name}\"}}");
+            let hits = crabcc_core::query::find_refs(&store, &root, &name)?;
+            println!("{}", serde_json::to_string(&hits)?);
         }
         Cmd::Callers { name } => {
-            println!("{{\"status\":\"todo\",\"op\":\"callers\",\"name\":\"{name}\"}}");
+            let hits = crabcc_core::query::find_callers(&store, &root, &name)?;
+            println!("{}", serde_json::to_string(&hits)?);
         }
         Cmd::Outline { file } => {
             println!("{{\"status\":\"todo\",\"op\":\"outline\",\"file\":\"{}\"}}",

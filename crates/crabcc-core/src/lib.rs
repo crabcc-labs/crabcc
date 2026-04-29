@@ -8,4 +8,6 @@ pub mod store;
 pub mod types;
 pub mod walker;
 
-pub use types::{Edge, Symbol, SymbolKind};
+pub mod refs;
+
+pub use types::{Edge, Hit, Symbol, SymbolKind};
