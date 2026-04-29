@@ -1,0 +1,41 @@
+{
+  "name": "crabcc",
+  "image": "mcr.microsoft.com/devcontainers/rust:1-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "installZsh": true,
+      "configureZshAsDefaultShell": true
+    },
+    "ghcr.io/devcontainers/features/python:1": {
+      "version": "3.12",
+      "installTools": true
+    }
+  },
+  "postCreateCommand": "sudo apt-get update -y && sudo apt-get install -y --no-install-recommends ripgrep fd-find jq upx-ucl && (command -v fd >/dev/null || sudo ln -sf $(which fdfind) /usr/local/bin/fd) && pip3 install --user matplotlib && cargo build --release && sudo cp target/release/crabcc /usr/local/bin/crabcc && crabcc --version",
+  "remoteEnv": {
+    "PATH": "/usr/local/cargo/bin:${containerEnv:PATH}",
+    "RUST_BACKTRACE": "1"
+  },
+  "mounts": [
+    "source=crabcc-cargo-cache,target=/usr/local/cargo/registry,type=volume",
+    "source=crabcc-target-cache,target=${containerWorkspaceFolder}/target,type=volume"
+  ],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "vadimcn.vscode-lldb",
+        "serayuzgur.crates"
+      ],
+      "settings": {
+        "rust-analyzer.cargo.features": "all",
+        "rust-analyzer.checkOnSave.command": "clippy",
+        "editor.formatOnSave": true,
+        "[rust]": {
+          "editor.defaultFormatter": "rust-lang.rust-analyzer"
+        }
+      }
+    }
+  }
+}

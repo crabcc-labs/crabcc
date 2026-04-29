@@ -1,0 +1,238 @@
+.\" Manpage for crabcc.
+.\" Render: man ./man/crabcc.1
+.\" Install: sudo install -m 0644 man/crabcc.1 /usr/local/share/man/man1/
+.TH CRABCC 1 "April 2026" "crabcc 0.1.0" "User Commands"
+
+.SH NAME
+crabcc \- symbol index for AI coding agents
+
+.SH SYNOPSIS
+.B crabcc
+[\fB\-\-root\fR \fIPATH\fR]
+[\fB\-\-mcp\fR]
+.I COMMAND
+[\fIARGS\fR]
+
+.SH DESCRIPTION
+.B crabcc
+is a symbol-aware code-lookup CLI built for LLM agents. It indexes a repository's
+symbols (functions, classes, methods, etc.) into a SQLite store at
+.IR .crabcc/index.db
+and exposes them via four primitives:
+.BR sym ,
+.BR refs ,
+.BR callers ,
+.BR outline .
+Output is compact JSON tuned for token efficiency.
+
+Languages supported in v0.1: TypeScript, TSX, JavaScript, Ruby.
+
+Compared to
+.BR grep (1)
+or
+.BR find (1):
+.IP \[bu] 2
+47\(en4400\(mu faster on monorepos (SQL index vs disk scan).
+.IP \[bu] 2
+85% fewer bytes sent to the LLM in aggregate.
+.IP \[bu] 2
+Returns structured JSON \(em
+.IR file ", " line ", " kind ", " signature ", " parent
+\(em
+not raw text.
+
+.SH GLOBAL OPTIONS
+.TP
+.BI \-\-root\  PATH
+Repo root. Defaults to the current working directory.
+.TP
+.B \-\-mcp
+Run as an MCP server (JSON-RPC 2.0 over stdio) instead of a one-shot CLI. See
+.BR EXAMPLES .
+
+.SH COMMANDS
+
+.SS Indexing
+.TP
+.B index
+Build a fresh index for the repo. Wipes any existing index. Also rebuilds the
+Tantivy fuzzy/prefix sidecar.
+.TP
+.B refresh
+Incrementally update the index. mtime + sha256 keyed; ~250 ms no-op on a
+13k-file repo.
+.TP
+.B fts-rebuild
+Rebuild only the Tantivy fuzzy/prefix sidecar from the current SQLite index.
+
+.SS Symbol queries
+.TP
+.BI sym\ NAME
+Find a symbol by exact name. Emits a JSON array of
+.IR {name, kind, signature, parent, file, line_start, line_end, visibility} .
+.TP
+.BI refs\ NAME\ [\-\-limit\ N]\ [\-\-files\-only]\ [\-\-count]
+Find every identifier reference to
+.IR NAME .
+Coarse \(em matches text equality on identifier nodes.
+.RS
+.TP
+.BI \-\-limit\  N
+Cap the full hit list at
+.IR N .
+0 = unlimited. Early-stops the per-file walk.
+.TP
+.B \-\-files\-only
+Emit a deduped JSON file list only \(em no per-line snippet (~88% smaller).
+.TP
+.B \-\-count
+Emit
+.RI {\(dqcount\(dq:\  N }
+only (~99.98% smaller).
+.RE
+.TP
+.BI callers\ NAME\ [\-\-limit\ N]\ [\-\-files\-only]\ [\-\-count]
+Find call sites of
+.IR NAME
+\(em both bare
+.IR foo()
+and method-receiver
+.IR obj.foo() .
+Same shaping flags as
+.BR refs .
+.TP
+.BI outline\ FILE
+List every symbol in
+.IR FILE
+ordered by line. Use
+.IR line_start / line_end
+ranges to selectively read portions.
+.TP
+.BI files\ [\-\-under\ PREFIX]\ [\-\-lang\ LANG]\ [\-\-ext\ EXT]\ [\-\-limit\ N]
+List indexed files. Replaces
+.BR ls (1)
+\fB\-R\fR /
+.BR find (1)
+\fB\-name\fR.
+
+.SS Approximate name search
+.TP
+.BI fuzzy\ QUERY\ [\-\-limit\ N]
+Levenshtein-distance-2 search over symbol names. Catches typos and plurals.
+Default limit: 20.
+.TP
+.BI prefix\ QUERY\ [\-\-limit\ N]
+Case-insensitive starts-with search over symbol names. Default limit: 20.
+
+.SS Telemetry
+.TP
+.BR track " [" \-\-json ]
+Show estimated tokens saved this session, last 24h, and all-time. Saved-token
+math is heuristic.
+.IR \-\-json
+emits a structured object instead of the human-readable table.
+
+.SH FILES
+.TP
+.I .crabcc/index.db
+SQLite store: per-repo. Add to
+.IR .gitignore .
+.TP
+.I .crabcc/tantivy/
+Tantivy sidecar: per-repo. Rebuilt by
+.B index
+or
+.BR fts\-rebuild .
+.TP
+.I ~/.crabcc/usage.log
+Global JSONL telemetry log used by
+.BR track .
+Append-only, never read by other commands.
+
+.SH ENVIRONMENT
+.TP
+.B RUST_LOG
+Tracing log filter. Defaults to
+.IR warn .
+Set
+.IR RUST_LOG=info
+for query timings and Tantivy chatter.
+
+.SH EXIT STATUS
+.B 0
+on success.
+.B 1
+on indexing or query errors. Errors are written to stderr; stdout JSON is
+guaranteed parseable on success.
+
+.SH EXAMPLES
+.SS Find a symbol
+.EX
+$ crabcc sym Assessment
+[{"name":"Assessment","kind":"class",
+  "signature":"class Assessment < ApplicationRecord", ...}]
+.EE
+
+.SS Count call sites
+.EX
+$ crabcc callers find_by --count
+{"count":475}
+.EE
+
+.SS Just the files referencing X
+.EX
+$ crabcc refs Assessment --files-only --limit 10
+{"files":["app/builders/...", "app/models/...", ...]}
+.EE
+
+.SS File outline + jq
+.EX
+$ crabcc outline app/models/user.rb |
+    jq -r '.[] | select(.kind=="method") | "\\(.name)\\t\\(.line_start)"'
+.EE
+
+.SS MCP server
+.EX
+$ printf '{"jsonrpc":"2.0","id":1,"method":"initialize"}\\n' | crabcc --mcp
+.EE
+
+.SH SEE ALSO
+.BR rg (1),
+.BR fd (1),
+.BR jq (1),
+.BR grep (1),
+.BR find (1).
+
+For prose-style, content-search questions, prefer
+.BR rg (1).
+For filename glob / by-age questions, prefer
+.BR fd (1).
+For reshaping crabcc JSON output, pipe through
+.BR jq (1).
+
+.B Never
+reach for plain
+.BR grep " \-rn"
+or
+.BR find " . \-name"
+on a real repo \(em they walk
+.IR node_modules/ ,
+.IR .git/ ,
+and
+.IR tmp/ ,
+which is slow and noisy.
+
+.SH AUTHOR
+Written by Peter Lodri. Source: https://github.com/peterlodri/crabcc
+
+.SH BUGS
+Report at https://github.com/peterlodri/crabcc/issues.
+
+Known limitations in v0.1:
+.IP \[bu] 2
+Ruby caller patterns don't catch chained-receiver calls (\fIobj.bar.foo\fR).
+.IP \[bu] 2
+.B grep
+subcommand is a TODO stub.
+.IP \[bu] 2
+Indexing is single-threaded.

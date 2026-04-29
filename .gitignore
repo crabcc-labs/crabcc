@@ -2,8 +2,13 @@
 **/*.rs.bk
 Cargo.lock
 .crabcc/
-bench/results/
 .DS_Store
+
+# Bench raw transcripts are noisy + reproducible; keep only the rendered report.
+bench/results/
+!bench/results/REPORT.md
+!bench/results/*.png
+
 # Research artifacts produced by sub-agents — not source.
 STORAGE_RESEARCH.md
 DB_*.md

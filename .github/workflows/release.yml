@@ -1,0 +1,121 @@
+name: release
+
+# Triggers on tag push (v*.*.*). Builds, tests, UPX-compresses, uploads.
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: write   # needed to create releases + upload artifacts
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+            cross: true
+          - target: x86_64-apple-darwin
+            os: macos-13
+            archive: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-${{ matrix.target }}
+
+      - name: install cross (linux aarch64 only)
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: build release
+        shell: bash
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }} -p crabcc-cli
+          else
+            cargo build --release --target ${{ matrix.target }} -p crabcc-cli
+          fi
+
+      # https://github.com/upx/upx — shrinks the release binary ~50–70%.
+      # macOS arm64 binaries can't be UPX-packed by current upx releases, so
+      # we skip on aarch64-apple-darwin (still ships uncompressed).
+      - name: install upx
+        if: ${{ matrix.target != 'aarch64-apple-darwin' }}
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            sudo apt-get update -y && sudo apt-get install -y upx-ucl
+          else
+            brew install upx
+          fi
+
+      - name: pack with upx
+        if: ${{ matrix.target != 'aarch64-apple-darwin' }}
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target }}/release/crabcc"
+          ls -la "$BIN"
+          # `--best --lzma` = max compression. Don't use `--ultra-brute` — slow,
+          # marginal gains on Rust binaries.
+          upx --best --lzma "$BIN" || echo "upx skipped (target unsupported)"
+          ls -la "$BIN"
+
+      - name: package
+        shell: bash
+        run: |
+          BIN="target/${{ matrix.target }}/release/crabcc"
+          NAME="crabcc-${{ github.ref_name }}-${{ matrix.target }}"
+          mkdir -p "dist/$NAME"
+          cp "$BIN" "dist/$NAME/"
+          cp README.md LICENSE CHANGELOG.md "dist/$NAME/" 2>/dev/null || true
+          tar -czf "dist/$NAME.tar.gz" -C dist "$NAME"
+          (cd dist && shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256")
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: crabcc-${{ matrix.target }}
+          path: dist/*
+
+  release:
+    name: release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: list artifacts
+        run: ls -la dist
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

@@ -1,0 +1,146 @@
+# https://taskfile.dev — install with `brew install go-task` or
+# `go install github.com/go-task/task/v3/cmd/task@latest`.
+#
+# Quick start:
+#   task              # default = build + test
+#   task install      # `cargo install` to ~/.cargo/bin/crabcc
+#   task bench        # raw-CLI A/B benchmark + visualization
+#   task ci           # full local CI dry-run (fmt + clippy + test + smoke)
+#   task release      # cut a tag; CI workflow handles the rest
+
+version: '3'
+
+vars:
+  REPO_FIXTURE: '{{.REPO_FIXTURE | default "/Users/peter.lodri/workspace/mc-mothership"}}'
+  CARGO: cargo
+  CRABCC: ~/.cargo/bin/crabcc
+
+tasks:
+  default:
+    desc: Build + test (the daily-driver task)
+    cmds:
+      - task: build
+      - task: test
+
+  build:
+    desc: Release build (LTO=fat — slower compile, ~5–10% faster runtime)
+    cmds:
+      - "{{.CARGO}} build --release"
+
+  build-fast:
+    desc: Iteration-friendly build (-O1, minimal debug info, ~half the time)
+    cmds:
+      - "{{.CARGO}} build --profile dev-fast"
+
+  test:
+    desc: Run all 60 unit tests across the workspace
+    cmds:
+      - "{{.CARGO}} test --workspace"
+
+  fmt:
+    desc: Format all Rust files
+    cmds:
+      - "{{.CARGO}} fmt --all"
+
+  fmt-check:
+    desc: Check formatting without modifying files (CI gate)
+    cmds:
+      - "{{.CARGO}} fmt --all -- --check"
+
+  lint:
+    desc: Strict clippy — fails on any warning
+    cmds:
+      - "{{.CARGO}} clippy --workspace --all-targets -- -D warnings"
+
+  install:
+    desc: Cargo install crabcc to ~/.cargo/bin/crabcc
+    deps: [build]
+    cmds:
+      - "{{.CARGO}} install --path crates/crabcc-cli --force"
+      - "{{.CRABCC}} --version"
+
+  install-skill:
+    desc: Symlink the skill + slash command into ~/.claude/
+    cmds:
+      - mkdir -p ~/.claude/skills/crabcc ~/.claude/commands
+      - ln -sf "$(pwd)/skill/crabcc/SKILL.md" ~/.claude/skills/crabcc/SKILL.md
+      - ln -sf "$(pwd)/commands/crabcc-init.md" ~/.claude/commands/crabcc-init.md
+      - 'echo "skill + command symlinked. Add the MCP server to ~/.claude.json manually if needed."'
+
+  bench:
+    desc: Run the raw-CLI A/B benchmark against REPO_FIXTURE
+    deps: [install]
+    cmds:
+      - "( cd {{.REPO_FIXTURE}} && {{.CRABCC}} index >/dev/null )"
+      - 'PATH="$HOME/.cargo/bin:$PATH" python3 bench/raw-bench.py {{.REPO_FIXTURE}}'
+
+  bench-viz:
+    desc: Generate REPORT.md + PNG charts from latest bench results
+    cmds:
+      - 'test -f bench/results/raw.json || (echo "run `task bench` first" && exit 1)'
+      - 'if command -v {{"/tmp/crabcc-bench-venv/bin/python"}} >/dev/null 2>&1; then /tmp/crabcc-bench-venv/bin/python bench/visualize.py; else python3 bench/visualize.py; fi'
+
+  bench-all:
+    desc: Bench + visualize in one shot
+    cmds:
+      - task: bench
+      - task: bench-viz
+
+  man:
+    desc: Render the manpage to a viewable PDF preview (and confirm troff syntax)
+    cmds:
+      - 'man -t man/crabcc.1 | open -fa Preview'
+
+  install-man:
+    desc: Install crabcc.1 into the local man-page tree
+    cmds:
+      - sudo install -m 0644 man/crabcc.1 /usr/local/share/man/man1/crabcc.1
+      - 'echo "test with: man crabcc"'
+
+  smoke:
+    desc: Index a tiny fixture + assert sym/callers/refs return data
+    deps: [install]
+    cmds:
+      - mkdir -p /tmp/crabcc-smoke && cd /tmp/crabcc-smoke && cat > a.ts <<'EOF'
+        export function hello(name: string) { return name; }
+        hello("world");
+        EOF
+      - "( cd /tmp/crabcc-smoke && {{.CRABCC}} index >/dev/null )"
+      - "{{.CRABCC}} --root /tmp/crabcc-smoke sym hello | jq -e '.[0].name == \"hello\"'"
+      - "{{.CRABCC}} --root /tmp/crabcc-smoke callers hello --count | jq -e '.count >= 1'"
+      - rm -rf /tmp/crabcc-smoke
+
+  ci:
+    desc: Local CI dry-run — fmt + clippy + test + smoke
+    cmds:
+      - task: fmt-check
+      - task: lint
+      - task: test
+      - task: smoke
+
+  release:
+    desc: Cut a release tag (CI builds + UPX-compresses + uploads on push)
+    summary: |
+      Pass VERSION=x.y.z. Updates Cargo.toml versions, commits, tags, and pushes.
+      The release.yml GitHub Actions workflow takes it from there.
+    cmds:
+      - test -n "{{.VERSION}}" || (echo "VERSION=x.y.z required" && exit 1)
+      - sed -i.bak 's/^version = "[^"]*"/version = "{{.VERSION}}"/' Cargo.toml && rm Cargo.toml.bak
+      - "{{.CARGO}} build --release"
+      - git add Cargo.toml Cargo.lock
+      - 'git commit -m "release: v{{.VERSION}}"'
+      - "git tag v{{.VERSION}}"
+      - "echo 'now: git push origin main --tags'"
+
+  clean:
+    desc: Remove target/, bench/results/, and any tantivy/sqlite test fixtures
+    cmds:
+      - "{{.CARGO}} clean"
+      - rm -rf bench/results/raw.json bench/results/REPORT.md bench/results/*.png
+
+  uninstall:
+    desc: Remove crabcc binary, skill symlink, command symlink
+    cmds:
+      - rm -f {{.CRABCC}}
+      - rm -f ~/.claude/skills/crabcc/SKILL.md
+      - rm -f ~/.claude/commands/crabcc-init.md
