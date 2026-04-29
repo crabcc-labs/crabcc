@@ -1,0 +1,24 @@
+# cargo-nextest config — referenced by .github/workflows/ci.yml.
+# https://nexte.st/book/configuration.html
+
+[profile.default]
+# Same defaults as `cargo test` (parallel, no retries).
+retries = 0
+status-level = "pass"
+fail-fast = false
+
+# CI profile: emit JUnit XML for upload as a build artifact, allow flaky retries
+# on the `flaky` test slow-class so transient OS-level events (FS event timing,
+# tempdir mtime granularity) don't fail the whole pipeline.
+[profile.ci]
+retries = { backoff = "fixed", count = 2, delay = "1s" }
+status-level = "all"
+final-status-level = "fail"
+fail-fast = false
+slow-timeout = { period = "60s", terminate-after = 2 }
+
+[profile.ci.junit]
+path = "junit.xml"
+report-name = "crabcc"
+store-success-output = false
+store-failure-output = true

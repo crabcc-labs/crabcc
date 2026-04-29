@@ -34,8 +34,23 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
-      - name: cargo test
-        run: cargo test --workspace --release
+      - name: install cargo-nextest (JUnit reporter)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+
+      - name: cargo nextest (with JUnit report)
+        run: |
+          cargo nextest run --workspace --profile ci
+
+      - name: upload test report (JUnit XML)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-${{ matrix.os }}
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: warn
+          retention-days: 30
 
       - name: smoke — index + query a small fixture
         shell: bash
