@@ -1,3 +1,5 @@
+#[cfg(feature = "compress")]
+pub mod compress;
 pub mod extract;
 pub mod fts;
 pub mod graph;
@@ -6,8 +8,6 @@ pub mod index;
 pub mod outline;
 pub mod pattern;
 pub mod query;
-#[cfg(feature = "compress")]
-pub mod compress;
 pub mod refs;
 pub mod store;
 pub mod track;

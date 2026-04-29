@@ -564,9 +564,7 @@ mod tests {
         // Train a codec on representative signature shapes and persist next to the DB.
         let samples_owned: Vec<String> = (0..200)
             .map(|i| {
-                format!(
-                    "function handle_{i}(input: string, opts: Options): Promise<Result<User>>"
-                )
+                format!("function handle_{i}(input: string, opts: Options): Promise<Result<User>>")
             })
             .collect();
         let sample_refs: Vec<&[u8]> = samples_owned.iter().map(|s| s.as_bytes()).collect();

@@ -157,38 +157,68 @@ def sample_symbol_names(crabcc: str, repo: Path, n: int) -> list[str]:
 
 
 def measure_decode_latency(crabcc: str, repo: Path, n_calls: int) -> dict[str, float]:
-    """End-to-end probe: `crabcc sym <name>` n_calls times, record per-call ms."""
-    names = sample_symbol_names(crabcc, repo, n_calls)
-    if not names:
-        return {"p50_ms": 0.0, "p95_ms": 0.0, "p99_ms": 0.0,
-                "samples": 0, "note": "no symbol names available"}
-    # Shuffle to defeat any name-order locality.
-    random.shuffle(names)
-    durations_ms: list[float] = []
-    for name in names:
-        cmd = [crabcc, "--root", str(repo), "sym", name]
-        t0 = time.perf_counter()
-        proc = subprocess.run(cmd, capture_output=True, timeout=10)
-        durations_ms.append((time.perf_counter() - t0) * 1000.0)
-        # We don't fail the bench on rc!=0 (some random names may be filter-only);
-        # the wall time still reflects per-row decompress + lookup overhead.
-        _ = proc
-    durations_ms.sort()
+    """In-process decode probe via `crabcc compress --decode-probe N --json`.
 
-    def pct(p: float) -> float:
-        if not durations_ms:
-            return 0.0
-        i = max(0, min(len(durations_ms) - 1, int(round(p * (len(durations_ms) - 1)))))
-        return durations_ms[i]
-
+    The previous version timed `crabcc sym <name>` end-to-end as a subprocess
+    — fork+exec+SQLite open+tantivy load dominated, hiding the actual codec
+    cost (microbench shows ~32 ns). This version asks the binary itself to
+    time `Codec::decompress` per row and emit nanosecond percentiles.
+    """
+    cmd = [crabcc, "--root", str(repo), "compress",
+           "--decode-probe", str(n_calls), "--json"]
+    t0 = time.perf_counter()
+    proc = subprocess.run(cmd, capture_output=True, timeout=120)
+    wall_ms = (time.perf_counter() - t0) * 1000.0
+    if proc.returncode != 0:
+        sys.stderr.write(proc.stderr.decode("utf-8", errors="replace"))
+        return {"error": f"--decode-probe exited rc={proc.returncode}",
+                "samples": 0, "wall_ms": round(wall_ms, 2)}
+    try:
+        d = json.loads(proc.stdout.decode("utf-8").strip())
+    except json.JSONDecodeError as e:
+        return {"error": f"probe-json parse failed: {e}",
+                "stdout": proc.stdout.decode("utf-8", errors="replace")[:1000],
+                "samples": 0, "wall_ms": round(wall_ms, 2)}
+    # Normalise to milliseconds so the rest of the harness stays the same.
+    ns_to_ms = lambda ns: round(ns / 1_000_000.0, 6) if isinstance(ns, (int, float)) else 0.0
     return {
-        "p50_ms": round(pct(0.50), 4),
-        "p95_ms": round(pct(0.95), 4),
-        "p99_ms": round(pct(0.99), 4),
-        "min_ms": round(durations_ms[0], 4),
-        "max_ms": round(durations_ms[-1], 4),
-        "mean_ms": round(statistics.mean(durations_ms), 4),
-        "samples": len(durations_ms),
+        "p50_ms": ns_to_ms(d.get("p50_ns", 0)),
+        "p95_ms": ns_to_ms(d.get("p95_ns", 0)),
+        "p99_ms": ns_to_ms(d.get("p99_ns", 0)),
+        "min_ms": ns_to_ms(d.get("min_ns", 0)),
+        "max_ms": ns_to_ms(d.get("max_ns", 0)),
+        "mean_ms": ns_to_ms(d.get("mean_ns", 0)),
+        "p50_ns": d.get("p50_ns", 0),
+        "p95_ns": d.get("p95_ns", 0),
+        "p99_ns": d.get("p99_ns", 0),
+        "samples": d.get("samples", 0),
+        "wall_ms": round(wall_ms, 2),
+        "total_bytes_in": d.get("total_bytes_in", 0),
+        "total_bytes_out": d.get("total_bytes_out", 0),
+    }
+
+
+def measure_plain_baseline(crabcc: str, repo: Path) -> dict[str, int]:
+    """Snapshot signature plain bytes/rows after a FSST-off index pass.
+
+    Used to compute a real compression ratio (plain / encoded) once Phase 2's
+    rebuild flips every row. Without this snapshot, post-rebuild stats see
+    plain_rows=0 and have no denominator to divide against.
+    """
+    cmd = [crabcc, "--root", str(repo), "--compress=false",
+           "compress", "--stats", "--json"]
+    proc = subprocess.run(cmd, capture_output=True, timeout=60)
+    if proc.returncode != 0:
+        sys.stderr.write(proc.stderr.decode("utf-8", errors="replace"))
+        return {"plain_bytes": 0, "plain_rows": 0, "error": proc.returncode}
+    try:
+        d = json.loads(proc.stdout.decode("utf-8").strip())
+    except json.JSONDecodeError as e:
+        return {"plain_bytes": 0, "plain_rows": 0, "error": str(e)}
+    sig = d.get("signature") or {}
+    return {
+        "plain_bytes": int(sig.get("plain_bytes") or 0),
+        "plain_rows": int(sig.get("plain_rows") or 0),
     }
 
 
@@ -244,10 +274,26 @@ def measure_bulk_decode_throughput(repo: Path, target_rows: int) -> dict[str, An
 
 
 def gate_verdict(off: dict[str, Any], on: dict[str, Any]) -> dict[str, Any]:
-    """Compute release-gate booleans per docs/RESEARCH-fsst.md §6.2."""
-    off_size = max(off.get("db_size_bytes", 0), 1)
-    on_size = max(on.get("db_size_bytes", 1), 1)
-    ratio = round(off_size / on_size, 2)
+    """Compute release-gate booleans per docs/RESEARCH-fsst.md §6.2.
+
+    Ratio is computed against the SIGNATURE COLUMN bytes specifically:
+    `off.plain_signature_bytes` (snapshotted after the FSST-off index) divided
+    by `on.encoded_signature_bytes` (post-rebuild). Whole-DB-file size is a
+    poor proxy because (a) FTS sidecar pages dominate, (b) SQLite holds slack
+    pages until VACUUM. The post-rebuild encoded count comes from the
+    `post_rebuild` block that `crabcc compress --rebuild` persists into the
+    `meta` table.
+    """
+    off_plain = int(off.get("plain_signature_bytes") or 0)
+    on_post = (on.get("stats") or {}).get("post_rebuild") or {}
+    on_encoded = int(on_post.get("encoded_bytes") or 0)
+    if off_plain > 0 and on_encoded > 0:
+        ratio = round(off_plain / on_encoded, 2)
+    else:
+        # Fallback to live stats (mixed-state ratio) or whole-file size. Both
+        # are imperfect — we flag the source so the gate scorecard can show it.
+        live = (on.get("stats") or {}).get("ratio") or 0.0
+        ratio = round(float(live) if live else 0.0, 2)
     p99 = on.get("decode_p99_ms", float("inf"))
     p99_under_1ms = isinstance(p99, (int, float)) and p99 < 1.0
     off_idx = max(off.get("index_ms", 0), 1.0)
@@ -258,6 +304,7 @@ def gate_verdict(off: dict[str, Any], on: dict[str, Any]) -> dict[str, Any]:
     pass_all = bool(p99_under_1ms and ratio_pass and regression_under_10)
     return {
         "ratio": ratio,
+        "ratio_source": "signature_column" if (off_plain > 0 and on_encoded > 0) else "fallback",
         "p99_decode_under_1ms": bool(p99_under_1ms),
         "p99_decode_ms": p99,
         "indexing_regression_pct": regression_pct,
@@ -287,9 +334,11 @@ def write_gate_md(out_md: Path, summary: dict[str, Any]) -> None:
             return "FAIL"
         return "n/a"
 
+    src = v.get("ratio_source", "?")
     rows = [
-        ("p99 single-row decode", "<1 ms", p99_disp, pf(v.get("p99_decode_under_1ms"))),
-        ("DB size reduction (signatures)", ">=1.4x", f"{ratio:.2f}x",
+        ("p99 single-row decode (in-process)", "<1 ms", p99_disp,
+         pf(v.get("p99_decode_under_1ms"))),
+        (f"Signature compression ratio ({src})", ">=1.4x", f"{ratio:.2f}x",
          pf(v.get("size_reduction_ge_1_4x"))),
         ("Indexing throughput regression", "<10%", f"{reg:+.1f}%",
          pf(v.get("indexing_regression_under_10pct"))),
@@ -359,7 +408,7 @@ def main() -> int:
     if not Path(crabcc).exists():
         sys.exit(f"error: crabcc binary not found at {crabcc}")
 
-    timestamp = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    timestamp = dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ")
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     out_path = Path(args.out) if args.out else RESULTS_DIR / f"compress-{timestamp}.json"
 
@@ -375,9 +424,17 @@ def main() -> int:
     off_idx_ms, off_db = measure_index(crabcc, repo, args.trials, compress_flag=False)
     print(f"  index_ms={off_idx_ms:.0f}  db={off_db:,} bytes")
 
+    # Snapshot the plain signature byte count NOW (before Phase 2 wipes it).
+    # This is the denominator-side input for the real-ratio computation.
+    plain_baseline = measure_plain_baseline(crabcc, repo)
+    print(f"  plain_signature_bytes={plain_baseline.get('plain_bytes'):,} "
+          f"({plain_baseline.get('plain_rows')} rows)")
+
     fsst_off = {
         "index_ms": round(off_idx_ms, 2),
         "db_size_bytes": off_db,
+        "plain_signature_bytes": plain_baseline.get("plain_bytes", 0),
+        "plain_signature_rows":  plain_baseline.get("plain_rows", 0),
     }
 
     # ------------------------------------------------------------------

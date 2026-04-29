@@ -86,7 +86,13 @@ fn link_one(src: &Path, dst: &Path, yes: bool) -> Result<()> {
         }
     }
 
-    if !yes && !confirm(&format!("Symlink {} -> {}? [y/N] ", src.display(), dst.display()))? {
+    if !yes
+        && !confirm(&format!(
+            "Symlink {} -> {}? [y/N] ",
+            src.display(),
+            dst.display()
+        ))?
+    {
         println!("  skipped");
         return Ok(());
     }

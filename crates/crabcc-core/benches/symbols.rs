@@ -51,11 +51,7 @@ fn synth_symbols(n: usize) -> Vec<Symbol> {
             file: format!("synthetic/path_{}.rs", i % 64),
             line_start: (i as u32) * 4 + 1,
             line_end: (i as u32) * 4 + 3,
-            visibility: if i % 5 == 0 {
-                Some("pub".into())
-            } else {
-                None
-            },
+            visibility: if i % 5 == 0 { Some("pub".into()) } else { None },
         })
         .collect()
 }
@@ -73,7 +69,8 @@ fn make_populated_store(n: usize) -> (TempDir, Store, PathBuf) {
     let per_file: std::collections::HashMap<usize, Vec<Symbol>> = {
         let mut m: std::collections::HashMap<usize, Vec<Symbol>> = std::collections::HashMap::new();
         for s in symbols {
-            let bucket = s.file
+            let bucket = s
+                .file
                 .rsplit('_')
                 .next()
                 .and_then(|t| t.trim_end_matches(".rs").parse::<usize>().ok())
@@ -87,7 +84,9 @@ fn make_populated_store(n: usize) -> (TempDir, Store, PathBuf) {
         let file_id = store
             .upsert_file(&path, "deadbeef", 0, "rust")
             .expect("upsert_file");
-        store.replace_symbols(file_id, &syms).expect("replace_symbols");
+        store
+            .replace_symbols(file_id, &syms)
+            .expect("replace_symbols");
     }
     (tmp, store, db_path)
 }

@@ -39,11 +39,22 @@ pub struct Args {
     pub rebuild: bool,
     pub stats: bool,
     pub json: bool,
+    /// In-process decode-latency probe. When `Some(n)`, sample n encoded rows
+    /// and time `Codec::decompress` per row; emit p50/p95/p99 nanoseconds.
+    /// Mutually exclusive with `--rebuild` in practice (we just run the probe
+    /// and skip training/rebuild).
+    pub decode_probe: Option<usize>,
 }
 
 pub fn run(args: Args) -> Result<()> {
     std::fs::create_dir_all(args.db.parent().unwrap())
         .with_context(|| format!("create index dir for {}", args.db.display()))?;
+
+    // Probe mode shortcuts everything: load the existing codec from disk,
+    // measure raw decompress throughput, exit.
+    if let Some(n) = args.decode_probe {
+        return decode_probe(&args, n);
+    }
 
     // Stats-only fast path: no training, no rebuild, just query the DB and
     // print. We still open via rusqlite directly so the existing rows decode
@@ -174,11 +185,7 @@ fn save_codec(codec: &Codec, path: &Path) -> Result<u64> {
         .save(path)
         .with_context(|| format!("save fsst symbol table to {}", path.display()))?;
     let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    println!(
-        "wrote {} ({} bytes table on disk)",
-        path.display(),
-        bytes
-    );
+    println!("wrote {} ({} bytes table on disk)", path.display(), bytes);
     Ok(bytes)
 }
 
@@ -240,7 +247,7 @@ fn rebuild_rows(db: &Path, codec: &Codec) -> Result<()> {
         }
         tx.commit()?;
         done += chunk.len();
-        if done.is_multiple_of(PROGRESS_EVERY) || done == total {
+        if done % PROGRESS_EVERY == 0 || done == total {
             let pct = if total == 0 {
                 100.0
             } else {
@@ -258,6 +265,109 @@ fn rebuild_rows(db: &Path, codec: &Codec) -> Result<()> {
     println!(
         "rebuilt {done} rows; bytes_before={bytes_before} bytes_after={bytes_after} ratio={ratio:.2}x"
     );
+
+    // Persist the rebuild totals so `--stats` can report a real ratio after
+    // every row has been encoded (the live row counts collapse to plain=0 in
+    // that state, which used to produce ratio=0.0 — a measurement artifact,
+    // not the true compression). Reading from `meta` survives across runs.
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params!["fsst_last_rebuild_plain_bytes", bytes_before.to_string()],
+    )?;
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params!["fsst_last_rebuild_encoded_bytes", bytes_after.to_string()],
+    )?;
+    conn.execute(
+        "INSERT INTO meta(key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params!["fsst_last_rebuild_rows", done.to_string()],
+    )?;
+
+    // Reclaim the slack pages — UPDATE leaves the file size unchanged because
+    // SQLite keeps freed space in the freelist. VACUUM rewrites the file
+    // compactly so on-disk size finally reflects the post-rebuild reality.
+    println!("rebuild: VACUUM…");
+    conn.execute_batch("VACUUM")?;
+    Ok(())
+}
+
+/// In-process decode-latency probe: sample N encoded rows directly via SQL,
+/// time `Codec::decompress` per row using `Instant::now()`. Emits p50/p95/p99
+/// in NANOSECONDS (compare apples-to-apples with the criterion micro-bench;
+/// the previous subprocess loop measured `crabcc sym` end-to-end where SQLite
+/// open + tantivy load + JSON encode dominated, hiding the codec entirely).
+fn decode_probe(args: &Args, n: usize) -> Result<()> {
+    let symbols_path = symbols_path(&args.db);
+    if !symbols_path.exists() {
+        anyhow::bail!(
+            "no symbol table at {} — run `crabcc compress` first",
+            symbols_path.display()
+        );
+    }
+    let codec = Codec::load(&symbols_path)
+        .with_context(|| format!("load codec from {}", symbols_path.display()))?;
+    let conn = Connection::open(&args.db).context("open sqlite for probe")?;
+    let mut stmt = conn.prepare(
+        "SELECT signature FROM symbols
+         WHERE signature IS NOT NULL AND signature_enc = 1
+         ORDER BY RANDOM() LIMIT ?1",
+    )?;
+    let rows: Vec<Vec<u8>> = stmt
+        .query_map(params![n as i64], |row| row.get::<_, Vec<u8>>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if rows.is_empty() {
+        anyhow::bail!(
+            "no encoded rows in {} — run `crabcc compress --rebuild` first",
+            args.db.display()
+        );
+    }
+
+    let mut timings_ns: Vec<u128> = Vec::with_capacity(rows.len());
+    let mut total_bytes_in: u128 = 0;
+    let mut total_bytes_out: u128 = 0;
+    // Warm-up: codec table TLB / branch predictor priming, doesn't go in the sample.
+    for r in rows.iter().take(8) {
+        let _ = codec.decompress(r);
+    }
+    for r in &rows {
+        let t = std::time::Instant::now();
+        let plain = codec.decompress(r);
+        let elapsed = t.elapsed().as_nanos();
+        timings_ns.push(elapsed);
+        total_bytes_in += r.len() as u128;
+        total_bytes_out += plain.len() as u128;
+    }
+
+    timings_ns.sort_unstable();
+    let pct = |p: f64| -> u128 {
+        let idx = ((timings_ns.len() as f64 - 1.0) * p).round() as usize;
+        timings_ns[idx]
+    };
+    let p50 = pct(0.50);
+    let p95 = pct(0.95);
+    let p99 = pct(0.99);
+    let min = *timings_ns.first().unwrap();
+    let max = *timings_ns.last().unwrap();
+    let mean: u128 = timings_ns.iter().sum::<u128>() / (timings_ns.len() as u128);
+
+    if args.json {
+        let v = serde_json::json!({
+            "samples": timings_ns.len(),
+            "p50_ns": p50, "p95_ns": p95, "p99_ns": p99,
+            "min_ns": min, "max_ns": max, "mean_ns": mean,
+            "total_bytes_in":  total_bytes_in  as u64,
+            "total_bytes_out": total_bytes_out as u64,
+        });
+        println!("{}", serde_json::to_string(&v)?);
+    } else {
+        println!("decode-probe: {} samples", timings_ns.len());
+        println!("  p50 {p50} ns  p95 {p95} ns  p99 {p99} ns");
+        println!("  min {min} ns  max {max} ns  mean {mean} ns");
+        println!("  in {total_bytes_in} B → out {total_bytes_out} B");
+    }
     Ok(())
 }
 
@@ -285,19 +395,40 @@ fn print_stats(args: &Args) -> Result<()> {
         .map(|m| m.len())
         .unwrap_or(0);
 
-    // Best-effort ratio: scale apples-to-apples by per-row average so a
-    // partially-rebuilt index still gives a meaningful number.
-    let ratio = if encoded_bytes == 0 || encoded_rows == 0 || plain_rows == 0 {
-        0.0
+    // Read the persisted post-rebuild totals from `meta` (written by
+    // `--rebuild`). When present they give us a true ratio even after every
+    // row has been encoded — the live mixed-state ratio collapses in that
+    // case because plain_rows = 0.
+    let read_meta = |key: &str| -> Option<i64> {
+        conn.query_row("SELECT value FROM meta WHERE key = ?1", params![key], |r| {
+            r.get::<_, String>(0)
+        })
+        .ok()
+        .and_then(|s| s.parse::<i64>().ok())
+    };
+    let last_plain = read_meta("fsst_last_rebuild_plain_bytes");
+    let last_encoded = read_meta("fsst_last_rebuild_encoded_bytes");
+    let last_rows = read_meta("fsst_last_rebuild_rows");
+    let post_rebuild_ratio = match (last_plain, last_encoded) {
+        (Some(p), Some(e)) if e > 0 => Some((p as f64) / (e as f64)),
+        _ => None,
+    };
+
+    // Best-effort live ratio (mixed state only): scale apples-to-apples by
+    // per-row average so a partially-rebuilt index gives a meaningful number.
+    let live_ratio = if encoded_bytes == 0 || encoded_rows == 0 || plain_rows == 0 {
+        None
     } else {
         let avg_plain = (plain_bytes as f64) / (plain_rows as f64);
         let avg_encoded = (encoded_bytes as f64) / (encoded_rows as f64);
         if avg_encoded > 0.0 {
-            avg_plain / avg_encoded
+            Some(avg_plain / avg_encoded)
         } else {
-            0.0
+            None
         }
     };
+    // Prefer the persisted post-rebuild ratio when both exist — it's exact.
+    let ratio = post_rebuild_ratio.or(live_ratio);
 
     if args.json {
         let v = serde_json::json!({
@@ -309,7 +440,13 @@ fn print_stats(args: &Args) -> Result<()> {
                 "null_rows":     null_rows,
             },
             "symbol_table_bytes": table_bytes,
-            "ratio": (ratio * 100.0).round() / 100.0,
+            "ratio": ratio.map(|r| (r * 100.0).round() / 100.0),
+            "post_rebuild": last_plain.map(|_| serde_json::json!({
+                "plain_bytes":   last_plain,
+                "encoded_bytes": last_encoded,
+                "rows":          last_rows,
+                "ratio":         post_rebuild_ratio.map(|r| (r * 100.0).round() / 100.0),
+            })),
         });
         println!("{}", serde_json::to_string(&v)?);
     } else {
@@ -325,7 +462,14 @@ fn print_stats(args: &Args) -> Result<()> {
         );
         println!("    null    : {:>7} rows", null_rows);
         println!("  symbol table on disk: {} bytes", table_bytes);
-        println!("  estimated ratio (plain/encoded): {:.2}x", ratio);
+        match ratio {
+            Some(r) => println!("  estimated ratio (plain/encoded): {r:.2}x"),
+            None => println!("  estimated ratio (plain/encoded): n/a (need both plain and encoded rows or a prior --rebuild)"),
+        }
+        if let (Some(p), Some(e), Some(rows)) = (last_plain, last_encoded, last_rows) {
+            let r = post_rebuild_ratio.unwrap_or(0.0);
+            println!("  last --rebuild: {rows} rows, {p}B → {e}B (ratio {r:.2}x)");
+        }
     }
     let _ = args.root; // currently unused; kept for future per-repo banners
     Ok(())

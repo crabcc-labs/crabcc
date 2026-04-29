@@ -172,7 +172,11 @@ mod tests {
     struct XorShift64(u64);
     impl XorShift64 {
         fn new(seed: u64) -> Self {
-            Self(if seed == 0 { 0xdead_beef_cafe_babe } else { seed })
+            Self(if seed == 0 {
+                0xdead_beef_cafe_babe
+            } else {
+                seed
+            })
         }
         fn next_u64(&mut self) -> u64 {
             let mut x = self.0;
@@ -247,7 +251,8 @@ mod tests {
             let enc = codec.compress(plain);
             let back = codec.decompress(&enc);
             assert_eq!(
-                back, *plain,
+                back,
+                *plain,
                 "mismatch at row {i} (seed=0x{seed:016x}): plain.len={} enc.len={}",
                 plain.len(),
                 enc.len()

@@ -1,0 +1,8 @@
+# clippy.toml — lint-level knobs for `cargo clippy`.
+# MSRV is pinned by the strictest dependency, fsst-rs 0.5.10 (rust-version = "1.86").
+# This both feeds clippy's `msrv` lints and prevents accidental use of newer APIs.
+msrv = "1.86"
+
+# Disallowed in app code: panics deep in libraries are usually a bug, not a feature.
+# (Tests are exempt — clippy already special-cases #[cfg(test)].)
+avoid-breaking-exported-api = true

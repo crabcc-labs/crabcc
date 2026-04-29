@@ -134,6 +134,11 @@ enum Cmd {
         /// Override the index path (default: $CRABCC_DB or .crabcc/index.db).
         #[arg(long)]
         db: Option<PathBuf>,
+        /// Probe in-process decode latency on N random encoded rows. Times
+        /// `Codec::decompress` directly (no subprocess, no SQLite open) and
+        /// emits p50/p95/p99 nanoseconds. Implies skipping train/rebuild.
+        #[arg(long, value_name = "N")]
+        decode_probe: Option<usize>,
     },
 }
 
@@ -209,6 +214,7 @@ fn main() -> Result<()> {
         stats,
         json,
         db: db_override,
+        decode_probe,
     }) = cli.cmd.as_ref()
     {
         let db_path = db_override.clone().unwrap_or_else(|| db.clone());
@@ -219,6 +225,7 @@ fn main() -> Result<()> {
             // --json implies --stats (mirrors common CLI ergonomics).
             stats: *stats || *json,
             json: *json,
+            decode_probe: *decode_probe,
         });
     }
 
