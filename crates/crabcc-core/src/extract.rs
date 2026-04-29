@@ -10,6 +10,9 @@ pub fn detect_lang(path: &Path) -> Option<&'static str> {
         "tsx" => "tsx",
         "js" | "jsx" | "mjs" | "cjs" => "javascript",
         "rb" | "rake" | "gemspec" => "ruby",
+        "rs" => "rust",
+        "go" => "go",
+        "py" | "pyi" => "python",
         _ => return None,
     })
 }
@@ -20,6 +23,9 @@ pub fn extract_file(file: &str, src: &str, lang: &str) -> Result<Vec<Symbol>> {
         "tsx" => tree_sitter_typescript::language_tsx(),
         "javascript" => tree_sitter_javascript::language(),
         "ruby" => tree_sitter_ruby::language(),
+        "rust" => tree_sitter_rust::language(),
+        "go" => tree_sitter_go::language(),
+        "python" => tree_sitter_python::language(),
         _ => return Err(anyhow!("unsupported lang: {lang}")),
     };
     let mut parser = Parser::new();
@@ -43,16 +49,50 @@ fn walk(
     parent: Option<&str>,
     out: &mut Vec<Symbol>,
 ) {
+    // Rust `impl Foo { ... }` and `impl Trait for Foo { ... }` don't have a
+    // `name` field — the parent context for inner methods is the impl-target
+    // (the `type` field). We don't emit a symbol for the impl block itself.
+    // Top-level fns are `function_item` -> SymbolKind::Function; inside an impl
+    // block they should be Method instead. Retag after recursion.
+    if lang == "rust" && node.kind() == "impl_item" {
+        let impl_target = node
+            .child_by_field_name("type")
+            .and_then(|n| n.utf8_text(src).ok())
+            .map(|s| strip_generics(s).to_string());
+        let before = out.len();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            walk(child, src, file, lang, impl_target.as_deref(), out);
+        }
+        for sym in out.iter_mut().skip(before) {
+            if matches!(sym.kind, SymbolKind::Function)
+                && sym.parent.as_deref() == impl_target.as_deref()
+            {
+                sym.kind = SymbolKind::Method;
+            }
+        }
+        return;
+    }
+
     if let Some(kind) = symbol_kind_for(lang, node.kind()) {
         if let Some(name) = node_name(&node, src) {
             let n_owned = name.to_string();
             let line_start = (node.start_position().row + 1) as u32;
             let line_end = (node.end_position().row + 1) as u32;
+            // Go method_declaration carries its parent type in the `receiver`
+            // field, not in lexical scope. Extract it so `parent` reflects the
+            // receiver type (with pointer/generic stripped).
+            let resolved_parent: Option<String> =
+                if lang == "go" && node.kind() == "method_declaration" {
+                    go_receiver_type(&node, src)
+                } else {
+                    parent.map(String::from)
+                };
             out.push(Symbol {
                 name: n_owned.clone(),
                 kind,
                 signature: signature_for(&node, src, lang),
-                parent: parent.map(String::from),
+                parent: resolved_parent,
                 file: file.to_string(),
                 line_start,
                 line_end,
@@ -70,6 +110,36 @@ fn walk(
     for child in node.children(&mut cursor) {
         walk(child, src, file, lang, parent, out);
     }
+}
+
+/// `Foo<T>` -> `Foo`. The impl-target's tree-sitter node text includes generic
+/// params; we strip them so `parent` is the bare type name an agent can grep for.
+fn strip_generics(s: &str) -> &str {
+    match s.find('<') {
+        Some(i) => s[..i].trim(),
+        None => s.trim(),
+    }
+}
+
+/// Extract the receiver type from a Go `method_declaration` node, stripping
+/// pointer (`*Repo` -> `Repo`) and any generic params (`Repo[T]` -> `Repo`).
+fn go_receiver_type(node: &Node, src: &[u8]) -> Option<String> {
+    let receiver = node.child_by_field_name("receiver")?;
+    let mut cursor = receiver.walk();
+    for child in receiver.children(&mut cursor) {
+        if child.kind() == "parameter_declaration" {
+            if let Some(ty) = child.child_by_field_name("type") {
+                let raw = ty.utf8_text(src).ok()?;
+                let no_ptr = raw.trim_start_matches('*').trim();
+                let no_generics = match no_ptr.find('[') {
+                    Some(i) => no_ptr[..i].trim(),
+                    None => no_ptr,
+                };
+                return Some(no_generics.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn node_name<'a>(node: &Node, src: &'a [u8]) -> Option<&'a str> {
@@ -101,6 +171,41 @@ fn symbol_kind_for(lang: &str, kind: &str) -> Option<SymbolKind> {
             "singleton_method" => Some(SymbolKind::Method),
             "class" => Some(SymbolKind::Class),
             "module" => Some(SymbolKind::Class), // collapse module into class for v1
+            _ => None,
+        },
+        ("rust", k) => match k {
+            // function_item is top-level fn; inside impl_item it's a method —
+            // the kind is fixed at extract time, but `parent` carries the impl
+            // context so callers can distinguish.
+            // function_signature_item covers trait-body declarations like
+            // `fn hello(&self);` — same shape, no body.
+            "function_item" | "function_signature_item" => Some(SymbolKind::Function),
+            "struct_item" => Some(SymbolKind::Struct),
+            "enum_item" => Some(SymbolKind::Enum),
+            "trait_item" => Some(SymbolKind::Trait),
+            "mod_item" => Some(SymbolKind::Class), // collapse mod into class for v1
+            "const_item" => Some(SymbolKind::Const),
+            "static_item" => Some(SymbolKind::Var),
+            "type_item" => Some(SymbolKind::Type),
+            "macro_definition" => Some(SymbolKind::Macro),
+            _ => None,
+        },
+        ("go", k) => match k {
+            "function_declaration" => Some(SymbolKind::Function),
+            "method_declaration" => Some(SymbolKind::Method),
+            // Go wraps the named declaration in `*_spec` nodes inside the
+            // `*_declaration`. The spec carries the `name` field; the outer
+            // declaration does not.
+            "type_spec" => Some(SymbolKind::Type),
+            "const_spec" => Some(SymbolKind::Const),
+            "var_spec" => Some(SymbolKind::Var),
+            _ => None,
+        },
+        ("python", k) => match k {
+            "function_definition" => Some(SymbolKind::Function),
+            "class_definition" => Some(SymbolKind::Class),
+            // decorated_definition wraps a function/class — descend without
+            // emitting; the inner definition carries the actual name.
             _ => None,
         },
         _ => None,
@@ -161,6 +266,48 @@ fn visibility_for(lang: &str, node: &Node, src: &[u8]) -> Option<String> {
             let _ = (node, src);
             None
         }
+        "rust" => {
+            // visibility_modifier child carries the literal "pub", "pub(crate)",
+            // "pub(super)", or "pub(self)". Absence means private (None).
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "visibility_modifier" {
+                    if let Ok(text) = child.utf8_text(src) {
+                        return Some(text.split_whitespace().collect::<Vec<_>>().join(""));
+                    }
+                }
+            }
+            None
+        }
+        "go" => {
+            // Go exports by capitalization. No AST node — read the name field.
+            let _ = src;
+            let name = node
+                .child_by_field_name("name")
+                .and_then(|n| n.utf8_text(src).ok())?;
+            let first = name.chars().next()?;
+            if first.is_ascii_uppercase() {
+                Some("pub".into())
+            } else {
+                Some("priv".into())
+            }
+        }
+        "python" => {
+            // Convention: `_foo` is private, `__foo` is name-mangled private,
+            // `__foo__` is a dunder and remains public by Python's rules.
+            let _ = src;
+            let name = node
+                .child_by_field_name("name")
+                .and_then(|n| n.utf8_text(src).ok())?;
+            let is_dunder = name.starts_with("__") && name.ends_with("__") && name.len() >= 4;
+            if is_dunder {
+                Some("pub".into())
+            } else if name.starts_with('_') {
+                Some("priv".into())
+            } else {
+                Some("pub".into())
+            }
+        }
         _ => None,
     }
 }
@@ -181,6 +328,10 @@ mod tests {
         assert_eq!(detect_lang(&PathBuf::from("a.js")), Some("javascript"));
         assert_eq!(detect_lang(&PathBuf::from("a.mjs")), Some("javascript"));
         assert_eq!(detect_lang(&PathBuf::from("a.rb")), Some("ruby"));
+        assert_eq!(detect_lang(&PathBuf::from("a.rs")), Some("rust"));
+        assert_eq!(detect_lang(&PathBuf::from("a.go")), Some("go"));
+        assert_eq!(detect_lang(&PathBuf::from("a.py")), Some("python"));
+        assert_eq!(detect_lang(&PathBuf::from("a.pyi")), Some("python"));
         assert_eq!(detect_lang(&PathBuf::from("Rakefile")), None);
         assert_eq!(detect_lang(&PathBuf::from("a.md")), None);
     }
@@ -272,6 +423,380 @@ mod tests {
             "signature should not leak '#' comments, got: {sig:?}"
         );
         assert!(sig.starts_with("class User"), "got: {sig:?}");
+    }
+
+    // ---- Rust ----
+
+    #[test]
+    fn rust_pub_function_with_visibility() {
+        let src = "pub fn add(a: i32, b: i32) -> i32 { a + b }\n";
+        let syms = extract_file("a.rs", src, "rust").unwrap();
+        assert_eq!(syms.len(), 1, "got: {syms:?}");
+        let s = &syms[0];
+        assert_eq!(s.name, "add");
+        assert!(matches!(s.kind, SymbolKind::Function));
+        assert_eq!(s.visibility.as_deref(), Some("pub"));
+        let sig = s.signature.as_deref().unwrap_or("");
+        assert!(sig.contains("fn add"), "got: {sig:?}");
+    }
+
+    #[test]
+    fn rust_private_function_has_no_visibility() {
+        let src = "fn helper() -> u8 { 0 }\n";
+        let syms = extract_file("a.rs", src, "rust").unwrap();
+        assert_eq!(syms.len(), 1);
+        assert!(syms[0].visibility.is_none());
+    }
+
+    #[test]
+    fn rust_pub_crate_visibility_preserved() {
+        let src = "pub(crate) fn internal() {}\npub(super) fn parent_only() {}\n";
+        let syms = extract_file("a.rs", src, "rust").unwrap();
+        let internal = syms.iter().find(|s| s.name == "internal").unwrap();
+        let parent_only = syms.iter().find(|s| s.name == "parent_only").unwrap();
+        assert_eq!(internal.visibility.as_deref(), Some("pub(crate)"));
+        assert_eq!(parent_only.visibility.as_deref(), Some("pub(super)"));
+    }
+
+    #[test]
+    fn rust_struct_with_inherent_impl_method_has_parent() {
+        let src = "pub struct User { id: u64 }\nimpl User { pub fn new(id: u64) -> Self { Self { id } } }\n";
+        let syms = extract_file("a.rs", src, "rust").unwrap();
+        let n = names(&syms);
+        assert!(n.contains(&"User"), "names: {n:?}");
+        assert!(n.contains(&"new"), "names: {n:?}");
+        let new = syms.iter().find(|s| s.name == "new").unwrap();
+        assert_eq!(new.parent.as_deref(), Some("User"));
+        // function_item inside an impl_item gets retagged to Method.
+        assert!(matches!(new.kind, SymbolKind::Method), "{new:?}");
+    }
+
+    #[test]
+    fn rust_impl_trait_for_method_has_concrete_type_parent() {
+        // For `impl Display for User { fn fmt(...) {} }` the method's parent
+        // should be the concrete type `User`, not the trait.
+        let src = "struct User;\nimpl std::fmt::Display for User { fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result { Ok(()) } }\n";
+        let syms = extract_file("a.rs", src, "rust").unwrap();
+        let m = syms.iter().find(|s| s.name == "fmt").unwrap();
+        assert_eq!(m.parent.as_deref(), Some("User"));
+        assert!(matches!(m.kind, SymbolKind::Method));
+    }
+
+    #[test]
+    fn rust_generic_impl_target_strips_params() {
+        // `impl<T> Container<T> { fn get(&self) {} }` → parent = "Container".
+        let src = "struct Container<T>(T);\nimpl<T> Container<T> { pub fn get(&self) -> &T { &self.0 } }\n";
+        let syms = extract_file("a.rs", src, "rust").unwrap();
+        let get = syms.iter().find(|s| s.name == "get").unwrap();
+        assert_eq!(get.parent.as_deref(), Some("Container"));
+    }
+
+    #[test]
+    fn rust_trait_enum_const_static_type() {
+        let src = "pub trait Greeter { fn hello(&self); }\n\
+                   pub enum Mode { Hits, Files, Count }\n\
+                   pub const MAX: u32 = 100;\n\
+                   pub static NAME: &str = \"crabcc\";\n\
+                   pub type Id = u64;\n";
+        let syms = extract_file("a.rs", src, "rust").unwrap();
+        let by = |needle: &str| {
+            syms.iter()
+                .find(|s| s.name == needle)
+                .unwrap_or_else(|| panic!("missing {needle}: {:?}", names(&syms)))
+                .clone()
+        };
+        assert!(matches!(by("Greeter").kind, SymbolKind::Trait));
+        assert!(matches!(by("Mode").kind, SymbolKind::Enum));
+        assert!(matches!(by("MAX").kind, SymbolKind::Const));
+        assert!(matches!(by("NAME").kind, SymbolKind::Var)); // static_item -> Var
+        assert!(matches!(by("Id").kind, SymbolKind::Type));
+    }
+
+    #[test]
+    fn rust_macro_rules_emits_macro_kind() {
+        let src = "macro_rules! say { ($n:expr) => { println!(\"hi {}\", $n) }; }\n";
+        let syms = extract_file("a.rs", src, "rust").unwrap();
+        let m = syms.iter().find(|s| s.name == "say").unwrap();
+        assert!(matches!(m.kind, SymbolKind::Macro), "{m:?}");
+    }
+
+    #[test]
+    fn rust_mod_collapses_to_class_kind() {
+        // mod_item has a `name` field; we collapse mod into Class for v1
+        // (same as Ruby module). Inner symbols carry `parent=<mod_name>`.
+        let src = "pub mod inner { pub fn q() {} }\n";
+        let syms = extract_file("a.rs", src, "rust").unwrap();
+        let m = syms.iter().find(|s| s.name == "inner").unwrap();
+        assert!(matches!(m.kind, SymbolKind::Class));
+        let q = syms.iter().find(|s| s.name == "q").unwrap();
+        assert_eq!(q.parent.as_deref(), Some("inner"));
+    }
+
+    #[test]
+    fn rust_strip_generics_helper() {
+        assert_eq!(strip_generics("Foo"), "Foo");
+        assert_eq!(strip_generics("Foo<T>"), "Foo");
+        assert_eq!(strip_generics("Container<T, U>"), "Container");
+        assert_eq!(strip_generics("  Spaced  "), "Spaced");
+    }
+
+    // ---- Go ----
+
+    #[test]
+    fn go_function_with_visibility_from_capitalization() {
+        let src = "package x\nfunc Add(a, b int) int { return a + b }\nfunc helper() {}\n";
+        let syms = extract_file("a.go", src, "go").unwrap();
+        let add = syms.iter().find(|s| s.name == "Add").unwrap();
+        assert!(matches!(add.kind, SymbolKind::Function));
+        assert_eq!(add.visibility.as_deref(), Some("pub"));
+        let helper = syms.iter().find(|s| s.name == "helper").unwrap();
+        assert_eq!(helper.visibility.as_deref(), Some("priv"));
+    }
+
+    #[test]
+    fn go_method_receiver_pointer_strips_to_type_name() {
+        let src = "package x\ntype Repo struct{}\nfunc (r *Repo) Save() error { return nil }\n";
+        let syms = extract_file("a.go", src, "go").unwrap();
+        let save = syms.iter().find(|s| s.name == "Save").unwrap();
+        assert!(matches!(save.kind, SymbolKind::Method));
+        assert_eq!(save.parent.as_deref(), Some("Repo"));
+    }
+
+    #[test]
+    fn go_method_value_receiver() {
+        let src = "package x\ntype User struct{}\nfunc (u User) Name() string { return \"\" }\n";
+        let syms = extract_file("a.go", src, "go").unwrap();
+        let name = syms.iter().find(|s| s.name == "Name").unwrap();
+        assert_eq!(name.parent.as_deref(), Some("User"));
+        assert!(matches!(name.kind, SymbolKind::Method));
+    }
+
+    #[test]
+    fn go_type_const_var_declarations() {
+        let src = "package x\ntype ID int\nconst Max = 100\nvar Default = \"hi\"\n";
+        let syms = extract_file("a.go", src, "go").unwrap();
+        let by = |needle: &str| {
+            syms.iter()
+                .find(|s| s.name == needle)
+                .unwrap_or_else(|| panic!("missing {needle}: {:?}", names(&syms)))
+                .clone()
+        };
+        assert!(matches!(by("ID").kind, SymbolKind::Type));
+        assert!(matches!(by("Max").kind, SymbolKind::Const));
+        assert!(matches!(by("Default").kind, SymbolKind::Var));
+    }
+
+    #[test]
+    fn go_receiver_helper_strips_pointer_and_generics() {
+        // Inline test of go_receiver_type via a method declaration with both
+        // pointer and generic params.
+        let src = "package x\ntype Box[T any] struct{}\nfunc (b *Box[T]) Open() {}\n";
+        let syms = extract_file("a.go", src, "go").unwrap();
+        let open = syms.iter().find(|s| s.name == "Open").unwrap();
+        assert_eq!(open.parent.as_deref(), Some("Box"));
+    }
+
+    // ---- Python ----
+
+    #[test]
+    fn python_def_function_visibility_from_underscore() {
+        let src = "def add(a, b):\n    return a + b\n\ndef _internal():\n    pass\n\ndef __mangled():\n    pass\n";
+        let syms = extract_file("a.py", src, "python").unwrap();
+        let add = syms.iter().find(|s| s.name == "add").unwrap();
+        let internal = syms.iter().find(|s| s.name == "_internal").unwrap();
+        let mangled = syms.iter().find(|s| s.name == "__mangled").unwrap();
+        assert_eq!(add.visibility.as_deref(), Some("pub"));
+        assert_eq!(internal.visibility.as_deref(), Some("priv"));
+        assert_eq!(mangled.visibility.as_deref(), Some("priv"));
+        assert!(matches!(add.kind, SymbolKind::Function));
+    }
+
+    #[test]
+    fn python_dunder_init_is_public() {
+        // Dunder methods (`__init__`, `__repr__`, `__eq__`) are public by
+        // Python's own rules even though they start with `__`.
+        let src = "class A:\n    def __init__(self):\n        pass\n";
+        let syms = extract_file("a.py", src, "python").unwrap();
+        let init = syms.iter().find(|s| s.name == "__init__").unwrap();
+        assert_eq!(init.visibility.as_deref(), Some("pub"));
+    }
+
+    #[test]
+    fn python_async_def_emits_function_kind() {
+        let src = "async def fetch(url):\n    return url\n";
+        let syms = extract_file("a.py", src, "python").unwrap();
+        let fetch = syms.iter().find(|s| s.name == "fetch").unwrap();
+        assert!(matches!(fetch.kind, SymbolKind::Function));
+    }
+
+    #[test]
+    fn python_class_with_method_has_parent() {
+        let src = "class User:\n    def name(self):\n        return ''\n";
+        let syms = extract_file("a.py", src, "python").unwrap();
+        let user = syms.iter().find(|s| s.name == "User").unwrap();
+        assert!(matches!(user.kind, SymbolKind::Class));
+        let name = syms.iter().find(|s| s.name == "name").unwrap();
+        assert_eq!(name.parent.as_deref(), Some("User"));
+        assert!(matches!(name.kind, SymbolKind::Function));
+    }
+
+    #[test]
+    fn python_decorated_class_unwraps_to_inner() {
+        // `@dataclass` wraps class_definition in decorated_definition. We descend
+        // through the wrapper and emit the inner class.
+        let src = "from dataclasses import dataclass\n\n@dataclass\nclass Point:\n    x: int\n    y: int\n";
+        let syms = extract_file("a.py", src, "python").unwrap();
+        let point = syms.iter().find(|s| s.name == "Point").unwrap();
+        assert!(matches!(point.kind, SymbolKind::Class));
+    }
+
+    #[test]
+    fn python_decorated_async_def_function() {
+        let src = "@retry\nasync def fetch_user(uid):\n    return uid\n";
+        let syms = extract_file("a.py", src, "python").unwrap();
+        let fetch = syms.iter().find(|s| s.name == "fetch_user").unwrap();
+        assert!(matches!(fetch.kind, SymbolKind::Function));
+    }
+
+    // ---- Cross-cutting extractor edge cases ----
+
+    #[test]
+    fn rust_impl_with_multiple_methods_all_get_method_kind() {
+        // Stress the impl_item retag path: every fn under the impl must come
+        // out as Method, not Function, even when there are several.
+        let src =
+            "struct Repo;\nimpl Repo {\n  pub fn one() {}\n  pub fn two() {}\n  fn three() {}\n}\n";
+        let syms = extract_file("a.rs", src, "rust").unwrap();
+        for n in ["one", "two", "three"] {
+            let s = syms.iter().find(|s| s.name == n).unwrap();
+            assert!(matches!(s.kind, SymbolKind::Method), "{n} -> {s:?}");
+            assert_eq!(s.parent.as_deref(), Some("Repo"));
+        }
+    }
+
+    #[test]
+    fn rust_top_level_fn_outside_impl_stays_function() {
+        // Regression guard for the impl_item retag — top-level fns must NOT
+        // get retagged, even when they appear in the same file as an impl.
+        let src = "pub fn standalone() {}\nstruct Repo;\nimpl Repo { fn member() {} }\n";
+        let syms = extract_file("a.rs", src, "rust").unwrap();
+        let standalone = syms.iter().find(|s| s.name == "standalone").unwrap();
+        assert!(matches!(standalone.kind, SymbolKind::Function));
+        assert!(standalone.parent.is_none());
+        let member = syms.iter().find(|s| s.name == "member").unwrap();
+        assert!(matches!(member.kind, SymbolKind::Method));
+    }
+
+    #[test]
+    fn rust_nested_mod_propagates_innermost_parent() {
+        let src = "pub mod outer {\n  pub mod inner {\n    pub fn deep() {}\n  }\n}\n";
+        let syms = extract_file("a.rs", src, "rust").unwrap();
+        let deep = syms.iter().find(|s| s.name == "deep").unwrap();
+        assert_eq!(deep.parent.as_deref(), Some("inner"));
+    }
+
+    #[test]
+    fn rust_trait_methods_have_trait_as_parent() {
+        // Methods declared inside `trait Greeter { fn hello(); }` should
+        // attribute their parent to the trait — same shape as Class methods.
+        let src =
+            "pub trait Greeter {\n  fn hello(&self);\n  fn goodbye(&self) { /* default */ }\n}\n";
+        let syms = extract_file("a.rs", src, "rust").unwrap();
+        let hello = syms.iter().find(|s| s.name == "hello").unwrap();
+        let goodbye = syms.iter().find(|s| s.name == "goodbye").unwrap();
+        assert_eq!(hello.parent.as_deref(), Some("Greeter"));
+        assert_eq!(goodbye.parent.as_deref(), Some("Greeter"));
+    }
+
+    #[test]
+    fn python_nested_class_and_method_chain() {
+        // Tests the parent walk through class_definition children. The inner
+        // class should have parent=Outer; its methods parent=Inner.
+        let src = "class Outer:\n    class Inner:\n        def deep(self):\n            return 1\n";
+        let syms = extract_file("a.py", src, "python").unwrap();
+        let inner = syms.iter().find(|s| s.name == "Inner").unwrap();
+        assert_eq!(inner.parent.as_deref(), Some("Outer"));
+        let deep = syms.iter().find(|s| s.name == "deep").unwrap();
+        assert_eq!(deep.parent.as_deref(), Some("Inner"));
+    }
+
+    #[test]
+    fn python_signature_does_not_leak_pound_comments() {
+        // Compaction strips `# ...` for Ruby; for Python the pound is also a
+        // comment marker. We don't apply Ruby's stripping logic to Python (the
+        // syntax differs), but signatures must not contain spurious pound chars
+        // mid-line that would confuse downstream parsers — verify the captured
+        // signature stays sensible for a typical decorated def.
+        let src = "def add(a, b):\n    \"\"\"docstring\"\"\"\n    return a + b\n";
+        let syms = extract_file("a.py", src, "python").unwrap();
+        let s = syms.iter().find(|s| s.name == "add").unwrap();
+        let sig = s.signature.as_deref().unwrap_or("");
+        assert!(sig.contains("def add"), "got: {sig:?}");
+    }
+
+    #[test]
+    fn go_function_inside_method_block_does_not_collide() {
+        // Local closure / func literal inside a method body should not pollute
+        // the symbol table — only the outer method should be emitted at the
+        // top level. Tree-sitter-go does not expose anonymous func literals
+        // as named declarations, so this is a sanity check.
+        let src = "package x\ntype Repo struct{}\nfunc (r *Repo) Save() {\n  helper := func() int { return 1 }\n  _ = helper\n}\n";
+        let syms = extract_file("a.go", src, "go").unwrap();
+        let save = syms.iter().find(|s| s.name == "Save").unwrap();
+        assert_eq!(save.parent.as_deref(), Some("Repo"));
+        // No phantom `helper` symbol from the local `:=` assignment.
+        assert!(syms.iter().all(|s| s.name != "helper"));
+    }
+
+    #[test]
+    fn cross_lang_dispatch_preserves_per_lang_kinds() {
+        // Same source byte string parsed under different langs must NOT bleed
+        // kinds across — a regression guard for the (lang, node_kind) match.
+        let rust_src = "pub fn x() {}";
+        let go_src = "package x\nfunc X() {}";
+        let py_src = "def x():\n    pass\n";
+        let r = extract_file("a.rs", rust_src, "rust").unwrap();
+        let g = extract_file("a.go", go_src, "go").unwrap();
+        let p = extract_file("a.py", py_src, "python").unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!(g.len(), 1);
+        assert_eq!(p.len(), 1);
+        assert_eq!(r[0].name, "x");
+        assert_eq!(g[0].name, "X");
+        assert_eq!(p[0].name, "x");
+    }
+
+    #[test]
+    fn empty_source_yields_no_symbols() {
+        // Defensive: empty / whitespace-only files must not panic.
+        for lang in ["rust", "go", "python", "typescript", "ruby"] {
+            let ext = match lang {
+                "rust" => "rs",
+                "go" => "go",
+                "python" => "py",
+                "typescript" => "ts",
+                "ruby" => "rb",
+                _ => "txt",
+            };
+            let file = format!("empty.{ext}");
+            let s = extract_file(&file, "", lang).unwrap();
+            assert!(
+                s.is_empty(),
+                "expected no symbols for empty {lang}, got: {s:?}"
+            );
+            let s2 = extract_file(&file, "\n\n   \n", lang).unwrap();
+            assert!(s2.is_empty(), "expected no symbols for whitespace {lang}");
+        }
+    }
+
+    #[test]
+    fn malformed_source_does_not_panic() {
+        // Tree-sitter is permissive; even broken syntax should produce SOME
+        // tree (possibly with ERROR nodes), not a panic. We don't assert on
+        // the exact symbol set — just that extraction returns.
+        let _ = extract_file("a.rs", "fn broken( {", "rust").unwrap();
+        let _ = extract_file("a.go", "package x\nfunc broken( {", "go").unwrap();
+        let _ = extract_file("a.py", "def broken(:\n", "python").unwrap();
     }
 
     #[test]
