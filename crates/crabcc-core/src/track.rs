@@ -38,6 +38,10 @@ pub fn estimate_saved(op: &str, results: usize, used_tokens: usize) -> usize {
         "callers" => 2_000 + (results.min(100) * 300),
         // outline replaces a full-file Read; large files get expensive.
         "outline" => 6_000,
+        // Fuzzy / prefix replace either nothing-the-agent-could-have-done
+        // or a brittle regex sweep; conservative flat estimate.
+        "fuzzy"   => 2_500,
+        "prefix"  => 1_500,
         _ => 0,
     };
     raw_estimate.saturating_sub(used_tokens)

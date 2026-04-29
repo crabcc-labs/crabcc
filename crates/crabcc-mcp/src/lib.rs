@@ -11,7 +11,7 @@
 // gets the same payload whether it talks to crabcc via subprocess or MCP.
 
 use anyhow::Result;
-use crabcc_core::{index, outline, query, store::Store};
+use crabcc_core::{fts::Fts, index, outline, query, store::Store};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -128,6 +128,19 @@ pub fn tools_def() -> Vec<Value> {
             json!({}),
             &[],
         ),
+        tool_schema(
+            "fuzzy",
+            "Fuzzy symbol-name search (Levenshtein distance 2). Use when the \
+             user might mistype or remember the name approximately.",
+            json!({"query": str_field("partial or misspelled symbol name")}),
+            &["query"],
+        ),
+        tool_schema(
+            "prefix",
+            "Prefix symbol-name search (case-insensitive starts-with).",
+            json!({"query": str_field("symbol-name prefix")}),
+            &["query"],
+        ),
     ]
 }
 
@@ -190,6 +203,16 @@ fn dispatch_tool(params: Option<&Value>, root: &Path) -> Result<String> {
             let r = index::refresh(root, &store)?;
             Ok(serde_json::to_string(&r)?)
         }
+        "fuzzy" => {
+            let fts = Fts::open(&root.join(".crabcc").join("tantivy"))?;
+            let r = fts.fuzzy(arg_str(&args, "query")?, 20)?;
+            Ok(serde_json::to_string(&r)?)
+        }
+        "prefix" => {
+            let fts = Fts::open(&root.join(".crabcc").join("tantivy"))?;
+            let r = fts.prefix(arg_str(&args, "query")?, 20)?;
+            Ok(serde_json::to_string(&r)?)
+        }
         other => Err(anyhow::anyhow!("unknown tool: {other}")),
     }
 }
@@ -236,7 +259,7 @@ mod tests {
         let resp = handle(&req, dir.path());
         let tools = resp["result"]["tools"].as_array().unwrap();
         let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
-        for expected in ["sym", "refs", "callers", "outline", "index", "refresh"] {
+        for expected in ["sym", "refs", "callers", "outline", "index", "refresh", "fuzzy", "prefix"] {
             assert!(names.contains(&expected), "missing tool: {expected}");
         }
     }

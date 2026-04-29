@@ -12,6 +12,7 @@ serde_json = { workspace = true }
 ignore = { workspace = true }
 grep = { workspace = true }
 memchr = { workspace = true }
+tantivy = { workspace = true }
 tree-sitter = { workspace = true }
 tree-sitter-typescript = { workspace = true }
 tree-sitter-javascript = { workspace = true }

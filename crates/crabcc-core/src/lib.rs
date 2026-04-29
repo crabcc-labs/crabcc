@@ -1,4 +1,5 @@
 pub mod extract;
+pub mod fts;
 pub mod hash;
 pub mod index;
 pub mod outline;

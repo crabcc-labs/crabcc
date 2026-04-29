@@ -34,6 +34,14 @@ enum Cmd {
     Outline { file: PathBuf },
     /// Symbol-aware grep wrapper.
     Grep { pattern: String },
+    /// Fuzzy symbol-name search (Levenshtein distance 2).
+    Fuzzy { query: String,
+        #[arg(long, default_value_t = 20)] limit: usize },
+    /// Prefix symbol-name search (case-insensitive).
+    Prefix { query: String,
+        #[arg(long, default_value_t = 20)] limit: usize },
+    /// Rebuild the Tantivy fuzzy/prefix sidecar from the current SQLite index.
+    FtsRebuild,
     /// Show estimated tokens saved by crabcc usage (this session, 24h, all-time).
     Track {
         /// Emit JSON instead of human-readable output.
@@ -43,7 +51,13 @@ enum Cmd {
 }
 
 fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    // Default to warn — tantivy emits INFO chatter on every commit otherwise.
+    // Override with RUST_LOG=info for debugging.
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
+    // Closed-pipe (e.g. piping to `head`) should exit silently, not panic.
+    reset_sigpipe();
 
     let cli = Cli::parse();
     let root = cli.root.unwrap_or_else(|| std::env::current_dir().unwrap());
@@ -55,10 +69,16 @@ fn main() -> Result<()> {
 
     std::fs::create_dir_all(db.parent().unwrap())?;
     let store = Store::open(&db)?;
+    let fts_dir = root.join(".crabcc").join("tantivy");
 
     match cli.cmd.unwrap_or(Cmd::Index) {
         Cmd::Index => {
             let stats = crabcc_core::index::full_index(&root, &store)?;
+            // Rebuild Tantivy too — keep the fuzzy/prefix sidecar in lockstep
+            // with a full reindex. (refresh deliberately does not.)
+            if let Ok(fts) = crabcc_core::fts::Fts::open(&fts_dir) {
+                let _ = fts.rebuild(&store);
+            }
             println!("{}", serde_json::to_string(&stats)?);
         }
         Cmd::Refresh => {
@@ -94,6 +114,25 @@ fn main() -> Result<()> {
             // TODO: ripgrep `grep` crate, annotate hits with enclosing symbol.
             println!("{{\"status\":\"todo\",\"op\":\"grep\",\"pattern\":\"{pattern}\"}}");
         }
+        Cmd::Fuzzy { query, limit } => {
+            let fts = crabcc_core::fts::Fts::open(&fts_dir)?;
+            let hits = fts.fuzzy(&query, limit)?;
+            let body = serde_json::to_string(&hits)?;
+            crabcc_core::track::record("fuzzy", &query, hits.len(), &repo_label(&root), body.len());
+            println!("{body}");
+        }
+        Cmd::Prefix { query, limit } => {
+            let fts = crabcc_core::fts::Fts::open(&fts_dir)?;
+            let hits = fts.prefix(&query, limit)?;
+            let body = serde_json::to_string(&hits)?;
+            crabcc_core::track::record("prefix", &query, hits.len(), &repo_label(&root), body.len());
+            println!("{body}");
+        }
+        Cmd::FtsRebuild => {
+            let fts = crabcc_core::fts::Fts::open(&fts_dir)?;
+            let n = fts.rebuild(&store)?;
+            println!("{{\"indexed\":{n}}}");
+        }
         Cmd::Track { json } => {
             let r = crabcc_core::track::report()?;
             if json {
@@ -105,6 +144,19 @@ fn main() -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(unix)]
+fn reset_sigpipe() {
+    // SAFETY: setting a signal handler is intrinsically unsafe, but
+    // restoring the default behaviour for SIGPIPE is the conventional
+    // fix for CLI tools that get piped into `head`.
+    unsafe {
+        let _ = libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+}
+
+#[cfg(not(unix))]
+fn reset_sigpipe() {}
 
 fn repo_label(root: &PathBuf) -> String {
     root.file_name()
