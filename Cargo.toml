@@ -1,0 +1,41 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/crabcc-cli",
+    "crates/crabcc-core",
+    "crates/crabcc-mcp",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/peterlodri/crabcc"
+
+[workspace.dependencies]
+crabcc-core = { path = "crates/crabcc-core" }
+crabcc-mcp = { path = "crates/crabcc-mcp" }
+
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ignore = "0.4"
+grep = "0.3"
+tree-sitter = "0.22"
+tree-sitter-typescript = "0.21"
+tree-sitter-javascript = "0.21"
+tree-sitter-ruby = "0.21"
+ast-grep-core = "0.30"
+ast-grep-language = "0.30"
+sha2 = "0.10"
+tempfile = "3"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
