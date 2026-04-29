@@ -95,6 +95,28 @@ impl Store {
         Ok(())
     }
 
+    pub fn symbols_in_file(&self, file: &str) -> Result<Vec<Symbol>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.name, s.kind, s.signature, s.parent, f.path, s.line_start, s.line_end, s.visibility
+             FROM symbols s JOIN files f ON s.file_id = f.id
+             WHERE f.path = ?1
+             ORDER BY s.line_start",
+        )?;
+        let rows = stmt.query_map(params![file], |row| {
+            Ok(Symbol {
+                name: row.get(0)?,
+                kind: kind_from_str(&row.get::<_, String>(1)?),
+                signature: row.get(2)?,
+                parent: row.get(3)?,
+                file: row.get(4)?,
+                line_start: row.get(5)?,
+                line_end: row.get(6)?,
+                visibility: row.get(7)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     pub fn find_by_name(&self, name: &str) -> Result<Vec<Symbol>> {
         let mut stmt = self.conn.prepare(
             "SELECT s.name, s.kind, s.signature, s.parent, f.path, s.line_start, s.line_end, s.visibility

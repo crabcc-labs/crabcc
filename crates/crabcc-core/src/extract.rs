@@ -40,7 +40,7 @@ fn walk(node: Node, src: &[u8], file: &str, lang: &str, parent: Option<&str>, ou
             out.push(Symbol {
                 name: n_owned.clone(),
                 kind,
-                signature: signature_for(&node, src),
+                signature: signature_for(&node, src, lang),
                 parent: parent.map(String::from),
                 file: file.to_string(),
                 line_start,
@@ -94,7 +94,7 @@ fn symbol_kind_for(lang: &str, kind: &str) -> Option<SymbolKind> {
     }
 }
 
-fn signature_for(node: &Node, src: &[u8]) -> Option<String> {
+fn signature_for(node: &Node, src: &[u8], lang: &str) -> Option<String> {
     let body = node
         .child_by_field_name("body")
         .or_else(|| node.child_by_field_name("value"));
@@ -105,11 +105,24 @@ fn signature_for(node: &Node, src: &[u8]) -> Option<String> {
         start + nl
     });
     let raw = std::str::from_utf8(&src[start..end]).ok()?;
-    Some(compact(raw))
+    Some(compact(raw, lang))
 }
 
-fn compact(s: &str) -> String {
-    let joined = s.split_whitespace().collect::<Vec<_>>().join(" ");
+fn compact(s: &str, lang: &str) -> String {
+    // Strip trailing Ruby line-comments BEFORE collapsing whitespace, so
+    // we drop the comment cleanly even if it spans multiple physical lines.
+    let cleaned = if lang == "ruby" {
+        s.lines()
+            .map(|line| match line.find(" # ") {
+                Some(i) => &line[..i],
+                None => line.trim_end_matches(|c: char| c == '#'),
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    } else {
+        s.to_string()
+    };
+    let joined = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
     joined.trim_end_matches('{')
           .trim_end_matches('=')
           .trim()
@@ -229,6 +242,17 @@ mod tests {
         let n = names(&syms);
         assert!(n.contains(&"Auth"));
         assert!(n.contains(&"sign_in"));
+    }
+
+    #[test]
+    fn ruby_signature_strips_trailing_comment() {
+        let src = "class User # the number seems arbitrary, ported from legacy\n  # extra notes\n  def name; end\nend\n";
+        let syms = extract_file("a.rb", src, "ruby").unwrap();
+        let cls = syms.iter().find(|s| s.name == "User").unwrap();
+        let sig = cls.signature.as_deref().unwrap_or("");
+        assert!(!sig.contains('#'),
+                "signature should not leak '#' comments, got: {sig:?}");
+        assert!(sig.starts_with("class User"), "got: {sig:?}");
     }
 
     #[test]

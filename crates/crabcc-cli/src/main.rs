@@ -36,8 +36,7 @@ enum Cmd {
     Grep { pattern: String },
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
 
     let cli = Cli::parse();
@@ -45,7 +44,7 @@ async fn main() -> Result<()> {
     let db = root.join(".crabcc").join("index.db");
 
     if cli.mcp {
-        return crabcc_mcp::serve_stdio(&root).await;
+        return crabcc_mcp::serve_stdio(&root);
     }
 
     std::fs::create_dir_all(db.parent().unwrap())?;
@@ -73,8 +72,9 @@ async fn main() -> Result<()> {
             println!("{}", serde_json::to_string(&hits)?);
         }
         Cmd::Outline { file } => {
-            println!("{{\"status\":\"todo\",\"op\":\"outline\",\"file\":\"{}\"}}",
-                     file.display());
+            let key = file.to_string_lossy();
+            let syms = crabcc_core::outline::outline(&store, &key)?;
+            println!("{}", serde_json::to_string(&syms)?);
         }
         Cmd::Grep { pattern } => {
             // TODO: ripgrep `grep` crate, annotate hits with enclosing symbol.

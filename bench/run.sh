@@ -52,7 +52,9 @@ run_task() {
   fi
   local full="${preface}${prompt}"
   echo "  [$mode] $id"
-  ( cd "$FIXTURE" && claude -p "$full" --output-format json ) > "$out" || {
+  # `claude -p` reads from stdin; without /dev/null it would consume the
+  # outer loop's task stream and only the first task would run.
+  ( cd "$FIXTURE" && claude -p "$full" --output-format json < /dev/null ) > "$out" || {
     echo "    (claude exited non-zero, see $out)"; return
   }
 }
@@ -60,7 +62,9 @@ run_task() {
 count=$(jq 'length' "$HERE/tasks.json")
 echo "running $count tasks × 2 modes against $FIXTURE"
 
-jq -c '.[]' "$HERE/tasks.json" | while read -r task; do
+# Read all tasks into an array first to avoid stdin contention with claude.
+mapfile -t TASKS < <(jq -c '.[]' "$HERE/tasks.json")
+for task in "${TASKS[@]}"; do
   id=$(jq -r '.id' <<<"$task")
   prompt=$(jq -r '.prompt' <<<"$task")
   run_task "$id" "$prompt" raw    "$PREFACE_RAW"
