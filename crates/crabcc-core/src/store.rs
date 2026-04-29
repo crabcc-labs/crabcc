@@ -1,6 +1,6 @@
 use crate::types::{Symbol, SymbolKind};
 use anyhow::{Context, Result};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 
 const SCHEMA: &str = include_str!("../../../schema/001_init.sql");
@@ -45,6 +45,26 @@ impl Store {
         conn.pragma_update(None, "cache_size", -16_000_i64).ok();
         conn.busy_timeout(std::time::Duration::from_millis(2_000))?;
         conn.execute_batch(SCHEMA).context("apply schema")?;
+        // Idempotent migration: pre-FSST DBs lack `symbols.signature_enc`. The
+        // schema above declares it for new DBs; for older indexes we ALTER
+        // TABLE in place. PRAGMA table_info is the standard "does this column
+        // exist?" probe — cheap and read-only.
+        let has_enc: bool = conn
+            .query_row(
+                "SELECT 1 FROM pragma_table_info('symbols') WHERE name = 'signature_enc'",
+                [],
+                |_| Ok(true),
+            )
+            .optional()
+            .unwrap_or(None)
+            .is_some();
+        if !has_enc {
+            conn.execute(
+                "ALTER TABLE symbols ADD COLUMN signature_enc INTEGER NOT NULL DEFAULT 0",
+                [],
+            )
+            .context("migrate: add symbols.signature_enc")?;
+        }
         // PRAGMA optimize is a no-op until the query planner has stats; it
         // becomes useful after ANALYZE. Run it whenever we open — sqlite
         // makes the call cheap when nothing's changed.

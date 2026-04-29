@@ -4,6 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+# `compress` pulls in fsst-rs (Apache-2.0) and gates `pub mod compress;` plus
+# the FSST-encoded symbol-store path. Off by default until the v2.0.0-alpha
+# release-gate criteria in docs/RESEARCH-fsst.md §6.2 are met.
+compress = ["dep:fsst-rs"]
+
 [dependencies]
 anyhow = { workspace = true }
 rusqlite = { workspace = true }
@@ -22,6 +29,14 @@ ast-grep-language = { workspace = true }
 sha2 = { workspace = true }
 tracing = { workspace = true }
 notify-debouncer-mini = { workspace = true }
+fsst-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+criterion = "0.5"
+
+# Wired now so `cargo bench` finds Agent C's harness once `benches/symbols.rs`
+# lands (T71). `cargo check --benches` will fail until then — that's expected.
+[[bench]]
+name = "symbols"
+harness = false

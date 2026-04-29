@@ -100,21 +100,22 @@ The index lives at `.crabcc/index.db` per repo. Add `.crabcc/` to `.gitignore`.
 
 ### Claude Code integration
 
-`crabcc` ships as an MCP server, a skill, and a slash command. To install all three globally:
-
 ```bash
-# MCP — exposes 9 tools to Claude Code (sym/refs/callers/outline/files/index/refresh/fuzzy/prefix)
-# Add to ~/.claude.json under "mcpServers":
-#   "crabcc": { "command": "crabcc", "args": ["--mcp"] }
-
-# Skill — auto-loads the routing rules
-ln -s "$(pwd)/skill/crabcc/SKILL.md" ~/.claude/skills/crabcc/SKILL.md
-
-# Command — /crabcc-init slash command
-ln -s "$(pwd)/commands/crabcc-init.md" ~/.claude/commands/crabcc-init.md
+cargo install --path crates/crabcc-cli
+crabcc install-claude
 ```
 
-Then `/reload-plugins` in Claude Code.
+The interactive `install-claude` subcommand symlinks the skill and slash-command
+into `~/.claude/`, then prints the `claude mcp add crabcc -- crabcc --mcp`
+invocation and two optional hook snippets (SessionStart auto-refresh,
+PreToolUse grep→crabcc hint) for you to paste into `~/.claude/settings.json`.
+The subcommand does **not** modify any global Claude config files.
+
+Hook templates: [`install/hooks-claude.json`](./install/hooks-claude.json).
+Pass `--yes` to skip the per-symlink prompts, or `--print-hooks` to dump only
+the hook JSON to stdout (e.g. `crabcc install-claude --print-hooks > hooks.json`).
+
+Then in Claude Code: `/reload-plugins`.
 
 ---
 

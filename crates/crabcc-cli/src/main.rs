@@ -3,6 +3,8 @@ use clap::{Args, Parser, Subcommand};
 use crabcc_core::{query, store::Store};
 use std::path::{Path, PathBuf};
 
+mod install;
+
 #[derive(Parser)]
 #[command(name = "crabcc", version, about = "Symbol index for AI coding agents")]
 struct Cli {
@@ -96,6 +98,17 @@ enum Cmd {
         #[arg(long, default_value_t = 2)]
         depth: usize,
     },
+    /// Symlink the crabcc skill + slash-command into `~/.claude/`, then
+    /// print the `claude mcp add` invocation and hook JSON snippets to
+    /// paste into `~/.claude/settings.json`. Never writes Claude config.
+    InstallClaude {
+        /// Skip the per-symlink y/N prompts.
+        #[arg(long)]
+        yes: bool,
+        /// Print only the hook JSON to stdout (for piping to a file). Skips symlinks.
+        #[arg(long)]
+        print_hooks: bool,
+    },
 }
 
 /// Shaping flags for refs/callers. `--files-only` and `--count` are
@@ -153,6 +166,13 @@ fn main() -> Result<()> {
 
     if cli.mcp {
         return crabcc_mcp::serve_stdio(&root);
+    }
+
+    // `install-claude` is a config-only operation — it must run with no
+    // store, no .crabcc dir, and no working repo (it resolves its own root
+    // via `git rev-parse`). Handle it before we touch the SQLite store.
+    if let Some(Cmd::InstallClaude { yes, print_hooks }) = &cli.cmd {
+        return install::run(*yes, *print_hooks);
     }
 
     std::fs::create_dir_all(db.parent().unwrap())?;
@@ -305,6 +325,8 @@ fn main() -> Result<()> {
             crabcc_core::track::record("graph", &name, hits.len(), &repo_label(&root), body.len());
             println!("{body}");
         }
+        // Handled by the early-return branch above before the store opens.
+        Cmd::InstallClaude { .. } => unreachable!("install-claude handled before store init"),
     }
     Ok(())
 }
