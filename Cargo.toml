@@ -10,7 +10,7 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/peterlodri/crabcc"
+repository = "https://github.com/peterlodri-sec/crabcc"
 
 [workspace.dependencies]
 crabcc-core = { path = "crates/crabcc-core" }
