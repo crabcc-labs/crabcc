@@ -82,6 +82,19 @@ impl Palace {
         source_id: &str,
         body: &str,
     ) -> Result<DrawerId> {
+        self.remember_in_session(wing, room, source_id, body, None)
+    }
+
+    /// Same as `remember`, with an explicit session id. Used by auto-capture
+    /// hooks that pass through `$TERM_SESSION_ID` or an MCP-supplied id.
+    pub fn remember_in_session(
+        &self,
+        wing: &str,
+        room: Option<&str>,
+        source_id: &str,
+        body: &str,
+        session_id: Option<&str>,
+    ) -> Result<DrawerId> {
         let emb = self.embedder.embed_one(body)?;
         let ids = self.backend.add(&[DrawerInsert {
             wing: wing.into(),
@@ -89,20 +102,56 @@ impl Palace {
             source_id: source_id.into(),
             body: body.into(),
             embedding: emb,
-            session_id: None,
+            session_id: session_id.map(str::to_string),
         }])?;
         ids.into_iter().next().context("backend returned no id")
     }
 
-    /// Embed query text and search top-K.
+    /// Embed query text and search top-K (no filters).
     pub fn search(&self, query: &str, limit: usize) -> Result<QueryResult> {
+        self.search_filtered(query, limit, None, None)
+    }
+
+    /// Embed query text and search top-K with optional wing/room filters.
+    pub fn search_filtered(
+        &self,
+        query: &str,
+        limit: usize,
+        wing: Option<&str>,
+        room: Option<&str>,
+    ) -> Result<QueryResult> {
         let emb = self.embedder.embed_one(query)?;
         self.backend.query(&Query {
             embedding: emb,
             limit,
-            wing: None,
-            room: None,
+            wing: wing.map(str::to_string),
+            room: room.map(str::to_string),
         })
+    }
+
+    /// Enumerate drawers; thin pass-through to `Backend::list_drawers`.
+    pub fn list_drawers(&self, wing: Option<&str>, limit: usize) -> Result<Vec<Drawer>> {
+        self.backend.list_drawers(wing, limit)
+    }
+
+    /// Fetch one drawer verbatim by id.
+    pub fn get(&self, id: DrawerId) -> Result<Option<Drawer>> {
+        Ok(self.backend.get(&[id])?.drawers.into_iter().next())
+    }
+
+    /// Delete drawers by selector. Returns rows removed.
+    pub fn delete(&self, sel: &DeleteSel) -> Result<usize> {
+        self.backend.delete(sel)
+    }
+
+    /// Drawer count.
+    pub fn count(&self) -> Result<usize> {
+        self.backend.count()
+    }
+
+    /// Health snapshot.
+    pub fn health(&self) -> HealthStatus {
+        self.backend.health()
     }
 }
 
@@ -302,5 +351,54 @@ mod tests {
         p1.remember("d", None, "x", "hello").unwrap();
         assert_eq!(p1.backend().count().unwrap(), 1);
         assert_eq!(p2.backend().count().unwrap(), 0);
+    }
+
+    #[test]
+    fn remember_in_session_round_trips_session_id() {
+        let dir = tempdir().unwrap();
+        let p = Palace::open(dir.path()).unwrap();
+        let id = p
+            .remember_in_session("default", None, "doc:1", "hello", Some("s1"))
+            .unwrap();
+        let d = p.get(id).unwrap().expect("drawer present");
+        assert_eq!(d.session_id.as_deref(), Some("s1"));
+    }
+
+    #[test]
+    fn remember_without_session_yields_no_session_id() {
+        let dir = tempdir().unwrap();
+        let p = Palace::open(dir.path()).unwrap();
+        let id = p.remember("default", None, "doc:1", "hello").unwrap();
+        let d = p.get(id).unwrap().expect("drawer present");
+        assert!(d.session_id.is_none());
+    }
+
+    #[test]
+    fn remember_in_session_persists_across_reopen() {
+        let dir = tempdir().unwrap();
+        {
+            let p = Palace::open(dir.path()).unwrap();
+            p.remember_in_session("default", None, "doc:1", "hello", Some("durable"))
+                .unwrap();
+        }
+        {
+            let p = Palace::open(dir.path()).unwrap();
+            let drawers = p.list_drawers(None, 10).unwrap();
+            assert_eq!(drawers[0].session_id.as_deref(), Some("durable"));
+        }
+    }
+
+    #[test]
+    fn search_filtered_returns_session_carrying_drawer() {
+        let dir = tempdir().unwrap();
+        let p = Palace::open(dir.path()).unwrap();
+        p.remember_in_session("default", None, "doc:1", "fox jumps", Some("s1"))
+            .unwrap();
+        let r = p.search("fox jumps", 1).unwrap();
+        assert_eq!(r.hits.len(), 1);
+        assert_eq!(r.hits[0].source_id, "doc:1");
+        // Round-trip via get to confirm session_id is populated on the row.
+        let d = p.get(r.hits[0].id).unwrap().unwrap();
+        assert_eq!(d.session_id.as_deref(), Some("s1"));
     }
 }

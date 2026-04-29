@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 mod compress_cmd;
 mod install;
+mod memory;
 
 #[derive(Parser)]
 #[command(name = "crabcc", version, about = "Symbol index for AI coding agents")]
@@ -140,6 +141,11 @@ enum Cmd {
         #[arg(long, value_name = "N")]
         decode_probe: Option<usize>,
     },
+    /// AI memory operations (per-repo .crabcc/memory.db).
+    Memory {
+        #[command(subcommand)]
+        sub: memory::MemoryCmd,
+    },
 }
 
 /// Shaping flags for refs/callers. `--files-only` and `--count` are
@@ -229,6 +235,13 @@ fn main() -> Result<()> {
         });
     }
 
+    // Memory subcommands open `.crabcc/memory.db` directly via Palace —
+    // route them here so we don't pay the symbol-index Store::open cost
+    // on a memory-only invocation.
+    if let Some(Cmd::Memory { sub }) = cli.cmd {
+        return memory::run(&root, sub);
+    }
+
     std::fs::create_dir_all(db.parent().unwrap())?;
     let store = Store::open_with_compress(&db, cli.compress)?;
     let fts_dir = root.join(".crabcc").join("tantivy");
@@ -251,6 +264,7 @@ fn main() -> Result<()> {
             let syms = query::find_symbol(&store, &name)?;
             let body = serde_json::to_string(&syms)?;
             crabcc_core::track::record("sym", &name, syms.len(), &repo_label(&root), body.len());
+            memory::auto_capture(&root, "sym", &name, syms.len());
             println!("{body}");
         }
         Cmd::Refs { name, opts } => {
@@ -258,6 +272,7 @@ fn main() -> Result<()> {
             let out = query::query_refs(&store, &root, &name, mode)?;
             let body = serde_json::to_string(&out)?;
             crabcc_core::track::record("refs", &name, out.count(), &repo_label(&root), body.len());
+            memory::auto_capture(&root, "refs", &name, out.count());
             println!("{body}");
         }
         Cmd::Callers { name, opts } => {
@@ -271,6 +286,7 @@ fn main() -> Result<()> {
                 &repo_label(&root),
                 body.len(),
             );
+            memory::auto_capture(&root, "callers", &name, out.count());
             println!("{body}");
         }
         Cmd::Outline { file } => {
@@ -312,6 +328,7 @@ fn main() -> Result<()> {
             let hits = fts.fuzzy(&query, limit)?;
             let body = serde_json::to_string(&hits)?;
             crabcc_core::track::record("fuzzy", &query, hits.len(), &repo_label(&root), body.len());
+            memory::auto_capture(&root, "fuzzy", &query, hits.len());
             println!("{body}");
         }
         Cmd::Prefix { query, limit } => {
@@ -325,6 +342,7 @@ fn main() -> Result<()> {
                 &repo_label(&root),
                 body.len(),
             );
+            memory::auto_capture(&root, "prefix", &query, hits.len());
             println!("{body}");
         }
         Cmd::FtsRebuild => {
@@ -379,9 +397,10 @@ fn main() -> Result<()> {
             crabcc_core::track::record("graph", &name, hits.len(), &repo_label(&root), body.len());
             println!("{body}");
         }
-        // Handled by the early-return branch above before the store opens.
+        // Handled by the early-return branches above before the store opens.
         Cmd::InstallClaude { .. } => unreachable!("install-claude handled before store init"),
         Cmd::Compress { .. } => unreachable!("compress handled before store init"),
+        Cmd::Memory { .. } => unreachable!("memory handled before store init"),
     }
     Ok(())
 }

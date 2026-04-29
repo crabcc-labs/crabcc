@@ -148,6 +148,15 @@ impl Backend for SqliteBackend {
                 continue;
             }
 
+            // Auto-upsert any referenced session so the drawer's FK resolves.
+            // Caller may later enrich metadata via SqliteBackend::upsert_session.
+            if let Some(sid) = &d.session_id {
+                tx.execute(
+                    "INSERT OR IGNORE INTO sessions(id, started_at) VALUES (?1, ?2)",
+                    params![sid, now],
+                )?;
+            }
+
             let wing_id = ensure_wing(&tx, &d.wing)?;
             let room_id = match d.room.as_deref() {
                 Some(r) => Some(ensure_room(&tx, wing_id, r)?),
@@ -300,6 +309,42 @@ impl Backend for SqliteBackend {
             },
             Err(_) => HealthStatus::Down,
         }
+    }
+
+    fn list_drawers(&self, wing: Option<&str>, limit: usize) -> Result<Vec<Drawer>> {
+        let conn = self.conn.lock().map_err(|_| anyhow!("poisoned mutex"))?;
+        let mut sql = String::from(
+            "SELECT d.id, w.name, r.name, d.session_id, d.source_id, d.body, d.sha256, d.created_at
+             FROM drawers d
+             JOIN wings w ON w.id = d.wing_id
+             LEFT JOIN rooms r ON r.id = d.room_id",
+        );
+        let mut args: Vec<rusqlite::types::Value> = Vec::new();
+        if let Some(w) = wing {
+            sql.push_str(" WHERE w.name = ?");
+            args.push(w.to_string().into());
+        }
+        sql.push_str(" ORDER BY d.id ASC");
+        if limit > 0 {
+            sql.push_str(&format!(" LIMIT {limit}"));
+        }
+        let mut stmt = conn.prepare(&sql)?;
+        let refs: Vec<&dyn rusqlite::ToSql> =
+            args.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(refs.as_slice(), |row| {
+            Ok(Drawer {
+                id: row.get(0)?,
+                wing: row.get(1)?,
+                room: row.get(2)?,
+                session_id: row.get(3)?,
+                source_id: row.get(4)?,
+                body: row.get(5)?,
+                sha256: row.get(6)?,
+                created_at: row.get(7)?,
+            })
+        })?;
+        let collected: rusqlite::Result<Vec<Drawer>> = rows.collect();
+        Ok(collected?)
     }
 }
 
@@ -548,6 +593,131 @@ mod tests {
             h.join().unwrap();
         }
         assert_eq!(b.count().unwrap(), 50);
+    }
+
+    #[test]
+    fn add_auto_upserts_referenced_session() {
+        // The FK on drawers.session_id rejects rows whose session_id has no
+        // matching sessions(id) row. SqliteBackend::add must auto-INSERT OR
+        // IGNORE the session so callers (e.g., CLI auto_capture using
+        // $TERM_SESSION_ID) don't have to upsert the session first.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("memory.db");
+        let b = SqliteBackend::open(&path).unwrap();
+        let e = HashEmbedder::new();
+
+        let mut d = ins(&e, "doc:1", "body", "default");
+        d.session_id = Some("term:fresh".into());
+        b.add(&[d]).unwrap();
+
+        let probe = Connection::open(&path).unwrap();
+        let n: i64 = probe
+            .query_row(
+                "SELECT COUNT(*) FROM sessions WHERE id = 'term:fresh'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "session row should be auto-created");
+    }
+
+    #[test]
+    fn add_does_not_create_session_when_none() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("memory.db");
+        let b = SqliteBackend::open(&path).unwrap();
+        let e = HashEmbedder::new();
+
+        // session_id=None — sessions table must stay empty.
+        b.add(&[ins(&e, "doc:1", "body", "default")]).unwrap();
+
+        let probe = Connection::open(&path).unwrap();
+        let n: i64 = probe
+            .query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn add_auto_upsert_does_not_overwrite_existing_session() {
+        // First explicit upsert with full metadata, then add() with same id.
+        // INSERT OR IGNORE in add() must NOT overwrite the existing metadata.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("memory.db");
+        let b = SqliteBackend::open(&path).unwrap();
+        let e = HashEmbedder::new();
+
+        b.upsert_session(&Session {
+            id: "term:rich".into(),
+            started_at: 100,
+            cwd: Some("/somewhere".into()),
+            git_branch: Some("feature".into()),
+            git_sha: Some("c0ffee".into()),
+        })
+        .unwrap();
+
+        let mut d = ins(&e, "doc:1", "body", "default");
+        d.session_id = Some("term:rich".into());
+        b.add(&[d]).unwrap();
+
+        let probe = Connection::open(&path).unwrap();
+        let (cwd, branch): (Option<String>, Option<String>) = probe
+            .query_row(
+                "SELECT cwd, git_branch FROM sessions WHERE id = 'term:rich'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(cwd.as_deref(), Some("/somewhere"));
+        assert_eq!(branch.as_deref(), Some("feature"));
+    }
+
+    #[test]
+    fn list_drawers_includes_session_id() {
+        let dir = tempdir().unwrap();
+        let b = SqliteBackend::open(&dir.path().join("memory.db")).unwrap();
+        let e = HashEmbedder::new();
+        let mut d = ins(&e, "doc:1", "body", "default");
+        d.session_id = Some("term:list".into());
+        b.add(&[d]).unwrap();
+        let listed = b.list_drawers(None, 10).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].session_id.as_deref(), Some("term:list"));
+    }
+
+    #[test]
+    fn session_id_persists_across_reopen() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("memory.db");
+        let e = HashEmbedder::new();
+        {
+            let b = SqliteBackend::open(&path).unwrap();
+            let mut d = ins(&e, "doc:1", "body", "default");
+            d.session_id = Some("term:durable".into());
+            b.add(&[d]).unwrap();
+        }
+        {
+            let b = SqliteBackend::open(&path).unwrap();
+            let listed = b.list_drawers(None, 10).unwrap();
+            assert_eq!(listed[0].session_id.as_deref(), Some("term:durable"));
+        }
+    }
+
+    #[test]
+    fn list_drawers_filters_by_wing_only_not_session() {
+        // Confirm list_drawers' wing filter is independent of session — two
+        // drawers in same session but different wings get split correctly.
+        let dir = tempdir().unwrap();
+        let b = SqliteBackend::open(&dir.path().join("memory.db")).unwrap();
+        let e = HashEmbedder::new();
+        let mut d1 = ins(&e, "1", "alpha", "wing-a");
+        d1.session_id = Some("s1".into());
+        let mut d2 = ins(&e, "2", "beta", "wing-b");
+        d2.session_id = Some("s1".into());
+        b.add(&[d1, d2]).unwrap();
+        let a = b.list_drawers(Some("wing-a"), 10).unwrap();
+        assert_eq!(a.len(), 1);
+        assert_eq!(a[0].session_id.as_deref(), Some("s1"));
     }
 
     #[test]

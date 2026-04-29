@@ -175,6 +175,21 @@ impl Backend for InMemoryBackend {
     fn health(&self) -> HealthStatus {
         HealthStatus::Ok
     }
+
+    fn list_drawers(&self, wing: Option<&str>, limit: usize) -> Result<Vec<Drawer>> {
+        let inner = self.inner.lock().map_err(|_| anyhow!("poisoned mutex"))?;
+        let mut rows: Vec<Drawer> = inner
+            .rows
+            .values()
+            .filter(|s| wing.is_none_or(|w| s.drawer.wing == w))
+            .map(|s| s.drawer.clone())
+            .collect();
+        rows.sort_by_key(|d| d.id);
+        if limit > 0 {
+            rows.truncate(limit);
+        }
+        Ok(rows)
+    }
 }
 
 #[cfg(test)]
@@ -298,6 +313,32 @@ mod tests {
             room: None,
         };
         assert!(b.query(&q).unwrap().hits.is_empty());
+    }
+
+    #[test]
+    fn list_drawers_includes_session_id() {
+        let e = HashEmbedder::new();
+        let b = InMemoryBackend::new();
+        let mut d = ins(&e, "doc:1", "body", "default");
+        d.session_id = Some("s1".into());
+        b.add(&[d]).unwrap();
+        let listed = b.list_drawers(None, 10).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].session_id.as_deref(), Some("s1"));
+    }
+
+    #[test]
+    fn list_drawers_wing_filter_preserves_session() {
+        let e = HashEmbedder::new();
+        let b = InMemoryBackend::new();
+        let mut d1 = ins(&e, "1", "alpha", "wing-a");
+        d1.session_id = Some("shared".into());
+        let mut d2 = ins(&e, "2", "beta", "wing-b");
+        d2.session_id = Some("shared".into());
+        b.add(&[d1, d2]).unwrap();
+        let only_a = b.list_drawers(Some("wing-a"), 10).unwrap();
+        assert_eq!(only_a.len(), 1);
+        assert_eq!(only_a[0].session_id.as_deref(), Some("shared"));
     }
 
     #[test]
