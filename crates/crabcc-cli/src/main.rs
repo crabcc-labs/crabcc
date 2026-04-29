@@ -53,12 +53,11 @@ async fn main() -> Result<()> {
 
     match cli.cmd.unwrap_or(Cmd::Index) {
         Cmd::Index => {
-            let stats = crabcc_core::index::build_index(&root, &store)?;
+            let stats = crabcc_core::index::full_index(&root, &store)?;
             println!("{}", serde_json::to_string(&stats)?);
         }
         Cmd::Refresh => {
-            // For v1, refresh == full rebuild. Hash-keyed incremental coming next.
-            let stats = crabcc_core::index::build_index(&root, &store)?;
+            let stats = crabcc_core::index::refresh(&root, &store)?;
             println!("{}", serde_json::to_string(&stats)?);
         }
         Cmd::Sym { name } => {

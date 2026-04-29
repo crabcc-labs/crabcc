@@ -1,6 +1,7 @@
 use crate::{extract, hash, store::Store, walker};
 use anyhow::Result;
 use serde::Serialize;
+use std::collections::HashSet;
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
@@ -8,6 +9,19 @@ use std::time::UNIX_EPOCH;
 pub struct IndexStats {
     pub files_indexed: usize,
     pub symbols: usize,
+    pub skipped_unsupported: usize,
+    pub skipped_too_large: usize,
+    pub skipped_unreadable: usize,
+    pub skipped_parse_error: usize,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct RefreshStats {
+    pub new: usize,
+    pub reindexed: usize,
+    pub touched: usize,
+    pub unchanged: usize,
+    pub deleted: usize,
     pub skipped_unsupported: usize,
     pub skipped_too_large: usize,
     pub skipped_unreadable: usize,
@@ -65,6 +79,114 @@ pub fn build_index(root: &Path, store: &Store) -> Result<IndexStats> {
     Ok(stats)
 }
 
+/// Wipe the index and rebuild from scratch. Use this when the schema or
+/// extractor rules change and the existing index is stale by construction.
+pub fn full_index(root: &Path, store: &Store) -> Result<IndexStats> {
+    store.clear_all()?;
+    build_index(root, store)
+}
+
+/// Incrementally update the index against the current state of `root`.
+///
+/// Strategy per file:
+///   - mtime unchanged   → skip (cheapest path, no read)
+///   - mtime changed     → hash bytes
+///       - hash matches  → just update mtime (touched)
+///       - hash differs  → reparse + replace symbols
+///   - file new on disk  → index it
+///   - file gone on disk → delete its row (cascades to symbols)
+pub fn refresh(root: &Path, store: &Store) -> Result<RefreshStats> {
+    let mut stats = RefreshStats::default();
+    let in_db = store.list_files_with_meta()?;
+    let mut seen: HashSet<String> = HashSet::with_capacity(in_db.len());
+
+    for path in walker::walk_repo(root) {
+        let lang = match extract::detect_lang(&path) {
+            Some(l) => l,
+            None => { stats.skipped_unsupported += 1; continue; }
+        };
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .into_owned();
+        seen.insert(rel.clone());
+
+        let mtime = std::fs::metadata(&path)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        if let Some((stored_sha, stored_mtime)) = in_db.get(&rel) {
+            if *stored_mtime == mtime {
+                stats.unchanged += 1;
+                continue;
+            }
+            // mtime changed — read and hash to decide.
+            let bytes = match std::fs::read(&path) {
+                Ok(b) => b,
+                Err(_) => { stats.skipped_unreadable += 1; continue; }
+            };
+            if bytes.len() > MAX_FILE_BYTES {
+                stats.skipped_too_large += 1;
+                continue;
+            }
+            let sha = hash::sha256_hex(&bytes);
+            if &sha == stored_sha {
+                store.touch_mtime(&rel, mtime)?;
+                stats.touched += 1;
+                continue;
+            }
+            // Real content change — reindex.
+            let src = match std::str::from_utf8(&bytes) {
+                Ok(s) => s,
+                Err(_) => { stats.skipped_unreadable += 1; continue; }
+            };
+            let symbols = match extract::extract_file(&rel, src, lang) {
+                Ok(s) => s,
+                Err(_) => { stats.skipped_parse_error += 1; continue; }
+            };
+            let file_id = store.upsert_file(&rel, &sha, mtime, lang)?;
+            store.replace_symbols(file_id, &symbols)?;
+            stats.reindexed += 1;
+        } else {
+            // New file on disk.
+            let bytes = match std::fs::read(&path) {
+                Ok(b) => b,
+                Err(_) => { stats.skipped_unreadable += 1; continue; }
+            };
+            if bytes.len() > MAX_FILE_BYTES {
+                stats.skipped_too_large += 1;
+                continue;
+            }
+            let src = match std::str::from_utf8(&bytes) {
+                Ok(s) => s,
+                Err(_) => { stats.skipped_unreadable += 1; continue; }
+            };
+            let symbols = match extract::extract_file(&rel, src, lang) {
+                Ok(s) => s,
+                Err(_) => { stats.skipped_parse_error += 1; continue; }
+            };
+            let sha = hash::sha256_hex(&bytes);
+            let file_id = store.upsert_file(&rel, &sha, mtime, lang)?;
+            store.replace_symbols(file_id, &symbols)?;
+            stats.new += 1;
+        }
+    }
+
+    // Delete rows for files no longer on disk.
+    for rel in in_db.keys() {
+        if !seen.contains(rel) {
+            store.delete_file(rel)?;
+            stats.deleted += 1;
+        }
+    }
+
+    Ok(stats)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -110,5 +232,84 @@ mod tests {
         let stats = build_index(root, &store).unwrap();
         assert_eq!(stats.skipped_too_large, 1);
         assert_eq!(stats.files_indexed, 0);
+    }
+
+    fn fresh_repo_with(files: &[(&str, &str)]) -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for (name, body) in files {
+            write(&root.join(name), body);
+        }
+        let store = Store::open(&root.join("idx.db")).unwrap();
+        build_index(root, &store).unwrap();
+        (dir, store)
+    }
+
+    #[test]
+    fn refresh_no_changes_marks_all_unchanged() {
+        let (dir, store) = fresh_repo_with(&[
+            ("a.ts", "export function a(){return 1;}"),
+            ("b.rb", "class B; end\n"),
+        ]);
+        let stats = refresh(dir.path(), &store).unwrap();
+        assert_eq!(stats.unchanged, 2, "stats: {stats:?}");
+        assert_eq!(stats.reindexed, 0);
+        assert_eq!(stats.new, 0);
+        assert_eq!(stats.deleted, 0);
+    }
+
+    #[test]
+    fn refresh_picks_up_modified_file() {
+        let (dir, store) = fresh_repo_with(&[
+            ("a.ts", "export function a(){return 1;}"),
+        ]);
+        // Force a perceptibly different mtime + content.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        write(&dir.path().join("a.ts"),
+              "export function a(){return 1;}\nexport function b(){return 2;}\n");
+
+        let stats = refresh(dir.path(), &store).unwrap();
+        assert_eq!(stats.reindexed, 1, "stats: {stats:?}");
+        assert!(store.find_by_name("b").unwrap().len() == 1);
+    }
+
+    #[test]
+    fn refresh_picks_up_new_file() {
+        let (dir, store) = fresh_repo_with(&[
+            ("a.ts", "export function a(){return 1;}"),
+        ]);
+        write(&dir.path().join("c.ts"), "export function c(){return 3;}");
+
+        let stats = refresh(dir.path(), &store).unwrap();
+        assert_eq!(stats.new, 1, "stats: {stats:?}");
+        assert_eq!(store.find_by_name("c").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn refresh_deletes_missing_file() {
+        let (dir, store) = fresh_repo_with(&[
+            ("a.ts", "export function a(){return 1;}"),
+            ("b.ts", "export function b(){return 2;}"),
+        ]);
+        std::fs::remove_file(dir.path().join("b.ts")).unwrap();
+
+        let stats = refresh(dir.path(), &store).unwrap();
+        assert_eq!(stats.deleted, 1, "stats: {stats:?}");
+        assert_eq!(store.find_by_name("b").unwrap().len(), 0);
+        assert_eq!(store.find_by_name("a").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn full_index_wipes_then_rebuilds() {
+        let (dir, store) = fresh_repo_with(&[
+            ("a.ts", "export function a(){return 1;}"),
+        ]);
+        std::fs::remove_file(dir.path().join("a.ts")).unwrap();
+        write(&dir.path().join("z.ts"), "export function z(){return 9;}");
+
+        let stats = full_index(dir.path(), &store).unwrap();
+        assert_eq!(stats.files_indexed, 1, "stats: {stats:?}");
+        assert_eq!(store.find_by_name("a").unwrap().len(), 0);
+        assert_eq!(store.find_by_name("z").unwrap().len(), 1);
     }
 }

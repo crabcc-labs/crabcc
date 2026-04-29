@@ -26,7 +26,14 @@ impl Store {
                                              indexed_at=strftime('%s','now')",
             params![path, sha256, mtime, lang],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        // last_insert_rowid is NOT updated on the UPSERT conflict path, so
+        // we must look up the id after to handle both insert and update.
+        let id: i64 = self.conn.query_row(
+            "SELECT id FROM files WHERE path = ?1",
+            params![path],
+            |row| row.get(0),
+        )?;
+        Ok(id)
     }
 
     pub fn replace_symbols(&self, file_id: i64, symbols: &[Symbol]) -> Result<()> {
@@ -55,6 +62,37 @@ impl Store {
         let mut stmt = self.conn.prepare("SELECT path, lang FROM files")?;
         let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn list_files_with_meta(&self) -> Result<std::collections::HashMap<String, (String, i64)>> {
+        let mut stmt = self.conn.prepare("SELECT path, sha256, mtime FROM files")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?))
+        })?;
+        let mut map = std::collections::HashMap::new();
+        for r in rows {
+            let (p, s, m) = r?;
+            map.insert(p, (s, m));
+        }
+        Ok(map)
+    }
+
+    pub fn touch_mtime(&self, path: &str, mtime: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE files SET mtime = ?1, indexed_at = strftime('%s','now') WHERE path = ?2",
+            params![mtime, path],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_file(&self, path: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM files WHERE path = ?1", params![path])?;
+        Ok(())
+    }
+
+    pub fn clear_all(&self) -> Result<()> {
+        self.conn.execute("DELETE FROM files", [])?;
+        Ok(())
     }
 
     pub fn find_by_name(&self, name: &str) -> Result<Vec<Symbol>> {
@@ -158,16 +196,13 @@ mod tests {
     }
 
     #[test]
-    fn upsert_file_idempotent() {
+    fn upsert_file_returns_stable_id() {
         let (_dir, store) = tmp_store();
         let a = store.upsert_file("a.ts", "h1", 0, "typescript").unwrap();
         let b = store.upsert_file("a.ts", "h2", 1, "typescript").unwrap();
-        // Same path → same row id (UPSERT). last_insert_rowid may report the
-        // attempted insert; what matters is only one row exists for the path.
-        let _ = (a, b);
-        // Inserting symbols against the conflicted-but-now-updated row works:
-        store.replace_symbols(a, &[sym("x", SymbolKind::Function, None)]).unwrap();
-        assert!(store.find_by_name("x").unwrap().len() <= 1);
+        assert_eq!(a, b, "upsert on same path must return the same row id");
+        store.replace_symbols(b, &[sym("x", SymbolKind::Function, None)]).unwrap();
+        assert_eq!(store.find_by_name("x").unwrap().len(), 1);
     }
 
     #[test]
