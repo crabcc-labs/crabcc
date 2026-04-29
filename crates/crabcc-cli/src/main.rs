@@ -3,6 +3,7 @@ use clap::{Args, Parser, Subcommand};
 use crabcc_core::{query, store::Store};
 use std::path::{Path, PathBuf};
 
+mod compress_cmd;
 mod install;
 
 #[derive(Parser)]
@@ -15,6 +16,15 @@ struct Cli {
     /// Run as MCP server over stdio instead of one-shot CLI.
     #[arg(long, global = true)]
     mcp: bool,
+
+    /// Enable FSST compression at the storage layer (default: true).
+    /// Pass `--compress=false` (or `--compress false`) to force plain text
+    /// even if `.crabcc/fsst.symbols` exists. Read-side: encoded rows in the
+    /// DB will be UNREADABLE (signatures surface as null) until `--compress`
+    /// is re-enabled — they stay correct on disk; we just refuse to load the
+    /// codec.
+    #[arg(long, global = true, value_name = "BOOL", default_value_t = true, action = clap::ArgAction::Set)]
+    compress: bool,
 
     #[command(subcommand)]
     cmd: Option<Cmd>,
@@ -109,6 +119,22 @@ enum Cmd {
         #[arg(long)]
         print_hooks: bool,
     },
+    /// Train an FSST symbol table from existing index data and write it to
+    /// .crabcc/fsst.symbols, then re-encode rows on demand.
+    Compress {
+        /// Re-encode every existing symbol row in 1000-row batches.
+        #[arg(long)]
+        rebuild: bool,
+        /// Print per-column byte savings (combine with --json for machine output).
+        #[arg(long)]
+        stats: bool,
+        /// Emit stats as JSON instead of human-readable text. Implies --stats.
+        #[arg(long)]
+        json: bool,
+        /// Override the index path (default: $CRABCC_DB or .crabcc/index.db).
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
 }
 
 /// Shaping flags for refs/callers. `--files-only` and `--count` are
@@ -175,8 +201,29 @@ fn main() -> Result<()> {
         return install::run(*yes, *print_hooks);
     }
 
+    // `compress` is a meta-operation on the index. It owns its own codec
+    // lifecycle (we're MAKING the codec, not consuming one), so it bypasses
+    // the global `Store::open` that would auto-load whatever is on disk.
+    if let Some(Cmd::Compress {
+        rebuild,
+        stats,
+        json,
+        db: db_override,
+    }) = cli.cmd.as_ref()
+    {
+        let db_path = db_override.clone().unwrap_or_else(|| db.clone());
+        return compress_cmd::run(compress_cmd::Args {
+            root: root.clone(),
+            db: db_path,
+            rebuild: *rebuild,
+            // --json implies --stats (mirrors common CLI ergonomics).
+            stats: *stats || *json,
+            json: *json,
+        });
+    }
+
     std::fs::create_dir_all(db.parent().unwrap())?;
-    let store = Store::open(&db)?;
+    let store = Store::open_with_compress(&db, cli.compress)?;
     let fts_dir = root.join(".crabcc").join("tantivy");
 
     match cli.cmd.unwrap_or(Cmd::Index) {
@@ -327,6 +374,7 @@ fn main() -> Result<()> {
         }
         // Handled by the early-return branch above before the store opens.
         Cmd::InstallClaude { .. } => unreachable!("install-claude handled before store init"),
+        Cmd::Compress { .. } => unreachable!("compress handled before store init"),
     }
     Ok(())
 }

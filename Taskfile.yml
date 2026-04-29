@@ -110,6 +110,14 @@ tasks:
       - "{{.CRABCC}} --root /tmp/crabcc-smoke callers hello --count | jq -e '.count >= 1'"
       - rm -rf /tmp/crabcc-smoke
 
+  compress:
+    desc: Train FSST symbol table on the current index + re-encode all rows + report stats
+    deps: [build]
+    cmds:
+      - "{{.CRABCC}} compress"
+      - "{{.CRABCC}} compress --rebuild"
+      - "{{.CRABCC}} compress --stats"
+
   ci:
     desc: Local CI dry-run — fmt + clippy + test + smoke
     cmds:

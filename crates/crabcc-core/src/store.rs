@@ -27,7 +27,18 @@ const _: fn() = || {
 };
 
 impl Store {
+    /// Open the index and (when the `compress` feature is built in) auto-load
+    /// the FSST codec at `<index_dir>/fsst.symbols` if present. Equivalent to
+    /// `open_with_compress(path, true)`.
     pub fn open(path: &Path) -> Result<Self> {
+        Self::open_with_compress(path, true)
+    }
+
+    /// Like `open`, but the caller controls whether the FSST codec is loaded.
+    /// `compress=false` skips codec discovery entirely — encoded rows on disk
+    /// stay correct, but reads of `signature_enc=1` rows return `None` until
+    /// the codec is re-enabled. New writes go down the plain path.
+    pub fn open_with_compress(path: &Path, compress: bool) -> Result<Self> {
         let conn = Connection::open(path).context("open sqlite")?;
         // WAL = concurrent readers + faster writes. NORMAL sync = "fast but
         // still durable on power loss". foreign_keys ON makes our ON DELETE
@@ -79,8 +90,13 @@ impl Store {
         // Codec discovery (FSST). The DB path is typically `.crabcc/index.db`;
         // the symbol table lives next to it as `.crabcc/fsst.symbols`. If the
         // file is absent we run uncompressed — matching default-feature builds.
+        // When `compress=false`, skip discovery entirely so the runtime flag
+        // (`crabcc --compress=false`) can force plain-text mode even when the
+        // symbol table is on disk.
         #[cfg(feature = "compress")]
-        let codec = {
+        let codec = if !compress {
+            None
+        } else {
             let symbols_path = path
                 .parent()
                 .map(|p| p.join("fsst.symbols"))
@@ -94,6 +110,8 @@ impl Store {
                 None
             }
         };
+        #[cfg(not(feature = "compress"))]
+        let _ = compress; // silence unused-arg warning when feature is off
 
         #[cfg(feature = "compress")]
         {
