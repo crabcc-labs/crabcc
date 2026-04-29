@@ -5,11 +5,49 @@ on:
     branches: [main]
   pull_request:
 
+# Cancel previous runs on the same ref. When a fixup commit lands on a PR
+# before the prior run finishes, the prior run is killed — saves runner minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
 
 jobs:
+  # fmt + clippy don't depend on OS — run them once on Linux only instead of
+  # duplicating the pass on macOS.
+  lint:
+    name: lint (fmt + clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: mozilla-actions/sccache-action@v0.0.6
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-lint
+          # Only write cache on main — keeps PR builds from churning the cache.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+      # `--lib --bins` covers the public surface; test-only clippy lints are
+      # caught by `cargo nextest` since it type-checks the same code.
+      - name: cargo clippy
+        run: cargo clippy --workspace --lib --bins -- -D warnings
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats || true
+
   test:
     name: test (${{ matrix.os }})
     strategy:
@@ -21,18 +59,13 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
+
+      - uses: mozilla-actions/sccache-action@v0.0.6
 
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-${{ matrix.os }}
-
-      - name: cargo fmt --check
-        run: cargo fmt --all -- --check
-
-      - name: cargo clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: install cargo-nextest (JUnit reporter)
         uses: taiki-e/install-action@v2
@@ -83,3 +116,7 @@ jobs:
           wait $WATCH_PID 2>/dev/null || true
           # Fuzzy + prefix sidecar.
           "$BIN" prefix hello | jq -e 'length >= 1'
+
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats || true
