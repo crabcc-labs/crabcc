@@ -1,0 +1,245 @@
+use crate::backend::{sqlite::SqliteBackend, Backend};
+use crate::embed::{Embedder, HashEmbedder};
+use crate::types::*;
+use anyhow::{Context, Result};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+/// Top-level memory facade. Owns one Backend + one Embedder.
+///
+/// `Palace::open(repo_root)` is idempotent: creates `<repo_root>/.crabcc/memory.db`
+/// if missing, reuses if present. Per-repo by design — the memory store
+/// is scoped to one git working tree (matches `.crabcc/index.db`).
+pub struct Palace {
+    pub root: PathBuf,
+    backend: Arc<dyn Backend>,
+    embedder: Arc<dyn Embedder>,
+}
+
+impl Palace {
+    /// Open or create a persistent palace at `<repo_root>/.crabcc/memory.db`.
+    /// Default embedder is `HashEmbedder` until M1 wires `fastembed-rs`.
+    pub fn open(repo_root: &Path) -> Result<Self> {
+        let crabcc_dir = repo_root.join(".crabcc");
+        std::fs::create_dir_all(&crabcc_dir)
+            .with_context(|| format!("create {}", crabcc_dir.display()))?;
+        let db_path = crabcc_dir.join("memory.db");
+        let backend = SqliteBackend::open(&db_path)?;
+        Ok(Self {
+            root: repo_root.to_path_buf(),
+            backend: Arc::new(backend),
+            embedder: Arc::new(HashEmbedder::new()),
+        })
+    }
+
+    /// Ephemeral palace — in-memory backend, no persistence. For tests
+    /// and one-shot operations.
+    pub fn ephemeral() -> Self {
+        Self {
+            root: PathBuf::from("."),
+            backend: Arc::new(crate::backend::in_memory::InMemoryBackend::new()),
+            embedder: Arc::new(HashEmbedder::new()),
+        }
+    }
+
+    pub fn with_components(
+        repo_root: &Path,
+        backend: Arc<dyn Backend>,
+        embedder: Arc<dyn Embedder>,
+    ) -> Self {
+        Self {
+            root: repo_root.to_path_buf(),
+            backend,
+            embedder,
+        }
+    }
+
+    pub fn backend(&self) -> &dyn Backend {
+        &*self.backend
+    }
+
+    pub fn embedder(&self) -> &dyn Embedder {
+        &*self.embedder
+    }
+
+    /// Embed and store one drawer. Returns its id.
+    pub fn remember(
+        &self,
+        wing: &str,
+        room: Option<&str>,
+        source_id: &str,
+        body: &str,
+    ) -> Result<DrawerId> {
+        let emb = self.embedder.embed_one(body)?;
+        let ids = self.backend.add(&[DrawerInsert {
+            wing: wing.into(),
+            room: room.map(str::to_string),
+            source_id: source_id.into(),
+            body: body.into(),
+            embedding: emb,
+            session_id: None,
+        }])?;
+        ids.into_iter().next().context("backend returned no id")
+    }
+
+    /// Embed query text and search top-K.
+    pub fn search(&self, query: &str, limit: usize) -> Result<QueryResult> {
+        let emb = self.embedder.embed_one(query)?;
+        self.backend.query(&Query {
+            embedding: emb,
+            limit,
+            wing: None,
+            room: None,
+        })
+    }
+}
+
+/// Walk up from `start` looking for `.git/`. Returns the first ancestor
+/// containing one, or `None` if not in a git repo.
+pub fn find_git_root(start: &Path) -> Option<PathBuf> {
+    let mut p = start.canonicalize().ok()?;
+    loop {
+        if p.join(".git").exists() {
+            return Some(p);
+        }
+        match p.parent() {
+            Some(parent) => p = parent.to_path_buf(),
+            None => return None,
+        }
+    }
+}
+
+/// Cache of open palaces, keyed by canonical repo root.
+///
+/// The MCP server uses this to handle tool calls from multiple projects in
+/// one process: each call carries a `cwd` arg, the registry walks up to
+/// find the git root, and returns (or opens) the matching palace.
+pub struct PalaceRegistry {
+    palaces: Mutex<HashMap<PathBuf, Arc<Palace>>>,
+}
+
+impl PalaceRegistry {
+    pub fn new() -> Self {
+        Self {
+            palaces: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Look up the palace for `cwd_or_root`. If `cwd_or_root` isn't itself
+    /// a git root, walks up to find one. Falls back to using the path as-is
+    /// if no `.git` is found upstream.
+    pub fn open_for(&self, cwd_or_root: &Path) -> Result<Arc<Palace>> {
+        let root = find_git_root(cwd_or_root).unwrap_or_else(|| cwd_or_root.to_path_buf());
+        let canon = root.canonicalize().unwrap_or(root.clone());
+        let mut map = self
+            .palaces
+            .lock()
+            .map_err(|_| anyhow::anyhow!("poisoned"))?;
+        if let Some(p) = map.get(&canon) {
+            return Ok(p.clone());
+        }
+        let p = Arc::new(Palace::open(&canon)?);
+        map.insert(canon.clone(), p.clone());
+        Ok(p)
+    }
+
+    pub fn count(&self) -> usize {
+        self.palaces.lock().map(|m| m.len()).unwrap_or(0)
+    }
+}
+
+impl Default for PalaceRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn open_creates_crabcc_dir_and_db() {
+        let dir = tempdir().unwrap();
+        let p = Palace::open(dir.path()).unwrap();
+        assert!(p.root.join(".crabcc").exists());
+        assert!(p.root.join(".crabcc").join("memory.db").exists());
+    }
+
+    #[test]
+    fn open_is_idempotent_and_reuses_data() {
+        let dir = tempdir().unwrap();
+        let id1 = {
+            let p = Palace::open(dir.path()).unwrap();
+            p.remember("default", None, "doc:1", "the fox jumps")
+                .unwrap()
+        };
+        let id2 = {
+            let p = Palace::open(dir.path()).unwrap();
+            // Re-opening must see the prior drawer (dedup returns same id).
+            p.remember("default", None, "doc:1", "the fox jumps")
+                .unwrap()
+        };
+        assert_eq!(id1, id2, "second open must reuse persisted drawer");
+    }
+
+    #[test]
+    fn remember_then_search() {
+        let dir = tempdir().unwrap();
+        let p = Palace::open(dir.path()).unwrap();
+        p.remember("default", None, "1", "the fox jumps").unwrap();
+        p.remember("default", None, "2", "the cat sleeps").unwrap();
+        let r = p.search("fox jumps", 5).unwrap();
+        assert!(!r.hits.is_empty());
+        assert_eq!(r.hits[0].source_id, "1");
+    }
+
+    #[test]
+    fn ephemeral_does_not_persist() {
+        let p1 = Palace::ephemeral();
+        p1.remember("d", None, "x", "hello").unwrap();
+        let p2 = Palace::ephemeral();
+        assert_eq!(p2.backend().count().unwrap(), 0);
+    }
+
+    #[test]
+    fn find_git_root_walks_up() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        let nested = dir.path().join("a/b/c");
+        std::fs::create_dir_all(&nested).unwrap();
+        let found = find_git_root(&nested).unwrap();
+        assert_eq!(found, dir.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn registry_caches_per_root() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        let nested = dir.path().join("sub/sub2");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        let reg = PalaceRegistry::new();
+        let p1 = reg.open_for(&nested).unwrap();
+        let p2 = reg.open_for(dir.path()).unwrap();
+        // Both lookups resolve to the same git root → same Arc.
+        assert!(Arc::ptr_eq(&p1, &p2));
+        assert_eq!(reg.count(), 1);
+    }
+
+    #[test]
+    fn registry_separates_distinct_roots() {
+        let a = tempdir().unwrap();
+        std::fs::create_dir_all(a.path().join(".git")).unwrap();
+        let b = tempdir().unwrap();
+        std::fs::create_dir_all(b.path().join(".git")).unwrap();
+
+        let reg = PalaceRegistry::new();
+        let pa = reg.open_for(a.path()).unwrap();
+        let pb = reg.open_for(b.path()).unwrap();
+        assert!(!Arc::ptr_eq(&pa, &pb));
+        assert_eq!(reg.count(), 2);
+    }
+}
