@@ -156,6 +156,13 @@ bench/                ← raw-CLI A/B benchmark harness + visualize
 - **`fuzzy` / `prefix`**: Tantivy sidecar at `.crabcc/tantivy/`. Rebuilt automatically
   on `crabcc index`; explicit `crabcc fts-rebuild` for refresh-only flows.
 - **`track`**: appends a JSONL log to `~/.crabcc/usage.log`, summarized by `crabcc track`.
+- **`watch`**: notify-debouncer-mini-based FS watcher running on its own thread.
+  Auto-runs `refresh` on file changes. Feedback-loop guard skips events under `.crabcc/`.
+- **`graph`**: call-graph BFS sidecar persisted at `.crabcc/graph.json`. Build once with
+  `crabcc graph-build`, query with `crabcc graph NAME [--dir callers|callees] [--depth N]`.
+
+For deeper architectural detail, mermaid diagrams of the data flow and threading model,
+and runbooks for adding features, see [`ARCHITECTURE.md`](./ARCHITECTURE.md).
 
 ---
 

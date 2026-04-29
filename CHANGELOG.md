@@ -7,7 +7,26 @@ All notable changes to crabcc are documented here. Format follows
 ## [Unreleased]
 
 ### Added
-- `crabcc files [--under PREFIX] [--lang LANG] [--ext EXT] [--limit N]` —
+- **`crabcc watch [--debounce MS]`** — bulletproof FS watchdog sidecar. Worker
+  thread (named `crabcc-watch`); debounced events (default 500ms) trigger
+  incremental refresh; feedback-loop guard skips events under `.crabcc/`.
+  4 unit tests + 1 ignored e2e.
+- **`crabcc graph-build`** + **`crabcc graph NAME [--dir callers|callees] [--depth N]`** —
+  call-graph sidecar persisted to `.crabcc/graph.json`. BFS expansion with
+  cycle protection. 5 tests.
+- **MCP `graph` tool** mirrors the CLI graph subcommand.
+- **SVG logo** at `assets/logo.svg`.
+- **`ARCHITECTURE.md`** — engineer-facing deep dive with mermaid diagrams.
+- **`docs/RESEARCH-mempalace.md`** (1027 lines) — full Rust-port plan for the
+  MemPalace AI-memory system as `crabcc memory` v2.0 subcommand. Vector-store
+  comparison appendix (sqlite-vec chosen), implementation walkthrough, 12
+  fine-tuning levers.
+- **`docs/RESEARCH-fsst.md`** (272 lines) — FSST string-compression integration
+  research for v2.0. Pessimistic gain ~30% storage reduction with <1ms p99
+  per-row decode. Tracked in [issue #1](https://github.com/peterlodri-sec/crabcc/issues/1).
+- **GitHub Actions test reporting** — `cargo nextest` with JUnit XML uploaded
+  as build artifact (30-day retention, per matrix entry).
+- **`crabcc files [--under PREFIX] [--lang LANG] [--ext EXT] [--limit N]`** —
   list indexed files. Replaces `ls -R` / `find -name` for code-file listings.
 - Token-shaping flags on `refs` and `callers`:
   - `--limit N` — cap full hit list, early-stops the per-file walk.
@@ -25,6 +44,12 @@ All notable changes to crabcc are documented here. Format follows
   build with UPX compression for Linux/macOS-x86 binaries).
 
 ### Changed
+- **`Store::open`** now sets `journal_mode=WAL`, `synchronous=NORMAL`,
+  `foreign_keys=ON`, `mmap_size=30GB`, `temp_store=MEMORY`, `cache_size=16MB`,
+  `busy_timeout=2s`, plus `PRAGMA optimize`. Compile-time assertion that
+  `Store: Send`. New `analyze()` method.
+- **Schema indexes**: `idx_symbols_file_line`, `idx_symbols_name_kind`,
+  `idx_files_lang` for hot query paths.
 - Snippet trim: `pattern.rs` and `refs.rs` cap line snippets at 80 chars
   (was 200 chars). ~60% smaller per-hit payload.
 - Cargo release profile pushed to `lto = "fat"`, `panic = "abort"`,
@@ -42,6 +67,12 @@ All notable changes to crabcc are documented here. Format follows
   `Output { Hits, Files, Count }` (untagged JSON for ergonomic output).
 - Early-stop when `--limit` is reached avoids walking the rest of the file list.
 - `--files-only` short-circuits per-file: dedupe-by-path, single insert per file.
+- **+22 unit tests** across walker / store / outline / track / pattern / query / mcp / watch / graph
+  (60 → 102 total; 2 ignored — both inherently FS-event-racy).
+- **Removed**: `query::callers_via_edges` TODO stub. `pattern::smoke` is now
+  `#[cfg(test)] pub(crate)` instead of a public API surface.
+- **`cargo clippy --workspace --all-targets -- -D warnings`** clean.
+- **`cargo fmt --all`** applied across the codebase.
 
 ### Notes
 - Bench results (mc-mothership, ~13k indexed files): **47–5500× faster than
