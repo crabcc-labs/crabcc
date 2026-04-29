@@ -3,36 +3,83 @@ use crate::refs;
 use crate::store::Store;
 use crate::types::{Hit, Symbol};
 use anyhow::Result;
+use serde::Serialize;
+use std::collections::HashSet;
 use std::path::Path;
 
 pub fn find_symbol(store: &Store, name: &str) -> Result<Vec<Symbol>> {
     store.find_by_name(name)
 }
 
-/// Find call sites of `name` across the indexed repo.
-/// Iterates indexed files, prefilters textually with memchr, parses
-/// candidates with ast-grep pattern `name($$$)`.
-pub fn find_callers(store: &Store, root: &Path, name: &str) -> Result<Vec<Hit>> {
-    run_per_file(store, root, name, |src, lang_str, file| {
-        let Some(lang) = pattern::lang_for(lang_str) else {
-            return Vec::new();
-        };
-        let mut hits = pattern::find_callers(src, lang, name);
-        for h in &mut hits {
-            h.file = file.to_string();
+/// Mode for refs/callers queries — controls how much we materialize
+/// before the agent ever sees the result. The flags are mutually exclusive
+/// at the CLI level; precedence here is Count > FilesOnly > Hits(limit).
+#[derive(Debug, Clone, Copy)]
+pub enum Mode {
+    /// Full hit list capped at `limit` (None = uncapped).
+    Hits { limit: Option<usize> },
+    /// Distinct file list, no line/col/snippet — capped at `limit`.
+    FilesOnly { limit: Option<usize> },
+    /// Count of hits only — `{"count": N}`.
+    Count,
+}
+
+impl Default for Mode {
+    fn default() -> Self {
+        Mode::Hits { limit: None }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+pub enum Output {
+    Hits(Vec<Hit>),
+    Files { files: Vec<String> },
+    Count { count: usize },
+}
+
+impl Output {
+    /// Approximate result count for tracking — total hits regardless of
+    /// which output shape we picked.
+    pub fn count(&self) -> usize {
+        match self {
+            Output::Hits(h) => h.len(),
+            Output::Files { files } => files.len(),
+            Output::Count { count } => *count,
         }
-        hits
-    })
+    }
+}
+
+/// Find call sites of `name` across the indexed repo.
+pub fn find_callers(store: &Store, root: &Path, name: &str) -> Result<Vec<Hit>> {
+    match query_callers(store, root, name, Mode::default())? {
+        Output::Hits(h) => Ok(h),
+        _ => unreachable!("default mode is Hits"),
+    }
 }
 
 /// Find every identifier reference to `name` across the indexed repo.
 pub fn find_refs(store: &Store, root: &Path, name: &str) -> Result<Vec<Hit>> {
-    run_per_file(store, root, name, |src, lang_str, file| {
+    match query_refs(store, root, name, Mode::default())? {
+        Output::Hits(h) => Ok(h),
+        _ => unreachable!("default mode is Hits"),
+    }
+}
+
+pub fn query_callers(store: &Store, root: &Path, name: &str, mode: Mode) -> Result<Output> {
+    run(store, root, name, mode, |src, lang_str, file| {
+        let Some(lang) = pattern::lang_for(lang_str) else { return Vec::new() };
+        let mut hits = pattern::find_callers(src, lang, name);
+        for h in &mut hits { h.file = file.to_string(); }
+        hits
+    })
+}
+
+pub fn query_refs(store: &Store, root: &Path, name: &str, mode: Mode) -> Result<Output> {
+    run(store, root, name, mode, |src, lang_str, file| {
         match refs::find_refs(src, lang_str, name) {
             Ok(mut hits) => {
-                for h in &mut hits {
-                    h.file = file.to_string();
-                }
+                for h in &mut hits { h.file = file.to_string(); }
                 hits
             }
             Err(_) => Vec::new(),
@@ -40,13 +87,19 @@ pub fn find_refs(store: &Store, root: &Path, name: &str) -> Result<Vec<Hit>> {
     })
 }
 
-fn run_per_file<F>(store: &Store, root: &Path, name: &str, per_file: F) -> Result<Vec<Hit>>
+fn run<F>(store: &Store, root: &Path, name: &str, mode: Mode, per_file: F) -> Result<Output>
 where
     F: Fn(&str, &str, &str) -> Vec<Hit>,
 {
     let needle = name.as_bytes();
-    let mut out = Vec::new();
+    let mut hits: Vec<Hit> = Vec::new();
+    let mut files: Vec<String> = Vec::new();
+    let mut seen_files: HashSet<String> = HashSet::new();
+    let mut count: usize = 0;
+
     for (rel_path, lang) in store.list_files()? {
+        if early_stop(&mode, hits.len(), files.len()) { break; }
+
         let full = root.join(&rel_path);
         let bytes = match std::fs::read(&full) {
             Ok(b) => b,
@@ -59,10 +112,44 @@ where
             Ok(s) => s,
             Err(_) => continue,
         };
-        let hits = per_file(src, &lang, &rel_path);
-        out.extend(hits);
+
+        match mode {
+            Mode::Count => {
+                let n = per_file(src, &lang, &rel_path).len();
+                count += n;
+            }
+            Mode::FilesOnly { limit } => {
+                let n = per_file(src, &lang, &rel_path).len();
+                if n > 0 && seen_files.insert(rel_path.clone()) {
+                    files.push(rel_path);
+                    if let Some(l) = limit { if files.len() >= l { break; } }
+                }
+            }
+            Mode::Hits { limit } => {
+                let mut new_hits = per_file(src, &lang, &rel_path);
+                if let Some(l) = limit {
+                    let room = l.saturating_sub(hits.len());
+                    if new_hits.len() > room { new_hits.truncate(room); }
+                }
+                hits.extend(new_hits);
+                if let Some(l) = limit { if hits.len() >= l { break; } }
+            }
+        }
     }
-    Ok(out)
+
+    Ok(match mode {
+        Mode::Hits { .. }      => Output::Hits(hits),
+        Mode::FilesOnly { .. } => Output::Files { files },
+        Mode::Count            => Output::Count { count },
+    })
+}
+
+fn early_stop(mode: &Mode, hits_len: usize, files_len: usize) -> bool {
+    match mode {
+        Mode::Hits { limit: Some(l) }      => hits_len >= *l,
+        Mode::FilesOnly { limit: Some(l) } => files_len >= *l,
+        _ => false,
+    }
 }
 
 // TODO(crabcc/v1.1): callers from edges table once edges are populated.
@@ -126,5 +213,39 @@ mod tests {
         let hits = find_callers(&store, dir.path(), "ab cd").unwrap();
         // memchr might match the substring "ab cd" but pattern compile rejects.
         assert_eq!(hits.len(), 0);
+    }
+
+    #[test]
+    fn refs_count_mode_returns_total() {
+        let (dir, store) = fixture_repo();
+        let out = query_refs(&store, dir.path(), "greet", Mode::Count).unwrap();
+        match out {
+            Output::Count { count } => assert!(count >= 4, "count: {count}"),
+            _ => panic!("expected Count output"),
+        }
+    }
+
+    #[test]
+    fn refs_files_only_dedupes_per_file() {
+        let (dir, store) = fixture_repo();
+        let out = query_refs(&store, dir.path(), "greet", Mode::FilesOnly { limit: None }).unwrap();
+        match out {
+            Output::Files { files } => {
+                assert!(files.contains(&"a.ts".to_string()));
+                assert!(files.contains(&"b.ts".to_string()));
+                assert_eq!(files.len(), 2, "expected 2 distinct files, got: {files:?}");
+            }
+            _ => panic!("expected Files output"),
+        }
+    }
+
+    #[test]
+    fn callers_limit_caps_results() {
+        let (dir, store) = fixture_repo();
+        let out = query_callers(&store, dir.path(), "greet", Mode::Hits { limit: Some(1) }).unwrap();
+        match out {
+            Output::Hits(h) => assert_eq!(h.len(), 1),
+            _ => panic!("expected Hits output"),
+        }
     }
 }

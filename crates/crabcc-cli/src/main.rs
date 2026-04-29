@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use crabcc_core::{query, store::Store};
 use std::path::PathBuf;
 
@@ -27,27 +27,87 @@ enum Cmd {
     /// Find a symbol by name.
     Sym { name: String },
     /// Find references to a name.
-    Refs { name: String },
+    Refs {
+        name: String,
+        #[command(flatten)]
+        opts: ResultOpts,
+    },
     /// Find callers of a function.
-    Callers { name: String },
+    Callers {
+        name: String,
+        #[command(flatten)]
+        opts: ResultOpts,
+    },
     /// File outline (top-level symbols, no bodies).
     Outline { file: PathBuf },
+    /// List indexed files (replaces `ls -R` / `find -name`).
+    Files {
+        /// Restrict to paths starting with PREFIX.
+        #[arg(long)]
+        under: Option<String>,
+        /// Restrict to a language: typescript, tsx, javascript, ruby.
+        #[arg(long)]
+        lang: Option<String>,
+        /// Restrict to file extension (without leading dot).
+        #[arg(long)]
+        ext: Option<String>,
+        /// Cap output. 0 means unlimited.
+        #[arg(long, default_value_t = 0)]
+        limit: usize,
+    },
     /// Symbol-aware grep wrapper.
     Grep { pattern: String },
     /// Fuzzy symbol-name search (Levenshtein distance 2).
-    Fuzzy { query: String,
-        #[arg(long, default_value_t = 20)] limit: usize },
+    Fuzzy {
+        query: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
     /// Prefix symbol-name search (case-insensitive).
-    Prefix { query: String,
-        #[arg(long, default_value_t = 20)] limit: usize },
+    Prefix {
+        query: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
     /// Rebuild the Tantivy fuzzy/prefix sidecar from the current SQLite index.
     FtsRebuild,
     /// Show estimated tokens saved by crabcc usage (this session, 24h, all-time).
     Track {
-        /// Emit JSON instead of human-readable output.
         #[arg(long)]
         json: bool,
     },
+}
+
+/// Shaping flags for refs/callers. `--files-only` and `--count` are
+/// mutually exclusive output shapes; `--limit` modifies whichever shape
+/// you picked (or the default hit-list shape).
+#[derive(Args, Debug, Clone)]
+struct ResultOpts {
+    /// Cap result size at N. 0 = unlimited. Applies to hits or file list.
+    #[arg(long, default_value_t = 0)]
+    limit: usize,
+    /// Emit deduped JSON array of file paths only — no line/col/snippet.
+    #[arg(long, conflicts_with = "count")]
+    files_only: bool,
+    /// Emit `{"count": N}` only — no per-hit payload.
+    #[arg(long)]
+    count: bool,
+}
+
+impl ResultOpts {
+    fn to_mode(&self) -> query::Mode {
+        if self.count {
+            query::Mode::Count
+        } else if self.files_only {
+            query::Mode::FilesOnly { limit: opt(self.limit) }
+        } else {
+            query::Mode::Hits { limit: opt(self.limit) }
+        }
+    }
+}
+
+fn opt(n: usize) -> Option<usize> {
+    if n == 0 { None } else { Some(n) }
 }
 
 fn main() -> Result<()> {
@@ -91,16 +151,18 @@ fn main() -> Result<()> {
             crabcc_core::track::record("sym", &name, syms.len(), &repo_label(&root), body.len());
             println!("{body}");
         }
-        Cmd::Refs { name } => {
-            let hits = crabcc_core::query::find_refs(&store, &root, &name)?;
-            let body = serde_json::to_string(&hits)?;
-            crabcc_core::track::record("refs", &name, hits.len(), &repo_label(&root), body.len());
+        Cmd::Refs { name, opts } => {
+            let mode = opts.to_mode();
+            let out = query::query_refs(&store, &root, &name, mode)?;
+            let body = serde_json::to_string(&out)?;
+            crabcc_core::track::record("refs", &name, out.count(), &repo_label(&root), body.len());
             println!("{body}");
         }
-        Cmd::Callers { name } => {
-            let hits = crabcc_core::query::find_callers(&store, &root, &name)?;
-            let body = serde_json::to_string(&hits)?;
-            crabcc_core::track::record("callers", &name, hits.len(), &repo_label(&root), body.len());
+        Cmd::Callers { name, opts } => {
+            let mode = opts.to_mode();
+            let out = query::query_callers(&store, &root, &name, mode)?;
+            let body = serde_json::to_string(&out)?;
+            crabcc_core::track::record("callers", &name, out.count(), &repo_label(&root), body.len());
             println!("{body}");
         }
         Cmd::Outline { file } => {
@@ -108,6 +170,12 @@ fn main() -> Result<()> {
             let syms = crabcc_core::outline::outline(&store, &key)?;
             let body = serde_json::to_string(&syms)?;
             crabcc_core::track::record("outline", &key, syms.len(), &repo_label(&root), body.len());
+            println!("{body}");
+        }
+        Cmd::Files { under, lang, ext, limit } => {
+            let files = list_files(&store, under.as_deref(), lang.as_deref(), ext.as_deref(), limit)?;
+            let body = serde_json::to_string(&files)?;
+            crabcc_core::track::record("files", "list", files.len(), &repo_label(&root), body.len());
             println!("{body}");
         }
         Cmd::Grep { pattern } => {
@@ -143,6 +211,30 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn list_files(
+    store: &Store,
+    under: Option<&str>,
+    lang: Option<&str>,
+    ext: Option<&str>,
+    limit: usize,
+) -> Result<Vec<String>> {
+    let all = store.list_files()?;
+    let mut out: Vec<String> = all
+        .into_iter()
+        .filter(|(p, l)| {
+            under.map_or(true, |u| p.starts_with(u))
+                && lang.map_or(true, |want| l == want)
+                && ext.map_or(true, |e| p.ends_with(&format!(".{e}")))
+        })
+        .map(|(p, _)| p)
+        .collect();
+    out.sort();
+    if limit > 0 && out.len() > limit {
+        out.truncate(limit);
+    }
+    Ok(out)
 }
 
 #[cfg(unix)]

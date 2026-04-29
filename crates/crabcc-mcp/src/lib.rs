@@ -88,6 +88,18 @@ pub fn handle(req: &Value, root: &Path) -> Value {
 }
 
 pub fn tools_def() -> Vec<Value> {
+    let mode_field = json!({
+        "type": "string",
+        "enum": ["hits", "files", "count"],
+        "description": "Output shape. 'hits' = full {file,line,col,snippet} list (default). \
+                        'files' = deduped file paths only (~70% smaller). \
+                        'count' = `{count: N}` only (smallest)."
+    });
+    let limit_field = json!({
+        "type": "integer",
+        "description": "Cap result size. Omit for unlimited."
+    });
+
     vec![
         tool_schema(
             "sym",
@@ -99,15 +111,25 @@ pub fn tools_def() -> Vec<Value> {
         tool_schema(
             "refs",
             "Find every identifier reference to `name` across the indexed repo. \
-             Coarse — matches text equality on identifier nodes.",
-            json!({"name": str_field("symbol name")}),
+             Coarse — matches text equality on identifier nodes. \
+             Use mode='files' for 'which files reference X', mode='count' for 'how many'.",
+            json!({
+                "name":  str_field("symbol name"),
+                "mode":  mode_field.clone(),
+                "limit": limit_field.clone(),
+            }),
             &["name"],
         ),
         tool_schema(
             "callers",
             "Find call sites of `name` — both bare (`foo()`) and method-receiver \
-             (`obj.foo()`) shapes. Returns file/line/snippet hits.",
-            json!({"name": str_field("function or method name")}),
+             (`obj.foo()`) shapes. Use mode='files' for 'which files call X', \
+             mode='count' for 'how many calls'.",
+            json!({
+                "name":  str_field("function or method name"),
+                "mode":  mode_field,
+                "limit": limit_field,
+            }),
             &["name"],
         ),
         tool_schema(
@@ -115,6 +137,17 @@ pub fn tools_def() -> Vec<Value> {
             "All symbols in `file` ordered by line. Use parent field to reconstruct hierarchy.",
             json!({"file": str_field("repo-relative file path")}),
             &["file"],
+        ),
+        tool_schema(
+            "files",
+            "List indexed files. Token-cheap replacement for `ls -R` / `find -name`.",
+            json!({
+                "under": str_field("optional path prefix to filter under"),
+                "lang":  str_field("optional language filter (typescript|tsx|javascript|ruby)"),
+                "ext":   str_field("optional file extension (without dot)"),
+                "limit": {"type": "integer", "description": "cap output size"},
+            }),
+            &[],
         ),
         tool_schema(
             "index",
@@ -184,15 +217,25 @@ fn dispatch_tool(params: Option<&Value>, root: &Path) -> Result<String> {
             Ok(serde_json::to_string(&r)?)
         }
         "refs" => {
-            let r = query::find_refs(&store, root, arg_str(&args, "name")?)?;
+            let mode = parse_mode(&args);
+            let r = query::query_refs(&store, root, arg_str(&args, "name")?, mode)?;
             Ok(serde_json::to_string(&r)?)
         }
         "callers" => {
-            let r = query::find_callers(&store, root, arg_str(&args, "name")?)?;
+            let mode = parse_mode(&args);
+            let r = query::query_callers(&store, root, arg_str(&args, "name")?, mode)?;
             Ok(serde_json::to_string(&r)?)
         }
         "outline" => {
             let r = outline::outline(&store, arg_str(&args, "file")?)?;
+            Ok(serde_json::to_string(&r)?)
+        }
+        "files" => {
+            let under = args.get("under").and_then(|v| v.as_str());
+            let lang  = args.get("lang").and_then(|v| v.as_str());
+            let ext   = args.get("ext").and_then(|v| v.as_str());
+            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let r = list_indexed_files(&store, under, lang, ext, limit)?;
             Ok(serde_json::to_string(&r)?)
         }
         "index" => {
@@ -215,6 +258,39 @@ fn dispatch_tool(params: Option<&Value>, root: &Path) -> Result<String> {
         }
         other => Err(anyhow::anyhow!("unknown tool: {other}")),
     }
+}
+
+fn parse_mode(args: &Value) -> query::Mode {
+    let limit = args.get("limit").and_then(|v| v.as_u64()).map(|n| n as usize);
+    match args.get("mode").and_then(|v| v.as_str()) {
+        Some("count") => query::Mode::Count,
+        Some("files") => query::Mode::FilesOnly { limit },
+        _             => query::Mode::Hits      { limit },
+    }
+}
+
+fn list_indexed_files(
+    store: &Store,
+    under: Option<&str>,
+    lang: Option<&str>,
+    ext: Option<&str>,
+    limit: usize,
+) -> Result<Vec<String>> {
+    let mut out: Vec<String> = store
+        .list_files()?
+        .into_iter()
+        .filter(|(p, l)| {
+            under.map_or(true, |u| p.starts_with(u))
+                && lang.map_or(true, |want| l == want)
+                && ext.map_or(true, |e| p.ends_with(&format!(".{e}")))
+        })
+        .map(|(p, _)| p)
+        .collect();
+    out.sort();
+    if limit > 0 && out.len() > limit {
+        out.truncate(limit);
+    }
+    Ok(out)
 }
 
 fn error_response(id: Option<Value>, code: i64, message: &str) -> Value {

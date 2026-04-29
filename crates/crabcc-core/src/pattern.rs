@@ -71,8 +71,9 @@ fn is_safe_identifier(s: &str) -> bool {
 
 fn compact_snippet(s: &str) -> String {
     let one_line: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
-    if one_line.len() > 200 {
-        format!("{}…", &one_line[..200])
+    // 80 chars is enough to disambiguate a call site without paying for noise.
+    if one_line.len() > 80 {
+        format!("{}…", &one_line[..80])
     } else {
         one_line
     }

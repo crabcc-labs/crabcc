@@ -64,10 +64,12 @@ fn is_identifier_kind(lang: &str, kind: &str) -> bool {
 }
 
 fn line_at(src: &str, row: usize) -> String {
-    src.lines()
-        .nth(row)
-        .map(|l| l.trim().to_string())
-        .unwrap_or_default()
+    let raw = src.lines().nth(row).unwrap_or("").trim();
+    if raw.len() > 80 {
+        format!("{}…", &raw[..80])
+    } else {
+        raw.to_string()
+    }
 }
 
 #[cfg(test)]

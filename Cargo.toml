@@ -38,6 +38,22 @@ tracing-subscriber = "0.3"
 libc = "0.2"
 
 [profile.release]
-lto = "thin"
+opt-level     = 3
+lto           = "fat"        # whole-program optimization (was "thin"; +30s compile, ~5–10% runtime)
 codegen-units = 1
-strip = true
+panic         = "abort"      # smaller binary, no unwinding tables
+strip         = true
+debug         = false
+incremental   = false
+
+# Faster iteration loop than `cargo build` (-O0) without paying full release cost.
+# `cargo build --profile dev-fast` gets a usable-speed binary in ~half the time.
+[profile.dev-fast]
+inherits      = "dev"
+opt-level     = 1
+debug         = 1            # minimal debug info; faster linker
+
+# Tests run with -O0 by default; bump to -O1 so the per-file tree-sitter walks in
+# query tests don't dominate the wall-time on the larger fixtures.
+[profile.test]
+opt-level     = 1
