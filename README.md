@@ -301,25 +301,31 @@ and runbooks for adding features, see [`ARCHITECTURE.md`](./ARCHITECTURE.md).
 
 ## Status
 
-v2.0.0 shipped (2026-04-30): edges-at-extract makes `graph build` O(files) and
-caller queries pure SQL. Languages: TS/TSX/JS/Ruby (Go/Python/Rust queued).
-**124 tests** (104 core + 20 MCP, 2 ignored: FS-event race + perf microbench). License: MIT.
-CI matrix: Linux x86_64 + Linux aarch64 + macOS x86_64 + macOS aarch64.
+v2.0.0 + v2.1.0 shipped (2026-04-30): edges-at-extract makes `graph build`
+O(files) and caller queries pure SQL; FSST string compression on signatures
++ memory drawer bodies; `crabcc memory` M0 + M3-light surface (CLI + 8
+`memory.*` MCP tools); v2.1.0 adds `crabcc upgrade` + shell completions.
+Languages: TypeScript / TSX / JavaScript / Ruby / Rust / Go / Python.
+**130+ tests** across the workspace. License: MIT.
+CI matrix: Linux x86_64 + Linux aarch64 + macOS aarch64. (Intel macOS
+dropped in v1.0.1 — `cargo install` from source.)
 
 ### Roadmap
 
 | Milestone | Status | Tracked |
 |---|---|---|
-| Token-shaping flags + `crabcc files` | ✅ shipped | — |
-| Watch + Graph sidecars | ✅ shipped | — |
-| SQLite tuning + +14 coverage tests | ✅ shipped | — |
-| CI: nextest + JUnit XML artifact | ✅ shipped | — |
-| ARCHITECTURE.md + install.sh + brew formula | ✅ shipped | — |
-| **`crabcc memory` MVP** (MemPalace port) | 📋 v2.0 | [#2](https://github.com/peterlodri-sec/crabcc/issues/2) |
-| **Edges-at-extract** (graph build O(n²)→O(n)) | ✅ shipped (v2.0.0) | [#3](https://github.com/peterlodri-sec/crabcc/issues/3) |
-| **Languages: Go, Python, Rust** | 📋 v2.0 | [#4](https://github.com/peterlodri-sec/crabcc/issues/4) |
-| **Distribution: brew tap, mdBook, demos** | 📋 v2.0 | [#5](https://github.com/peterlodri-sec/crabcc/issues/5) |
-| **CI optimizations** (sccache, smarter cache) | 📋 v2.0 | [#6](https://github.com/peterlodri-sec/crabcc/issues/6) |
-| **FSST string compression** | 📋 v2.0 | [#1](https://github.com/peterlodri-sec/crabcc/issues/1) |
+| Token-shaping flags + `crabcc files` | ✅ shipped (v1.0.0) | — |
+| Watch + Graph sidecars | ✅ shipped (v1.0.0) | — |
+| SQLite tuning + +14 coverage tests | ✅ shipped (v1.0.0) | — |
+| CI: nextest + JUnit XML artifact | ✅ shipped (v1.0.0) | — |
+| ARCHITECTURE.md + install.sh + brew skeleton | ✅ shipped (v1.0.0) | — |
+| Languages: Go, Python, Rust | ✅ shipped (v1.1.0) | [#4](https://github.com/peterlodri-sec/crabcc/issues/4) |
+| CI optimizations (sccache, smarter cache) | ✅ shipped | [#6](https://github.com/peterlodri-sec/crabcc/issues/6) |
+| FSST string compression | ✅ shipped (v2.0.0) | [#1](https://github.com/peterlodri-sec/crabcc/issues/1) |
+| Edges-at-extract (graph build O(n²)→O(n)) | ✅ shipped (v2.0.0) | [#3](https://github.com/peterlodri-sec/crabcc/issues/3) |
+| `crabcc memory` M0 + M3-light surface | ✅ shipped (v2.0.0) | [#2](https://github.com/peterlodri-sec/crabcc/issues/2) |
+| `crabcc upgrade` + shell completions | ✅ shipped (v2.1.0) | — |
+| **Memory: semantic search (M0.5 + M1)** | 🚧 v2.5 sprint 1 | [#2](https://github.com/peterlodri-sec/crabcc/issues/2) |
+| **Distribution: brew tap, mdBook, demos** | 🚧 v2.5 sprint 2 | [#5](https://github.com/peterlodri-sec/crabcc/issues/5) |
 
-Full v2.0 milestone: <https://github.com/peterlodri-sec/crabcc/milestone/1>.
+Full v2.5 plan: [`docs/ROADMAP-v2.5.md`](./docs/ROADMAP-v2.5.md).

@@ -175,6 +175,19 @@ tasks:
       - "git tag v{{.VERSION}}"
       - "echo 'now: git push origin main --tags'"
 
+  repomix:
+    desc: Pack repo into a token-minimized XML bundle for LLM ingestion (.repomix/crabcc.xml)
+    summary: |
+      Tree-sitter compressed (signatures only), no comments, no empty lines,
+      no .md files, no per-file or directory-structure summary headers.
+      XML style is the smallest. Override target with OUT=path.
+    vars:
+      OUT: '{{.OUT | default ".repomix/crabcc.xml"}}'
+    cmds:
+      - mkdir -p $(dirname {{.OUT}})
+      - 'repomix --compress --remove-comments --remove-empty-lines --no-file-summary --no-directory-structure --style xml --ignore "**/*.md,**/*.lock,**/target/**,**/.crabcc/**,bench/results/**,assets/**,.repomix/**" --output {{.OUT}}'
+      - 'wc -c {{.OUT}} | awk ''{ printf "size: %.1f KiB\n", $1/1024 }'''
+
   clean:
     desc: Remove target/, bench/results/, and any tantivy/sqlite test fixtures
     cmds:
