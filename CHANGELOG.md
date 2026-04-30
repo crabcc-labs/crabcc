@@ -6,6 +6,23 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+### Added — Test coverage for `memory forget` (follow-up to [#26](https://github.com/peterlodri-sec/crabcc/issues/26))
+- PR #55 landed the `memory forget` CLI + `memory.forget` MCP tool
+  but shipped no tests. This change closes that gap:
+  - 4 Palace tests in `crates/crabcc-memory/src/palace.rs`: by-id
+    removal, idempotency on missing id, before-in-wing scoping,
+    empty-window noop. The before-in-wing test backdates rows via
+    a direct `UPDATE drawers SET created_at = ?` so the cutoff is
+    deterministic (no sleeping the test thread).
+  - 3 CLI tests in `crates/crabcc-cli/src/memory.rs` for
+    `parse_before_timestamp`: epoch seconds, RFC3339Z, garbage
+    rejection (must surface as an error so we don't silently wipe
+    everything by parsing to `0`).
+  - 3 MCP dispatch tests in `crates/crabcc-mcp/src/lib.rs`:
+    `forget --drawer ID` (incl. idempotent re-call), invalid arg
+    combinations (no selector / both selectors / wing-without-before),
+    and the RFC3339 cutoff path.
+
 ### Added — MCP `memory.search` ranked-output assertions (closes [#21](https://github.com/peterlodri-sec/crabcc/issues/21))
 - The MCP `memory.search` tool already mirrors the CLI's hybrid /
   lexical / vector dispatch via `palace.search_with_mode` (#48).
