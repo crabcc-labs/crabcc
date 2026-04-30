@@ -61,6 +61,7 @@
 
 #[cfg(feature = "compress")]
 pub mod compress;
+pub mod config;
 pub mod extract;
 pub mod fts;
 pub mod gitdiff;

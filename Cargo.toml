@@ -98,6 +98,12 @@ fastembed = "5"
 # runtime deps. Routes: GET / (bundled HTML) + GET /api/graph (JSON snapshot).
 # WebSocket push (Phase 2) will live alongside, not replace, this.
 tiny_http = "0.12"
+# Issue #105 (config) — single-file YAML config at
+# `$HOME/.crabcc/._config.internal`. serde_yml is the maintained fork of
+# the abandoned serde_yaml; same surface, drop-in. Used by `crabcc-core`'s
+# `config` module for runtime defaults (agent backend / ollama base url /
+# jobs redis url). Default-on dep (small, no transitive cargo features).
+serde_yml = "0.0.12"
 # Issue #109 — async runtime for the BullMQ-backed jobs surface in
 # crabcc-core. INTENTIONALLY scoped behind the `jobs` feature on
 # crabcc-core so default builds (CLI, MCP, viz) stay tokio-free. The
