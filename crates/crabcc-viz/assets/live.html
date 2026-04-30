@@ -299,11 +299,27 @@
   <span class="crumb" id="crumb"></span>
   <span class="stats" id="stats"></span>
   <span class="actions">
+    <button id="btnReindex" title="Run `crabcc index` against the server's PWD and show stats + logs">↻ Re-index PWD</button>
     <button id="btnRandomQuery" title="Run a random crabcc query against this repo">⚡ Random query</button>
     <button id="btnDumpDebug" title="Download full debug snapshot as JSON">💾 Dump debug</button>
     <a href="/graph" title="Open the interactive call-graph viewer">interactive ›</a>
   </span>
 </header>
+<dialog id="reindexDialog" style="border:1px solid var(--border); border-radius:8px; padding:0; max-width:780px; width:80vw; background:var(--panel); color:var(--fg);">
+  <div style="padding:14px 18px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center;">
+    <strong>↻ Re-index PWD</strong>
+    <button id="reindexClose" style="background:none; border:1px solid var(--border); color:var(--fg); border-radius:4px; padding:2px 8px; cursor:pointer;">✕</button>
+  </div>
+  <div id="reindexBody" style="padding:14px 18px;">
+    <div id="reindexStatus" style="font-size:13px; color:var(--muted);">Click <b>Run</b> to start a full re-index against the server's PWD. The page will block until the index finishes.</div>
+    <div id="reindexStats" style="display:none; font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; margin-top:10px; padding:10px; background:var(--bg); border:1px solid var(--border); border-radius:4px;"></div>
+    <h4 style="font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:14px 0 6px;">Tail of log output</h4>
+    <pre id="reindexLogs" style="margin:0; max-height:300px; overflow:auto; font:11px/1.4 ui-monospace, Menlo, Consolas, monospace; background:var(--bg); border:1px solid var(--border); border-radius:4px; padding:8px; white-space:pre-wrap; word-break:break-word;">— logs land here after the run completes —</pre>
+  </div>
+  <div style="padding:10px 18px; border-top:1px solid var(--border); display:flex; gap:8px; justify-content:flex-end;">
+    <button id="reindexRun" style="background:var(--accent); color:white; border:none; border-radius:4px; padding:6px 14px; cursor:pointer; font-weight:600;">Run</button>
+  </div>
+</dialog>
 <main>
   <!-- ── tool calls (left) ─────────────────────────────────────────── -->
   <section>
@@ -920,7 +936,10 @@ meta:   ${j.paths.meta}`);
         if (t) t.textContent = `${Math.max(0, Math.ceil((total - elapsed) / 1000))}s`;
       }
       // Fire-and-forget — failures don't abort the burst.
-      fetch("/api/random-query").catch(() => {});
+      // /api/random-query is POST-only (the btnRandomQuery handler also
+      // uses POST). A GET here returned 405 every tick, so the activity
+      // log never lit up during a burst.
+      fetch("/api/random-query", { method: "POST" }).catch(() => {});
     }, interval);
   }
   if (els.burstBtn) els.burstBtn.addEventListener("click", startBurst);
@@ -953,6 +972,59 @@ meta:   ${j.paths.meta}`);
       flashHint("debug dump downloaded");
     } catch (e) {
       flashHint(`dump error: ${e.message || e}`);
+    }
+  });
+
+  // ── Re-index PWD dialog ────────────────────────────────────────────────
+  const reindexDialog = document.getElementById("reindexDialog");
+  const reindexClose = document.getElementById("reindexClose");
+  const reindexRun = document.getElementById("reindexRun");
+  const reindexStatus = document.getElementById("reindexStatus");
+  const reindexStats = document.getElementById("reindexStats");
+  const reindexLogs = document.getElementById("reindexLogs");
+  document.getElementById("btnReindex").addEventListener("click", () => {
+    reindexStatus.textContent = "Click Run to start a full re-index against the server's PWD. The page will block until the index finishes.";
+    reindexStats.style.display = "none";
+    reindexLogs.textContent = "— logs land here after the run completes —";
+    reindexRun.disabled = false;
+    reindexRun.textContent = "Run";
+    reindexDialog.showModal();
+  });
+  reindexClose.addEventListener("click", () => reindexDialog.close());
+  reindexRun.addEventListener("click", async () => {
+    reindexRun.disabled = true;
+    reindexRun.textContent = "Running…";
+    reindexStatus.textContent = "Running `crabcc index` — this may take a few seconds on a large repo.";
+    reindexStats.style.display = "none";
+    reindexLogs.textContent = "(waiting)";
+    try {
+      const t0 = performance.now();
+      const r = await fetch("/api/reindex", { method: "POST" });
+      if (!r.ok) throw new Error(await r.text());
+      const j = await r.json();
+      const wall = (performance.now() - t0).toFixed(0);
+      const s = j.stats || {};
+      reindexStatus.textContent = `Done in ${j.elapsed_ms} ms (server) / ${wall} ms (round-trip).`;
+      reindexStats.style.display = "block";
+      reindexStats.innerHTML =
+        `<b>root</b>:&nbsp;${j.root || "?"}<br>` +
+        `<b>files_indexed</b>:&nbsp;${s.files_indexed ?? "?"}` +
+        `&nbsp;&nbsp;<b>symbols</b>:&nbsp;${s.symbols ?? "?"}` +
+        `&nbsp;&nbsp;<b>edges</b>:&nbsp;${s.edges ?? "?"}<br>` +
+        `<b>skipped</b>:&nbsp;` +
+        `unsupported=${s.skipped_unsupported ?? 0}` +
+        `, too_large=${s.skipped_too_large ?? 0}` +
+        `, unreadable=${s.skipped_unreadable ?? 0}` +
+        `, parse_error=${s.skipped_parse_error ?? 0}`;
+      reindexLogs.textContent = (j.logs || []).join("\n") || "(no log lines captured)";
+      flashHint(`re-index ok · ${s.files_indexed ?? 0} files · ${j.elapsed_ms} ms`);
+    } catch (e) {
+      reindexStatus.textContent = `Re-index failed: ${e.message || e}`;
+      reindexLogs.textContent = String(e);
+      flashHint(`re-index error: ${e.message || e}`);
+    } finally {
+      reindexRun.disabled = false;
+      reindexRun.textContent = "Run again";
     }
   });
 

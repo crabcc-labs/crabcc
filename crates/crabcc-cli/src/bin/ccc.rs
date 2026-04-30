@@ -97,6 +97,12 @@ enum Cmd {
         compress: bool,
         #[arg(long, group = "index_mode")]
         rebuild_fts: bool,
+        /// Stream tracing logs (info-level, scoped to crabcc) to stderr
+        /// alongside the JSON stats. Equivalent to setting
+        /// `RUST_LOG=crabcc=info,crabcc_core=info,crabcc_cli=info` for
+        /// the underlying `crabcc index` invocation.
+        #[arg(long)]
+        logs: bool,
     },
     /// Memory operations. Pass-through to `crabcc memory ...`.
     Memory {
@@ -159,6 +165,19 @@ fn locate_crabcc() -> PathBuf {
         }
     }
     PathBuf::from("crabcc")
+}
+
+/// Turn on info-level tracing for the next subprocess `run()` call.
+/// Used by `--logs` flags: we set `RUST_LOG` in our own env before the
+/// subprocess inherits it. Scoped to `crabcc*` so tantivy chatter stays
+/// suppressed.
+fn set_log_filter() {
+    if std::env::var_os("RUST_LOG").is_none() {
+        std::env::set_var(
+            "RUST_LOG",
+            "crabcc=info,crabcc_core=info,crabcc_cli=info,crabcc_mcp=info,crabcc_memory=info",
+        );
+    }
 }
 
 fn run(args: &[&str]) -> ! {
@@ -249,7 +268,15 @@ fn main() {
             watch,
             compress,
             rebuild_fts,
+            logs,
         } => {
+            // `--logs` is a flag-of-flags: it doesn't pick a different
+            // sub-mode, it just turns on RUST_LOG for whatever sub-mode
+            // the caller already chose. The plain `index` (default) is
+            // the most useful pairing in practice.
+            if logs {
+                set_log_filter();
+            }
             if watch {
                 run(&["watch"]);
             }
