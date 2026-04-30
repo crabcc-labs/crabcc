@@ -12,6 +12,7 @@ mod doctor;
 mod go;
 mod install;
 mod memory;
+mod model_info;
 mod status;
 mod telemetry;
 
@@ -298,12 +299,15 @@ enum Cmd {
         /// a wrapping script has already brought the index up to date.
         #[arg(long)]
         no_refresh: bool,
-        /// LLM backend the spawned agent talks to. `claude` (default)
-        /// uses Anthropic via Claude Code's existing config. `ollama`
-        /// routes through the local LiteLLM proxy from the bundled
-        /// Compose stack (issue #105) — requires Docker; the stack is
-        /// auto-brought-up before spawn via `ollama_stack::ensure_up`.
-        #[arg(long, value_name = "BACKEND", default_value = "claude")]
+        /// LLM backend the spawned agent talks to. `ollama` (DEFAULT
+        /// since v2.8.x) routes through the local LiteLLM proxy from
+        /// the bundled Compose stack (issue #105) — requires Docker
+        /// or an OrbStack equivalent; the stack is auto-brought-up
+        /// before spawn via `ollama_stack::ensure_up`. `claude` (BETA)
+        /// uses Anthropic via Claude Code's existing config — kept for
+        /// users who still want hosted; will become an opt-in
+        /// `--backend claude` in a future major.
+        #[arg(long, value_name = "BACKEND", default_value = "ollama")]
         backend: String,
         /// Internal-agent profile to load (issue #112 follow-up). Pass
         /// `internal/<name>` to load the matching profile from
@@ -375,6 +379,37 @@ enum Cmd {
     AgentKills {
         #[arg(long, default_value_t = 50)]
         limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Per-model metadata stored at $CRABCC_HOME/models/.model.<provider>.<name>.info
+    /// (TOML). Used by `crabcc agent` to print a one-line banner before
+    /// launch + by Containerfile builds to bake metadata into images.
+    #[command(name = "model-info")]
+    ModelInfo {
+        #[command(subcommand)]
+        op: ModelInfoOp,
+    },
+}
+
+#[derive(Subcommand)]
+enum ModelInfoOp {
+    /// Print the .info file for <provider>:<name>. Defaults to the
+    /// bundled Ollama default (`ollama:qwen2.5-coder`).
+    Show {
+        #[arg(long, default_value = "ollama")]
+        provider: String,
+        #[arg(long, default_value = "qwen2.5-coder")]
+        name: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Seed the bundled Ollama default's .info file. Idempotent.
+    /// Run by the install path; safe to invoke any time.
+    SeedDefault,
+    /// List all .info files under $CRABCC_HOME/models/ as a table.
+    /// JSON output via --json. Used by the live dashboard's model picker.
+    Ls {
         #[arg(long)]
         json: bool,
     },
@@ -748,6 +783,9 @@ fn main() -> Result<()> {
     if let Some(Cmd::AgentKills { limit, json }) = cli.cmd.as_ref() {
         return run_agent_kills(*limit, *json);
     }
+    if let Some(Cmd::ModelInfo { op }) = cli.cmd.as_ref() {
+        return run_model_info(op);
+    }
 
     // `ollama-stack` is an operator surface — pure shell-out to
     // `docker compose` against the bundled stack at install/ollama-stack/.
@@ -1041,6 +1079,7 @@ fn main() -> Result<()> {
         Cmd::AgentLs { .. } => unreachable!("agent-ls handled before store init"),
         Cmd::AgentGuard { .. } => unreachable!("agent-guard handled before store init"),
         Cmd::AgentKills { .. } => unreachable!("agent-kills handled before store init"),
+        Cmd::ModelInfo { .. } => unreachable!("model-info handled before store init"),
         Cmd::OllamaStack { .. } => unreachable!("ollama-stack handled before store init"),
         Cmd::Doctor { .. } => unreachable!("doctor handled before store init"),
     }
@@ -1147,6 +1186,81 @@ fn run_agent_kills(limit: usize, json: bool) -> Result<()> {
     Ok(())
 }
 
+fn run_model_info(op: &ModelInfoOp) -> Result<()> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("HOME not set"))?;
+    match op {
+        ModelInfoOp::Show {
+            provider,
+            name,
+            json,
+        } => match model_info::read(&home, provider, name)? {
+            Some(info) => {
+                if *json {
+                    println!("{}", serde_json::to_string_pretty(&info)?);
+                } else {
+                    println!("{}", model_info::banner_line(&info));
+                    if let Some(ref n) = info.notes {
+                        println!("\n{n}");
+                    }
+                    if !info.flags.is_empty() {
+                        println!("\nflags:");
+                        for f in &info.flags {
+                            println!(
+                                "  {:<22} {}{}",
+                                f.name,
+                                f.default
+                                    .as_ref()
+                                    .map(|d| format!("[{d}] "))
+                                    .unwrap_or_default(),
+                                f.description
+                            );
+                        }
+                    }
+                }
+                Ok(())
+            }
+            None => {
+                let path = model_info::file_path(&home, provider, name);
+                anyhow::bail!(
+                    "no .info at {}. Run `crabcc model-info seed-default` for the bundled default.",
+                    path.display()
+                )
+            }
+        },
+        ModelInfoOp::SeedDefault => {
+            let path = model_info::seed_default_ollama(&home)?;
+            println!("seeded {}", path.display());
+            Ok(())
+        }
+        ModelInfoOp::Ls { json } => {
+            let dir = model_info::default_dir(&home);
+            let mut rows: Vec<String> = Vec::new();
+            if let Ok(entries) = std::fs::read_dir(&dir) {
+                for e in entries.flatten() {
+                    let n = e.file_name().to_string_lossy().to_string();
+                    if n.starts_with(".model.") && n.ends_with(".info") {
+                        rows.push(n);
+                    }
+                }
+            }
+            rows.sort();
+            if *json {
+                let dir_s = dir.display().to_string();
+                let arr: Vec<String> = rows.iter().map(|n| format!("\"{n}\"")).collect();
+                println!(r#"{{"dir":"{dir_s}","files":[{}]}}"#, arr.join(","));
+            } else {
+                println!("dir: {}", dir.display());
+                for n in rows {
+                    println!("  {n}");
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
 fn run_serve(root: &Path, port: u16, bind: &str, no_open: bool, init: bool) -> Result<()> {
     let bind: std::net::IpAddr = bind
         .parse()
@@ -1230,6 +1344,7 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::AgentLs { .. } => "agent-ls",
         Cmd::AgentGuard { .. } => "agent-guard",
         Cmd::AgentKills { .. } => "agent-kills",
+        Cmd::ModelInfo { .. } => "model-info",
         Cmd::Serve { .. } => "serve",
         Cmd::InstallClaude { .. } => "install-claude",
         Cmd::OllamaStack { .. } => "ollama-stack",

@@ -81,6 +81,29 @@ export type TelemetrySnapshot = {
   source: TelemetrySource;
 };
 
+// Issue #112 follow-up — agent dashboard surfaces.
+export type AgentProfileEntry = {
+  id: string;
+  crate_: string | null;
+  description: string | null;
+  model: string | null;
+};
+export type AgentKillRow = {
+  run_id: string;
+  reason: string;
+  pid: number | null;
+  detail: string | null;
+  killed_at: number;
+};
+export type AgentModelEntry = {
+  file: string;
+  provider: string;
+  name: string;
+  params: string | null;
+  context: number | null;
+  docs_first: string | null;
+};
+
 export const api = {
   bootstrap: () => getJson<Bootstrap>("/api/bootstrap"),
   activity: (sinceTs?: number, limit = 100) =>
@@ -90,6 +113,14 @@ export const api = {
   agents: () => getJson<{ agents: AgentSummary[] }>("/api/agents"),
   agentLog: (id: string, since: number) =>
     getJson<AgentLog>(`/api/agents/${id}/log?since=${since}`),
+  agentProfiles: () =>
+    getJson<{ dir: string; profiles: AgentProfileEntry[] }>(
+      "/api/agent-profiles",
+    ),
+  agentKills: () =>
+    getJson<{ db: string; rows: AgentKillRow[] }>("/api/agent-kills"),
+  agentModels: () =>
+    getJson<{ dir: string; models: AgentModelEntry[] }>("/api/agent-models"),
   reindex: () => postJson<ReindexReport>("/api/reindex"),
   randomQuery: () =>
     postJson<{ op: string; symbol: string }>("/api/random-query"),
@@ -98,3 +129,25 @@ export const api = {
       `/api/telemetry?since=${sinceTs ?? 0}&limit=${limit}`,
     ),
 };
+
+// Issue #112 follow-up — expose the api surface on window for
+// Chrome DevTools console use. Devs can call `window.crabcc.agents()`,
+// `window.crabcc.agentKills()`, etc. directly. Logged once on first
+// import so the console hint shows up before the React tree mounts.
+declare global {
+  interface Window {
+    crabcc?: typeof api;
+  }
+}
+if (typeof window !== "undefined") {
+  window.crabcc = api;
+  // Friendly console banner — readable in Chrome DevTools / Safari Web Inspector.
+  // eslint-disable-next-line no-console
+  console.info(
+    "%ccrabcc%c live dashboard — call %cwindow.crabcc%c.{agents, agentProfiles, agentKills, agentModels, telemetry, ...}() to query the running server.",
+    "color:#ff2a6d;font-weight:700;text-shadow:0 0 4px rgba(255,42,109,.5);",
+    "color:#c8d4ff;",
+    "color:#00f0ff;font-weight:700;",
+    "color:#c8d4ff;",
+  );
+}

@@ -72,10 +72,18 @@ impl Backend {
     }
     pub fn from_str(s: &str) -> Result<Self> {
         match s {
-            "claude" => Ok(Backend::Claude),
+            "claude" => {
+                eprintln!(
+                    "crabcc agent: warning — `--backend claude` is BETA. The default \
+                     is now `ollama` (issue #105 LiteLLM proxy + local stack). Pass \
+                     `--backend ollama` to silence this notice; `--backend claude` \
+                     keeps working but may move to an opt-in path in a future major."
+                );
+                Ok(Backend::Claude)
+            }
             "ollama" => Ok(Backend::Ollama),
             other => Err(anyhow!(
-                "unknown agent backend `{other}`; supported: claude, ollama"
+                "unknown agent backend `{other}`; supported: ollama (default), claude (beta)"
             )),
         }
     }
@@ -520,6 +528,27 @@ pub fn run(req: AgentRequest<'_>) -> Result<()> {
         run_dir.id,
         run_dir.log_path.display()
     );
+
+    // Per-model banner (one stderr line). Looks up the .info file for
+    // the resolved provider+model and prints it before any heavy work.
+    // Best-effort: silent on missing file or read error.
+    let provider = match req.backend {
+        Backend::Claude => "claude",
+        Backend::Ollama => "ollama",
+    };
+    let resolved_model = req.model.as_deref().unwrap_or(match req.backend {
+        Backend::Claude => DEFAULT_MODEL,
+        Backend::Ollama => DEFAULT_OLLAMA_MODEL,
+    });
+    // For provider "ollama" the resolved_model often comes prefixed
+    // (e.g. `ollama/qwen2.5-coder`). The .info file is keyed on the
+    // model name without the prefix; strip it for the lookup.
+    let bare_name = resolved_model
+        .strip_prefix("ollama/")
+        .unwrap_or(resolved_model);
+    if let Ok(Some(info)) = crate::model_info::read(&home, provider, bare_name) {
+        eprintln!("crabcc agent: {}", crate::model_info::banner_line(&info));
+    }
 
     // Open the singleton runs DB. Best-effort: if it fails (locked,
     // disk full), the agent still runs — the menubar's pgrep + lockfile

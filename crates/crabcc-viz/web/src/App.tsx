@@ -2,6 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { Header } from "./components/Header";
 import { ActivityPanel } from "./components/ActivityPanel";
 import { AgentsPanel } from "./components/AgentsPanel";
+import { AgentProfilesPanel } from "./components/AgentProfilesPanel";
+import { AgentKillsPanel } from "./components/AgentKillsPanel";
+import { AgentModelsPanel } from "./components/AgentModelsPanel";
 import { ReindexDialog } from "./components/ReindexDialog";
 import { TelemetryPanel } from "./components/TelemetryPanel";
 import { DebugPanel } from "./components/DebugPanel";
@@ -87,6 +90,18 @@ export function App() {
             agents <span className="count">{agents.length}</span>
           </h2>
           <AgentsPanel agents={agents} />
+          <h2 style={{ marginTop: "1.2em" }}>
+            agent profiles
+          </h2>
+          <AgentProfilesPanel />
+          <h2 style={{ marginTop: "1.2em" }}>
+            recent kills
+          </h2>
+          <AgentKillsPanel />
+          <h2 style={{ marginTop: "1.2em" }}>
+            models
+          </h2>
+          <AgentModelsPanel />
           <h2 style={{ marginTop: "1.2em" }}>
             telemetry <span className="count">{telEvents.length}</span>
           </h2>
