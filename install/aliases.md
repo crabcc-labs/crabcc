@@ -38,20 +38,26 @@ scripts/install-aliases.sh --install-tools
 | `--print`           | Echo the alias block(s) only.                            |
 | `--remove`          | Strip the fenced block from the rc file(s).              |
 
-## Aggressive verbs (issue #81)
+## Aggressive verbs (issue #81 + #74)
 
-When you pass `--aggressive`, the script adds these short verbs (all gated
-on `crabcc` being on `PATH`):
+When you pass `--aggressive`, the script wires short verbs to the `ccc`
+high-level binary (issue #74). Verbs that take their argument mid-line
+are installed as shell functions (alias-with-args isn't portable);
+plain ones are aliases. All gated on the relevant binary being on `PATH`.
 
-| Alias       | Expands to                       |
-|-------------|----------------------------------|
-| `gr`        | `crabcc grep`                    |
-| `sym`       | `crabcc sym`                     |
-| `refs`      | `crabcc refs --files-only`       |
-| `callers`   | `crabcc callers --files-only`    |
-| `outline`   | `crabcc outline`                 |
-| `fuzzy`     | `crabcc fuzzy`                   |
-| `diff`      | `delta` *(when delta installed)* |
+| Verb       | Expands to                                       | Shape    |
+|------------|--------------------------------------------------|----------|
+| `sym`      | `ccc find`                                       | alias    |
+| `fuzzy`    | `ccc find --mode fuzzy`                          | alias    |
+| `outline`  | `crabcc outline` *(no ccc combo for outline yet)*| alias    |
+| `refs`     | `ccc find <NAME> --mode references --files-only` | function |
+| `callers`  | `ccc find <NAME> --mode callers --files-only`    | function |
+| `gr`       | `ccc find <PATTERN> --mode grep`                 | function |
+| `diff`     | `delta` *(when delta installed)*                 | alias    |
+
+The basic alias set (`cci`, `ccs`, `ccm`) also routes through `ccc`
+post-issue-#74. The previous `alias ccc='crabcc callers'` was dropped
+because it shadowed the new `ccc` binary.
 
 Avoid `g` as the alias for grep — it clashes with the GNU coreutils `g`
 macro on some Linux distros — hence `gr`.

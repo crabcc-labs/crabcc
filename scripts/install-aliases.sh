@@ -150,29 +150,33 @@ command -v btop   >/dev/null 2>&1 && alias top='btop'
 command -v zoxide >/dev/null 2>&1 && eval "\$(zoxide init "$shell_name" --cmd cd)"
 command -v jq     >/dev/null 2>&1 && alias jq='jq --indent 2'
 
-# crabcc-specific shortcuts.
+# crabcc / ccc shortcuts.
+# Issue #74 — `ccc` is now a real binary (high-level combo CLI) installed
+# next to crabcc. The previous `alias ccc='crabcc callers'` shadowed it,
+# so it's been removed. Reach for `ccc` directly for the friendly surface;
+# `crabcc` (or `cc`) for the low-level granular surface.
 command -v crabcc >/dev/null 2>&1 && {
     alias cc='crabcc'
-    alias cci='crabcc index'
-    alias ccs='crabcc sym'
-    alias ccr='crabcc refs'
-    alias ccc='crabcc callers'
-    alias ccm='crabcc memory'
+    alias cci='ccc index'
+    alias ccs='ccc find'
+    alias ccm='ccc memory'
 }
 EOF
     if [ "$AGGRESSIVE" = "1" ]; then
         cat <<'EOF'
 
-# --- aggressive (--aggressive) — short crabcc verbs + delta diff ---------
-# Issue #81: route muscle memory ('where is X?', 'what calls Y?') to crabcc
-# instead of grep/find. Each verb is gated on crabcc being on PATH.
-command -v crabcc >/dev/null 2>&1 && {
-    alias gr='crabcc grep'
-    alias sym='crabcc sym'
-    alias refs='crabcc refs --files-only'
-    alias callers='crabcc callers --files-only'
-    alias outline='crabcc outline'
-    alias fuzzy='crabcc fuzzy'
+# --- aggressive (--aggressive) — short verbs routed to ccc ---------------
+# Issues #81, #74: route muscle memory ('where is X?', 'what calls Y?') to
+# the high-level `ccc` binary first. Verbs that take an argument mid-line
+# use shell functions (alias-with-args isn't portable); plain ones are
+# aliases. All gated on the relevant binary being on PATH.
+command -v ccc >/dev/null 2>&1 && {
+    alias sym='ccc find'
+    alias outline='crabcc outline'   # no ccc combo for outline yet
+    alias fuzzy='ccc find --mode fuzzy'
+    refs() { ccc find "$1" --mode references --files-only "${@:2}"; }
+    callers() { ccc find "$1" --mode callers --files-only "${@:2}"; }
+    gr() { ccc find "$1" --mode grep "${@:2}"; }
 }
 command -v delta >/dev/null 2>&1 && alias diff='delta'
 EOF
@@ -200,24 +204,22 @@ type -q jq;     and alias jq 'jq --indent 2'
 
 if type -q crabcc
     alias cc 'crabcc'
-    alias cci 'crabcc index'
-    alias ccs 'crabcc sym'
-    alias ccr 'crabcc refs'
-    alias ccc 'crabcc callers'
-    alias ccm 'crabcc memory'
+    alias cci 'ccc index'
+    alias ccs 'ccc find'
+    alias ccm 'ccc memory'
 end
 EOF
     if [ "$AGGRESSIVE" = "1" ]; then
         cat <<'EOF'
 
-# --- aggressive (--aggressive) -------------------------------------------
-if type -q crabcc
-    alias gr 'crabcc grep'
-    alias sym 'crabcc sym'
-    alias refs 'crabcc refs --files-only'
-    alias callers 'crabcc callers --files-only'
-    alias outline 'crabcc outline'
-    alias fuzzy 'crabcc fuzzy'
+# --- aggressive (--aggressive) — short verbs routed to ccc ---------------
+if type -q ccc
+    alias sym 'ccc find'
+    alias outline 'crabcc outline'   # no ccc combo for outline yet
+    alias fuzzy 'ccc find --mode fuzzy'
+    function refs;     ccc find $argv[1] --mode references --files-only $argv[2..];   end
+    function callers;  ccc find $argv[1] --mode callers --files-only $argv[2..];      end
+    function gr;       ccc find $argv[1] --mode grep $argv[2..];                       end
 end
 type -q delta; and alias diff 'delta'
 EOF
