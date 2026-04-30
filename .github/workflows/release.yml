@@ -1,6 +1,6 @@
 name: release
 
-# Triggers on tag push (v*.*.*). Builds, tests, UPX-compresses, uploads.
+# Triggers on tag push (v*.*.*). Builds, tests, uploads release tarballs.
 on:
   push:
     tags: ['v*.*.*']
@@ -58,30 +58,6 @@ jobs:
           else
             cargo build --release --target ${{ matrix.target }} -p crabcc-cli
           fi
-
-      # https://github.com/upx/upx — shrinks the release binary ~50–70%.
-      # macOS arm64 binaries can't be UPX-packed by current upx releases, so
-      # we skip on aarch64-apple-darwin (still ships uncompressed).
-      - name: install upx
-        if: ${{ matrix.target != 'aarch64-apple-darwin' }}
-        shell: bash
-        run: |
-          if [ "${{ runner.os }}" = "Linux" ]; then
-            sudo apt-get update -y && sudo apt-get install -y upx-ucl
-          else
-            brew install upx
-          fi
-
-      - name: pack with upx
-        if: ${{ matrix.target != 'aarch64-apple-darwin' }}
-        shell: bash
-        run: |
-          BIN="target/${{ matrix.target }}/release/crabcc"
-          ls -la "$BIN"
-          # `--best --lzma` = max compression. Don't use `--ultra-brute` — slow,
-          # marginal gains on Rust binaries.
-          upx --best --lzma "$BIN" || echo "upx skipped (target unsupported)"
-          ls -la "$BIN"
 
       - name: package
         shell: bash

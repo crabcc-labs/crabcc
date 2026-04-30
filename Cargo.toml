@@ -95,26 +95,42 @@ fastembed = "5"
 # WebSocket push (Phase 2) will live alongside, not replace, this.
 tiny_http = "0.12"
 
+# Dev profile — primary iteration loop. `split-debuginfo=unpacked` skips the
+# slow `dsymutil` step on macOS (saves several seconds on every relink), and
+# bumping deps to -O1 keeps test runs fast even with our own crates at -O0.
+[profile.dev]
+split-debuginfo = "unpacked"
+
+# Build all third-party deps with -O1 even in dev/test. Our crates stay at
+# -O0 (fast compile, full debug info) — but tantivy / tree-sitter / rusqlite
+# inner loops are dominant in test wall-time, so optimizing them once and
+# leaving them cached is the biggest cheap dev-loop win available.
+[profile.dev.package."*"]
+opt-level = 1
+
 [profile.release]
-opt-level     = 3
-lto           = "fat"        # whole-program optimization (was "thin"; +30s compile, ~5–10% runtime)
-codegen-units = 1
-panic         = "abort"      # smaller binary, no unwinding tables
-strip         = true
-debug         = false
-incremental   = false
+opt-level       = 3
+lto             = "fat"        # whole-program optimization (was "thin"; +30s compile, ~5–10% runtime)
+codegen-units   = 1
+panic           = "abort"      # smaller binary, no unwinding tables
+strip           = true
+debug           = false
+incremental     = false
+split-debuginfo = "off"
 
 # Faster iteration loop than `cargo build` (-O0) without paying full release cost.
 # `cargo build --profile dev-fast` gets a usable-speed binary in ~half the time.
 [profile.dev-fast]
-inherits      = "dev"
-opt-level     = 1
-debug         = 1            # minimal debug info; faster linker
+inherits        = "dev"
+opt-level       = 1
+debug           = 1            # minimal debug info; faster linker
+split-debuginfo = "unpacked"
 
 # Tests run with -O0 by default; bump to -O1 so the per-file tree-sitter walks in
 # query tests don't dominate the wall-time on the larger fixtures.
 [profile.test]
-opt-level     = 1
+opt-level       = 1
+split-debuginfo = "unpacked"
 
 # `cargo build --profile profiling` produces a binary with the same codegen
 # as release (LTO=fat, opt=3, codegen-units=1) BUT keeps debug-info and
