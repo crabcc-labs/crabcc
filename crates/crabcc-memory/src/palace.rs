@@ -53,17 +53,48 @@ pub const GIT_ROOT_CACHE_TTL: Duration = Duration::from_secs(60);
 /// use without measurable memory pressure.
 pub const GIT_ROOT_CACHE_CAPACITY: u64 = 256;
 
-/// Which retriever(s) to use. Default is `Hybrid` — vector + lexical with
-/// Reciprocal Rank Fusion. `Lexical` and `Vector` are exposed for ablation
-/// (CLI `--mode`) and for callers that need a deterministic single-source
-/// score order.
-#[derive(Debug, Copy, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Which retriever(s) to use.
+///
+/// The `Default` impl is feature-conditional (issue #20):
+///
+/// - With `memory-embed` ON → `Hybrid` (vector + lexical via RRF).
+///   Real semantic embeddings make the vector path informative.
+/// - With `memory-embed` OFF → `Lexical` (BM25 only).
+///   The default `HashEmbedder` produces deterministic-but-meaningless
+///   vectors — running cosine over them is noise, so we fall back to
+///   keyword search until a real embedder is plugged in.
+///
+/// `Vector` is exposed for ablation regardless of features, and remains
+/// what callers will explicitly pick once they've wired their own
+/// `Embedder` impl through `Palace::with_components`.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SearchMode {
-    #[default]
     Hybrid,
     Lexical,
     Vector,
+}
+
+// Feature-conditional default — clippy's `derivable_impls` would have us
+// `#[derive(Default)]` with `#[default]` on a single variant, but the
+// chosen variant flips with a cargo feature so a hand-written impl is
+// the only way to express that.
+#[allow(clippy::derivable_impls)]
+impl Default for SearchMode {
+    fn default() -> Self {
+        // With no real embedder available, vector hits are meaningless,
+        // so the safe default is BM25-only. Hosts that construct
+        // `Palace::with_components(..., Arc<FastEmbedder>)` can still
+        // ask for `Hybrid` explicitly.
+        #[cfg(feature = "memory-embed")]
+        {
+            Self::Hybrid
+        }
+        #[cfg(not(feature = "memory-embed"))]
+        {
+            Self::Lexical
+        }
+    }
 }
 
 impl SearchMode {
@@ -754,8 +785,14 @@ mod tests {
     }
 
     #[test]
-    fn search_mode_default_is_hybrid() {
+    fn search_mode_default_matches_feature_gate() {
+        // Default flips with the `memory-embed` feature (issue #20):
+        // real embedder available → Hybrid; otherwise → Lexical so we
+        // don't blend meaningless HashEmbedder cosine into the result.
+        #[cfg(feature = "memory-embed")]
         assert_eq!(SearchMode::default(), SearchMode::Hybrid);
+        #[cfg(not(feature = "memory-embed"))]
+        assert_eq!(SearchMode::default(), SearchMode::Lexical);
     }
 
     #[test]
@@ -842,18 +879,17 @@ mod tests {
     }
 
     #[test]
-    fn search_default_is_hybrid_not_vector() {
-        // A regression guard: if someone re-flips Palace::search to vector
-        // by accident, this test fires. We assert that lexical-only signal
-        // surfaces under the default search() — which only happens when
-        // hybrid (or lexical) is the default routing.
+    fn search_default_surfaces_lexical_signal() {
+        // A regression guard: if someone re-flips `Palace::search` to
+        // pure vector by accident, this test fires. Asserts that the
+        // BM25 winner appears under the default `search()` — which is
+        // true whether the default is `Hybrid` (RRF includes lexical)
+        // or `Lexical` (BM25-only).
         let dir = tempdir().unwrap();
         let p = Palace::open(dir.path()).unwrap();
-        // Two docs with WILDLY different lexical content but stub-embedded
-        // vectors are random. If the default were vector-only, the result
-        // ordering would be embedder-noise, not BM25-meaningful. Assert
-        // the BM25 winner appears in the top-2 — proves the lexical
-        // signal is contributing to the fusion.
+        // Two docs with WILDLY different lexical content. If the default
+        // were vector-only, the ordering would be embedder-noise, not
+        // BM25-meaningful.
         p.remember("default", None, "doc:1", "needle haystack token")
             .unwrap();
         p.remember("default", None, "doc:2", "completely orthogonal text")
@@ -1003,5 +1039,127 @@ mod tests {
             .resolve_git_root(dir.path())
             .expect("memoized result must survive .git removal within TTL");
         assert_eq!(first, second);
+    }
+
+    // ─── recall@5 golden test (issue #20) ──────────────────────────────
+    //
+    // 50 short canned lines covering 10 thematic clusters of 5 docs each;
+    // 7 representative queries each with a known-good source_id. Asserts
+    // recall@5 ≥ 0.8 — i.e., the right doc is in the top-5 for at least
+    // 6 of the 7 queries — under the default search mode (Lexical
+    // without `memory-embed`, Hybrid with). Documents that the lexical
+    // fallback is informative on its own; running this same test with
+    // `--features memory-embed` should hit recall@5 = 1.0 once a real
+    // embedder is plugged in.
+
+    fn golden_drawers() -> &'static [(&'static str, &'static str)] {
+        &[
+            // cluster 1: HTTP servers
+            ("http:1", "configure listen address and port for the HTTP server"),
+            ("http:2", "rate limiting middleware for inbound HTTP requests"),
+            ("http:3", "TLS termination and certificate auto-renewal via ACME"),
+            ("http:4", "CORS headers for cross-origin browser requests"),
+            ("http:5", "websocket upgrade handshake on the HTTP listener"),
+            // cluster 2: SQL / databases
+            ("db:1", "create a new postgres database with utf8 encoding"),
+            ("db:2", "alter table to add a non-null default column"),
+            ("db:3", "transaction isolation levels for sqlite WAL mode"),
+            ("db:4", "rollback strategy for a failed batch insert into postgres"),
+            ("db:5", "connection pooling for high-throughput SQL workloads"),
+            // cluster 3: tree-sitter / parsing
+            ("ts:1", "tree-sitter walks symbol tables in source code"),
+            ("ts:2", "ast-grep patterns for matching function call sites"),
+            ("ts:3", "incremental reparse on edit using tree-sitter"),
+            ("ts:4", "node kind dispatch table for typescript and javascript"),
+            ("ts:5", "tree-sitter-rust grammar handles impl blocks"),
+            // cluster 4: embeddings / vectors
+            ("vec:1", "MiniLM-L6-v2 produces 384-dim semantic embeddings"),
+            ("vec:2", "cosine similarity over L2 normalized float vectors"),
+            ("vec:3", "sqlite-vec virtual table for ANN nearest neighbor search"),
+            ("vec:4", "fastembed batch embed reuses the ort session"),
+            ("vec:5", "FNV xorshift fallback for deterministic test embeddings"),
+            // cluster 5: filesystem / IO
+            ("fs:1", "ignore-aware repository walk respecting gitignore"),
+            ("fs:2", "memchr fast prefilter for byte needle in source files"),
+            ("fs:3", "mmap large index database read only access"),
+            ("fs:4", "filesystem watcher debouncing rapid file save bursts"),
+            ("fs:5", "atomic write to temp file then rename for durability"),
+            // cluster 6: compression
+            ("zip:1", "FSST symbol table compresses repeated string prefixes"),
+            ("zip:2", "zstd level tradeoff between size and decompression speed"),
+            ("zip:3", "decode FSST encoded rows lazily on read"),
+            ("zip:4", "bench compression ratio across natural language and code"),
+            ("zip:5", "cargo feature gate for optional fsst-rs dependency"),
+            // cluster 7: caching
+            ("cache:1", "moka time to idle eviction closes idle SQLite connections"),
+            ("cache:2", "sha256 keyed cache for repeated embedding queries"),
+            ("cache:3", "git root memoization with a 60 second TTL"),
+            ("cache:4", "bounded LRU palace registry keyed by canonical repo root"),
+            ("cache:5", "FSST codec arc shared across store sessions no contention"),
+            // cluster 8: testing
+            ("test:1", "tempfile based integration test cleans up in drop"),
+            ("test:2", "ignore attribute for network dependent end to end checks"),
+            ("test:3", "snapshot comparison for golden file fixtures"),
+            ("test:4", "criterion benchmark harness reports throughput"),
+            ("test:5", "table driven tests with parameterized search queries"),
+            // cluster 9: tokens / shaping
+            ("tok:1", "tokens per query saved versus raw grep walk"),
+            ("tok:2", "limit flag short circuits per file walk early stop"),
+            ("tok:3", "files only output dedupes hits across the same file"),
+            ("tok:4", "count mode emits only an integer not the matched lines"),
+            ("tok:5", "JSON projection via jq pipeline trims irrelevant fields"),
+            // cluster 10: misc / off-topic
+            ("misc:1", "release pipeline builds linux mac windows binaries"),
+            ("misc:2", "homebrew tap distributes prebuilt mac arm64 binaries"),
+            ("misc:3", "starship custom module renders crabcc status in the prompt"),
+            ("misc:4", "claude code skill auto routes lookups to crabcc CLI"),
+            ("misc:5", "MCP JSON RPC dispatches tool calls over stdio"),
+        ]
+    }
+
+    fn golden_queries() -> &'static [(&'static str, &'static str)] {
+        &[
+            ("ACME TLS", "http:3"),
+            ("postgres database utf8", "db:1"),
+            ("ast-grep call sites", "ts:2"),
+            ("MiniLM 384 dim", "vec:1"),
+            ("memchr byte needle", "fs:2"),
+            ("fsst symbol table", "zip:1"),
+            ("moka idle SQLite", "cache:1"),
+        ]
+    }
+
+    #[test]
+    fn search_recall_at_5_meets_threshold() {
+        // Verify clause from issue #20: recall@5 ≥ 0.8 over the canned
+        // corpus. Runs under the *default* search mode for the build
+        // (Lexical when `memory-embed` is off; Hybrid when on).
+        let dir = tempdir().unwrap();
+        let p = Palace::open(dir.path()).unwrap();
+        for (id, body) in golden_drawers() {
+            p.remember("default", None, id, body)
+                .unwrap_or_else(|e| panic!("remember {id}: {e}"));
+        }
+
+        let queries = golden_queries();
+        let mut hits = 0usize;
+        for (query, expected) in queries {
+            let r = p.search(query, 5).unwrap();
+            let ids: Vec<&str> = r.hits.iter().map(|h| h.source_id.as_str()).collect();
+            if ids.iter().any(|id| id == expected) {
+                hits += 1;
+            } else {
+                eprintln!(
+                    "miss: query={query:?} expected={expected:?} top5={ids:?}"
+                );
+            }
+        }
+
+        let recall = hits as f64 / queries.len() as f64;
+        assert!(
+            recall >= 0.8,
+            "recall@5 = {recall:.2} (got {hits}/{}); issue #20 requires ≥ 0.80",
+            queries.len()
+        );
     }
 }
