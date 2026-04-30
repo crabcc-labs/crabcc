@@ -595,12 +595,14 @@ pub fn run(req: AgentRequest<'_>) -> Result<()> {
         crabcc_core::ollama_stack::check_docker().with_context(|| {
             "agent --backend ollama needs Docker; install from \
              https://docs.docker.com/get-docker/ then `crabcc install-claude \
-             --with-ollama-stack`"
+             --with-ollama-stack`. Run `crabcc doctor docker` for diagnostics."
         })?;
         let opts = crabcc_core::ollama_stack::Options::new()
             .with_correlation_id(format!("agent-{}", run_dir.id));
-        let up = crabcc_core::ollama_stack::ensure_up(&opts)
-            .context("agent --backend ollama: ensure_up() failed")?;
+        let up = crabcc_core::ollama_stack::ensure_up(&opts).with_context(|| {
+            "agent --backend ollama: ensure_up() failed. \
+             Run `crabcc doctor stack` to inspect container health."
+        })?;
         eprintln!(
             "crabcc agent: ollama stack ready ({} services, {} ms)",
             up.services_healthy.len(),

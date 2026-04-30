@@ -133,7 +133,8 @@ pub fn run(opts: InstallOptions) -> Result<()> {
             .with_compose_dir(home.join(".crabcc/ollama-stack"));
         let up = crabcc_core::ollama_stack::up(&ols_opts).context(
             "compose up failed; check docker compose logs and re-run \
-             `crabcc install-claude --with-ollama-stack`",
+             `crabcc install-claude --with-ollama-stack`. \
+             Run `crabcc doctor` for a full environment audit.",
         )?;
         println!(
             "  stack ready: {} services healthy in {} ms",

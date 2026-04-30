@@ -1,0 +1,22 @@
+{
+  "name": "@crabcc/jobs-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "BullMQ worker that dequeues jobs submitted by crabcc-core::jobs (issue #109). Uses bun + TypeScript; Redis backend matches the wire format encoded by submit_async.",
+  "type": "module",
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --target bun",
+    "dev": "bun run src/index.ts",
+    "start": "bun run dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test src"
+  },
+  "dependencies": {
+    "bullmq": "^5.30.0",
+    "ioredis": "^5.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  }
+}

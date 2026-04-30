@@ -1396,12 +1396,14 @@ fn run_upgrade_stack(recreate: bool, text: bool) -> Result<()> {
     if text {
         eprintln!("  → docker compose pull");
     }
-    ols::pull(&opts).context("ollama-stack pull failed")?;
+    ols::pull(&opts)
+        .context("ollama-stack pull failed. Run `crabcc doctor stack` for diagnostics.")?;
     if recreate {
         if text {
             eprintln!("  → docker compose up -d --wait");
         }
-        let up = ols::up(&opts).context("ollama-stack re-up failed")?;
+        let up = ols::up(&opts)
+            .context("ollama-stack re-up failed. Run `crabcc doctor stack` to inspect health.")?;
         if text {
             eprintln!(
                 "  → stack ready: {} services in {} ms",
