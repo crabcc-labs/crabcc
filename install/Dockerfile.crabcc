@@ -94,6 +94,11 @@ LABEL org.opencontainers.image.created="${BUILD_DATE}"
 LABEL com.crabcc.role="binary"
 LABEL com.crabcc.issue="#105"
 LABEL com.crabcc.build.local="true"
+# OTel resource attributes — used by rotel and any OTLP collector to
+# tag all spans/metrics/logs from this container (issue #86).
+LABEL org.opentelemetry.service.name="crabcc"
+LABEL org.opentelemetry.service.version="${VERSION}"
+LABEL org.opentelemetry.service.namespace="crabcc"
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \

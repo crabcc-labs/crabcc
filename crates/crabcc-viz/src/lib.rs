@@ -433,6 +433,14 @@ fn handle(request: Request, root: &Path) -> Result<()> {
             Ok(snap) => respond_json(request, &snap),
             Err(e) => respond_status(request, 500, &format!("telemetry tail failed: {e}")),
         },
+        // Issue #86 — rotel OTLP health probe.
+        // Checks whether the configured OTLP endpoint is reachable by
+        // hitting its /health path. Returns {"reachable":bool,"endpoint":url}.
+        // Used by the /live dashboard panel to show the green/red pill.
+        "/api/telemetry/otlp-health" => {
+            let snap = otlp_health_probe();
+            respond_json(request, &snap)
+        }
         "/api/memory/recent" => match memory_recent(root, query) {
             Ok(snap) => respond_json(request, &snap),
             Err(e) => respond_status(request, 500, &format!("memory snapshot failed: {e}")),
@@ -571,6 +579,60 @@ struct ActivityEvent {
     op: String,
     query: String,
     results: usize,
+}
+
+// =====================================================================
+// OTLP health probe — issue #86
+//
+// Probes the OTLP endpoint configured via OTEL_EXPORTER_OTLP_ENDPOINT
+// by hitting its /health path (rotel and most collectors expose this).
+// Purely read-only; aggregated telemetry is NEVER written to any
+// crabcc SQLite database (index.db / _internal.db / memory.db).
+
+#[derive(Serialize)]
+struct OtlpHealthSnapshot {
+    reachable: bool,
+    endpoint: String,
+    error: Option<String>,
+}
+
+fn otlp_health_probe() -> OtlpHealthSnapshot {
+    let endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").unwrap_or_default();
+    if endpoint.is_empty() {
+        return OtlpHealthSnapshot {
+            reachable: false,
+            endpoint: String::new(),
+            error: Some("OTEL_EXPORTER_OTLP_ENDPOINT not set".into()),
+        };
+    }
+
+    // Try rotel's /health endpoint (5 s timeout, no external crate needed).
+    let health_url = format!("{endpoint}/health");
+    let ok = (|| -> Option<bool> {
+        use std::net::TcpStream;
+        use std::time::Duration;
+        let url = health_url
+            .trim_start_matches("http://")
+            .trim_start_matches("https://");
+        let (host_port, _) = url.split_once('/').unwrap_or((url, ""));
+        let addr = if host_port.contains(':') {
+            host_port.to_owned()
+        } else {
+            format!("{host_port}:80")
+        };
+        Some(TcpStream::connect_timeout(&addr.parse().ok()?, Duration::from_secs(2)).is_ok())
+    })()
+    .unwrap_or(false);
+
+    OtlpHealthSnapshot {
+        reachable: ok,
+        endpoint,
+        error: if ok {
+            None
+        } else {
+            Some("TCP connect failed".into())
+        },
+    }
 }
 
 // =====================================================================

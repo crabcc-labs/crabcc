@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { Header } from "./components/Header";
 import { ActivityPanel } from "./components/ActivityPanel";
 import { AgentsPanel } from "./components/AgentsPanel";
@@ -10,6 +10,12 @@ import { ServicesPanel } from "./components/ServicesPanel";
 import { ReindexDialog } from "./components/ReindexDialog";
 import { TelemetryPanel } from "./components/TelemetryPanel";
 import { DebugPanel } from "./components/DebugPanel";
+import {
+  SettingsPanel,
+  loadSettings,
+  saveSettings,
+  type Settings,
+} from "./components/SettingsPanel";
 import { usePolling } from "./usePolling";
 import { useEventStream } from "./useEventStream";
 import {
@@ -18,21 +24,37 @@ import {
   type AgentSummary,
   type TelemetryEvent,
   type TelemetrySource,
+  type OtlpHealth,
 } from "./api";
 
 export function App() {
   const [reindexOpen, setReindexOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settings, setSettings] = useState<Settings>(loadSettings);
   const [activity, setActivity] = useState<ActivityHit[]>([]);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const bootstrap = usePolling(api.bootstrap, 0);
 
-  // Telemetry — issue #90 dashboard surface. Polls /api/telemetry every
-  // 3 s. The cursor returned by the server is the max ts seen; we pass
-  // it as `since` on the next poll to bound the response size to deltas.
-  const telemetry = usePolling(() => api.telemetry(0, 100), 3000);
+  // Apply new settings + reload the page so all polling intervals update.
+  const applySettings = useCallback((s: Settings) => {
+    setSettings(s);
+    saveSettings(s);
+    // Reload to re-init all usePolling instances with the new intervals.
+    window.location.reload();
+  }, []);
+
+  // Telemetry — issue #90. Interval from settings (default 3 s).
+  const telemetry = usePolling(
+    () => api.telemetry(0, settings.telMaxEvents),
+    settings.telPollMs,
+  );
   const telEvents: TelemetryEvent[] = telemetry.data?.events ?? [];
   const telSource: TelemetrySource | null = telemetry.data?.source ?? null;
+
+  // Issue #86 — OTLP health probe. Interval from settings (default 30 s).
+  const otlpHealth = usePolling(api.otlpHealth, settings.otlpPollMs);
+  const otlpData: OtlpHealth | null = otlpHealth.data ?? null;
 
   // Tick the wall clock once per second so the relative-age timestamps
   // (`12s ago`) re-render without re-fetching.
@@ -114,10 +136,18 @@ export function App() {
           <OllamaKeyPanel />
           <h2 style={{ marginTop: "1.2em" }}>
             telemetry <span className="count">{telEvents.length}</span>
+            <button
+              className="settings-gear"
+              onClick={() => setSettingsOpen(true)}
+              title="Dashboard settings"
+              aria-label="Open settings"
+            >⚙</button>
           </h2>
           <TelemetryPanel
             events={telEvents}
             source={telSource}
+            otlpHealth={otlpData}
+            otlpPollMs={settings.otlpPollMs}
             now={now}
           />
         </section>
@@ -140,6 +170,13 @@ export function App() {
         }}
       />
       {reindexOpen && <ReindexDialog onClose={() => setReindexOpen(false)} />}
+      {settingsOpen && (
+        <SettingsPanel
+          settings={settings}
+          onChange={applySettings}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
     </div>
   );
 }

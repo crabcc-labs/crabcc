@@ -30,7 +30,8 @@ crabcc-memory = { workspace = true }
 crabcc-viz    = { workspace = true }
 anyhow        = { workspace = true }
 clap          = { workspace = true }
-tokio         = { workspace = true }
+tokio                    = { workspace = true }
+reqwest                  = { workspace = true }
 clap_complete = "4"
 rusqlite      = { workspace = true }
 # Issue #107 Phase 5a — `crabcc doctor` derives Serialize/Deserialize on

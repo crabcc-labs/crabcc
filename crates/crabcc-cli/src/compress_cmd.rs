@@ -474,3 +474,154 @@ fn print_stats(args: &Args) -> Result<()> {
     let _ = args.root; // currently unused; kept for future per-repo banners
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn symbols_path_in_subdirectory() {
+        let db = PathBuf::from("/home/user/.crabcc/index.db");
+        let result = symbols_path(&db);
+        assert_eq!(result, PathBuf::from("/home/user/.crabcc/fsst.symbols"));
+    }
+
+    #[test]
+    fn symbols_path_bare_filename() {
+        let db = PathBuf::from("index.db");
+        // When db has no parent, fallback
+        let result = symbols_path(&db);
+        assert_eq!(result, PathBuf::from("fsst.symbols"));
+    }
+
+    #[test]
+    fn symbols_path_nested() {
+        let db = PathBuf::from("/a/b/c/d.db");
+        assert_eq!(symbols_path(&db), PathBuf::from("/a/b/c/fsst.symbols"));
+    }
+
+    #[test]
+    fn args_struct_defaults() {
+        let args = Args {
+            root: PathBuf::from("/tmp"),
+            db: PathBuf::from("/tmp/.crabcc/index.db"),
+            rebuild: false,
+            stats: false,
+            json: false,
+            decode_probe: None,
+        };
+        assert!(!args.rebuild);
+        assert!(!args.stats);
+        assert!(args.decode_probe.is_none());
+    }
+
+    #[test]
+    fn run_on_empty_db_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        // Create an empty SQLite DB with the expected schema
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS symbols (
+                id INTEGER PRIMARY KEY,
+                name TEXT,
+                signature TEXT,
+                signature_enc INTEGER DEFAULT 0,
+                file_id INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS files (
+                id INTEGER PRIMARY KEY,
+                path TEXT
+            );
+            CREATE TABLE IF NOT EXISTS meta (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            );",
+        )
+        .unwrap();
+        drop(conn);
+
+        let args = Args {
+            root: dir.path().to_path_buf(),
+            db: db_path,
+            rebuild: false,
+            stats: false,
+            json: false,
+            decode_probe: None,
+        };
+        // With no rows, train_codec should fail
+        let result = run(args);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("no training samples"));
+    }
+
+    #[test]
+    fn stats_on_empty_db() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS symbols (
+                id INTEGER PRIMARY KEY,
+                name TEXT,
+                signature TEXT,
+                signature_enc INTEGER DEFAULT 0,
+                file_id INTEGER
+            );
+            CREATE TABLE IF NOT EXISTS files (
+                id INTEGER PRIMARY KEY,
+                path TEXT
+            );
+            CREATE TABLE IF NOT EXISTS meta (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            );",
+        )
+        .unwrap();
+        drop(conn);
+
+        let args = Args {
+            root: dir.path().to_path_buf(),
+            db: db_path,
+            rebuild: false,
+            stats: true,
+            json: true,
+            decode_probe: None,
+        };
+        // stats-only on empty DB should work (just reports zeros)
+        let result = run(args);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn decode_probe_no_symbol_table_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("index.db");
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS symbols (
+                id INTEGER PRIMARY KEY,
+                name TEXT,
+                signature TEXT,
+                signature_enc INTEGER DEFAULT 0
+            );",
+        )
+        .unwrap();
+        drop(conn);
+
+        let args = Args {
+            root: dir.path().to_path_buf(),
+            db: db_path,
+            rebuild: false,
+            stats: false,
+            json: false,
+            decode_probe: Some(10),
+        };
+        let result = run(args);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("no symbol table"));
+    }
+}
