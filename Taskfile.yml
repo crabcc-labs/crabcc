@@ -1248,6 +1248,52 @@ tasks:
     cmds:
       - 'RUST_LOG=crabcc_telegram=debug {{.CARGO}} run -p crabcc-telegram'
 
+  telegram-setup:
+    desc: Get your Telegram chat ID and set it as TELEGRAM_CHAT_ID repo secret
+    summary: |
+      1. Open Telegram and send /start to @CrabCC_bot
+      2. Run this task — it fetches the chat_id from the bot's updates
+      3. Sets TELEGRAM_CHAT_ID as a repo secret in peterlodri-sec/crabcc
+         so the TelegramBridge CI action can notify you
+    cmds:
+      - |
+        TOKEN="${TELEGRAM_BOT_TOKEN:-8723906293:AAHrAFP6-HPQA5FXEiTYKa4iqtay9dFVwyY}"
+        RESULT=$(curl -sf "https://api.telegram.org/bot${TOKEN}/getUpdates")
+        CHAT_ID=$(echo "$RESULT" | python3 -c "
+        import sys,json
+        d=json.load(sys.stdin)
+        msgs = [u.get('message',{}) for u in d.get('result',[])]
+        chats = [m['chat']['id'] for m in msgs if m.get('chat')]
+        print(chats[-1] if chats else '')
+        " 2>/dev/null)
+        if [ -z "$CHAT_ID" ]; then
+          echo "No messages found. Send /start to @CrabCC_bot in Telegram first, then re-run."
+          exit 1
+        fi
+        echo "Found chat_id: $CHAT_ID"
+        gh secret set TELEGRAM_CHAT_ID --repo peterlodri-sec/crabcc --body "$CHAT_ID"
+        gh secret set TELEGRAM_CHAT_ID --repo peterlodri-sec/free-claude-code --body "$CHAT_ID" || true
+        echo "✓ TELEGRAM_CHAT_ID=$CHAT_ID set on both repos"
+
+  # ─── kan (self-hosted kanban) ─────────────────────────────────────────────
+  kan-up:
+    desc: Start kan self-hosted kanban (http://localhost:3000)
+    cmds:
+      - |
+        if [ ! -f install/kan/.env ]; then
+          cp install/kan/.env.example install/kan/.env
+          echo "▶ Created install/kan/.env — fill in POSTGRES_PASSWORD + BETTER_AUTH_SECRET"
+          echo "  openssl rand -base64 32  # use for BETTER_AUTH_SECRET"
+          exit 1
+        fi
+        docker compose -f install/kan/docker-compose.yml up -d --wait
+        echo "✓ kan running at http://localhost:${KAN_PORT:-3000}"
+
+  kan-down:
+    desc: Stop kan
+    cmds:
+      - docker compose -f install/kan/docker-compose.yml down
+
   # ─── ollama stack ─────────────────────────────────────────────────────────
   ollama-stack-up:
     desc: Bring up the ollama-stack (Apple Containers → Docker) with LiteLLM + Caddy

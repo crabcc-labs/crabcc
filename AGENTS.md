@@ -40,6 +40,37 @@ trait, `Palace` facade, and `crabcc memory` CLI / `memory.*` MCP tools.
 | Run a crabcc agent | `crabcc agent --run "<task>" --backend ollama` |
 | Launch Ollama stack | `task ollama-stack-up` (LiteLLM :4000 → Ollama) |
 
+## Copilot cloud agent — MCP
+
+crabcc exposes its symbol index, memory, and graph as MCP tools that GitHub
+Copilot's cloud agent can call directly.
+
+**Private repo note:** you can keep the repo private and still use Copilot cloud
+agent MCP. The MCP server URL just needs to be reachable from GitHub's runners.
+Cloudflared/Tailscale tunnels work fine; `CRABCC_AUTH_TOKEN` is encrypted in
+the GitHub copilot environment.
+
+```bash
+# Expose crabcc serve over HTTPS (required by Copilot cloud agent)
+crabcc serve &
+cloudflared tunnel --url http://localhost:8090
+# → Set CRABCC_MCP_URL=https://random.trycloudflare.com in copilot environment
+```
+
+Paste `.github/copilot/mcp.json` into **Settings → Environments → copilot → MCP configuration**.
+Full setup guide: [`.github/copilot/README.md`](.github/copilot/README.md).
+
+| MCP tool | Description |
+|----------|-------------|
+| `crabcc.sym` | Symbol definition lookup |
+| `crabcc.refs` | Find all references |
+| `crabcc.callers` | Find callers of a function |
+| `crabcc.outline` | Outline a file |
+| `crabcc.fuzzy` | Fuzzy symbol search |
+| `crabcc.memory.search` | Search AI memory drawers |
+| `crabcc.memory.remember` | Save a memory drawer |
+| `crabcc.graph` | Call graph queries |
+
 ## Ollama agent backend
 
 Default backend is `ollama` (since v2.8). Model: **qwen3.5:35b-a3b-coding-nvfp4**

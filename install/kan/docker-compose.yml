@@ -1,0 +1,73 @@
+# kan — open-source Trello alternative (https://github.com/kanbn/kan)
+#
+# Self-hosted project management. Works with any private/public GitHub repo
+# — the repo visibility is independent of this stack.
+#
+# Setup:
+#   cp install/kan/.env.example install/kan/.env
+#   # fill in secrets (openssl rand -base64 32 for BETTER_AUTH_SECRET)
+#   docker compose -f install/kan/docker-compose.yml up -d --wait
+#
+# Access: http://localhost:3000
+
+name: crabcc-kan
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: kan
+      POSTGRES_USER: kan
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - kan_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kan"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    logging: *logging
+
+  migrate:
+    image: ghcr.io/kanbn/kan-migrate:latest
+    restart: "no"
+    environment:
+      POSTGRES_URL: postgresql://kan:${POSTGRES_PASSWORD}@postgres:5432/kan
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging: *logging
+
+  web:
+    image: ghcr.io/kanbn/kan:latest
+    restart: unless-stopped
+    ports:
+      - "${KAN_PORT:-3000}:3000"
+    environment:
+      NEXT_PUBLIC_BASE_URL: ${KAN_BASE_URL:-http://localhost:3000}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env}
+      POSTGRES_URL: postgresql://kan:${POSTGRES_PASSWORD}@postgres:5432/kan
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    logging: *logging
+
+volumes:
+  kan_postgres:
+
+networks:
+  default:
+    name: crabcc-kan
