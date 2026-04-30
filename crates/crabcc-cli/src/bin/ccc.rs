@@ -46,6 +46,8 @@ Examples:
   ccc memory search 'auth flow'    → crabcc memory search 'auth flow'
   ccc info --tokens                → crabcc track
   ccc setup --claude               → crabcc install-claude
+  ccc setup --ollama-up            → crabcc ollama-stack up      (issue #105)
+  ccc setup --ollama-status        → crabcc ollama-stack status
 
 Issue #74 — v3.0 CLI consolidation. The granular `crabcc` subcommands stay
 available unchanged; running them prints a one-line stderr hint pointing at
@@ -118,7 +120,11 @@ enum Cmd {
         #[arg(long, group = "info_what")]
         status_line: bool,
     },
-    /// Setup. Combo of install-claude / completions / upgrade.
+    /// Setup. Combo of install-claude / completions / upgrade /
+    /// ollama-stack ops. Ollama-stack flags are intentionally folded
+    /// into setup (not exposed as a top-level `ccc ollama-stack`) per
+    /// issue #105 — operator surface lives under the setup/install
+    /// umbrella.
     Setup {
         #[arg(long, group = "setup_what")]
         claude: bool,
@@ -126,6 +132,26 @@ enum Cmd {
         completions: Option<String>,
         #[arg(long, group = "setup_what")]
         upgrade: bool,
+        /// Bring the Ollama auth stack up — `crabcc ollama-stack up`.
+        /// Requires Docker; see install/ollama-stack/README.md.
+        #[arg(long, group = "setup_what")]
+        ollama_up: bool,
+        /// Stop the Ollama auth stack — `crabcc ollama-stack down`.
+        /// Volumes (model cache) are kept; pass `--ollama-down-volumes`
+        /// to wipe them.
+        #[arg(long, group = "setup_what")]
+        ollama_down: bool,
+        /// Stop the Ollama stack and wipe model-cache + caddy volumes.
+        /// Implies --ollama-down.
+        #[arg(long, group = "setup_what")]
+        ollama_down_volumes: bool,
+        /// Print Ollama stack status (JSON) — `crabcc ollama-stack status`.
+        #[arg(long, group = "setup_what")]
+        ollama_status: bool,
+        /// Refresh upstream images — `crabcc ollama-stack pull`.
+        /// Combine with --ollama-up afterward to recreate services.
+        #[arg(long, group = "setup_what")]
+        ollama_pull: bool,
     },
 }
 
@@ -316,6 +342,11 @@ fn main() {
             claude,
             completions,
             upgrade,
+            ollama_up,
+            ollama_down,
+            ollama_down_volumes,
+            ollama_status,
+            ollama_pull,
         } => {
             if claude {
                 run(&["install-claude"]);
@@ -326,8 +357,25 @@ fn main() {
             if upgrade {
                 run(&["upgrade"]);
             }
+            if ollama_up {
+                run(&["ollama-stack", "up"]);
+            }
+            if ollama_down_volumes {
+                run(&["ollama-stack", "down", "--volumes"]);
+            }
+            if ollama_down {
+                run(&["ollama-stack", "down"]);
+            }
+            if ollama_status {
+                run(&["ollama-stack", "status"]);
+            }
+            if ollama_pull {
+                run(&["ollama-stack", "pull"]);
+            }
             eprintln!(
-                "ccc setup: pass --claude / --completions <SHELL> / --upgrade.\nSee `ccc setup --help`."
+                "ccc setup: pass --claude / --completions <SHELL> / --upgrade / \
+                 --ollama-up / --ollama-down[-volumes] / --ollama-status / --ollama-pull.\n\
+                 See `ccc setup --help`."
             );
             exit(2);
         }

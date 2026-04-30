@@ -230,8 +230,31 @@ Spawn an ollama agent that exercises crabcc's surface against the indexed
 repo to populate the graph + memory drawers with real query traces.
 Runs as a child with PID recorded so the guard agent can supervise it.
 
+**Preference order (issue #105):**
+
+1. If the bundled Ollama auth stack is up (`crabcc ollama-stack status`
+   returns at least one healthy container), prefer
+   `crabcc agent --backend ollama --run "<prompt>"` — that path goes
+   through the LiteLLM proxy with proper Bearer-auth and benefits from
+   the auto-up check + correlated tracing in `~/.crabcc/agents/`.
+2. If no stack but `crabcc install-claude --with-ollama-stack` is
+   available, optionally bring it up first.
+3. Fall back to the local `ollama` binary path below for users who
+   want zero-Docker.
+
 ```bash
-if command -v ollama >/dev/null 2>&1; then
+if crabcc ollama-stack status 2>/dev/null | jq -e 'length > 0' >/dev/null; then
+    # Path 1 — stack is up, use crabcc agent so the run is observable + correlated.
+    crabcc agent --backend ollama --run "$(cat <<'PROMPT'
+Exercise the indexed repo via `crabcc` / `ccc` calls. Print each command,
+then its output. Goal: ~5–10 symbols across 3+ files, drop notes into
+memory drawers as you go. End in ≤ 10 minutes. Do NOT mutate source.
+PROMPT
+)" 2>&1 | tee -a "$LOG" &
+    echo $! > .crabcc/ollama.pid
+    wait $(cat .crabcc/ollama.pid) || true
+elif command -v ollama >/dev/null 2>&1; then
+    # Path 3 — local ollama binary (legacy path).
     ( timeout 600 ollama run llama3.2:latest <<'PROMPT' 2>&1 | tee -a "$LOG" ) &
     echo $! > .crabcc/ollama.pid
     wait $(cat .crabcc/ollama.pid) || true

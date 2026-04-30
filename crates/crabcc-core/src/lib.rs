@@ -61,14 +61,18 @@
 
 #[cfg(feature = "compress")]
 pub mod compress;
+pub mod config;
 pub mod extract;
 pub mod fts;
 pub mod gitdiff;
 pub mod graph;
 pub mod hash;
 pub mod index;
+#[cfg(feature = "jobs")]
+pub mod jobs;
 #[cfg(feature = "markdown")]
 pub mod md;
+pub mod ollama_stack;
 pub mod outline;
 pub mod pattern;
 pub mod query;

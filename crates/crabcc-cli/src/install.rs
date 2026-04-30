@@ -15,8 +15,60 @@ use std::process::Command;
 /// `crabcc install-claude` works after `cargo install` (no repo needed).
 const HOOKS_JSON: &str = include_str!("../../../install/hooks-claude.json");
 
-pub fn run(yes: bool, print_hooks_only: bool) -> Result<()> {
-    if print_hooks_only {
+/// Embedded Ollama auth stack — issue #105 Phase 5b. Same compile-time
+/// embedding pattern as HOOKS_JSON so `crabcc install-claude
+/// --with-ollama-stack` works after `cargo install` without a checkout.
+/// Materializes to `~/.crabcc/ollama-stack/` on demand. (mode, bytes)
+const OLLAMA_STACK_FILES: &[(&str, u32, &[u8])] = &[
+    (
+        "docker-compose.yml",
+        0o644,
+        include_bytes!("../../../install/ollama-stack/docker-compose.yml"),
+    ),
+    (
+        "Caddyfile",
+        0o644,
+        include_bytes!("../../../install/ollama-stack/Caddyfile"),
+    ),
+    (
+        "litellm.config.yaml",
+        0o644,
+        include_bytes!("../../../install/ollama-stack/litellm.config.yaml"),
+    ),
+    (
+        ".env.example",
+        0o644,
+        include_bytes!("../../../install/ollama-stack/.env.example"),
+    ),
+    (
+        "init-keys.sh",
+        0o755,
+        include_bytes!("../../../install/ollama-stack/init-keys.sh"),
+    ),
+    (
+        "README.md",
+        0o644,
+        include_bytes!("../../../install/ollama-stack/README.md"),
+    ),
+    (
+        "MANUAL_TEST_CHECKLIST.md",
+        0o644,
+        include_bytes!("../../../install/ollama-stack/MANUAL_TEST_CHECKLIST.md"),
+    ),
+];
+
+/// Caller-provided flags for `crabcc install-claude`. Issue #105 Phase 5b
+/// added the two `with_ollama_stack` / `print_stack_instructions` fields.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct InstallOptions {
+    pub yes: bool,
+    pub print_hooks_only: bool,
+    pub with_ollama_stack: bool,
+    pub print_stack_instructions: bool,
+}
+
+pub fn run(opts: InstallOptions) -> Result<()> {
+    if opts.print_hooks_only {
         // Round-trip through serde_json so output is canonicalised pretty JSON.
         let v: serde_json::Value = serde_json::from_str(HOOKS_JSON)
             .context("embedded hooks-claude.json is not valid JSON")?;
@@ -24,6 +76,11 @@ pub fn run(yes: bool, print_hooks_only: bool) -> Result<()> {
         return Ok(());
     }
 
+    if opts.print_stack_instructions {
+        return print_stack_instructions();
+    }
+
+    let yes = opts.yes;
     let repo_root = git_repo_root()?;
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -67,6 +124,82 @@ pub fn run(yes: bool, print_hooks_only: bool) -> Result<()> {
     println!();
     println!("Then in Claude Code: /reload-plugins");
 
+    if opts.with_ollama_stack {
+        materialize_ollama_stack(&home)?;
+        println!();
+        println!("Ollama stack materialized; bringing it up...");
+        crabcc_core::ollama_stack::check_docker()?;
+        let ols_opts = crabcc_core::ollama_stack::Options::new()
+            .with_compose_dir(home.join(".crabcc/ollama-stack"));
+        let up = crabcc_core::ollama_stack::up(&ols_opts).context(
+            "compose up failed; check docker compose logs and re-run \
+             `crabcc install-claude --with-ollama-stack`",
+        )?;
+        println!(
+            "  stack ready: {} services healthy in {} ms",
+            up.services_healthy.len(),
+            up.duration_ms
+        );
+    }
+
+    Ok(())
+}
+
+/// Phase 5b — write the embedded ` install/ollama-stack/` files to
+/// ` $HOME/.crabcc/ollama-stack/` so the user has a writable, OS-local
+/// copy of the Compose recipe. Idempotent — overwrites on each call so
+/// upgrading crabcc picks up Caddyfile / docker-compose.yml changes.
+/// Preserves any existing ` .env` (real secrets) by skipping it when
+/// already on disk.
+fn materialize_ollama_stack(home: &Path) -> Result<()> {
+    let dest = home.join(".crabcc/ollama-stack");
+    std::fs::create_dir_all(&dest).with_context(|| format!("create {}", dest.display()))?;
+
+    for (name, mode, bytes) in OLLAMA_STACK_FILES {
+        let path = dest.join(name);
+        std::fs::write(&path, bytes).with_context(|| format!("write {}", path.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perm = std::fs::Permissions::from_mode(*mode);
+            let _ = std::fs::set_permissions(&path, perm);
+        }
+        println!("wrote: {}", path.display());
+    }
+
+    // Don't clobber a real .env. We never embed one.
+    let env_path = dest.join(".env");
+    if !env_path.exists() {
+        eprintln!(
+            "  hint: no .env yet at {} — run `{}/init-keys.sh` to generate keys",
+            env_path.display(),
+            dest.display()
+        );
+    }
+    Ok(())
+}
+
+/// Print the bring-up commands for the Ollama stack without symlinking
+/// any Claude config. Counterpart to ` --print-hooks` for the
+/// ` install/ollama-stack/` recipe.
+fn print_stack_instructions() -> Result<()> {
+    println!("# crabcc Ollama auth stack — manual bring-up (issue #105)");
+    println!();
+    println!("# 1. Materialize embedded files (or use the repo copy at install/ollama-stack/)");
+    println!("crabcc install-claude --with-ollama-stack");
+    println!();
+    println!("# 2. Bootstrap shared Docker network");
+    println!("install/init-shared-network.sh");
+    println!();
+    println!("# 3. Generate API keys (writes ~/.crabcc/ollama-stack/.env, mode 600)");
+    println!("~/.crabcc/ollama-stack/init-keys.sh");
+    println!();
+    println!("# 4. Bring stack up");
+    println!("crabcc ollama-stack up   # or:  ccc setup --ollama-up");
+    println!();
+    println!("# 5. Smoke");
+    println!("crabcc ollama-stack status");
+    println!("crabcc agent --backend ollama --run \"ping\" --dry-run");
     Ok(())
 }
 

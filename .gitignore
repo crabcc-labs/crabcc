@@ -22,3 +22,7 @@ Cargo.lock
 STORAGE_RESEARCH.md
 DB_*.md
 crates/crabcc-core/fuzz/target/
+
+# Generated secrets for the Ollama auth stack. Real .env never committed;
+# track install/ollama-stack/.env.example instead. See issue #105.
+install/ollama-stack/.env

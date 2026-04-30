@@ -41,3 +41,17 @@ examples/
 
 # Editor backups.
 *.bak
+
+# Issue #105 — extra exclusions to keep the agent build context small.
+# Mirrors .gitignore additions.
+.summary/
+.repomix/
+/docs/
+/bench/
+
+# Built artifacts under crates/crabcc-viz/web/ — esbuild rebuilds dist/
+# inside the dev compose's viz-web service, no value shipping the host
+# build into the crabcc image.
+crates/crabcc-viz/web/dist/
+crates/crabcc-viz/web/node_modules/
+crates/crabcc-viz/web/bun.lock
