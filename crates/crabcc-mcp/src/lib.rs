@@ -44,10 +44,24 @@ pub fn serve_stdio(root: &Path) -> Result<()> {
 pub fn serve_stdio_with(root: &Path, dev: bool) -> Result<()> {
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
-    let mut reader = BufReader::new(stdin.lock());
-    let mut writer = stdout.lock();
-    let mut line = String::new();
+    let reader = BufReader::new(stdin.lock());
+    let writer = stdout.lock();
+    serve_io(reader, writer, root, dev)
+}
 
+/// Generic I/O variant — issue #89 slice 1.
+///
+/// Drives the JSON-RPC loop against any [`BufRead`] / [`Write`] pair.
+/// `serve_stdio_with` wraps locked stdin/stdout; tests pipe a
+/// `Cursor<Vec<u8>>` of newline-delimited JSON in and capture the
+/// response stream on a `Vec<u8>` writer — no `tempfile`, no pipe,
+/// no subprocess.
+pub fn serve_io<R, W>(mut reader: R, mut writer: W, root: &Path, dev: bool) -> Result<()>
+where
+    R: BufRead,
+    W: Write,
+{
+    let mut line = String::new();
     loop {
         line.clear();
         match reader.read_line(&mut line) {
@@ -69,6 +83,11 @@ pub fn serve_stdio_with(root: &Path, dev: bool) -> Result<()> {
             }
         };
         let resp = handle_with(&req, root, dev);
+        // Spec: notifications get no response. Skip empty/Null
+        // (notifications/initialized in particular).
+        if resp.is_null() {
+            continue;
+        }
         writeln!(writer, "{resp}")?;
         writer.flush()?;
     }
@@ -1953,5 +1972,93 @@ mod tests {
                 "memory tool {name:?} description should mention a domain concept: {desc:?}"
             );
         }
+    }
+
+    // =========================================================================
+    // serve_io tests — issue #89 slice 1.
+    // Drive the JSON-RPC loop against in-memory readers/writers so we can
+    // assert response framing without `tempfile` / pipes / subprocess.
+    // =========================================================================
+
+    use std::io::Cursor;
+
+    /// Send `requests` (one JSON-RPC object per element), get back the
+    /// newline-delimited responses as parsed Values.
+    fn drive_serve_io(requests: &[Value], dev: bool) -> Vec<Value> {
+        let mut input = String::new();
+        for r in requests {
+            input.push_str(&r.to_string());
+            input.push('\n');
+        }
+        let reader = Cursor::new(input);
+        let mut writer: Vec<u8> = Vec::new();
+        // root doesn't matter for these tests — we exercise the framing,
+        // not the tool implementations (those have their own tests).
+        let root = std::env::temp_dir();
+        super::serve_io(reader, &mut writer, &root, dev).expect("serve_io ok");
+        let body = String::from_utf8(writer).expect("response is utf-8");
+        body.lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| serde_json::from_str(l).expect("line is JSON"))
+            .collect()
+    }
+
+    #[test]
+    fn serve_io_handles_initialize_then_tools_list() {
+        let resps = drive_serve_io(
+            &[
+                json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+                json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+            ],
+            false,
+        );
+        assert_eq!(resps.len(), 2, "expected one response per request");
+        assert_eq!(resps[0]["id"], 1);
+        assert_eq!(resps[0]["result"]["serverInfo"]["name"], "crabcc-mcp");
+        assert_eq!(resps[1]["id"], 2);
+        let tools = resps[1]["result"]["tools"].as_array().unwrap();
+        assert!(!tools.is_empty(), "tools/list should return ≥ 1 tool");
+    }
+
+    #[test]
+    fn serve_io_skips_response_for_notifications() {
+        // notifications/initialized has no `id` and expects no response per
+        // the JSON-RPC spec. Mixing it between two real requests must NOT
+        // shift the response indices.
+        let resps = drive_serve_io(
+            &[
+                json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
+                json!({"jsonrpc":"2.0","method":"notifications/initialized","params":{}}),
+                json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
+            ],
+            false,
+        );
+        assert_eq!(resps.len(), 2, "notification must not produce a frame");
+        assert_eq!(resps[0]["id"], 1);
+        assert_eq!(resps[1]["id"], 2);
+    }
+
+    #[test]
+    fn serve_io_returns_parse_error_for_malformed_line() {
+        // Bad JSON between two valid frames. Loop must keep going + emit
+        // a -32700 parse error for the bad line.
+        let mut input = String::new();
+        input.push_str(&json!({"jsonrpc":"2.0","id":1,"method":"initialize"}).to_string());
+        input.push('\n');
+        input.push_str("{ not valid json\n");
+        input.push_str(&json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}).to_string());
+        input.push('\n');
+        let mut writer: Vec<u8> = Vec::new();
+        super::serve_io(Cursor::new(input), &mut writer, &std::env::temp_dir(), false).unwrap();
+        let lines: Vec<Value> = String::from_utf8(writer)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0]["id"], 1);
+        assert_eq!(lines[1]["error"]["code"], -32700);
+        assert_eq!(lines[2]["id"], 2);
     }
 }
