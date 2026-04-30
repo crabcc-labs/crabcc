@@ -93,6 +93,28 @@ tasks:
       - "{{.CRABCC}} agent-ls --limit 10"
       - "{{.CRABCC}} agent-kills --limit 10"
 
+  manager-status:
+    desc: Bulletproof orchestrator health (manager / agentd / menubar / docker / errors)
+    summary: |
+      Runs `crabcc manager status` — reports liveness for each
+      LaunchAgent (com.crabcc.manager / agentd / agent-guard / menubar),
+      docker stack health, active agent runs, recent kill events, and
+      a recommendations list when anything is wrong. Pass JSON=1 for
+      machine-readable output (used by the menubar's About panel).
+    vars:
+      JSON: '{{.JSON | default ""}}'
+    cmds:
+      - "{{.CRABCC}} manager status {{if .JSON}}--json{{end}}"
+
+  envs:
+    desc: Print the dev-side environment summary (repo, git, paths, LaunchAgents, manager status).
+    summary: |
+      One-line snapshot of everything the manager knows about this
+      machine. Source the script (`source scripts/set-local-dev-envs.sh`)
+      to also export CRABCC_REPO / CRABCC_VERSION / CRABCC_BIN / etc.
+    cmds:
+      - bash scripts/set-local-dev-envs.sh --print
+
   dmg:
     desc: Build dist/crabcc-<version>.dmg — installer .app + menubar UI + LaunchAgent (issue #107)
     summary: |

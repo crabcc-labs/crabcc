@@ -75,7 +75,19 @@ pub fn open(path: &Path) -> Result<Connection> {
            detail       TEXT\n\
          );\n\
          CREATE INDEX IF NOT EXISTS idx_kill_events_run    ON agent_kill_events(run_id);\n\
-         CREATE INDEX IF NOT EXISTS idx_kill_events_at     ON agent_kill_events(killed_at DESC);",
+         CREATE INDEX IF NOT EXISTS idx_kill_events_at     ON agent_kill_events(killed_at DESC);\n\
+         CREATE TABLE IF NOT EXISTS cli_calls (\n\
+           id           INTEGER PRIMARY KEY AUTOINCREMENT,\n\
+           started_ts   INTEGER NOT NULL,\n\
+           finished_ts  INTEGER,\n\
+           pid          INTEGER NOT NULL,\n\
+           cmd          TEXT NOT NULL,\n\
+           args         TEXT,\n\
+           exit_code    INTEGER,\n\
+           duration_ms  INTEGER,\n\
+           errors_seen  INTEGER NOT NULL DEFAULT 0\n\
+         );\n\
+         CREATE INDEX IF NOT EXISTS idx_cli_calls_started ON cli_calls(started_ts DESC);",
     )?;
     Ok(conn)
 }

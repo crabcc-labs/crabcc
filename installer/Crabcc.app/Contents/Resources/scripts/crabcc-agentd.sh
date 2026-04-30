@@ -33,12 +33,19 @@ log() { printf '%s [agentd %d] %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$$" "$*
 # --- signal plumbing -------------------------------------------------------
 
 shutdown=0
-on_term() { log "received SIGTERM/SIGINT — shutting down"; shutdown=1; }
+on_term() { log "received SIGTERM/SIGINT — shutting down gracefully"; shutdown=1; }
+on_hup()  { log "received SIGHUP — soft reload"; }
 on_chld() { while wait -n 2>/dev/null; do :; done; }  # reap children, no zombies
+on_exit() {
+    rc=$?
+    rm -f "$PID_FILE" 2>/dev/null
+    log "exit rc=$rc shutdown=$shutdown"
+}
 
-trap on_term  TERM INT
-trap on_chld  CHLD
-trap 'log "exiting (rc=$?)"' EXIT
+trap on_term TERM INT
+trap on_hup  HUP
+trap on_chld CHLD
+trap on_exit EXIT
 
 # --- single-instance guard -------------------------------------------------
 

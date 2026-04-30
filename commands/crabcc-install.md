@@ -42,5 +42,25 @@ After the install:
 2. Suggest the user run `crabcc go` from a project root to bootstrap
    index + memory + open a Claude Code session with the crabcc primer
    already loaded.
-3. Mention `claude mcp add crabcc -- crabcc mcp` to register the MCP
-   server (the install script prints this hint at the end too).
+3. Mention `claude mcp add crabcc -- crabcc --mcp` to register the MCP
+   server (the install script prints this hint at the end too). Note
+   the flag is `--mcp` (single-word), not `mcp` — the latter is the
+   subcommand-style spelling that some older docs used.
+
+## macOS extras (issue #107)
+
+On macOS, the bootstrap can also build + install the `Crabcc.app`
+menubar bundle and register the four LaunchAgents (manager / agentd /
+agent-guard / menubar). The installer ad-hoc codesigns the binaries so
+they run cleanly under macOS Sequoia's provenance-xattr policy.
+
+```bash
+# Fresh-machine bootstrap including the menubar app + LaunchAgents:
+curl -fsSL \
+    https://raw.githubusercontent.com/peterlodri-sec/crabcc/main/scripts/bootstrap.sh \
+    | bash -s -- --with-launchd --with-macos-app
+```
+
+After install, `crabcc manager status` reports overall health (manager
+heartbeat, each LaunchAgent's state, docker stack, active agent runs,
+kill events) plus actionable recommendations on any red.

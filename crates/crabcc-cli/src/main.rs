@@ -9,6 +9,7 @@ mod agent_runs_db;
 mod compress_cmd;
 mod go;
 mod install;
+mod manager;
 mod memory;
 mod status;
 mod telemetry;
@@ -320,6 +321,32 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Bulletproof orchestrator: heartbeat daemon (com.crabcc.manager
+    /// LaunchAgent) + comprehensive system health snapshot. The
+    /// daemon writes `manager_heartbeats` rows on a configurable
+    /// cadence so any reader (menubar, doctor, scripts) can prove
+    /// "the manager is alive AND recent". `status` reports live state
+    /// for manager / agentd / agent-guard / menubar / docker stack +
+    /// recommendations when anything is wrong.
+    Manager {
+        #[command(subcommand)]
+        sub: ManagerSub,
+    },
+}
+
+#[derive(Subcommand)]
+enum ManagerSub {
+    /// Long-running heartbeat process. Wired to com.crabcc.manager.plist.
+    Daemon {
+        /// Heartbeat interval in seconds. Default 30.
+        #[arg(long, default_value_t = 30u64)]
+        interval: u64,
+    },
+    /// Point-in-time snapshot. JSON output for the menubar / doctor.
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -449,8 +476,34 @@ fn main() -> Result<()> {
     reset_sigpipe();
 
     let cli = Cli::parse();
-    let root = cli.root.unwrap_or_else(|| std::env::current_dir().unwrap());
+    let root = cli
+        .root
+        .clone()
+        .unwrap_or_else(|| std::env::current_dir().unwrap());
     let db = root.join(".crabcc").join("index.db");
+
+    // Issue #107 — every CLI invocation registers in cli_calls so
+    // `crabcc manager status` can report "what just ran". Skip for the
+    // manager daemon itself (it heartbeats separately) to avoid a
+    // self-referential row every interval. Best-effort — the guard's
+    // begin() never fails the call.
+    let cmd_label = cli
+        .cmd
+        .as_ref()
+        .map(cmd_name_for_log)
+        .unwrap_or("(no-subcmd)");
+    let args_summary = std::env::args().skip(1).collect::<Vec<_>>().join(" ");
+    let is_manager_daemon = matches!(
+        cli.cmd,
+        Some(Cmd::Manager {
+            sub: ManagerSub::Daemon { .. }
+        })
+    );
+    let _mgr_guard = if is_manager_daemon {
+        None
+    } else {
+        Some(manager::ManagerGuard::begin(cmd_label, &args_summary))
+    };
 
     // Issue #74 — `crabcc` is the low-level surface; `ccc` is the
     // user-friendly combo CLI. Emit a one-line stderr hint when the
@@ -605,6 +658,12 @@ fn main() -> Result<()> {
     }
     if let Some(Cmd::AgentKills { limit, json }) = cli.cmd.as_ref() {
         return run_agent_kills(*limit, *json);
+    }
+    if let Some(Cmd::Manager { sub }) = cli.cmd.as_ref() {
+        return match sub {
+            ManagerSub::Daemon { interval } => manager::run_daemon(*interval),
+            ManagerSub::Status { json } => manager::run_status(*json),
+        };
     }
 
     // `compress` is a meta-operation on the index. It owns its own codec
@@ -879,6 +938,7 @@ fn main() -> Result<()> {
         Cmd::AgentLs { .. } => unreachable!("agent-ls handled before store init"),
         Cmd::AgentGuard { .. } => unreachable!("agent-guard handled before store init"),
         Cmd::AgentKills { .. } => unreachable!("agent-kills handled before store init"),
+        Cmd::Manager { .. } => unreachable!("manager handled before store init"),
     }
     Ok(())
 }
@@ -1066,6 +1126,7 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::AgentLs { .. } => "agent-ls",
         Cmd::AgentGuard { .. } => "agent-guard",
         Cmd::AgentKills { .. } => "agent-kills",
+        Cmd::Manager { .. } => "manager",
         Cmd::Serve { .. } => "serve",
         Cmd::InstallClaude { .. } => "install-claude",
     }

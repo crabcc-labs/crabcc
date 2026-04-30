@@ -165,6 +165,36 @@ func activeAgentRunCountFromDb() -> Int? {
 
 struct KillEvent { let runId: String; let reason: String; let detail: String }
 
+// One-line manager health summary. Shells out to `crabcc manager status
+// --json` and parses the boolean fields. Returns "unknown" on parse
+// failure so we never wedge the menu open if the binary isn't installed.
+func managerHealthSummary() -> (String, String) {
+    let crabcc = NSString(string: "~/.cargo/bin/crabcc").expandingTildeInPath
+    guard FileManager.default.isExecutableFile(atPath: crabcc) else {
+        return ("manager: crabcc not on PATH", "exclamationmark.triangle.fill")
+    }
+    let raw = captureStdout([crabcc, "manager", "status", "--json"])
+    guard let data = raw.data(using: .utf8),
+          let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else {
+        return ("manager: status unavailable", "questionmark.circle")
+    }
+    let mgr   = (obj["manager_alive"]      as? Bool) ?? false
+    let agtd  = (obj["agentd_alive"]       as? Bool) ?? false
+    let menu  = (obj["menubar_alive"]      as? Bool) ?? false
+    let stack = (obj["docker_stack"]       as? String) ?? "?"
+    let active = (obj["active_runs"]       as? Int) ?? 0
+    let parts: [String] = [
+        mgr   ? "manager✓"  : "manager✗",
+        agtd  ? "agentd✓"   : "agentd✗",
+        menu  ? "menubar✓"  : "menubar✗",
+        "stack:\(stack)",
+        "running:\(active)",
+    ]
+    let allGreen = mgr && agtd && menu && stack != "down"
+    return (parts.joined(separator: " · "), allGreen ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+}
+
 struct ScheduledTask {
     let label: String
     let cadence: String       // "every 20 min" / "at login" / "kept alive"
@@ -290,6 +320,17 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let header = NSMenuItem(title: "Crabcc \(v)", action: nil, keyEquivalent: "")
         header.isEnabled = false
         menu.addItem(header)
+
+        // Manager health one-liner — directly under the version header so
+        // any red shows up on first menu-open.
+        let (healthLine, healthSym) = managerHealthSummary()
+        let healthItem = NSMenuItem(title: healthLine, action: #selector(showAbout), keyEquivalent: "")
+        healthItem.target = self
+        if let img = NSImage(systemSymbolName: healthSym, accessibilityDescription: nil) {
+            img.isTemplate = true
+            healthItem.image = img
+        }
+        menu.addItem(healthItem)
 
         let repo = currentRepo()
         let repoItem = NSMenuItem(
