@@ -51,6 +51,9 @@ case "$MODEL" in
   qwen2.5-coder:7b*)                          disk_req=5;  ram_req=6;  known=1 ;;
   qwen2.5-coder:32b*)                         disk_req=20; ram_req=24; known=1 ;;
   qwen3*32b*|qwen3-coder*30b*)                disk_req=20; ram_req=24; known=1 ;;
+  # Ollama 0.19 (MLX preview, March 2026) recommended NVFP4 model.
+  # Requires Apple Silicon w/ ≥32 GB unified memory per the launch post.
+  qwen3.5:35b-a3b-coding-nvfp4*|qwen3.5*nvfp4*) disk_req=21; ram_req=32; known=1 ;;
 esac
 
 # ── platform / arch ──────────────────────────────────────────────────
@@ -85,12 +88,40 @@ fi
 
 # ── ollama daemon reachable? ────────────────────────────────────────
 host="${OLLAMA_HOST:-http://127.0.0.1:11434}"
+ollama_ver=""
 if curl -fsS --max-time 3 "$host/api/version" >/dev/null 2>&1; then
   daemon_status="green"
   daemon_label="reachable at $host"
+  ollama_ver=$(curl -fsS --max-time 3 "$host/api/version" 2>/dev/null \
+               | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
 else
   daemon_status="red"
   daemon_label="NOT reachable at $host (run \`ollama serve\` or open the desktop app)"
+fi
+
+# ── MLX backend eligibility (https://ollama.com/blog/mlx, 2026-03-30) ──
+# Ollama 0.19+ uses MLX as the default backend on Apple Silicon. No env
+# var to opt in — auto-on when the binary supports it. We surface
+# eligibility here so users on 0.18 know to upgrade for the 1.5–2× gain.
+mlx_status="green"
+mlx_label="not applicable on this platform"
+if [ "$os/$arch" = "Darwin/arm64" ]; then
+  if [ -z "$ollama_ver" ]; then
+    mlx_status="yellow"
+    mlx_label="cannot probe — daemon unreachable"
+  else
+    # Numeric compare: split on '.', read as N.N.N, strip pre-release suffix.
+    ver_clean="${ollama_ver%%-*}"
+    IFS='.' read -r vmaj vmin _vpat <<<"$ver_clean"
+    vmaj="${vmaj:-0}"; vmin="${vmin:-0}"
+    if [ "$vmaj" -gt 0 ] || [ "$vmin" -ge 19 ]; then
+      mlx_status="green"
+      mlx_label="active — Ollama $ollama_ver on Apple Silicon (auto-enabled in 0.19+)"
+    else
+      mlx_status="yellow"
+      mlx_label="upgrade Ollama to ≥0.19 for MLX backend (1.5–2× faster on M-series); current $ollama_ver"
+    fi
+  fi
 fi
 
 # ── verdict per check ───────────────────────────────────────────────
@@ -112,10 +143,11 @@ echo "$(sg "$arch_status")  arch:        $arch_label"
 echo "$(sg "$ram_status")  RAM:         $ram_gb GB total · need ~$ram_req GB for this model"
 echo "$(sg "$disk_status")  disk:        $disk_free_gb GB free in $models_dir · need ~$disk_req GB"
 echo "$(sg "$daemon_status")  daemon:      $daemon_label"
+echo "$(sg "$mlx_status")  MLX:         $mlx_label"
 
 # ── exit code ───────────────────────────────────────────────────────
 worst=0
-for s in "$arch_status" "$ram_status" "$disk_status" "$daemon_status"; do
+for s in "$arch_status" "$ram_status" "$disk_status" "$daemon_status" "$mlx_status"; do
   case "$s" in
     yellow) [ "$worst" -lt 1 ] && worst=1 ;;
     red)    worst=2 ;;
