@@ -8,6 +8,14 @@ license.workspace = true
 name = "crabcc"
 path = "src/main.rs"
 
+[features]
+default = []
+# v3.0 (#62) — surfaces the SandboxRuntime stub. The actual microsandbox
+# integration is deferred per `install/agent-runtime.md`; this feature
+# only flips on the trait impl + a clearer "not yet implemented" error
+# so callers can write code against the v3.0 API today.
+agent-sandbox = []
+
 [dependencies]
 crabcc-core   = { workspace = true }
 crabcc-mcp    = { workspace = true }
