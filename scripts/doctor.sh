@@ -40,6 +40,12 @@ set -uo pipefail
 # NB: no `set -e` here — doctor must keep running past failed checks so the
 # user sees the full picture in one run.
 
+# --- workspace version (single source of truth) ----------------------------
+__SD="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck disable=SC1091
+. "$__SD/version.sh" 2>/dev/null || true
+CRABCC_VERSION="${CRABCC_VERSION:-unknown}"
+
 # --- terminal styling ------------------------------------------------------
 if [ -t 1 ] && command -v tput >/dev/null 2>&1; then
     BOLD="$(tput bold || true)"
@@ -101,11 +107,11 @@ chk() {
 # --- pre-flight banner -----------------------------------------------------
 if [ "$JSON" = "0" ]; then
     if [ "$QUIET" = "0" ]; then
-        printf "${BOLD}crabcc doctor${RESET}  ${DIM}(mode: %s, log: %s)${RESET}\n\n" \
-            "$MODE" "$LOG"
+        printf "${BOLD}crabcc doctor${RESET}  ${DIM}(crabcc v%s, mode: %s, log: %s)${RESET}\n\n" \
+            "$CRABCC_VERSION" "$MODE" "$LOG"
     fi
 fi
-log "=== crabcc doctor — mode=$MODE host=$(uname -srm) ==="
+log "=== crabcc doctor v$CRABCC_VERSION — mode=$MODE host=$(uname -srm) ==="
 
 # --- helpers --------------------------------------------------------------
 declare -a JSON_ENTRIES=()

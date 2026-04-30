@@ -6,6 +6,25 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+### Added — `scripts/version.sh` + globalized `CRABCC_VERSION`
+- Single source of truth for the workspace version. Parses
+  `[workspace.package].version` from `Cargo.toml` once and exports
+  `CRABCC_VERSION` to anything that sources it. `task version` (also
+  `task version JSON=1`) prints from the same helper. The check-deps
+  and doctor banners now display `crabcc vX.Y.Z` so log paste-ups carry
+  provenance, and the Taskfile's top-level `vars:` exposes
+  `{{.CRABCC_VERSION}}` for any future task.
+
+### Added — `scripts/install-aliases.sh` + `task aliases`
+- Idempotent installer for shell aliases that swap commonly-used legacy
+  CLI tools for modern equivalents when the modern tool is on PATH:
+  `grep→rg`, `find→fd`, `cat→bat`, `ls→eza`, `du→dust`, `df→duf`,
+  `ps→procs`, `top→btop`, `tree→eza --tree`, `cd→zoxide`, plus crabcc
+  shortcuts (`cc`, `cci`, `ccs`, `ccr`, `ccc`, `ccm`). Writes a fenced
+  `# >>> crabcc-aliases >>>` block into `~/.zshrc` / `~/.bashrc` /
+  `~/.config/fish/config.fish`; `MODE=remove` strips the block cleanly,
+  `MODE=print` dry-runs.
+
 ### Added — M1a: hybrid memory search (issue #2)
 - **FTS5 lexical index** for `drawers.body` (contentless `drawers_fts`
   virtual table keyed on drawer id) so KNN ids and BM25 ids share one

@@ -43,6 +43,12 @@
 
 set -euo pipefail
 
+# --- workspace version (single source of truth) ----------------------------
+__SD="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+# shellcheck disable=SC1091
+. "$__SD/version.sh" 2>/dev/null || true
+CRABCC_VERSION="${CRABCC_VERSION:-unknown}"
+
 # --- terminal styling -------------------------------------------------------
 if [ -t 1 ] && command -v tput >/dev/null 2>&1; then
     BOLD="$(tput bold || true)"
@@ -240,7 +246,8 @@ check_tool() {
 
 # --- header / banner --------------------------------------------------------
 if [ "$MODE" != "json" ]; then
-    printf "${BOLD}crabcc dev-deps check${RESET}  ${DIM}(host: %s)${RESET}\n\n" "$OS"
+    printf "${BOLD}crabcc dev-deps check${RESET}  ${DIM}(crabcc v%s, host: %s)${RESET}\n\n" \
+        "$CRABCC_VERSION" "$OS"
 fi
 
 while IFS='|' read -r name bucket desc verscmd; do

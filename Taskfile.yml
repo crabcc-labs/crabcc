@@ -14,6 +14,11 @@ vars:
   REPO_FIXTURE: '{{.REPO_FIXTURE | default "/Users/peter.lodri/workspace/mc-mothership"}}'
   CARGO: cargo
   CRABCC: ~/.cargo/bin/crabcc
+  # Single source of truth for the workspace version. Other tasks read
+  # through {{.CRABCC_VERSION}} so bumping Cargo.toml flips banners,
+  # release messages, and `task version` automatically.
+  CRABCC_VERSION:
+    sh: bash scripts/version.sh
 
 tasks:
   default:
@@ -226,6 +231,28 @@ tasks:
       MODE: '{{.MODE | default "check"}}'
     cmds:
       - 'bash scripts/doctor.sh --{{.MODE}}'
+
+  version:
+    desc: Print the workspace version (parsed from Cargo.toml). --json for machine output.
+    summary: |
+      Single source of truth for "what version are we shipping". Reads
+      [workspace.package].version from the top-level Cargo.toml. Other tasks
+      pick up the same value via {{.CRABCC_VERSION}}.
+    cmds:
+      - 'bash scripts/version.sh{{if .JSON}} --json{{end}}'
+
+  aliases:
+    desc: Install developer-friendly CLI aliases (grep→rg, find→fd, …) into the user shell rc
+    summary: |
+      Idempotent: writes a fenced `# >>> crabcc-aliases >>>` block into
+      ~/.zshrc / ~/.bashrc / ~/.config/fish/config.fish. Each alias is
+      gated on `command -v <tool>` so the rc stays clean if the modern
+      tool isn't installed yet. Pass MODE=remove to strip the block,
+      MODE=print to dry-run.
+    vars:
+      MODE: '{{.MODE | default "install"}}'
+    cmds:
+      - 'bash scripts/install-aliases.sh{{if eq .MODE "remove"}} --remove{{end}}{{if eq .MODE "print"}} --print{{end}}'
 
   local-ci:
     desc: Local CI snapshot — fmt-check + lint + test, output to .summary/local-ci.txt
