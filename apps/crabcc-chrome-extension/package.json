@@ -1,0 +1,22 @@
+{
+  "name": "crabcc-chrome-extension",
+  "version": "0.0.1",
+  "private": true,
+  "description": "MV3 Chrome extension that tethers to crabcc serve over SSE; MCP bridge for cua/devtools/page tools.",
+  "type": "module",
+  "scripts": {
+    "build": "bun run build.ts",
+    "dev": "bun run build.ts --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check src",
+    "format": "biome format --write src",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/bun": "^1.1.13",
+    "@types/chrome": "^0.0.281",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.2"
+  }
+}

@@ -1,0 +1,53 @@
+name: chrome-extension CI
+
+# Path-filtered: TS-only PRs to apps/crabcc-chrome-extension don't fire the
+# Rust suite, and Rust PRs don't run this. Keep both lists in sync if either
+# side ever moves files. NOT a branch-protection required check (see RFC #184
+# / issue #184 comment) — required checks must run on every PR or they ghost.
+on:
+  pull_request:
+    paths:
+      - 'apps/crabcc-chrome-extension/**'
+      - '.github/workflows/chrome-extension.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'apps/crabcc-chrome-extension/**'
+      - '.github/workflows/chrome-extension.yml'
+
+# Cancel in-flight runs on the same ref when a new push lands.
+concurrency:
+  group: chrome-extension-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: lint + typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: apps/crabcc-chrome-extension
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: arduino/setup-task@v2
+        with:
+          version: '3.x'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Use plain `bun install` until bun.lockb is committed; switch to
+      # `bun install --frozen-lockfile` once we land the lockfile.
+      - name: install deps
+        run: bun install
+
+      - name: ci gate (typecheck + lint)
+        working-directory: ${{ github.workspace }}
+        run: task chrome:ci

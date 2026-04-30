@@ -1,0 +1,98 @@
+# https://taskfile.dev — included from root Taskfile under the `chrome:`
+# namespace. From repo root: `task chrome:dev`, `task chrome:build`, etc.
+# Standalone: `cd apps/crabcc-chrome-extension && task <target>`.
+#
+# Stack: Bun (runtime + package manager + test runner) + esbuild
+# (bundler) + Biome (lint+format) + tsc (typecheck only). MV3 manifest
+# is hand-written; build.ts orchestrates the bundle.
+
+version: '3'
+
+vars:
+  EXT_DIR: '{{.TASKFILE_DIR}}'
+  DIST:    '{{.TASKFILE_DIR}}/dist'
+  PKG_OUT: '{{.TASKFILE_DIR}}/dist.zip'
+
+tasks:
+  default:
+    desc: Install + typecheck + lint + build (the daily-driver)
+    cmds:
+      - task: install
+      - task: typecheck
+      - task: lint
+      - task: build
+
+  install:
+    desc: Install JS deps via Bun
+    sources: ['package.json', 'bun.lockb']
+    generates: ['node_modules/.package-lock.json']
+    cmds:
+      - bun install --frozen-lockfile
+
+  build:
+    desc: Production bundle to dist/ (service-worker + offscreen + content + popup + manifest)
+    deps: [install]
+    cmds:
+      - bun run build.ts
+
+  dev:
+    desc: Watch-mode bundle; reload the unpacked extension in Chrome to pick up changes
+    deps: [install]
+    cmds:
+      - bun run build.ts --watch
+
+  typecheck:
+    desc: tsc --noEmit (CI gate)
+    deps: [install]
+    cmds:
+      - bun x tsc --noEmit
+
+  lint:
+    desc: Biome lint (CI gate)
+    deps: [install]
+    cmds:
+      - bun x biome check src
+
+  format:
+    desc: Biome format --write
+    deps: [install]
+    cmds:
+      - bun x biome format --write src
+
+  test:
+    desc: Bun unit tests (protocol shapes, offscreen wiring, content-script helpers)
+    deps: [install]
+    cmds:
+      - bun test
+
+  e2e:
+    desc: 'LOCAL-ONLY end-to-end smoke against a real Chrome profile (NOT run in CI)'
+    dir: '{{.EXT_DIR}}'
+    deps: [build]
+    cmds:
+      - 'echo "[e2e] launching Chrome with --load-extension=$(pwd)/dist"'
+      - 'bash scripts/e2e-smoke.sh'
+    status:
+      - 'test "${CI:-}" = "" || (echo "chrome:e2e is local-only; skipping in CI" && exit 0)'
+
+  package:
+    desc: Zip dist/ as dist.zip for Chrome Web Store upload
+    dir: '{{.EXT_DIR}}'
+    deps: [build]
+    cmds:
+      - rm -f {{.PKG_OUT}}
+      - cd {{.DIST}} && zip -r {{.PKG_OUT}} . -x "*.map"
+      - 'echo "✓ packaged: {{.PKG_OUT}}"'
+
+  clean:
+    desc: Remove dist/ and node_modules/
+    dir: '{{.EXT_DIR}}'
+    cmds:
+      - rm -rf dist node_modules dist.zip
+
+  ci:
+    desc: 'CI gate (lint + typecheck only; e2e is local-only — see chrome:e2e)'
+    deps: [install]
+    cmds:
+      - task: typecheck
+      - task: lint

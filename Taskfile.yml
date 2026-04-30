@@ -65,6 +65,14 @@ vars:
   CRABCC_VERSION:
     sh: bash scripts/version.sh
 
+# Per-app Taskfiles. Targets surface under their namespace, e.g.:
+#   task chrome:dev   task chrome:build   task chrome:test   task chrome:e2e
+includes:
+  chrome:
+    taskfile: ./apps/crabcc-chrome-extension/Taskfile.yml
+    dir: ./apps/crabcc-chrome-extension
+    optional: true
+
 tasks:
   default:
     desc: Build + test (the daily-driver task)

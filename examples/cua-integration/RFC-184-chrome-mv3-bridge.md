@@ -3,6 +3,111 @@
 > Tracked design doc for [issue #184](https://github.com/peterlodri-sec/crabcc/issues/184).
 > This file is the source of truth for the plan; the GitHub issue mirrors it.
 
+## Update — 2026-05-01 — Architecture pivot to SSE through `crabcc serve`
+
+The original design below uses a Rust **Native Messaging Host** as the
+bridge between the agent and the extension. After verifying what
+`crabcc serve` already exposes (SSE machinery at `/api/events`, tiny_http
+on loopback `:7878`), we pivoted to a **pure-extension install** that
+tethers to the running `crabcc serve` daemon over loopback HTTP/SSE.
+
+**Rationale and trade-off table:** see
+[issue #184 comment](https://github.com/peterlodri-sec/crabcc/issues/184#issuecomment-4356550962).
+**Implementation discussion:** see "Implementation decisions" below.
+
+### Pivot summary
+
+- **Drop:** the `crabcc-chrome` Rust binary, the `nativeMessaging` permission,
+  and the per-OS native-messaging-host JSON.
+- **Add:** a broker module in `crabcc-viz` (`broadcast::channel<JsonRpcRequest>`
+  + `oneshot` response map) and two routes — `GET /api/chrome-bridge/sse`
+  (downlink) and `POST /api/chrome-bridge/response/:id` (uplink). Origin-
+  locked to `chrome-extension://<paired-id>`.
+- **MV3 keep-alive:** an **Offscreen Document** holds the long-lived
+  `EventSource`. The service worker is killed after ~30 s idle; the
+  offscreen doc is exempt from that lifecycle.
+- **Daemon expectation:** users run `crabcc serve` in the background. The
+  extension popup probes `:7878/api/health` and reports unreachable status.
+
+### Revised Phase 0 (replaces the original "Phase 0 — Stub + pairing")
+
+1. Add `broadcast::channel<JsonRpcRequest>` + `oneshot` response map to
+   `crabcc-viz` server state.
+2. New routes: `GET /api/chrome-bridge/sse` (downlink), `POST
+   /api/chrome-bridge/response/:id` (uplink). Origin-locked to
+   `chrome-extension://<paired-id>`.
+3. Wire `crabcc-mcp` stdio to push JSON-RPC requests onto the broadcast
+   channel and `await` the matching `oneshot`.
+4. Scaffold the MV3 extension at `apps/crabcc-chrome-extension/` (Bun +
+   esbuild + Biome). `offscreen.html` holds `EventSource`; service worker
+   routes by `cua.*` / `devtools.*` / `page.*`; content scripts drive the
+   DOM via `chrome.scripting.executeScript`.
+5. Smoke: `page.list_pages()` round-trips agent → mcp stdio → `crabcc
+   serve` → SSE → offscreen → SW → POST back.
+
+### Implementation decisions
+
+- **Shared schema:** TypeShare deferred until the Rust broker module
+  lands. For Phase 0 the protocol shapes are hand-written in
+  `apps/crabcc-chrome-extension/src/types/protocol.ts` (JSON-RPC 2.0
+  envelope + per-method result types). When we build the broker in
+  `crabcc-viz`, we'll annotate the Rust structs with `#[typeshare]` and
+  generate the TS counterpart, replacing the hand-written file.
+- **CI strategy:** `task chrome:ci` (typecheck + lint via Biome) runs on
+  GitHub Actions in `.github/workflows/chrome-extension.yml`,
+  path-filtered to `apps/crabcc-chrome-extension/**` so TS-only PRs don't
+  fire the 564-test Rust suite. Real e2e (`task chrome:e2e`) is
+  **local-only** — launches Chrome with `--load-extension=dist/` against
+  a running `crabcc serve`. Mirrors the `service_discovery_e2e.rs`
+  pattern (gated behind a feature, default `cargo test` skips it).
+- **Permissions** (revised manifest): `offscreen`, `tabs`, `activeTab`,
+  `scripting`, `storage` + `host_permissions` for `http://localhost:7878/*`.
+  `nativeMessaging` is no longer needed; `debugger` returns in Phase 1
+  for the `devtools.*` lane only.
+- **Pairing:** the QR-code flow in the original Phase 0 still applies,
+  but the secret stored is now an extension-id ↔ daemon token pair (used
+  for origin-locking the SSE / response routes), not a native-messaging
+  host name.
+
+### Architecture (revised)
+
+```
+┌─ crabcc agent (Claude Code via crabcc-mcp stdio) ───────────────┐
+│  Calls one of:  cua.*  /  devtools.*  /  page.*  /  inspect.*  │
+└──────────────────────┬───────────────────────────────────────────┘
+                       │ MCP stdio
+                       ▼
+        ┌──────────────────────────────────┐
+        │ crabcc-mcp (existing)            │
+        │  pushes JsonRpcRequest onto      │
+        │  broadcast channel; awaits       │
+        │  matching oneshot response       │
+        └────────────────┬─────────────────┘
+                         │ in-process
+                         ▼
+        ┌──────────────────────────────────┐
+        │ crabcc-viz HTTP server (:7878)   │  ← chrome-bridge module added
+        │  GET /api/chrome-bridge/sse      │       (downlink, server→ext)
+        │  POST /api/chrome-bridge/        │       (uplink,   ext→server)
+        │       response/:id               │
+        └────────────────┬─────────────────┘
+                         │ HTTP loopback (origin-locked)
+                         ▼
+   ┌──────────────────────────────────────────────────────┐
+   │ Chrome MV3 extension                                 │
+   │                                                      │
+   │  offscreen/offscreen.html   (holds EventSource)      │
+   │  background/service-worker.ts (routes by tool prefix)│
+   │  content/cua-driver.ts      (chrome.scripting tgt)   │
+   │  popup/popup.ts             (status / detach UI)     │
+   └──────────────────────────────────────────────────────┘
+```
+
+The original section below is preserved as historical context for the
+Native Messaging design we considered first.
+
+---
+
 ## Summary
 
 Build a single Chrome MV3 extension that fuses three browser-control surfaces

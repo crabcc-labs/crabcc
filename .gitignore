@@ -42,3 +42,10 @@ install/ollama-stack/.env
 __pycache__/
 *.pyc
 *.pyo
+
+# go-task local cache (.task/checksum/, fingerprint state).
+.task/
+
+# JS / Bun outputs (apps/crabcc-chrome-extension and any future TS app).
+**/node_modules/
+**/dist.zip

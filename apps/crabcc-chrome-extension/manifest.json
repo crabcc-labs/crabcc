@@ -1,0 +1,31 @@
+{
+  "manifest_version": 3,
+  "name": "crabcc Chrome bridge",
+  "version": "0.0.1",
+  "description": "Tethers Chrome to a local crabcc serve daemon for agent-driven browser control (cua / devtools / page).",
+  "minimum_chrome_version": "116",
+  "background": {
+    "service_worker": "background/service-worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "crabcc bridge"
+  },
+  "permissions": [
+    "offscreen",
+    "tabs",
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://localhost:7878/*",
+    "http://127.0.0.1:7878/*"
+  ],
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  }
+}
