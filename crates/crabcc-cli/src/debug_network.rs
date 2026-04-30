@@ -6,34 +6,46 @@
 //! `dig`, `traceroute`, `ifconfig`, `route`.
 //!
 //! Shells out to OS-native tools (no pure-Rust traceroute — that needs raw
-//! sockets / capabilities). Each spawn is bounded by `PER_CMD_TIMEOUT`; the
-//! whole sweep is bounded by `OVERALL_TIMEOUT`. Output: text (default) or
-//! JSON (`--json`).
+//! sockets / capabilities). Each spawn is bounded by `PER_CMD_TIMEOUT`; DNS
+//! lookups are bounded by `DNS_TIMEOUT`. There is no separate overall cap —
+//! the sweep finishes in roughly `(N_hosts × (DNS_TIMEOUT + traceroute)) +
+//! 3 × PER_CMD_TIMEOUT (interfaces + routes + resolver) + 2 × PER_CMD_TIMEOUT
+//! (connectivity)` worst case. Output: text (default) or JSON (`--json`).
 //!
 //! Surfaces:
 //!   - `crabcc debug-network` — internal CLI, this module's `run()` entrypoint.
 //!   - `bootstrap.sh --diagnose-network` — tracked in #150, separate change.
 
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use serde::Serialize;
 
 const PER_CMD_TIMEOUT: Duration = Duration::from_secs(10);
+const DNS_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Default targets when `--service` is not specified. Mirrors the canonical
-/// service set in `crabcc_core::service_discovery::known_services()`.
-const DEFAULT_HOSTS: &[&str] = &[
-    "127.0.0.1",
-    "localhost",
-    "redis",
-    "litellm",
-    "ollama",
-    "rotel",
-    "host.docker.internal",
-    "host.containers.internal",
-];
+/// Default targets when `--service` is not specified — derived from
+/// `crabcc_core::service_discovery::known_services()` so the host list
+/// stays in sync with compose-mode hostnames automatically. Always
+/// includes `127.0.0.1` + `localhost` first, and the two container-host
+/// aliases (`host.docker.internal` / `host.containers.internal`) at the
+/// tail so traceroutes from inside a container can find the host.
+fn default_hosts() -> Vec<String> {
+    let mut hosts: Vec<String> = vec!["127.0.0.1".into(), "localhost".into()];
+    for s in crabcc_core::service_discovery::known_services() {
+        if !hosts.contains(&s.host) {
+            hosts.push(s.host);
+        }
+    }
+    for h in ["host.docker.internal", "host.containers.internal"] {
+        if !hosts.iter().any(|x| x == h) {
+            hosts.push(h.to_string());
+        }
+    }
+    hosts
+}
 
 #[derive(Debug, Serialize, Clone)]
 pub struct CmdResult {
@@ -58,6 +70,10 @@ pub struct NetworkReport {
     pub os: String,
     pub started_at: u64,
     pub elapsed_ms: u64,
+    /// Echo of the `--max-hops` flag — surfaced in the report so JSON
+    /// consumers and the rendered text header can show the actual cap
+    /// instead of a hardcoded value.
+    pub max_hops: u8,
     pub dns: Vec<DnsHit>,
     pub traceroute: Vec<CmdResult>,
     pub interfaces: CmdResult,
@@ -85,12 +101,14 @@ fn build_report(service: Option<&str>, max_hops: u8) -> NetworkReport {
         .unwrap_or(0);
     let os = std::env::consts::OS.to_string();
 
-    let hosts: Vec<&str> = match service {
-        Some(s) => vec![s],
-        None => DEFAULT_HOSTS.to_vec(),
+    let hosts: Vec<String> = match service {
+        Some(s) => vec![s.to_string()],
+        None => default_hosts(),
     };
 
     // 1. DNS — pure-Rust via std::net::ToSocketAddrs to avoid needing `dig`.
+    //    Bounded by `DNS_TIMEOUT` (worker thread + recv_timeout) so a broken
+    //    resolver can't hang the whole sweep.
     let dns: Vec<DnsHit> = hosts.iter().map(|h| resolve_host(h)).collect();
 
     // 2. Traceroute — only against successfully-resolved hosts (saves time).
@@ -128,6 +146,7 @@ fn build_report(service: Option<&str>, max_hops: u8) -> NetworkReport {
         os,
         started_at,
         elapsed_ms: started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+        max_hops,
         dns,
         traceroute,
         interfaces,
@@ -142,21 +161,41 @@ fn resolve_host(host: &str) -> DnsHit {
     let start = Instant::now();
     // Attach a port for ToSocketAddrs; we discard it.
     let target = format!("{host}:80");
-    match target.to_socket_addrs() {
-        Ok(iter) => {
-            let addrs: Vec<String> = iter.map(|a| a.ip().to_string()).collect();
-            DnsHit {
-                host: host.to_string(),
-                addrs,
-                elapsed_ms: start.elapsed().as_millis().min(u64::MAX as u128) as u64,
-                error: None,
-            }
-        }
-        Err(e) => DnsHit {
+
+    // Run the lookup on a worker thread so we can cap it with `recv_timeout` —
+    // `ToSocketAddrs` itself has no timeout knob and can block for tens of
+    // seconds on a broken resolver.
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = target
+            .to_socket_addrs()
+            .map(|iter| iter.map(|a| a.ip().to_string()).collect::<Vec<_>>())
+            .map_err(|e| e.to_string());
+        let _ = tx.send(result);
+    });
+
+    let elapsed = || start.elapsed().as_millis().min(u64::MAX as u128) as u64;
+    match rx.recv_timeout(DNS_TIMEOUT) {
+        Ok(Ok(addrs)) => DnsHit {
+            host: host.to_string(),
+            addrs,
+            elapsed_ms: elapsed(),
+            error: None,
+        },
+        Ok(Err(e)) => DnsHit {
             host: host.to_string(),
             addrs: vec![],
-            elapsed_ms: start.elapsed().as_millis().min(u64::MAX as u128) as u64,
-            error: Some(e.to_string()),
+            elapsed_ms: elapsed(),
+            error: Some(e),
+        },
+        Err(_) => DnsHit {
+            host: host.to_string(),
+            addrs: vec![],
+            elapsed_ms: elapsed(),
+            error: Some(format!(
+                "DNS lookup timed out after {}s",
+                DNS_TIMEOUT.as_secs()
+            )),
         },
     }
 }
@@ -227,83 +266,78 @@ fn run_capped(argv: &[&str]) -> CmdResult {
 }
 
 /// Wait for `child` up to `timeout`. On expiry, SIGKILL the pid (Unix) and
-/// reap. Returns `(timed_out, Option<Output>)` — `None` on hard kill.
+/// reap. Returns `(timed_out, Option<Output>)`:
+///   - `(false, Some(output))` — child exited within the cap; `output.status`
+///     is the real `ExitStatus` (so callers see actual non-zero exit codes).
+///   - `(true,  None)` — timed out; SIGKILL was sent and the worker joined.
+///   - `(false, None)` — `wait_with_output()` itself errored (rare).
+///
+/// Uses `wait_with_output()` rather than `wait()`-then-read so stdout/stderr
+/// are drained **concurrently** with execution. This prevents the child from
+/// blocking on a full pipe buffer, which would otherwise look like a timeout.
 fn wait_with_timeout(
-    mut child: std::process::Child,
+    child: std::process::Child,
     timeout: Duration,
     _pid: u32,
 ) -> (bool, Option<std::process::Output>) {
-    use std::sync::mpsc;
     let (tx, rx) = mpsc::channel();
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
     let id = child.id();
 
-    // Drive the wait on a thread so we can race a timeout against it.
     let handle = std::thread::spawn(move || {
-        let status = child.wait();
-        let _ = tx.send(status);
+        let result = child.wait_with_output();
+        let _ = tx.send(result);
     });
 
-    let timed_out = rx.recv_timeout(timeout).is_err();
-    if timed_out {
-        // SIGKILL — Unix path. On non-Unix, no fallback (we don't ship
-        // Windows binaries). Threads orphan harmlessly on test runners.
-        #[cfg(unix)]
-        unsafe {
-            extern "C" {
-                fn kill(pid: i32, sig: i32) -> i32;
-            }
-            kill(id as i32, 9);
+    match rx.recv_timeout(timeout) {
+        Ok(Ok(output)) => {
+            let _ = handle.join();
+            (false, Some(output))
         }
-        let _ = handle.join();
-        return (true, None);
+        Ok(Err(_)) => {
+            let _ = handle.join();
+            (false, None)
+        }
+        Err(_) => {
+            // SIGKILL — Unix path. On non-Unix, no fallback (we don't ship
+            // Windows binaries). The worker thread will see the wait return
+            // an error or a killed-by-signal status; we just join it.
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(id as libc::pid_t, libc::SIGKILL);
+            }
+            let _ = handle.join();
+            (true, None)
+        }
     }
-    let _ = handle.join();
-
-    // Drain stdio after a successful wait. We took the handles above so the
-    // child can't deadlock on a full pipe.
-    let mut out_buf = Vec::new();
-    let mut err_buf = Vec::new();
-    if let Some(mut s) = stdout {
-        use std::io::Read;
-        let _ = s.read_to_end(&mut out_buf);
-    }
-    if let Some(mut s) = stderr {
-        use std::io::Read;
-        let _ = s.read_to_end(&mut err_buf);
-    }
-
-    let output = std::process::Output {
-        // Best-effort: synthesize an exit-success status if we lost the
-        // wait result on the channel; the timed_out branch above caught
-        // the real failure mode.
-        status: dummy_success(),
-        stdout: out_buf,
-        stderr: err_buf,
-    };
-    (false, Some(output))
 }
 
-#[cfg(unix)]
-fn dummy_success() -> std::process::ExitStatus {
-    use std::os::unix::process::ExitStatusExt;
-    std::process::ExitStatus::from_raw(0)
-}
-
-#[cfg(not(unix))]
-fn dummy_success() -> std::process::ExitStatus {
-    std::process::ExitStatus::default()
-}
-
+/// Probe whether `name` is on `PATH` and is an executable file. Walks the
+/// `PATH` env var directly rather than shelling out to `/usr/bin/which`,
+/// which isn't guaranteed to exist on every distro / minimal container.
 fn which_exists(name: &str) -> bool {
-    Command::new("/usr/bin/which")
-        .arg(name)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    let Some(paths) = std::env::var_os("PATH") else {
+        return false;
+    };
+    for dir in std::env::split_paths(&paths) {
+        let candidate = dir.join(name);
+        match std::fs::metadata(&candidate) {
+            Ok(meta) if meta.is_file() => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if meta.permissions().mode() & 0o111 != 0 {
+                        return true;
+                    }
+                }
+                #[cfg(not(unix))]
+                {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 fn print_text(r: &NetworkReport) {
@@ -333,7 +367,7 @@ fn print_text(r: &NetworkReport) {
     }
     println!();
 
-    println!("== Traceroute (max 8 hops, 1s/hop) ==");
+    println!("== Traceroute (max {} hops, 1s/hop) ==", r.max_hops);
     for t in &r.traceroute {
         let cmd = t.command.join(" ");
         let label = match (t.timed_out, t.exit_code) {
@@ -413,21 +447,60 @@ mod tests {
 
     #[test]
     fn run_capped_short_command_returns_exit_zero() {
-        // `true` is universally available on Unix; on Windows we'd need
-        // something else but we don't ship Windows binaries.
-        let r = run_capped(&["/usr/bin/true"]);
+        // `true` is universally available on Unix; resolve via PATH so the
+        // test stays portable across Nix, minimal containers, etc. (where
+        // `/usr/bin/true` may not exist even though `true` is on PATH).
+        let r = run_capped(&["true"]);
         assert!(!r.timed_out);
         assert_eq!(r.exit_code, Some(0));
     }
 
     #[test]
+    fn run_capped_propagates_real_exit_code() {
+        // `false` exits 1 on every Unix. The previous implementation
+        // synthesized success unconditionally — this test guards against
+        // regressing back to that bug.
+        let r = run_capped(&["false"]);
+        assert!(!r.timed_out);
+        assert_eq!(r.exit_code, Some(1), "expected exit 1, got {r:?}");
+    }
+
+    #[test]
     fn report_serializes_with_expected_keys() {
-        let r = build_report(Some("127.0.0.1"), 2);
+        // Synthesize a NetworkReport directly so this test doesn't shell
+        // out to `traceroute` / `ifconfig` / `ip` / `ping` (slow + flaky
+        // on CI runners that lack those binaries or have no networking).
+        let dummy_cmd = CmdResult {
+            command: vec!["dummy".into()],
+            exit_code: Some(0),
+            elapsed_ms: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            timed_out: false,
+        };
+        let r = NetworkReport {
+            os: "test".into(),
+            started_at: 0,
+            elapsed_ms: 0,
+            max_hops: 4,
+            dns: vec![DnsHit {
+                host: "127.0.0.1".into(),
+                addrs: vec!["127.0.0.1".into()],
+                elapsed_ms: 0,
+                error: None,
+            }],
+            traceroute: vec![dummy_cmd.clone()],
+            interfaces: dummy_cmd.clone(),
+            routes: dummy_cmd.clone(),
+            resolver: dummy_cmd.clone(),
+            connectivity: vec![dummy_cmd],
+        };
         let v = serde_json::to_value(&r).unwrap();
         for k in [
             "os",
             "started_at",
             "elapsed_ms",
+            "max_hops",
             "dns",
             "traceroute",
             "interfaces",
@@ -437,8 +510,32 @@ mod tests {
         ] {
             assert!(v.get(k).is_some(), "missing key: {k}");
         }
-        // DNS section must contain our requested host.
         let dns = v["dns"].as_array().unwrap();
         assert!(dns.iter().any(|d| d["host"] == "127.0.0.1"));
+    }
+
+    #[test]
+    fn default_hosts_includes_loopback_and_compose_aliases() {
+        let hosts = default_hosts();
+        assert!(hosts.iter().any(|h| h == "127.0.0.1"));
+        assert!(hosts.iter().any(|h| h == "localhost"));
+        assert!(hosts.iter().any(|h| h == "host.docker.internal"));
+        assert!(hosts.iter().any(|h| h == "host.containers.internal"));
+        // Dedupe sanity check — no host should appear twice.
+        let mut sorted = hosts.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), hosts.len(), "duplicates in {hosts:?}");
+    }
+
+    #[test]
+    fn which_exists_finds_true_on_path() {
+        // `true` is on PATH on every Unix CI runner.
+        assert!(which_exists("true"));
+    }
+
+    #[test]
+    fn which_exists_returns_false_for_garbage() {
+        assert!(!which_exists("definitely-not-a-real-binary-xyz123"));
     }
 }
