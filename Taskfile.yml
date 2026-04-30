@@ -262,37 +262,73 @@ tasks:
       - bash scripts/build-dmg.sh {{if .SKIP_BUILD}}--skip-build{{end}}
 
   # Container images (#195) — distroless-first per apps/CONTAINER-POLICY.md.
-  # Each service gets `task docker-build-<name>` and `task docker-push-<name>`.
+  # Each service gets `task docker-build-<name>`, `docker-push-<name>`, and
+  # `docker-sbom-<name>`.
+  #
+  # Tagging policy (per CONTAINER-POLICY.md): semver only. No `:latest`
+  # is produced — production deploys MUST pin to a semver tag and dev
+  # convenience uses the bare `:<version>` instead.
+  #
+  # Platform: linux/arm64 only (Apple Silicon Mac is the target host).
+  # Multi-arch was dropped per #195 follow-up — re-add when a non-arm64
+  # consumer shows up.
 
   docker-build-crabcc:
-    desc: Build ghcr.io/peterlodri-sec/crabcc:<version> locally (#195)
+    desc: Build ghcr.io/peterlodri-sec/crabcc:<semver> locally for linux/arm64 (#195)
     summary: |
       Multi-stage build via crates/crabcc-cli/Dockerfile. Runtime is
-      gcr.io/distroless/cc-debian12:nonroot. Pass PLATFORMS to opt into
-      multi-arch; default builds for the host arch only and uses
-      `--load` so the image is available to the local docker daemon.
+      gcr.io/distroless/cc-debian12:nonroot. Single platform
+      (linux/arm64 — Apple Silicon target). Semver tag only; no
+      `:latest`. Build-time ARGs populate the OCI metadata labels
+      (version, revision, created) so the registry-side metadata
+      reflects the actual commit + build timestamp.
     vars:
-      PLATFORMS: '{{.PLATFORMS | default ""}}'
+      GIT_SHA:
+        sh: git rev-parse HEAD
+      BUILD_DATE:
+        sh: date -u +%Y-%m-%dT%H:%M:%SZ
     cmds:
       - >-
         docker buildx build
         -f crates/crabcc-cli/Dockerfile
+        --platform linux/arm64
+        --build-arg VERSION="{{.CRABCC_VERSION}}"
+        --build-arg REVISION="{{.GIT_SHA}}"
+        --build-arg CREATED="{{.BUILD_DATE}}"
         -t ghcr.io/peterlodri-sec/crabcc:{{.CRABCC_VERSION}}
-        -t ghcr.io/peterlodri-sec/crabcc:latest
-        {{if .PLATFORMS}}--platform {{.PLATFORMS}} --push{{else}}--load{{end}}
+        --load
         .
 
   docker-push-crabcc:
-    desc: Push ghcr.io/peterlodri-sec/crabcc:<version> to GHCR (#195)
+    desc: Push ghcr.io/peterlodri-sec/crabcc:<semver> to GHCR (#195)
     summary: |
-      Single-arch push (host arch only). For multi-arch use
-      `task docker-build-crabcc PLATFORMS="linux/amd64,linux/arm64"`
-      which pushes inline. Requires `gh auth login` (or a GHCR write
-      token in DOCKER_CONFIG) for ghcr.io credentials.
+      Pushes the semver tag only — no `:latest`. Requires GHCR write
+      credentials in DOCKER_CONFIG (run `gh auth login` then
+      `gh auth setup-git` once, or `echo $GHCR_TOKEN | docker login
+      ghcr.io -u <user> --password-stdin`).
     deps: [docker-build-crabcc]
     cmds:
       - docker push ghcr.io/peterlodri-sec/crabcc:{{.CRABCC_VERSION}}
-      - docker push ghcr.io/peterlodri-sec/crabcc:latest
+
+  docker-sbom-crabcc:
+    desc: Generate SPDX SBOM for ghcr.io/peterlodri-sec/crabcc:<semver> (#195)
+    summary: |
+      Runs Syft against the locally-built image and writes
+      dist/sbom/crabcc-<version>.spdx.json. CI publishes this alongside
+      the image to GHCR via anchore/sbom-action — this target is the
+      local-dev equivalent for inspecting the SBOM ad-hoc.
+      Install Syft: `brew install syft` (or curl the install script
+      from https://github.com/anchore/syft).
+    deps: [docker-build-crabcc]
+    vars:
+      SBOM_DIR: dist/sbom
+      SBOM_FILE: 'dist/sbom/crabcc-{{.CRABCC_VERSION}}.spdx.json'
+    cmds:
+      - mkdir -p {{.SBOM_DIR}}
+      - >-
+        syft ghcr.io/peterlodri-sec/crabcc:{{.CRABCC_VERSION}}
+        -o spdx-json={{.SBOM_FILE}}
+      - echo "SBOM written to {{.SBOM_FILE}}"
 
   install:
     desc: Cargo install crabcc to ~/.cargo/bin/crabcc; auto-bootstraps shell aliases (idempotent)

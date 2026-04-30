@@ -15,6 +15,12 @@
 ARG RUST_VERSION=1.87
 ARG DEBIAN_VERSION=bookworm
 
+# Image-metadata args — Taskfile passes the live values; defaults keep
+# `docker build` invocations outside the Taskfile self-contained.
+ARG VERSION=dev
+ARG REVISION=unknown
+ARG CREATED=1970-01-01T00:00:00Z
+
 # --- build stage ----------------------------------------------------------
 #
 # We use the cc-debian12 distroless variant in the runtime stage (allows
@@ -89,10 +95,28 @@ RUN cargo build --release --bin crabcc --locked
 
 FROM gcr.io/distroless/cc-debian12:nonroot AS runtime
 
-LABEL org.opencontainers.image.source="https://github.com/peterlodri-sec/crabcc"
-LABEL org.opencontainers.image.title="crabcc"
-LABEL org.opencontainers.image.description="Symbol-aware code indexer + agent runtime"
-LABEL org.opencontainers.image.licenses="MIT"
+# Re-import the metadata ARGs so they're available in the runtime stage's
+# LABEL expansions (ARG scope is per stage in Docker).
+ARG VERSION
+ARG REVISION
+ARG CREATED
+
+# Full OCI image-spec annotations — discoverable by registries, signed
+# by cosign, and consumed by Anchore SBOM action / Snyk / Trivy. See
+# apps/CONTAINER-POLICY.md → "Dockerfile conventions" for the canonical
+# label set.
+LABEL org.opencontainers.image.title="crabcc" \
+      org.opencontainers.image.description="Symbol-aware code indexer + agent runtime" \
+      org.opencontainers.image.source="https://github.com/peterlodri-sec/crabcc" \
+      org.opencontainers.image.url="https://github.com/peterlodri-sec/crabcc" \
+      org.opencontainers.image.documentation="https://github.com/peterlodri-sec/crabcc/blob/main/README.md" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.vendor="peterlodri-sec" \
+      org.opencontainers.image.authors="Peter Lodri <peter.lodri@instructure.com>" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${REVISION}" \
+      org.opencontainers.image.created="${CREATED}" \
+      org.opencontainers.image.base.name="gcr.io/distroless/cc-debian12:nonroot"
 
 # Working dir is the volume mount point — `docker run -v $PWD:/work`
 # pattern. crabcc reads the cwd as the repo to index.

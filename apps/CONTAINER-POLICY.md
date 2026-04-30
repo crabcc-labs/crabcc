@@ -48,9 +48,25 @@ USER nonroot:nonroot
 ENTRYPOINT ["/usr/local/bin/<name>"]
 ```
 
-### Multi-arch (mandatory)
+### Platform: linux/arm64 only
 
-Every image ships `linux/amd64` + `linux/arm64` as a single multi-arch manifest. CI uses `docker buildx build --platform linux/amd64,linux/arm64`. Local `task docker-build-*` targets default to the host arch; pass `PLATFORMS="linux/amd64,linux/arm64"` to opt in.
+The deploy target is **Apple Silicon Mac running Docker Desktop** —
+single platform, single arch. We deliberately drop multi-arch manifests
+in this revision because:
+
+- Every consumer today (developer Macs, the menubar `Crabcc.app` host)
+  is `arm64`.
+- Multi-arch builds via QEMU emulation roughly double CI time and
+  triple build-stage memory. The cost isn't justified until a
+  non-arm64 consumer shows up.
+- Apple-Silicon-only is consistent with our build-target choice for
+  the Swift app side (`apps/macos/Project.swift` targets arm64-apple-
+  macos13.0).
+
+If a `linux/amd64` consumer (e.g. a Linux build runner, an EC2 worker)
+ever lands, re-add `--platform linux/amd64,linux/arm64` in the
+Taskfile build target and convert this section to "multi-arch
+mandatory".
 
 ### `.dockerignore` parity (mandatory)
 
@@ -72,22 +88,19 @@ Pattern: `ghcr.io/peterlodri-sec/<image>:<tag>`
 
 | Tag | Movable | Use |
 |---|---|---|
-| `<semver>` (e.g. `0.1.0`) | No | Production deploys MUST pin to a semver tag. |
-| `latest` | Yes | Dev convenience. **Never in production** — see warning below. |
-| `sha-<7-char>` (e.g. `sha-65963b3`) | No | Per-commit, gc-able. CI debugging only. |
-| `@sha256:<digest>` | No | Content-addressable. Recommended for the strictest deploys. |
+| `<semver>` (e.g. `0.1.0`) | No | **The only tag we publish.** Read from `Cargo.toml` workspace version via `scripts/version.sh`. |
+| `sha-<7-char>` (e.g. `sha-65963b3`) | No | Per-commit, gc-able. CI debugging only — never in production. |
+| `@sha256:<digest>` | No | Content-addressable. Recommended for the strictest deploys (full digest pin). |
 
-> **`latest` does not mean "newest".** It's the same as any other tag — whatever
-> was last pushed (or pulled) **without explicitly specifying a tag**. Docker
-> does not auto-resolve `latest` to the most recent build of the image; it
-> simply happens to be the default name when none is given. A developer who
-> builds locally without `-t` overwrites their local `:latest`; a deploy
-> consumer who pulls `:latest` gets whatever the registry happens to have
-> labeled `:latest` right now — which can be older than the latest semver
-> tag if a release was tagged but `:latest` was never re-pushed. **Always
-> deploy semver or `@sha256:` digest pins.** This guidance follows the
-> consensus in [Kalafatis, "Docker Image Naming and Tagging" (dev.to,
-> 2024)](https://dev.to/kalkwst/docker-image-naming-and-tagging-1pg9).
+> **No `:latest`.** Per follow-up review of #195, we deliberately do not
+> publish a movable `:latest` tag. Movable tags invite the failure mode
+> where a developer pulls `:latest` and gets a build older than the latest
+> semver tag (because someone tagged a release but never re-pushed
+> `:latest`). Production deploys MUST pin to a `<semver>` or
+> `@sha256:<digest>` — both are immutable and the registry record is
+> the single source of truth. This is consistent with the `latest`-is-not-
+> "newest" warning in [Kalafatis, "Docker Image Naming and Tagging"
+> (dev.to, 2024)](https://dev.to/kalkwst/docker-image-naming-and-tagging-1pg9).
 
 ### Image inventory (current state)
 
@@ -136,26 +149,43 @@ Every published image gets an SPDX SBOM attached as a GHCR artifact via `anchore
 2. **Cache-friendly layering.** Order steps from most-stable to least-stable: base → toolchain install → manifest files → dep build → source → app build. Never `COPY . .` before deps are cached.
 3. **Single ARG block.** Declare versions / arch flags at the top. `ARG TARGETARCH` is automatically populated by `buildx`.
 4. **`HEALTHCHECK`** for any service that listens on a port. Skip for one-shot CLIs.
-5. **`LABEL org.opencontainers.image.*`** for source / version / license metadata. CI fills these in automatically; Dockerfile just declares them.
+5. **Full OCI labels** (mandatory). Every image declares the canonical
+   `org.opencontainers.image.*` annotation set so registries, signers,
+   and SBOM tools have consistent metadata to consume. Build-time
+   `ARG`s for `VERSION` / `REVISION` / `CREATED` are populated by the
+   `task docker-build-*` target — Dockerfile defaults keep `docker
+   build` outside Taskfile self-contained.
+
+   Required label set:
+
+   | Label | Source | Purpose |
+   |---|---|---|
+   | `org.opencontainers.image.title` | static (image name) | Short human-readable name |
+   | `org.opencontainers.image.description` | static | One-line description |
+   | `org.opencontainers.image.source` | static (repo URL) | Source-of-truth git URL |
+   | `org.opencontainers.image.url` | static | Project landing page |
+   | `org.opencontainers.image.documentation` | static | README / docs link |
+   | `org.opencontainers.image.licenses` | static (SPDX id) | e.g. `MIT` |
+   | `org.opencontainers.image.vendor` | static | Org name (`peterlodri-sec`) |
+   | `org.opencontainers.image.authors` | static | Maintainer email |
+   | `org.opencontainers.image.version` | `ARG VERSION` (semver from Cargo.toml) | Image semver |
+   | `org.opencontainers.image.revision` | `ARG REVISION` (`git rev-parse HEAD`) | Source-of-truth commit SHA |
+   | `org.opencontainers.image.created` | `ARG CREATED` (RFC 3339 build time) | Build timestamp (UTC) |
+   | `org.opencontainers.image.base.name` | static | Base-image reference |
 6. **No mutable `/tmp` writes** in the runtime stage — distroless makes this hard anyway, but worth stating.
 
 ## Taskfile targets
 
-Each container has a paired Taskfile target named `docker-build-<service>` and `docker-push-<service>`:
+Each container has three paired Taskfile targets:
 
-```yaml
-docker-build-crabcc:
-    desc: Build ghcr.io/peterlodri-sec/crabcc:<version> locally (#195)
-    dir: .
-    cmds:
-        - docker buildx build -f crates/crabcc-cli/Dockerfile -t ghcr.io/peterlodri-sec/crabcc:{{.CRABCC_VERSION}} --load .
+| Target | Purpose |
+|---|---|
+| `task docker-build-<service>` | Single-arch (linux/arm64) build with `--load` + full OCI label injection |
+| `task docker-push-<service>` | Push the semver tag to GHCR (no `:latest`) |
+| `task docker-sbom-<service>` | Generate SPDX JSON SBOM via Syft, write to `dist/sbom/<service>-<version>.spdx.json` |
 
-docker-push-crabcc:
-    desc: Push the locally-built crabcc image to GHCR (#195)
-    deps: [docker-build-crabcc]
-    cmds:
-        - docker push ghcr.io/peterlodri-sec/crabcc:{{.CRABCC_VERSION}}
-```
+The `crabcc-cli` triple is the canonical reference (see `Taskfile.yml`)
+— copy that block when adding a new image.
 
 ## How to add a new image
 
