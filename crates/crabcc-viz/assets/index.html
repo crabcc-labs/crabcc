@@ -17,8 +17,11 @@
     --accent:    #d35400;
     --node:      #2c3e50;
     --node-root: #d35400;
+    --node-hot:  #ff8c42;
     --edge:      #b8b8b8;
     --hover-bg:  #fff7e6;
+    --live-ok:   #27ae60;
+    --live-off:  #95a5a6;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -28,10 +31,13 @@
       --panel:     #161618;
       --border:    #2a2a2c;
       --accent:    #ff8c42;
-      --node:      #e8e8e8;
+      --node:      #cfd6dc;
       --node-root: #ff8c42;
+      --node-hot:  #ffb380;
       --edge:      #4a4a4c;
       --hover-bg:  #2a1f10;
+      --live-ok:   #2ecc71;
+      --live-off:  #6a6a6c;
     }
   }
   html, body { margin: 0; padding: 0; height: 100%; }
@@ -56,9 +62,32 @@
   header input[type=number] { width: 56px; }
   header button { cursor: pointer; }
   header button:hover { border-color: var(--accent); color: var(--accent); }
+  header .live {
+    display: inline-flex; gap: 6px; align-items: center; margin-left: 6px;
+  }
+  header .live .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--live-off); transition: background .25s;
+    box-shadow: 0 0 0 0 currentColor;
+  }
+  header .live.on .dot {
+    background: var(--live-ok);
+    animation: live-pulse 1.6s ease-out infinite;
+  }
+  @keyframes live-pulse {
+    0%   { box-shadow: 0 0 0 0   rgba(39,174,96,.55); }
+    70%  { box-shadow: 0 0 0 8px rgba(39,174,96,0);   }
+    100% { box-shadow: 0 0 0 0   rgba(39,174,96,0);   }
+  }
   header .status { color: var(--muted); margin-left: auto; }
-  main { flex: 1; position: relative; overflow: hidden; }
-  canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+  main {
+    flex: 1; position: relative; overflow: hidden;
+    display: grid; grid-template-columns: 1fr 280px;
+  }
+  #stage { position: relative; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; }
+  canvas.gl  { position: absolute; inset: 0; cursor: grab; }
+  canvas.ovl { position: absolute; inset: 0; pointer-events: none; }
   canvas.dragging { cursor: grabbing; }
   #tooltip {
     position: absolute; pointer-events: none;
@@ -82,11 +111,46 @@
     background: var(--panel); border: 1px solid var(--border); border-radius: 3px;
     padding: 1px 5px; font-size: 11px;
   }
+  aside {
+    border-left: 1px solid var(--border); background: var(--panel);
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  aside h2 {
+    font: 600 11px/1 ui-monospace, Menlo, Consolas, monospace;
+    text-transform: uppercase; letter-spacing: .08em;
+    color: var(--muted); margin: 0; padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px;
+  }
+  aside h2 .count { margin-left: auto; color: var(--muted); font-weight: 400; }
+  #activity { flex: 1; overflow-y: auto; padding: 4px 0; }
+  #activity .row {
+    display: grid; grid-template-columns: 50px 60px 1fr;
+    gap: 6px; align-items: baseline;
+    padding: 4px 12px; cursor: pointer;
+    border-left: 2px solid transparent;
+  }
+  #activity .row:hover {
+    background: var(--hover-bg); border-left-color: var(--accent);
+  }
+  #activity .row.fresh {
+    background: var(--hover-bg);
+    animation: fade-fresh 1.6s ease-out forwards;
+  }
+  @keyframes fade-fresh { to { background: transparent; } }
+  #activity .row .ts  { color: var(--muted); font-size: 11px; }
+  #activity .row .op  { color: var(--accent); font-size: 11px; text-transform: uppercase; }
+  #activity .row .q   { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #activity .row .res { color: var(--muted); font-size: 11px; }
+  #activity .empty {
+    color: var(--muted); padding: 12px; font-style: italic;
+  }
 </style>
 </head>
 <body>
 <header>
   <span class="brand">crabcc</span>
+  <span class="live" id="live" title="Polling /api/activity for agent queries"><span class="dot"></span><span>live</span></span>
   <label>root <input id="root" type="text" placeholder="Symbol name" value=""></label>
   <label>dir
     <select id="dir">
@@ -99,44 +163,152 @@
   <span class="status" id="status">enter a symbol and press <kbd>load</kbd></span>
 </header>
 <main>
-  <canvas id="graph"></canvas>
-  <div id="tooltip"></div>
-  <div id="empty">No graph yet — type a symbol name above and press <kbd>load</kbd>.</div>
+  <div id="stage">
+    <canvas id="gl"  class="gl"></canvas>
+    <canvas id="ovl" class="ovl"></canvas>
+    <div id="tooltip"></div>
+    <div id="empty">No graph yet — type a symbol name above and press <kbd>load</kbd>, or click an entry from the live activity panel.</div>
+  </div>
+  <aside>
+    <h2>live activity <span class="count" id="actCount">0</span></h2>
+    <div id="activity"><div class="empty">Waiting for agent queries…</div></div>
+  </aside>
 </main>
 <script>
 (() => {
   "use strict";
 
-  const canvas  = document.getElementById("graph");
-  const ctx     = canvas.getContext("2d");
-  const tooltip = document.getElementById("tooltip");
-  const status  = document.getElementById("status");
-  const empty   = document.getElementById("empty");
+  const glCanvas  = document.getElementById("gl");
+  const ovlCanvas = document.getElementById("ovl");
+  const tooltip   = document.getElementById("tooltip");
+  const status    = document.getElementById("status");
+  const empty     = document.getElementById("empty");
+  const live      = document.getElementById("live");
+  const activityEl = document.getElementById("activity");
+  const actCount   = document.getElementById("actCount");
+  const ctx2d = ovlCanvas.getContext("2d");
+  const gl = glCanvas.getContext("webgl", { antialias: true, premultipliedAlpha: false })
+          || glCanvas.getContext("experimental-webgl");
+  if (!gl) {
+    document.getElementById("stage").innerHTML =
+      '<div style="padding:20px;color:var(--muted)">WebGL not available in this browser.</div>';
+    return;
+  }
 
-  let nodes = [];   // { id, depth, x, y, vx, vy, fx, fy, root }
+  let nodes = [];   // { id, depth, x, y, vx, vy, fx, fy, root, hot }
   let edges = [];   // { src, dst }
-
   const view = { tx: 0, ty: 0, scale: 1 };
-  let dragging = null;     // dragged node, or null
-  let panning  = false;
-  let panStart = null;
-  let hoverIdx = -1;
+  let dragging = null, panning = false, panStart = null, hoverIdx = -1;
+
+  // ── WebGL: shaders + buffers ────────────────────────────────────────────
+  // Two programs: one for nodes (gl.POINTS with a circular fragment shader),
+  // one for edges (gl.LINES). Both use a single 3x3 transform uniform that
+  // maps world coords through pan/zoom into clip space.
+  const VS_NODE = `
+    attribute vec2  a_pos;
+    attribute vec3  a_color;
+    attribute float a_size;
+    uniform   mat3  u_view;
+    uniform   vec2  u_resolution;
+    varying   vec3  v_color;
+    void main() {
+      vec3 p = u_view * vec3(a_pos, 1.0);
+      vec2 clip = (p.xy / u_resolution) * 2.0 - 1.0;
+      gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+      gl_PointSize = a_size;
+      v_color = a_color;
+    }`;
+  const FS_NODE = `
+    precision mediump float;
+    varying vec3 v_color;
+    void main() {
+      vec2 d = gl_PointCoord - vec2(0.5);
+      float r = length(d);
+      // Smooth circle edge — anti-aliased without MSAA.
+      float alpha = smoothstep(0.5, 0.42, r);
+      if (alpha < 0.01) discard;
+      gl_FragColor = vec4(v_color, alpha);
+    }`;
+  const VS_EDGE = `
+    attribute vec2 a_pos;
+    attribute vec3 a_color;
+    uniform   mat3 u_view;
+    uniform   vec2 u_resolution;
+    varying   vec3 v_color;
+    void main() {
+      vec3 p = u_view * vec3(a_pos, 1.0);
+      vec2 clip = (p.xy / u_resolution) * 2.0 - 1.0;
+      gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+      v_color = a_color;
+    }`;
+  const FS_EDGE = `
+    precision mediump float;
+    varying vec3 v_color;
+    void main() { gl_FragColor = vec4(v_color, 0.65); }`;
+
+  function compile(src, type) {
+    const sh = gl.createShader(type);
+    gl.shaderSource(sh, src); gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS))
+      throw new Error("shader compile: " + gl.getShaderInfoLog(sh));
+    return sh;
+  }
+  function link(vs, fs) {
+    const p = gl.createProgram();
+    gl.attachShader(p, compile(vs, gl.VERTEX_SHADER));
+    gl.attachShader(p, compile(fs, gl.FRAGMENT_SHADER));
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS))
+      throw new Error("program link: " + gl.getProgramInfoLog(p));
+    return p;
+  }
+  const progNode = link(VS_NODE, FS_NODE);
+  const progEdge = link(VS_EDGE, FS_EDGE);
+
+  const nodeAttr = {
+    pos:   gl.getAttribLocation(progNode, "a_pos"),
+    color: gl.getAttribLocation(progNode, "a_color"),
+    size:  gl.getAttribLocation(progNode, "a_size"),
+  };
+  const edgeAttr = {
+    pos:   gl.getAttribLocation(progEdge, "a_pos"),
+    color: gl.getAttribLocation(progEdge, "a_color"),
+  };
+  const uNodeView = gl.getUniformLocation(progNode, "u_view");
+  const uNodeRes  = gl.getUniformLocation(progNode, "u_resolution");
+  const uEdgeView = gl.getUniformLocation(progEdge, "u_view");
+  const uEdgeRes  = gl.getUniformLocation(progEdge, "u_resolution");
+
+  const bufNode = gl.createBuffer();
+  const bufEdge = gl.createBuffer();
+
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+  function rgb(varName) {
+    const cs = getComputedStyle(document.documentElement);
+    const v = cs.getPropertyValue(varName).trim() || "#888";
+    const m = v.match(/^#([0-9a-f]{6})$/i);
+    if (!m) return [0.5, 0.5, 0.5];
+    const n = parseInt(m[1], 16);
+    return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+  }
 
   function resize() {
     const dpr = window.devicePixelRatio || 1;
-    const w = canvas.clientWidth, h = canvas.clientHeight;
-    canvas.width  = Math.round(w * dpr);
-    canvas.height = Math.round(h * dpr);
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const w = glCanvas.clientWidth, h = glCanvas.clientHeight;
+    glCanvas.width  = ovlCanvas.width  = Math.round(w * dpr);
+    glCanvas.height = ovlCanvas.height = Math.round(h * dpr);
+    gl.viewport(0, 0, glCanvas.width, glCanvas.height);
+    ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0);
     draw();
   }
   window.addEventListener("resize", resize);
 
-  // Force-directed layout — simple Eades-style spring + repulsion. Runs on
-  // requestAnimationFrame; cools as kinetic energy drops below an epsilon.
+  // ── Force simulation (Eades-style: spring + repulsion + center pull) ────
   function step() {
     if (!nodes.length) return;
-    const w = canvas.clientWidth, h = canvas.clientHeight;
+    const w = glCanvas.clientWidth, h = glCanvas.clientHeight;
     const cx = w / 2, cy = h / 2;
     const REPULSE = 6500, SPRING = 0.04, REST_LEN = 110, DAMP = 0.78, CENTER = 0.012;
 
@@ -172,92 +344,167 @@
       energy += a.vx * a.vx + a.vy * a.vy;
     }
     draw();
-    if (energy > 0.5 || dragging) requestAnimationFrame(step);
+    if (energy > 0.5 || dragging || pulses.length) requestAnimationFrame(step);
   }
 
+  // ── Pulses (live-activity highlight rings) ──────────────────────────────
+  // When an activity event arrives matching a graph node, push a pulse with
+  // the node index and start time; each frame we draw an expanding ring on
+  // the 2D overlay, fading as it grows. Pulses self-evict at age >= 1.6s.
+  const pulses = []; // { idx, t0 }
+  function pulseNode(nodeIdx) {
+    pulses.push({ idx: nodeIdx, t0: performance.now() });
+    nodes[nodeIdx].hot = performance.now();
+    requestAnimationFrame(step);
+  }
+  function evictPulses() {
+    const now = performance.now();
+    for (let i = pulses.length - 1; i >= 0; i--) {
+      if (now - pulses[i].t0 > 1600) pulses.splice(i, 1);
+    }
+  }
+
+  // ── Render: WebGL for nodes/edges, 2D overlay for labels + pulses ───────
   function draw() {
-    const w = canvas.clientWidth, h = canvas.clientHeight;
-    ctx.save();
-    ctx.clearRect(0, 0, w, h);
-    ctx.translate(view.tx, view.ty);
-    ctx.scale(view.scale, view.scale);
+    const w = glCanvas.clientWidth, h = glCanvas.clientHeight;
+    const dpr = window.devicePixelRatio || 1;
+    const tx = view.tx * dpr, ty = view.ty * dpr, sc = view.scale * dpr;
+    // Column-major 3x3: [sc 0 0; 0 sc 0; tx ty 1]
+    const matrix = new Float32Array([sc, 0, 0, 0, sc, 0, tx, ty, 1]);
 
-    const cs = getComputedStyle(document.documentElement);
-    const edgeColor = cs.getPropertyValue("--edge").trim() || "#b8b8b8";
-    const nodeColor = cs.getPropertyValue("--node").trim() || "#2c3e50";
-    const rootColor = cs.getPropertyValue("--node-root").trim() || "#d35400";
-    const fg        = cs.getPropertyValue("--fg").trim() || "#1a1a1a";
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
 
-    ctx.strokeStyle = edgeColor;
-    ctx.lineWidth = 1.2;
-    for (const e of edges) {
-      const a = nodes[e.src], b = nodes[e.dst];
-      ctx.beginPath();
-      ctx.moveTo(a.x, a.y);
-      ctx.lineTo(b.x, b.y);
-      ctx.stroke();
-      // Arrow head
-      const dx = b.x - a.x, dy = b.y - a.y;
-      const d  = Math.sqrt(dx * dx + dy * dy) || 1;
-      const ux = dx / d, uy = dy / d;
-      const ax = b.x - ux * 16, ay = b.y - uy * 16;
-      const px = -uy, py = ux;
-      ctx.beginPath();
-      ctx.moveTo(ax + px * 4, ay + py * 4);
-      ctx.lineTo(b.x - ux * 9, b.y - uy * 9);
-      ctx.lineTo(ax - px * 4, ay - py * 4);
-      ctx.stroke();
+    const edgeRGB = rgb("--edge");
+    const nodeRGB = rgb("--node");
+    const rootRGB = rgb("--node-root");
+    const hotRGB  = rgb("--node-hot");
+
+    // ── Edges
+    if (edges.length) {
+      const data = new Float32Array(edges.length * 2 * 5); // 2 verts × (xy + rgb)
+      let p = 0;
+      for (const e of edges) {
+        const a = nodes[e.src], b = nodes[e.dst];
+        data[p++] = a.x; data[p++] = a.y;
+        data[p++] = edgeRGB[0]; data[p++] = edgeRGB[1]; data[p++] = edgeRGB[2];
+        data[p++] = b.x; data[p++] = b.y;
+        data[p++] = edgeRGB[0]; data[p++] = edgeRGB[1]; data[p++] = edgeRGB[2];
+      }
+      gl.useProgram(progEdge);
+      gl.uniformMatrix3fv(uEdgeView, false, matrix);
+      gl.uniform2f(uEdgeRes, glCanvas.width, glCanvas.height);
+      gl.bindBuffer(gl.ARRAY_BUFFER, bufEdge);
+      gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+      gl.enableVertexAttribArray(edgeAttr.pos);
+      gl.vertexAttribPointer(edgeAttr.pos, 2, gl.FLOAT, false, 5 * 4, 0);
+      gl.enableVertexAttribArray(edgeAttr.color);
+      gl.vertexAttribPointer(edgeAttr.color, 3, gl.FLOAT, false, 5 * 4, 2 * 4);
+      gl.drawArrays(gl.LINES, 0, edges.length * 2);
     }
 
-    ctx.font = "12px ui-monospace, Menlo, Consolas, monospace";
-    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    // ── Nodes
+    if (nodes.length) {
+      const data = new Float32Array(nodes.length * 6); // xy + rgb + size
+      const now = performance.now();
+      let p = 0;
+      for (const n of nodes) {
+        const hotT = n.hot ? Math.max(0, 1 - (now - n.hot) / 1600) : 0;
+        const c = n.root ? rootRGB
+                : hotT > 0 ? mix(nodeRGB, hotRGB, hotT)
+                : nodeRGB;
+        const r = (n.root ? 14 : 10) + hotT * 8;
+        data[p++] = n.x; data[p++] = n.y;
+        data[p++] = c[0]; data[p++] = c[1]; data[p++] = c[2];
+        data[p++] = r * dpr;
+      }
+      gl.useProgram(progNode);
+      gl.uniformMatrix3fv(uNodeView, false, matrix);
+      gl.uniform2f(uNodeRes, glCanvas.width, glCanvas.height);
+      gl.bindBuffer(gl.ARRAY_BUFFER, bufNode);
+      gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+      gl.enableVertexAttribArray(nodeAttr.pos);
+      gl.vertexAttribPointer(nodeAttr.pos, 2, gl.FLOAT, false, 6 * 4, 0);
+      gl.enableVertexAttribArray(nodeAttr.color);
+      gl.vertexAttribPointer(nodeAttr.color, 3, gl.FLOAT, false, 6 * 4, 2 * 4);
+      gl.enableVertexAttribArray(nodeAttr.size);
+      gl.vertexAttribPointer(nodeAttr.size, 1, gl.FLOAT, false, 6 * 4, 5 * 4);
+      gl.drawArrays(gl.POINTS, 0, nodes.length);
+    }
+
+    // ── 2D overlay: labels, hover ring, pulse rings
+    ctx2d.save();
+    ctx2d.clearRect(0, 0, glCanvas.clientWidth, glCanvas.clientHeight);
+    ctx2d.translate(view.tx, view.ty);
+    ctx2d.scale(view.scale, view.scale);
+
+    const fg = `rgb(${(rgb("--fg").map(v => Math.round(v * 255))).join(",")})`;
+    const accent = `rgb(${(rgb("--accent").map(v => Math.round(v * 255))).join(",")})`;
+    ctx2d.font = "12px ui-monospace, Menlo, Consolas, monospace";
+    ctx2d.textAlign = "center"; ctx2d.textBaseline = "middle";
+    ctx2d.fillStyle = fg;
+
     for (let i = 0; i < nodes.length; i++) {
       const n = nodes[i];
-      ctx.beginPath();
-      ctx.fillStyle = n.root ? rootColor : nodeColor;
-      ctx.arc(n.x, n.y, n.root ? 9 : 6, 0, Math.PI * 2);
-      ctx.fill();
-      if (i === hoverIdx) {
-        ctx.strokeStyle = rootColor; ctx.lineWidth = 2;
-        ctx.stroke();
-      }
+      const r = n.root ? 9 : 6;
       const label = n.id.length > 32 ? n.id.slice(0, 30) + "…" : n.id;
-      ctx.fillStyle = fg;
-      ctx.fillText(label, n.x, n.y + (n.root ? 22 : 18));
+      ctx2d.fillStyle = fg;
+      ctx2d.fillText(label, n.x, n.y + r + 12);
+      if (i === hoverIdx) {
+        ctx2d.beginPath(); ctx2d.arc(n.x, n.y, r + 4, 0, Math.PI * 2);
+        ctx2d.strokeStyle = accent; ctx2d.lineWidth = 2; ctx2d.stroke();
+      }
     }
-    ctx.restore();
+    evictPulses();
+    const now2 = performance.now();
+    for (const p of pulses) {
+      const n = nodes[p.idx];
+      if (!n) continue;
+      const t = (now2 - p.t0) / 1600;
+      const radius = 8 + t * 38;
+      const alpha = 1 - t;
+      ctx2d.beginPath(); ctx2d.arc(n.x, n.y, radius, 0, Math.PI * 2);
+      ctx2d.strokeStyle = `rgba(255,140,66,${alpha.toFixed(3)})`;
+      ctx2d.lineWidth = 2; ctx2d.stroke();
+    }
+    ctx2d.restore();
+    if (pulses.length) requestAnimationFrame(step);
   }
 
+  function mix(a, b, t) {
+    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+  }
+
+  // ── Hit-testing + interaction ───────────────────────────────────────────
   function nodeAt(clientX, clientY) {
-    const rect = canvas.getBoundingClientRect();
+    const rect = glCanvas.getBoundingClientRect();
     const x = (clientX - rect.left - view.tx) / view.scale;
     const y = (clientY - rect.top  - view.ty) / view.scale;
     for (let i = nodes.length - 1; i >= 0; i--) {
       const n = nodes[i];
       const r = n.root ? 9 : 6;
       const dx = x - n.x, dy = y - n.y;
-      if (dx * dx + dy * dy <= (r + 4) * (r + 4)) return i;
+      if (dx * dx + dy * dy <= (r + 5) * (r + 5)) return i;
     }
     return -1;
   }
 
-  canvas.addEventListener("mousedown", (e) => {
+  glCanvas.addEventListener("mousedown", (e) => {
     const idx = nodeAt(e.clientX, e.clientY);
     if (idx >= 0) {
       dragging = nodes[idx];
-      const rect = canvas.getBoundingClientRect();
+      const rect = glCanvas.getBoundingClientRect();
       dragging.fx = (e.clientX - rect.left - view.tx) / view.scale;
       dragging.fy = (e.clientY - rect.top  - view.ty) / view.scale;
       requestAnimationFrame(step);
     } else {
       panning = true;
       panStart = { x: e.clientX - view.tx, y: e.clientY - view.ty };
-      canvas.classList.add("dragging");
+      glCanvas.classList.add("dragging");
     }
   });
   window.addEventListener("mousemove", (e) => {
     if (dragging) {
-      const rect = canvas.getBoundingClientRect();
+      const rect = glCanvas.getBoundingClientRect();
       dragging.fx = (e.clientX - rect.left - view.tx) / view.scale;
       dragging.fy = (e.clientY - rect.top  - view.ty) / view.scale;
       return;
@@ -269,10 +516,7 @@
       return;
     }
     const idx = nodeAt(e.clientX, e.clientY);
-    if (idx !== hoverIdx) {
-      hoverIdx = idx;
-      draw();
-    }
+    if (idx !== hoverIdx) { hoverIdx = idx; draw(); }
     if (idx >= 0) {
       const n = nodes[idx];
       tooltip.style.display = "block";
@@ -286,11 +530,11 @@
   window.addEventListener("mouseup", () => {
     if (dragging) { dragging.fx = null; dragging.fy = null; dragging = null; }
     panning = false;
-    canvas.classList.remove("dragging");
+    glCanvas.classList.remove("dragging");
   });
-  canvas.addEventListener("wheel", (e) => {
+  glCanvas.addEventListener("wheel", (e) => {
     e.preventDefault();
-    const rect = canvas.getBoundingClientRect();
+    const rect = glCanvas.getBoundingClientRect();
     const mx = e.clientX - rect.left, my = e.clientY - rect.top;
     const k  = Math.exp(-e.deltaY * 0.0015);
     const next = Math.max(0.2, Math.min(4, view.scale * k));
@@ -301,10 +545,13 @@
     draw();
   }, { passive: false });
 
-  async function load() {
-    const root  = document.getElementById("root").value.trim();
-    const dir   = document.getElementById("dir").value;
-    const depth = document.getElementById("depth").value;
+  // ── Graph load ──────────────────────────────────────────────────────────
+  async function load(rootName, dirName, depthN) {
+    const root  = (rootName ?? document.getElementById("root").value).trim();
+    const dir   = dirName  ?? document.getElementById("dir").value;
+    const depth = depthN   ?? document.getElementById("depth").value;
+    if (rootName) document.getElementById("root").value = rootName;
+    if (dirName)  document.getElementById("dir").value  = dirName;
     if (!root) { status.textContent = "enter a symbol name"; return; }
     status.textContent = `loading ${dir} of "${root}" depth=${depth}…`;
     empty.classList.add("hidden");
@@ -319,20 +566,18 @@
       status.textContent = `error: ${e.message || e}`;
     }
   }
-
   function buildLayout(g) {
-    const w = canvas.clientWidth, h = canvas.clientHeight;
+    const w = glCanvas.clientWidth, h = glCanvas.clientHeight;
     const idx = new Map();
     nodes = g.nodes.map((n, i) => {
       idx.set(n.id, i);
       const ang = (i / Math.max(1, g.nodes.length)) * Math.PI * 2;
       const r   = n.depth === 0 ? 0 : 80 + n.depth * 70;
       return {
-        ...n,
+        ...n, root: n.depth === 0, hot: 0,
         x: w / 2 + Math.cos(ang) * r + (Math.random() - 0.5) * 30,
         y: h / 2 + Math.sin(ang) * r + (Math.random() - 0.5) * 30,
         vx: 0, vy: 0, fx: null, fy: null,
-        root: n.depth === 0,
       };
     });
     edges = g.edges.map(e => ({ src: idx.get(e.src), dst: idx.get(e.dst) }))
@@ -340,17 +585,94 @@
     requestAnimationFrame(step);
   }
 
-  document.getElementById("go").addEventListener("click", load);
+  // ── Live activity polling ───────────────────────────────────────────────
+  // Polls /api/activity at 1.5s intervals, advancing a `since` cursor each
+  // poll. Localhost RTT is microseconds; SSE/WS would only be a net win at
+  // sub-100ms cadence. Phase 2 of #64 promotes this to SSE.
+  let cursor = Math.floor(Date.now() / 1000) - 60; // first window: last minute
+  let totalActivity = 0;
+  const activityRows = []; // { ts, op, q, results }
+  const ACTIVITY_KEEP = 60;
+
+  function fmtTs(ts) {
+    const d = new Date(ts * 1000);
+    return d.toTimeString().slice(0, 8);
+  }
+  function renderActivity(freshKeys) {
+    if (!activityRows.length) {
+      activityEl.innerHTML = '<div class="empty">Waiting for agent queries…</div>';
+      return;
+    }
+    const html = activityRows.slice().reverse().map((r) => {
+      const fresh = freshKeys && freshKeys.has(r.ts + "·" + r.op + "·" + r.q) ? " fresh" : "";
+      return `<div class="row${fresh}" data-q="${escapeAttr(r.q)}" data-op="${escapeAttr(r.op)}">
+        <span class="ts">${fmtTs(r.ts)}</span>
+        <span class="op">${escapeHTML(r.op)}</span>
+        <span class="q" title="${escapeAttr(r.q)}">${escapeHTML(r.q)}</span>
+      </div>`;
+    }).join("");
+    activityEl.innerHTML = html;
+    actCount.textContent = totalActivity;
+  }
+  function escapeHTML(s) {
+    return s.replace(/[&<>"]/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
+  }
+  function escapeAttr(s) { return escapeHTML(s).replace(/'/g, "&#39;"); }
+
+  activityEl.addEventListener("click", (e) => {
+    const row = e.target.closest(".row");
+    if (!row) return;
+    const q = row.getAttribute("data-q");
+    const op = row.getAttribute("data-op");
+    // sym/refs/callers/outline/fuzzy/prefix all carry a symbol name in `q`;
+    // load callers of that symbol so the user can see who depends on it.
+    if (q && (op === "sym" || op === "refs" || op === "callers"
+              || op === "outline" || op === "fuzzy" || op === "prefix")) {
+      load(q, "callers", document.getElementById("depth").value);
+    }
+  });
+
+  async function pollActivity() {
+    try {
+      const r = await fetch(`/api/activity?since=${cursor}&limit=200`);
+      if (!r.ok) throw new Error(await r.text());
+      const j = await r.json();
+      live.classList.add("on");
+      if (j.events && j.events.length) {
+        const fresh = new Set();
+        for (const e of j.events) {
+          activityRows.push(e);
+          fresh.add(e.ts + "·" + e.op + "·" + e.query);
+          totalActivity++;
+          // Pulse matching node if it's in the current graph.
+          const nIdx = nodes.findIndex(n => n.id === e.query);
+          if (nIdx >= 0) pulseNode(nIdx);
+        }
+        if (activityRows.length > ACTIVITY_KEEP) {
+          activityRows.splice(0, activityRows.length - ACTIVITY_KEEP);
+        }
+        renderActivity(fresh);
+      }
+      cursor = j.cursor || cursor;
+    } catch (e) {
+      live.classList.remove("on");
+      tracing(e);
+    }
+  }
+  function tracing(e) { /* swallow: console noise off by default */ void e; }
+
+  setInterval(pollActivity, 1500);
+  pollActivity();
+
+  // ── Boot ────────────────────────────────────────────────────────────────
+  document.getElementById("go").addEventListener("click", () => load());
   document.getElementById("root").addEventListener("keydown", (e) => {
     if (e.key === "Enter") load();
   });
-
-  // Pre-fill from ?root=…&dir=…&depth=… in the URL.
   const params = new URLSearchParams(location.search);
   if (params.has("root"))  document.getElementById("root").value  = params.get("root");
   if (params.has("dir"))   document.getElementById("dir").value   = params.get("dir");
   if (params.has("depth")) document.getElementById("depth").value = params.get("depth");
-
   resize();
   if (params.has("root")) load();
 })();
