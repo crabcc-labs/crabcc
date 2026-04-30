@@ -46,6 +46,17 @@ pub struct LexicalQuery {
 }
 
 /// L2-cosine similarity. Returns 0.0 for length-mismatched or zero vectors.
+///
+/// SIMD audit (issue #38): no `std::arch` / `std::simd` / wide-crate usage
+/// anywhere in the workspace today — this scalar loop is the only
+/// vector-arithmetic hot path. With production embeddings at 384 dim and
+/// a per-query candidate pool of a few thousand drawers, SIMD'ing the
+/// dot/na/nb accumulators with `Simd<f32, 8>` (AVX2) or `Simd<f32, 16>`
+/// (AVX-512) would cut iteration count 8-16×; the arithmetic itself
+/// fully vectorises and 384 is divisible by both 8 and 16 so there's no
+/// scalar tail. Blocked on `portable_simd` (nightly-only as of 2026); the
+/// research issue lays out the `simd-cosine` cargo-feature pattern that
+/// keeps stable users on this scalar fallback.
 pub(crate) fn cosine(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;

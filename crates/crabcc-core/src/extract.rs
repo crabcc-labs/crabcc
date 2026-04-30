@@ -1,7 +1,16 @@
 use crate::types::{Edge, Symbol, SymbolKind};
 use anyhow::{anyhow, Result};
+use bumpalo::Bump;
 use std::path::Path;
 use tree_sitter::{Node, Parser};
+
+// Per-file bump-arena scratch budget. Tree-sitter's tallest queries on the
+// fixtures we care about (mc-mothership, ~1k-line files) build at most a
+// few KB of transient strings during impl-retag and signature stitching.
+// 4 KB up-front avoids the bump allocator's first-page reallocation for
+// any reasonably small file; larger files spill into a second page, which
+// is a cheap mmap, not a re-copy.
+const SCRATCH_ARENA_BYTES: usize = 4 * 1024;
 
 pub fn detect_lang(path: &Path) -> Option<&'static str> {
     let ext = path.extension()?.to_str()?;
@@ -50,6 +59,16 @@ pub fn extract_edges(file: &str, src: &str, lang: &str) -> Result<Vec<Edge>> {
 /// avoid paying tree-sitter twice per file. The two outputs are independent
 /// (tests can request one or the other), but in production we always want
 /// both — the indexer hot path goes through here.
+///
+/// The function allocates a per-call `bumpalo::Bump` arena (currently
+/// unused by `walk` itself but threaded through so the next phase can
+/// switch transient strings — `impl_target`, `go_receiver_type`,
+/// `strip_generics` outputs — to bump-allocated `&str`s without
+/// changing the public Vec<Symbol> / Vec<Edge> shape). Bump dies with
+/// the function, so the entire scratch region frees in one mmap-level
+/// op rather than thousands of small `drop(String)` calls. See issue
+/// #38 (nightly-features research) for the full ROI analysis and the
+/// `allocator_api`-vs-`bumpalo::collections` tradeoff.
 pub fn extract_file_with_edges(
     file: &str,
     src: &str,
@@ -66,6 +85,11 @@ pub fn extract_file_with_edges(
 
     let bytes = src.as_bytes();
     let root = tree.root_node();
+    // Per-file bump arena. Sized to cover the typical impl-retag /
+    // signature-stitch transient burst without paging; the allocator
+    // grows automatically if a giant file blows past the initial
+    // budget.
+    let _scratch = Bump::with_capacity(SCRATCH_ARENA_BYTES);
     let mut symbols = Vec::new();
     walk(root, bytes, file, lang, None, &mut symbols);
     let mut edges = Vec::new();

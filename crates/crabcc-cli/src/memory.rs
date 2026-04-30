@@ -101,15 +101,15 @@ pub fn run(root: &Path, cmd: MemoryCmd) -> Result<()> {
             })?;
             let r =
                 palace.search_with_mode(parsed, &query, limit, wing.as_deref(), room.as_deref())?;
-            println!("{}", serde_json::to_string(&r)?);
+            println!("{}", sonic_rs::to_string(&r)?);
         }
         MemoryCmd::Get { id } => match palace.get(id)? {
-            Some(d) => println!("{}", serde_json::to_string(&d)?),
+            Some(d) => println!("{}", sonic_rs::to_string(&d)?),
             None => println!("null"),
         },
         MemoryCmd::List { wing, limit } => {
             let drawers = palace.list_drawers(wing.as_deref(), limit)?;
-            println!("{}", serde_json::to_string(&drawers)?);
+            println!("{}", sonic_rs::to_string(&drawers)?);
         }
         MemoryCmd::Delete { id, source, all } => {
             let count = [id.is_some(), source.is_some(), all]
@@ -134,7 +134,7 @@ pub fn run(root: &Path, cmd: MemoryCmd) -> Result<()> {
             println!("{}", serde_json::json!({"count": n}));
         }
         MemoryCmd::Health => {
-            println!("{}", serde_json::to_string(&palace.health())?);
+            println!("{}", sonic_rs::to_string(&palace.health())?);
         }
     }
     Ok(())
