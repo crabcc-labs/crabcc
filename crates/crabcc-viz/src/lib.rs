@@ -318,8 +318,52 @@ fn handle(request: Request, root: &Path) -> Result<()> {
         None => (url.as_str(), ""),
     };
 
+    // POST is reserved for launch + kill endpoints. Any other POST is 405.
+    if method == Method::Post {
+        if let Some(rest) = path.strip_prefix("/api/agents/") {
+            if let Some(id) = rest.strip_suffix("/kill") {
+                return match agent_kill(id) {
+                    Ok(snap) => respond_json(request, &snap),
+                    Err(e) => respond_status(request, 400, &format!("kill failed: {e}")),
+                };
+            }
+        }
+        return match path {
+            "/api/agents/launch" => match agents_launch(request, root) {
+                Ok(()) => Ok(()),
+                Err(e) => Err(e),
+            },
+            "/api/random-query" => match random_query(request, root) {
+                Ok(()) => Ok(()),
+                Err(e) => Err(e),
+            },
+            _ => respond_status(request, 405, "method not allowed"),
+        };
+    }
     if method != Method::Get {
         return respond_status(request, 405, "method not allowed");
+    }
+
+    // Path-prefix routing for per-agent endpoints.
+    if let Some(rest) = path.strip_prefix("/api/agents/") {
+        if let Some(id) = rest.strip_suffix("/log") {
+            return match agent_log(id, query) {
+                Ok(snap) => respond_json(request, &snap),
+                Err(e) => respond_status(request, 404, &format!("log unavailable: {e}")),
+            };
+        }
+        if let Some(id) = rest.strip_suffix("/tail") {
+            return match agent_tail(id, query) {
+                Ok(snap) => respond_json(request, &snap),
+                Err(e) => respond_status(request, 404, &format!("tail unavailable: {e}")),
+            };
+        }
+        if let Some(id) = rest.strip_suffix("/info") {
+            return match agent_info(id) {
+                Ok(snap) => respond_json(request, &snap),
+                Err(e) => respond_status(request, 404, &format!("info unavailable: {e}")),
+            };
+        }
     }
 
     match path {
@@ -337,6 +381,18 @@ fn handle(request: Request, root: &Path) -> Result<()> {
         "/api/bootstrap" => match bootstrap_snapshot(root) {
             Ok(snap) => respond_json(request, &snap),
             Err(e) => respond_status(request, 500, &format!("bootstrap failed: {e}")),
+        },
+        "/api/seed-graph" => match seed_graph(root, query) {
+            Ok(snap) => respond_json(request, &snap),
+            Err(e) => respond_status(request, 500, &format!("seed-graph failed: {e}")),
+        },
+        "/api/agents" => match agents_list() {
+            Ok(snap) => respond_json(request, &snap),
+            Err(e) => respond_status(request, 500, &format!("agents list failed: {e}")),
+        },
+        "/api/debug/dump" => match debug_dump(root) {
+            Ok(snap) => respond_json(request, &snap),
+            Err(e) => respond_status(request, 500, &format!("dump failed: {e}")),
         },
         "/api/memory/recent" => match memory_recent(root, query) {
             Ok(snap) => respond_json(request, &snap),
@@ -775,6 +831,125 @@ fn memory_recent(root: &Path, query: &str) -> Result<MemoryRecentSnapshot> {
     })
 }
 
+// ── /api/seed-graph ─────────────────────────────────────────────────────
+//
+// "What should the live relation graph show before any agent has run?"
+// Picks the top-degree nodes (combined in/out edges) from the cached
+// `graph.json` and returns them with their immediate neighbors. Gives
+// the live dashboard something meaningful to render on first paint
+// instead of an empty canvas.
+
+#[derive(Serialize)]
+struct SeedSnapshot {
+    nodes: Vec<NodeOut>,
+    edges: Vec<EdgeOut>,
+    seeds: Vec<String>,
+}
+
+fn seed_graph(root: &Path, query: &str) -> Result<SeedSnapshot> {
+    let mut limit: usize = 8;
+    for pair in query.split('&').filter(|s| !s.is_empty()) {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        if k == "limit" {
+            limit = url_decode(v).parse::<usize>().unwrap_or(8).clamp(2, 32);
+        }
+    }
+
+    let graph_path = root.join(".crabcc").join("graph.json");
+    if !graph_path.exists() {
+        // No cached graph — return an empty seed; the frontend just
+        // shows the empty-state hint and waits for activity. We don't
+        // fall back to building on the fly here because seed-graph
+        // is on the page-boot critical path and a cold build can
+        // take seconds on a real repo.
+        return Ok(SeedSnapshot {
+            nodes: vec![],
+            edges: vec![],
+            seeds: vec![],
+        });
+    }
+    let graph = CallGraph::load(&graph_path)?;
+
+    // Combined-degree ranking: a node's "importance" for the seed view
+    // is the sum of its outgoing + incoming edge counts. This biases
+    // toward central / heavily-traversed symbols, which are usually
+    // the more interesting starting points than leaf-of-the-tree fns.
+    let mut degree: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for (k, v) in &graph.callees {
+        *degree.entry(k.as_str()).or_insert(0) += v.len();
+        for nb in v {
+            *degree.entry(nb.as_str()).or_insert(0) += 1;
+        }
+    }
+    let mut ranked: Vec<(&str, usize)> = degree.into_iter().collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    let seeds: Vec<String> = ranked
+        .iter()
+        .take(limit)
+        .map(|(s, _)| s.to_string())
+        .collect();
+
+    // Materialize the induced subgraph: for each seed, pull its direct
+    // callers + callees and keep edges where both endpoints are in
+    // the seed set OR are an immediate neighbor of one.
+    let mut node_set: std::collections::HashSet<String> = seeds.iter().cloned().collect();
+    for s in &seeds {
+        if let Some(callees) = graph.callees.get(s) {
+            for c in callees {
+                node_set.insert(c.clone());
+            }
+        }
+        if let Some(callers) = graph.callers.get(s) {
+            for c in callers {
+                node_set.insert(c.clone());
+            }
+        }
+    }
+    // Cap total nodes — really popular seeds blow up the snapshot
+    // otherwise (one symbol with 200 callers floods the canvas).
+    let cap = MAX_NODES.min(seeds.len() * 12);
+    if node_set.len() > cap {
+        // Keep the seeds first, then add neighbors deterministically
+        // by sorted name until we hit `cap`.
+        let mut out: std::collections::BTreeSet<String> = seeds.iter().cloned().collect();
+        let mut others: Vec<&String> = node_set.iter().filter(|n| !out.contains(*n)).collect();
+        others.sort();
+        for n in others.into_iter().take(cap.saturating_sub(out.len())) {
+            out.insert(n.clone());
+        }
+        node_set = out.into_iter().collect();
+    }
+
+    let nodes: Vec<NodeOut> = node_set
+        .iter()
+        .map(|id| NodeOut {
+            id: id.clone(),
+            // Seeds are "depth 0" (queried-equivalent), neighbors are 1.
+            depth: if seeds.contains(id) { 0 } else { 1 },
+        })
+        .collect();
+    let mut edges: Vec<EdgeOut> = Vec::new();
+    for (src, dsts) in &graph.callees {
+        if !node_set.contains(src) {
+            continue;
+        }
+        for d in dsts {
+            if node_set.contains(d) {
+                edges.push(EdgeOut {
+                    src: src.clone(),
+                    dst: d.clone(),
+                });
+            }
+        }
+    }
+
+    Ok(SeedSnapshot {
+        nodes,
+        edges,
+        seeds,
+    })
+}
+
 struct Query {
     root: String,
     dir: String,
@@ -854,6 +1029,636 @@ fn hex_digit(b: u8) -> Option<u8> {
         b'A'..=b'F' => Some(b - b'A' + 10),
         _ => None,
     }
+}
+
+// ── /api/agents — list, log tail, launch ────────────────────────────────
+//
+// Surfaces `~/.crabcc/agents/<id>/` to the live dashboard. The dashboard
+// can:
+//   1. List recent runs (with status: in-flight if `lock` present, exited
+//      otherwise; meta.json provides the start command + model + ts).
+//   2. Tail a specific run's log via `/api/agents/<id>/log?since=N`.
+//   3. POST `/api/agents/launch` with a JSON body to spawn a new run.
+//
+// Reads ~/.crabcc/agents/ directly rather than going through a DB; the
+// directory is the source of truth and `crabcc agent --run` already
+// writes the file shape we expect (lock, pid, log, meta.json).
+
+#[derive(Serialize)]
+struct AgentsList {
+    agents: Vec<AgentSummary>,
+}
+
+#[derive(Serialize)]
+struct AgentSummary {
+    id: String,
+    started_ts: u64,
+    /// "running" if `lock` is still present, "exited" otherwise.
+    status: &'static str,
+    /// PID if `pid` file is present and parseable.
+    pid: Option<u32>,
+    runtime: String,
+    model: Option<String>,
+    /// Truncated start prompt (first 240 chars) — full prompt lives
+    /// in `meta.json` if the user wants the rest.
+    prompt_preview: String,
+    /// Approximate log size in bytes (so the UI can show "12 KB").
+    log_bytes: u64,
+    /// Repo root the agent was started against, from meta.json.
+    root: Option<String>,
+}
+
+fn agents_list() -> Result<AgentsList> {
+    let home = runtime::home_dir()?;
+    let dir = home.join(".crabcc").join("agents");
+    let mut agents: Vec<AgentSummary> = vec![];
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return Ok(AgentsList { agents: vec![] }),
+    };
+    for ent in entries.flatten() {
+        let p = ent.path();
+        if !p.is_dir() {
+            continue;
+        }
+        let id = match p.file_name().and_then(|n| n.to_str()) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        let lock = p.join("lock");
+        let pid_path = p.join("pid");
+        let log_path = p.join("log");
+        let meta_path = p.join("meta.json");
+
+        let status = if lock.exists() { "running" } else { "exited" };
+        let pid = std::fs::read_to_string(&pid_path)
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok());
+        let log_bytes = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+
+        // meta.json is optional — older runs (or `--dry-run`) don't
+        // always have it. Best-effort parse; missing fields fall to
+        // sensible defaults so the UI never breaks on a half-written
+        // run dir.
+        let mut started_ts = 0u64;
+        let mut runtime_label = String::from("subprocess (host)");
+        let mut model: Option<String> = None;
+        let mut prompt_preview = String::new();
+        let mut root: Option<String> = None;
+        if let Ok(body) = std::fs::read_to_string(&meta_path) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+                started_ts = v["started_ts"].as_u64().unwrap_or(0);
+                runtime_label = v["runtime"].as_str().unwrap_or("?").to_string();
+                model = v["model"].as_str().map(|s| s.to_string());
+                prompt_preview = v["prompt_preview"].as_str().unwrap_or("").to_string();
+                root = v["root"].as_str().map(|s| s.to_string());
+            }
+        }
+        agents.push(AgentSummary {
+            id,
+            started_ts,
+            status,
+            pid,
+            runtime: runtime_label,
+            model,
+            prompt_preview,
+            log_bytes,
+            root,
+        });
+    }
+    // Most recent first; the dashboard shows running runs at the top.
+    agents.sort_by(|a, b| b.started_ts.cmp(&a.started_ts));
+    Ok(AgentsList { agents })
+}
+
+#[derive(Serialize)]
+struct AgentLog {
+    id: String,
+    cursor: u64,
+    body: String,
+    /// Total log size for "you've read X of Y bytes" UX.
+    total: u64,
+}
+
+fn agent_log(id: &str, query: &str) -> Result<AgentLog> {
+    // Defend against path traversal: the id segment is what got pulled
+    // out of the URL between `/api/agents/` and `/log`. We require it
+    // to be hex-only (the IDs we generate are 16 hex chars) to stop
+    // anyone slipping a `..` past the URL parser.
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_hexdigit()) {
+        anyhow::bail!("invalid agent id");
+    }
+    let mut since: u64 = 0;
+    for pair in query.split('&').filter(|s| !s.is_empty()) {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        if k == "since" {
+            since = url_decode(v).parse().unwrap_or(0);
+        }
+    }
+    let home = runtime::home_dir()?;
+    let log_path = home.join(".crabcc").join("agents").join(id).join("log");
+    if !log_path.exists() {
+        anyhow::bail!("no such agent: {id}");
+    }
+    let total = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(&log_path)?;
+    if since > 0 && since < total {
+        f.seek(SeekFrom::Start(since))?;
+    }
+    // Cap the read at 256 KB per poll so a runaway agent doesn't make
+    // the dashboard chew through gigabytes of stdout in one round-trip.
+    // The frontend keeps polling, so the rest streams in over time.
+    let cap = 256 * 1024usize;
+    let mut buf = Vec::with_capacity(cap);
+    f.take(cap as u64).read_to_end(&mut buf)?;
+    let body = String::from_utf8_lossy(&buf).to_string();
+    Ok(AgentLog {
+        id: id.to_string(),
+        cursor: since + buf.len() as u64,
+        body,
+        total,
+    })
+}
+
+fn agents_launch(mut request: Request, root: &Path) -> Result<()> {
+    // Parse JSON body: `{ "prompt": "...", "model"?: "...", "no_refresh"?: bool }`.
+    let mut body = String::new();
+    if let Err(e) = request.as_reader().read_to_string(&mut body) {
+        return respond_status(request, 400, &format!("read body: {e}"));
+    }
+    #[derive(serde::Deserialize)]
+    struct LaunchReq {
+        prompt: String,
+        #[serde(default)]
+        model: Option<String>,
+        #[serde(default)]
+        no_refresh: bool,
+    }
+    let req: LaunchReq = match serde_json::from_str(&body) {
+        Ok(r) => r,
+        Err(e) => return respond_status(request, 400, &format!("invalid JSON: {e}")),
+    };
+    if req.prompt.trim().is_empty() {
+        return respond_status(request, 400, "prompt must be non-empty");
+    }
+
+    // Spawn `crabcc agent --run …` as a detached subprocess so the
+    // launch endpoint returns immediately. We capture the run id by
+    // reading the most-recently-modified entry of ~/.crabcc/agents/
+    // after the spawn — `crabcc agent` prints the id on stdout but
+    // we'd have to keep the pipe open to see it; the directory
+    // approach is simpler and matches what `agents_list` returns.
+    let self_exe = std::env::current_exe()?;
+    let mut cmd = std::process::Command::new(&self_exe);
+    cmd.arg("--root").arg(root);
+    cmd.arg("agent").arg("--run").arg(&req.prompt);
+    if let Some(m) = &req.model {
+        cmd.arg("--model").arg(m);
+    }
+    if req.no_refresh {
+        cmd.arg("--no-refresh");
+    }
+    // Detach: we don't wait, the agent's lifecycle is its run-dir.
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::null());
+
+    let before: std::collections::HashSet<String> = list_agent_ids().unwrap_or_default();
+    // Detached + reaped + 20min hard timeout — see `spawn_detached`.
+    let pid = spawn_detached(&mut cmd, Some(AGENT_HARD_TIMEOUT)).context("spawn `crabcc agent`")?;
+    // Give the child a tick to create its run-dir, then diff to find
+    // the new id. 200ms is long enough for `RunDir::create` to land
+    // and short enough to not block the live dashboard's UI.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let after: std::collections::HashSet<String> = list_agent_ids().unwrap_or_default();
+    let id = after.difference(&before).next().cloned();
+
+    let response = serde_json::json!({
+        "ok": true,
+        "id": id,
+        "pid": pid,
+        "prompt_chars": req.prompt.chars().count(),
+        "timeout_secs": AGENT_HARD_TIMEOUT.as_secs(),
+    });
+    respond_json(request, &response)
+}
+
+/// Last N lines of the agent log. Cheap inline preview for the agent
+/// list — `agent_log` reads the whole file from `since` (good for
+/// streaming the open-log-viewer pane); `agent_tail` reads the file
+/// backwards in 8 KiB chunks until it has N newlines or hits the
+/// start (good for "show me the latest 20 lines on every poll").
+#[derive(Serialize)]
+struct AgentTail {
+    id: String,
+    lines: Vec<String>,
+    total: u64,
+}
+
+fn agent_tail(id: &str, query: &str) -> Result<AgentTail> {
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_hexdigit()) {
+        anyhow::bail!("invalid agent id");
+    }
+    let mut want_lines = 20usize;
+    for pair in query.split('&').filter(|s| !s.is_empty()) {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        if k == "lines" {
+            want_lines = url_decode(v).parse::<usize>().unwrap_or(20).clamp(1, 200);
+        }
+    }
+    let home = runtime::home_dir()?;
+    let log_path = home.join(".crabcc").join("agents").join(id).join("log");
+    if !log_path.exists() {
+        anyhow::bail!("no such agent: {id}");
+    }
+    let total = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(&log_path)?;
+    // Read the last min(total, 64 KiB) bytes — enough for 20 lines of
+    // typical agent output. Bigger logs scrollback through the streaming
+    // log viewer (`/api/agents/<id>/log`) which is the right surface
+    // for full-history reads.
+    const WINDOW: u64 = 64 * 1024;
+    let start = total.saturating_sub(WINDOW);
+    f.seek(SeekFrom::Start(start))?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf)?;
+    let text = String::from_utf8_lossy(&buf);
+    // If we started mid-line, drop the leading partial.
+    let text = if start > 0 {
+        match text.find('\n') {
+            Some(i) => &text[i + 1..],
+            None => &text,
+        }
+    } else {
+        &text
+    };
+    let all: Vec<String> = text.lines().map(|s| s.to_string()).collect();
+    let take = all.len().saturating_sub(want_lines);
+    let lines = all.into_iter().skip(take).collect();
+    Ok(AgentTail {
+        id: id.to_string(),
+        lines,
+        total,
+    })
+}
+
+#[derive(Serialize)]
+struct AgentInfo {
+    id: String,
+    status: &'static str,
+    pid: Option<u32>,
+    is_alive: bool,
+    started_ts: u64,
+    runtime: String,
+    model: Option<String>,
+    prompt_chars: usize,
+    prompt_preview: String,
+    root: Option<String>,
+    log_bytes: u64,
+    paths: AgentPaths,
+}
+
+#[derive(Serialize)]
+struct AgentPaths {
+    dir: String,
+    log: String,
+    pid: String,
+    lock: String,
+    meta: String,
+}
+
+fn agent_info(id: &str) -> Result<AgentInfo> {
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_hexdigit()) {
+        anyhow::bail!("invalid agent id");
+    }
+    let home = runtime::home_dir()?;
+    let dir = home.join(".crabcc").join("agents").join(id);
+    if !dir.exists() {
+        anyhow::bail!("no such agent: {id}");
+    }
+    let lock = dir.join("lock");
+    let pid_path = dir.join("pid");
+    let log_path = dir.join("log");
+    let meta_path = dir.join("meta.json");
+
+    let status = if lock.exists() { "running" } else { "exited" };
+    let pid = std::fs::read_to_string(&pid_path)
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok());
+    let is_alive = pid.map(pid_alive).unwrap_or(false);
+    let log_bytes = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+
+    let mut started_ts = 0u64;
+    let mut runtime_label = String::from("subprocess (host)");
+    let mut model: Option<String> = None;
+    let mut prompt_preview = String::new();
+    let mut prompt_chars = 0usize;
+    let mut root: Option<String> = None;
+    if let Ok(body) = std::fs::read_to_string(&meta_path) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+            started_ts = v["started_ts"].as_u64().unwrap_or(0);
+            runtime_label = v["runtime"].as_str().unwrap_or("?").to_string();
+            model = v["model"].as_str().map(|s| s.to_string());
+            prompt_preview = v["prompt_preview"].as_str().unwrap_or("").to_string();
+            prompt_chars = v["prompt_chars"].as_u64().unwrap_or(0) as usize;
+            root = v["root"].as_str().map(|s| s.to_string());
+        }
+    }
+
+    Ok(AgentInfo {
+        id: id.to_string(),
+        status,
+        pid,
+        is_alive,
+        started_ts,
+        runtime: runtime_label,
+        model,
+        prompt_chars,
+        prompt_preview,
+        root,
+        log_bytes,
+        paths: AgentPaths {
+            dir: dir.display().to_string(),
+            log: log_path.display().to_string(),
+            pid: pid_path.display().to_string(),
+            lock: lock.display().to_string(),
+            meta: meta_path.display().to_string(),
+        },
+    })
+}
+
+#[derive(Serialize)]
+struct KillResult {
+    id: String,
+    pid: Option<u32>,
+    signaled: bool,
+    note: String,
+}
+
+/// Send SIGTERM to the agent's pid (read from `pid` file). Best-effort:
+/// the agent may have already exited (in which case the pid is reused
+/// or stale); we never escalate to SIGKILL automatically — that's a
+/// follow-up the user can do from a shell. The lock file is preserved
+/// so `agents_list` correctly shows "running" until the child handles
+/// the signal and exits (which removes its own lock).
+fn agent_kill(id: &str) -> Result<KillResult> {
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_hexdigit()) {
+        anyhow::bail!("invalid agent id");
+    }
+    let home = runtime::home_dir()?;
+    let pid_path = home.join(".crabcc").join("agents").join(id).join("pid");
+    let pid: Option<u32> = std::fs::read_to_string(&pid_path)
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok());
+    let Some(pid) = pid else {
+        return Ok(KillResult {
+            id: id.to_string(),
+            pid: None,
+            signaled: false,
+            note: "no pid file (agent may have exited or been a dry-run)".into(),
+        });
+    };
+    if !pid_alive(pid) {
+        return Ok(KillResult {
+            id: id.to_string(),
+            pid: Some(pid),
+            signaled: false,
+            note: "process already exited".into(),
+        });
+    }
+    let signaled = send_sigterm(pid);
+    Ok(KillResult {
+        id: id.to_string(),
+        pid: Some(pid),
+        signaled,
+        note: if signaled {
+            "SIGTERM delivered; agent will clean up its run dir on exit"
+        } else {
+            "kill(pid, SIGTERM) failed (likely permissions)"
+        }
+        .into(),
+    })
+}
+
+#[cfg(unix)]
+fn pid_alive(pid: u32) -> bool {
+    // `kill(pid, 0)` returns 0 if the signal could be delivered without
+    // actually delivering one — the standard "is this pid alive?" probe.
+    unsafe extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+    unsafe { kill(pid as i32, 0) == 0 }
+}
+#[cfg(not(unix))]
+fn pid_alive(_pid: u32) -> bool {
+    false
+}
+
+#[cfg(unix)]
+fn send_sigterm(pid: u32) -> bool {
+    unsafe extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+    const SIGTERM: i32 = 15;
+    unsafe { kill(pid as i32, SIGTERM) == 0 }
+}
+#[cfg(not(unix))]
+fn send_sigterm(_pid: u32) -> bool {
+    false
+}
+
+#[derive(Serialize)]
+struct DebugDump {
+    when: u64,
+    bootstrap: BootstrapSnapshot,
+    agents: AgentsList,
+    activity: ActivitySnapshot,
+}
+
+/// One-shot debug snapshot — the dashboard's "dump debug" button
+/// downloads this. Combines bootstrap + agent list + the last hour of
+/// activity into a single JSON, suitable for attaching to a bug
+/// report or a perf review thread.
+fn debug_dump(root: &Path) -> Result<DebugDump> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let bootstrap = bootstrap_snapshot(root)?;
+    let agents = agents_list()?;
+    let since = now.saturating_sub(3600);
+    let activity = activity_tail(root, &format!("since={since}&limit=500"))?;
+    Ok(DebugDump {
+        when: now,
+        bootstrap,
+        agents,
+        activity,
+    })
+}
+
+/// One-shot symbol query against a random op × random symbol drawn
+/// from the cached `graph.json`. Used by the live dashboard's
+/// "Run random query" button to populate the activity log + relation
+/// graph without requiring the user to keep the simulator script
+/// running. Cheap — the heaviest of the picked ops (`callers --count`)
+/// is a single SQLite query.
+fn random_query(_request: Request, root: &Path) -> Result<()> {
+    let req = _request;
+    // Pick from the same op set the live overlay treats as symbol-aware
+    // (sym/refs/callers/outline). Outline takes a file, not a symbol —
+    // we pick a random indexed file in that branch.
+    let ops = ["sym", "refs", "callers"];
+    let op = ops[(rand_usize() as usize) % ops.len()];
+
+    // Random symbol from graph.json. We avoid hitting Store::find_by_name
+    // because we want a name we know exists in the call-graph.
+    let graph_path = root.join(".crabcc").join("graph.json");
+    let mut symbols: Vec<String> = Vec::new();
+    if let Ok(g) = CallGraph::load(&graph_path) {
+        for k in g.callees.keys() {
+            symbols.push(k.clone());
+        }
+    }
+    if symbols.is_empty() {
+        return respond_status(req, 400, "no graph.json — run `crabcc graph build` first");
+    }
+    let pick = &symbols[(rand_usize() as usize) % symbols.len()];
+
+    let self_exe = std::env::current_exe()?;
+    let mut cmd = std::process::Command::new(&self_exe);
+    cmd.arg("--root").arg(root).arg(op).arg(pick);
+    if op == "callers" || op == "refs" {
+        cmd.arg("--count");
+    }
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::null());
+    cmd.stderr(std::process::Stdio::null());
+    // No timeout: a single `crabcc <op> <name>` finishes in milliseconds.
+    // We still go through `spawn_detached` so the wait thread reaps the
+    // zombie (otherwise repeated random-query clicks would pile up
+    // `<defunct>` entries in ps).
+    spawn_detached(&mut cmd, None).with_context(|| format!("spawn `crabcc {op} {pick}`"))?;
+
+    respond_json(
+        req,
+        &serde_json::json!({
+            "ok": true,
+            "op": op,
+            "symbol": pick,
+        }),
+    )
+}
+
+/// Fast non-cryptographic RNG drawn from `/dev/urandom` (single-shot
+/// per call). We don't pull `rand` for one usize.
+fn rand_usize() -> u64 {
+    use std::io::Read;
+    let mut bytes = [0u8; 8];
+    if std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut bytes))
+        .is_err()
+    {
+        // Fallback: time-based.
+        let ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        bytes.copy_from_slice(&ns.to_le_bytes());
+    }
+    u64::from_le_bytes(bytes)
+}
+
+/// Hard ceiling on agent run length, enforced by [`spawn_detached`]
+/// when invoked with `Some(AGENT_HARD_TIMEOUT)`. Twenty minutes is the
+/// default; long enough for a thoughtful refactor pass, short enough
+/// to defend against a stuck agent (LLM rate-limit retry loops, MCP
+/// transport hangs) burning hours of background time without human
+/// input. Users who legitimately need a longer agent run can run
+/// `crabcc agent --run …` directly from a shell — the hard timeout
+/// only applies to dashboard-launched runs.
+pub const AGENT_HARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20 * 60);
+
+/// Spawn a child process and reap its zombie when it exits. Without
+/// this, fire-and-forget spawns from `agents_launch` / `random_query`
+/// would accumulate `<defunct>` entries in `ps` until our process
+/// exits — Unix kernels keep an exited child's exit-status entry around
+/// until the parent calls `waitpid` on it.
+///
+/// We solve this by handing each `Child` to a dedicated thread whose
+/// only job is to call `child.wait()` (or poll `try_wait` when a
+/// timeout is set) and then exit. No SIGCHLD handler, no global reaper
+/// loop, no race with `agent_kill`'s SIGTERM — the wait thread sees
+/// the signaled exit and reaps it just the same.
+///
+/// **Timeout semantics**: if `timeout` is `Some`, the reaper polls
+/// `try_wait` every 5s; after the timeout elapses it sends SIGKILL
+/// (via `Child::kill`) and then reaps. The dashboard sets this for
+/// agent launches so a stuck `claude` process doesn't run forever in
+/// the background. The kill is intentionally SIGKILL, not SIGTERM,
+/// because the timeout is the *hard* fallback — userspace already
+/// has [`agent_kill`] for the graceful path.
+///
+/// Returns the child's pid for callers that need it.
+fn spawn_detached(
+    cmd: &mut std::process::Command,
+    timeout: Option<std::time::Duration>,
+) -> Result<u32> {
+    let child = cmd.spawn().context("spawn child process")?;
+    let pid = child.id();
+    std::thread::spawn(move || {
+        let mut child = child;
+        match timeout {
+            None => {
+                if let Err(e) = child.wait() {
+                    tracing::debug!("crabcc viz: detached child {pid} wait failed: {e}");
+                }
+            }
+            Some(deadline) => {
+                let start = std::time::Instant::now();
+                let poll = std::time::Duration::from_secs(5);
+                loop {
+                    match child.try_wait() {
+                        Ok(Some(_)) => return,
+                        Ok(None) => {
+                            if start.elapsed() >= deadline {
+                                tracing::warn!(
+                                    "crabcc viz: agent pid {pid} hit {}s timeout — killing",
+                                    deadline.as_secs()
+                                );
+                                let _ = child.kill();
+                                let _ = child.wait();
+                                return;
+                            }
+                            std::thread::sleep(poll);
+                        }
+                        Err(e) => {
+                            tracing::debug!(
+                                "crabcc viz: detached child {pid} try_wait failed: {e}"
+                            );
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    });
+    Ok(pid)
+}
+
+fn list_agent_ids() -> Result<std::collections::HashSet<String>> {
+    let home = runtime::home_dir()?;
+    let dir = home.join(".crabcc").join("agents");
+    let mut out = std::collections::HashSet::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            if let Some(name) = e.file_name().to_str() {
+                out.insert(name.to_string());
+            }
+        }
+    }
+    Ok(out)
 }
 
 fn respond_html(request: Request, body: &str) -> Result<()> {
