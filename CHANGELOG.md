@@ -6,6 +6,31 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+### Added — `crabcc memory forget` + `memory.forget` MCP tool (closes [#26](https://github.com/peterlodri-sec/crabcc/issues/26))
+- New `crabcc memory forget` CLI subcommand. Two selector shapes:
+  - `--drawer ID` — drop a single drawer by id.
+  - `--wing W --before DATE` — drop everything in wing `W` whose
+    `created_at` is strictly less than `DATE` (epoch seconds or
+    RFC3339, e.g. `2026-01-01T00:00:00Z`).
+- Mirrors as the `memory.forget` MCP tool with the same selector
+  semantics.
+- Idempotent: missing IDs / empty wings / no rows in window all
+  return `{"forgotten": 0}` and still run `VACUUM`. Mixing the two
+  selector shapes (or omitting both) surfaces as a usage error
+  rather than silently wiping the store.
+- Reclaims on-disk space — `forget = delete + VACUUM`. Backends
+  that don't compact (the in-memory one) treat `vacuum()` as a
+  no-op via the trait default. SQLite runs `VACUUM` outside any
+  transaction since SQLite refuses it inline.
+- New `DeleteSel::BeforeInWing { wing, before }` variant in
+  `crates/crabcc-memory/src/types.rs` plus matching SQLite +
+  in-memory backend implementations.
+- 4 new Palace tests (id-removal, idempotency on missing ids,
+  before-in-wing scoping, no-match noop), 3 new CLI tests for
+  the timestamp parser (epoch / RFC3339Z / garbage rejection),
+  and 3 new MCP dispatch tests (forget by id, invalid arg
+  combinations, RFC3339 cutoff).
+
 ### Added — MCP `memory.search` ranked-output assertions (closes [#21](https://github.com/peterlodri-sec/crabcc/issues/21))
 - The MCP `memory.search` tool already mirrors the CLI's hybrid /
   lexical / vector dispatch via `palace.search_with_mode` (#48).

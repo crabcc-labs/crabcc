@@ -1386,4 +1386,102 @@ mod tests {
             }
         }
     }
+
+    // ---- forget (issue #26) -------------------------------------------------
+
+    #[test]
+    fn forget_by_id_removes_drawer_and_returns_count() {
+        let dir = tempdir().unwrap();
+        let p = Palace::open(dir.path()).unwrap();
+        let id = p
+            .remember("default", None, "doc:1", "to be forgotten")
+            .unwrap();
+        let other = p
+            .remember("default", None, "doc:2", "stays around")
+            .unwrap();
+
+        let n = p.forget(&DeleteSel::ById(vec![id])).unwrap();
+        assert_eq!(n, 1, "forget should report 1 drawer removed");
+        assert!(
+            p.get(id).unwrap().is_none(),
+            "forgotten drawer must be gone"
+        );
+        assert!(p.get(other).unwrap().is_some(), "untouched drawer survives");
+    }
+
+    #[test]
+    fn forget_is_idempotent_on_missing_id() {
+        // Issue #26 deliverable — `forget` MUST return Ok with 0 rows
+        // removed when the selector matches nothing. Callers (notably
+        // the MCP tool) treat this as "drawer is gone, no work needed".
+        let dir = tempdir().unwrap();
+        let p = Palace::open(dir.path()).unwrap();
+        let n = p.forget(&DeleteSel::ById(vec![99_999])).unwrap();
+        assert_eq!(n, 0, "missing id must return 0, not error");
+
+        // And a second call against a now-empty store stays Ok(0).
+        let n = p.forget(&DeleteSel::ById(vec![99_999])).unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn forget_before_in_wing_only_drops_matching_rows() {
+        let dir = tempdir().unwrap();
+        let p = Palace::open(dir.path()).unwrap();
+
+        // Seed three drawers across two wings, then backdate two of them
+        // via a direct SQLite UPDATE so we can pin `created_at` deterministically
+        // without sleeping the test thread.
+        let stale = p.remember("notes", None, "old:1", "stale note").unwrap();
+        let fresh = p.remember("notes", None, "fresh:1", "fresh note").unwrap();
+        let other = p
+            .remember("scratch", None, "other:1", "different wing")
+            .unwrap();
+
+        // Backdate the two non-fresh rows. We want a single cutoff
+        // `BEFORE = 1000` to drop only `stale` (in `notes`).
+        let conn = rusqlite::Connection::open(dir.path().join(".crabcc/memory.db")).unwrap();
+        conn.execute("UPDATE drawers SET created_at = 500 WHERE id = ?1", [stale])
+            .unwrap();
+        conn.execute("UPDATE drawers SET created_at = 500 WHERE id = ?1", [other])
+            .unwrap();
+        conn.execute(
+            "UPDATE drawers SET created_at = 2000 WHERE id = ?1",
+            [fresh],
+        )
+        .unwrap();
+
+        let sel = DeleteSel::BeforeInWing {
+            wing: "notes".into(),
+            before: 1_000,
+        };
+        let n = p.forget(&sel).unwrap();
+        assert_eq!(n, 1, "only `stale` (notes wing, created_at < 1000) drops");
+
+        assert!(p.get(stale).unwrap().is_none(), "stale removed");
+        assert!(
+            p.get(fresh).unwrap().is_some(),
+            "fresh kept (created_at >= cutoff)"
+        );
+        assert!(p.get(other).unwrap().is_some(), "other-wing row untouched");
+    }
+
+    #[test]
+    fn forget_before_in_wing_with_no_matches_is_noop() {
+        let dir = tempdir().unwrap();
+        let p = Palace::open(dir.path()).unwrap();
+        p.remember("notes", None, "doc:1", "body").unwrap();
+
+        let sel = DeleteSel::BeforeInWing {
+            wing: "notes".into(),
+            before: 1, // before any plausible created_at
+        };
+        let n = p.forget(&sel).unwrap();
+        assert_eq!(n, 0, "no rows in window must return 0");
+        assert_eq!(
+            p.count().unwrap(),
+            1,
+            "drawer survives an empty-window forget"
+        );
+    }
 }
