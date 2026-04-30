@@ -82,6 +82,47 @@ tasks:
     cmds:
       - "{{.CARGO}} build --profile dev-fast"
 
+  build-native:
+    desc: Release build with -C target-cpu=native — personal/dev only, NOT shippable (issue #112)
+    summary: |
+      Compiles for the host CPU's exact ISA extensions (AVX2 / NEON / etc.).
+      Typical 3–8% gain on tight loops, but the resulting binary will SIGILL
+      on a CPU lacking the same extensions — never use this for the released
+      binary. Local benchmarking + personal `~/.cargo/bin` install only.
+    cmds:
+      - 'RUSTFLAGS="-C target-cpu=native" {{.CARGO}} build --release'
+
+  pgo-release:
+    desc: Profile-guided optimization release build (issue #112) — typical 10–20% gain on hot paths
+    summary: |
+      Two-pass build via `cargo-pgo` (https://github.com/Kobzol/cargo-pgo):
+        pass 1 — `cargo pgo build` instrumented binary
+        pass 2 — `cargo pgo run -- <training corpus>` to generate profile data
+        pass 3 — `cargo pgo optimize` final release with profile data baked in
+
+      Training corpus runs `crabcc index` + `crabcc sym Foo` + `crabcc agent
+      --dry-run` against this repo (deterministic, ~30 s).
+
+      Prerequisites: `cargo install cargo-pgo` and llvm-profdata on PATH
+      (Xcode Command Line Tools on macOS, llvm-tools-preview rustup component
+      on Linux).
+
+      Output: target/release/crabcc with profile data baked in. Drops in
+      next to the regular release binary; install via `task install` after.
+    cmds:
+      - >-
+        if ! command -v cargo-pgo >/dev/null 2>&1; then
+          echo 'cargo-pgo missing; install: cargo install cargo-pgo' >&2; exit 1;
+        fi
+      - "{{.CARGO}} pgo build"
+      - >-
+        HOST=$(rustc -vV | sed -n 's/host: //p');
+        BIN="target/$HOST/release/crabcc";
+        "$BIN" index --root . >/dev/null 2>&1 || true;
+        "$BIN" sym Store --root . >/dev/null 2>&1 || true;
+        "$BIN" agent --dry-run --run "ping" --root . >/dev/null 2>&1 || true
+      - "{{.CARGO}} pgo optimize"
+
   test:
     desc: Run all 60 unit tests across the workspace
     cmds:
