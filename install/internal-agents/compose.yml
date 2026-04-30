@@ -54,8 +54,8 @@ x-agent: &agent-base
   # Note: model RAM lives in the separate ollama-stack containers
   # (issue #105), NOT here. The agent only needs enough headroom for
   # the LiteLLM client + its own toolchain.
-  mem_limit: 8g
-  cpus: 4
+  mem_limit: 12g
+  cpus: 6
   # Drop everything the agent shouldn't need — code-edit + cargo build
   # + gh need almost no Linux capabilities. We re-add CHOWN so cargo's
   # registry cache permission fix-up works, and SETUID/SETGID for the
