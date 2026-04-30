@@ -132,6 +132,28 @@ tasks:
       - task: bench
       - task: bench-viz
 
+  bench-e2e:
+    desc: |
+      Full end-to-end bench sweep against REPO_FIXTURE — runs every harness
+      under bench/ + the moka cache micro-bench + the pinned-walkdir e2e
+      integration test. Results land in bench/results/ (JSON snapshots) and
+      the rendered Markdown reports stay in tree.
+    deps: [build]
+    cmds:
+      # 1. Raw CLI A/B (crabcc vs grep/find/rg/fd) → bench/results/raw.json
+      - task: bench
+      # 2. PNG charts + bench/results/REPORT.md
+      - task: bench-viz
+      # 3. FSST off-vs-on gate (single trial) → bench/results/fsst-gate.md
+      - task: bench-compress
+      # 4. moka cache micro-bench → bench/results/cache-bench-REPORT.md
+      - 'python3 bench/cache-bench.py'
+      # 5. e2e integration test against pinned BurntSushi/walkdir 2.5.0
+      - '{{.CARGO}} test -p crabcc-cli --test e2e_walkdir -- --ignored --nocapture'
+      # 6. Surface the three rendered reports together so the run summary
+      # has everything in one scroll.
+      - 'echo "" && echo "── bench-e2e summary ──" && ls -la bench/results/ | head -30'
+
   man:
     desc: Render the manpage to a viewable PDF preview (and confirm troff syntax)
     cmds:
