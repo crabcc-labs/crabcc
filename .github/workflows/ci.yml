@@ -18,6 +18,22 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Wire sccache as the rustc wrapper. Without this `RUSTC_WRAPPER`,
+  # `mozilla-actions/sccache-action` installs the binary and exports
+  # `SCCACHE_PATH` but cargo never invokes it (we observed
+  # `Compile requests 0` in run #25185569799). With it set, cargo
+  # routes every rustc call through sccache and the second-build
+  # cache hit rate jumps to ~95% on this workspace.
+  RUSTC_WRAPPER: sccache
+  SCCACHE_GHA_ENABLED: "true"
+  # Swatinem rust-cache requires `CARGO_INCREMENTAL=0` for cache
+  # determinism — incremental fingerprints poison the cache key.
+  CARGO_INCREMENTAL: 0
+  # Linux-only mold linker — slashes link time on debug + ci profiles
+  # for big workspaces (we have 567 deps). The flag is a no-op on
+  # macOS jobs (the lld/zld fallback is fine there).
+  CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
+  CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
 
 jobs:
   lint:
@@ -33,7 +49,27 @@ jobs:
         with:
           components: clippy, rustfmt
 
-      - uses: mozilla-actions/sccache-action@v0.0.6
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
+      # OS-only registry cache — never invalidates on Cargo.lock changes
+      # (Swatinem caches per-lockfile; this layer stays warm across the
+      # whole branch fleet and removes the `Updating crates.io index`
+      # round-trip on cold runs).
+      - name: cache cargo registry index
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-registry-${{ runner.os }}-
+
+      # mold linker — Apache-2.0, ~3-5x faster link than lld on big
+      # debug + ci profile builds. Apt install is sub-second.
+      - name: install mold linker
+        run: sudo apt-get install -y --no-install-recommends mold
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -109,7 +145,24 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: mozilla-actions/sccache-action@v0.0.6
+      - uses: mozilla-actions/sccache-action@v0.0.9
+
+      # OS-only registry cache — see lint-job comment above. Same key
+      # is shared across both jobs intentionally (single registry
+      # download warms both target/s).
+      - name: cache cargo registry index
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-registry-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            cargo-registry-${{ runner.os }}-
+
+      - name: install mold linker
+        run: sudo apt-get install -y --no-install-recommends mold
 
       - uses: Swatinem/rust-cache@v2
         with:
