@@ -1,12 +1,25 @@
 # https://taskfile.dev — install with `brew install go-task` or
 # `go install github.com/go-task/task/v3/cmd/task@latest`.
 #
-# Quick start:
-#   task              # default = build + test
-#   task install      # `cargo install` to ~/.cargo/bin/crabcc
-#   task bench        # raw-CLI A/B benchmark + visualization
-#   task ci           # full local CI dry-run (fmt + clippy + test + smoke)
-#   task release      # cut a tag; CI workflow handles the rest
+# Quick start (the daily-driver targets):
+#   task                    # build + test (the default)
+#   task install            # `cargo install` to ~/.cargo/bin/crabcc
+#   task ci                 # full local CI (fmt + clippy + test + smoke)
+#   task local-ci           # snapshot fmt+clippy+test to .summary/local-ci.txt
+#                           # (used in PR descriptions when GH CI is offline)
+#   task coverage           # generate code-coverage report (cargo-llvm-cov)
+#   task version            # print the workspace version (Cargo.toml truth)
+#
+# Workflow extras (one-off / situational):
+#   task bench              # raw-CLI A/B benchmark + visualization
+#   task bench-compress     # FSST off-vs-on gate bench
+#   task release            # cut a tag; CI workflow handles the rest
+#   task check-deps         # audit external dev tools (jq/yq/rg/gh/…)
+#   task doctor             # diagnose crabcc dev install (CLI/MCP/skill/hooks)
+#   task aliases            # install grep→rg / find→fd / etc. shell aliases
+#   task docs-refresh       # spawn background `claude -p` to update docs
+#
+# Pass `task --list` for everything (descriptions auto-render).
 
 version: '3'
 
@@ -106,7 +119,9 @@ tasks:
     desc: Index a tiny fixture + assert sym/callers/refs return data
     deps: [install]
     cmds:
-      - mkdir -p /tmp/crabcc-smoke && cd /tmp/crabcc-smoke && cat > a.ts <<'EOF'
+      - |
+        mkdir -p /tmp/crabcc-smoke
+        cat > /tmp/crabcc-smoke/a.ts <<'EOF'
         export function hello(name: string) { return name; }
         hello("world");
         EOF
@@ -220,6 +235,48 @@ tasks:
       MODE: '{{.MODE | default ""}}'
     cmds:
       - 'bash scripts/check-deps.sh {{if .MODE}}--{{.MODE}}{{end}}'
+
+  coverage:
+    desc: Generate code-coverage report (cargo-llvm-cov). FORMAT=html (default), lcov, text, or json
+    summary: |
+      Auto-installs cargo-llvm-cov on first run. Output lands in
+      .summary/coverage/ (html, lcov.info, coverage.json). Use FORMAT=text
+      for a quick console summary.
+    vars:
+      FORMAT: '{{.FORMAT | default "html"}}'
+    cmds:
+      - 'command -v cargo-llvm-cov >/dev/null 2>&1 || {{.CARGO}} install cargo-llvm-cov --locked'
+      - 'mkdir -p .summary/coverage'
+      - 'bash scripts/coverage.sh {{.FORMAT}}'
+
+  prep-pr:
+    desc: One-shot pre-PR check — fmt, clippy, test, smoke, doc-build, log to .summary/prep-pr.txt
+    summary: |
+      The combined pre-PR gate. Runs everything CI would run plus a
+      doc-build sanity check, captures the output for paste-into-PR-body
+      use, and exits non-zero on any failure. Idempotent.
+        - cargo fmt --check
+        - cargo clippy --workspace --all-targets -- -D warnings
+        - cargo test --workspace --no-fail-fast
+        - cargo doc --workspace --no-deps  (catches rustdoc warnings)
+      Pass NO_DOC=1 to skip the doc-build step (faster).
+    vars:
+      NO_DOC: '{{.NO_DOC | default "0"}}'
+    cmds:
+      - 'mkdir -p .summary'
+      - 'bash scripts/prep-pr.sh{{if eq .NO_DOC "1"}} --no-doc{{end}}'
+
+  doc:
+    desc: Build rustdoc HTML for the workspace (no deps; opens index in browser)
+    summary: |
+      Generates rustdoc for crabcc-core, crabcc-memory, crabcc-mcp, and
+      crabcc-cli. Pass OPEN=0 to skip the browser open; pass DEPS=1 to
+      include external-crate docs (slower, much larger output).
+    vars:
+      OPEN: '{{.OPEN | default "1"}}'
+      DEPS: '{{.DEPS | default "0"}}'
+    cmds:
+      - '{{.CARGO}} doc --workspace --no-deps={{if eq .DEPS "1"}}false{{else}}true{{end}}{{if eq .OPEN "1"}} --open{{end}}'
 
   doctor:
     desc: Diagnose crabcc dev install — CLI, MCP, commands, skill, hooks; writes a debug log

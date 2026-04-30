@@ -355,11 +355,7 @@ impl PalaceRegistry {
     /// Build a registry tuned for tests — short TTI/TTL so eviction can
     /// be observed within a unit-test wall-time budget.
     #[doc(hidden)]
-    pub fn with_test_timings(
-        capacity: u64,
-        palace_tti: Duration,
-        git_root_ttl: Duration,
-    ) -> Self {
+    pub fn with_test_timings(capacity: u64, palace_tti: Duration, git_root_ttl: Duration) -> Self {
         let palaces = Cache::builder()
             .max_capacity(capacity)
             .time_to_idle(palace_tti)
@@ -940,11 +936,8 @@ mod tests {
         let c = tempdir().unwrap();
         std::fs::create_dir_all(c.path().join(".git")).unwrap();
 
-        let reg = PalaceRegistry::with_test_timings(
-            2,
-            Duration::from_secs(60),
-            Duration::from_secs(60),
-        );
+        let reg =
+            PalaceRegistry::with_test_timings(2, Duration::from_secs(60), Duration::from_secs(60));
         reg.open_for(a.path()).unwrap();
         reg.open_for(b.path()).unwrap();
         reg.open_for(c.path()).unwrap();
@@ -998,11 +991,8 @@ mod tests {
         // would propagate; inside it the memo wins.)
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".git")).unwrap();
-        let reg = PalaceRegistry::with_test_timings(
-            8,
-            Duration::from_secs(60),
-            Duration::from_secs(60),
-        );
+        let reg =
+            PalaceRegistry::with_test_timings(8, Duration::from_secs(60), Duration::from_secs(60));
 
         let first = reg.resolve_git_root(dir.path()).unwrap();
         std::fs::remove_dir_all(dir.path().join(".git")).unwrap();
