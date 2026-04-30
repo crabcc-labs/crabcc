@@ -60,6 +60,14 @@ cp "$CRABCC_BIN" "$APP_STAGE/Contents/Resources/bin/crabcc"
 cp "$CCC_BIN"    "$APP_STAGE/Contents/Resources/bin/ccc"
 chmod 0755 "$APP_STAGE/Contents/Resources/bin/"*
 
+# Verify the copy actually landed — without this, a silently empty bin/ ships
+# in the DMG and install.sh can't find the binaries at runtime.
+for b in crabcc ccc; do
+    [[ -x "$APP_STAGE/Contents/Resources/bin/$b" ]] \
+        || { echo "build-dmg: $b binary missing/non-exec at $APP_STAGE/Contents/Resources/bin/$b" >&2; exit 1; }
+done
+log "bundled binaries verified (crabcc + ccc are present and executable)"
+
 # skills (symlink-friendly copy: dereference, since DMG can't ship symlinks safely)
 for s in "$REPO_ROOT/skill"/*/; do
     [[ -d "$s" ]] || continue

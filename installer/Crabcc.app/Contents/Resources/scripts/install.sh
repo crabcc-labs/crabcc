@@ -30,10 +30,26 @@ BIN_DST="$HOME_DIR/.cargo/bin"
 mkdir -p "$BIN_DST"
 
 for bin in crabcc ccc; do
-    src="$RESOURCES/bin/$bin"
-    [[ -f "$src" ]] || die "missing bundled binary: $src"
-    install -m 0755 "$src" "$BIN_DST/$bin"
-    log "installed $BIN_DST/$bin"
+    # Bundle layout is Contents/Resources/bin/<bin> — one level up from this
+    # script (which lives in Contents/Resources/scripts/). The previous
+    # `$RESOURCES/bin/...` path looked at Contents/Resources/scripts/bin/
+    # and hard-failed when the dir was empty (it always was).
+    src="$APP_DIR/bin/$bin"
+    if [[ -f "$src" ]]; then
+        install -m 0755 "$src" "$BIN_DST/$bin"
+        log "installed $BIN_DST/$bin (from bundle)"
+    elif command -v cargo >/dev/null 2>&1; then
+        log "bundled $bin missing — falling back to: cargo install --git"
+        if cargo install --force --quiet \
+            --git "https://github.com/peterlodri-sec/crabcc.git" \
+            --branch main "$bin"; then
+            log "installed $BIN_DST/$bin (from cargo)"
+        else
+            die "fallback cargo install of '$bin' failed (see Library/Logs/Crabcc/installer.log)"
+        fi
+    else
+        die "bundled $bin missing AND cargo unavailable — install Rust (https://rustup.rs) or rebuild the .app via scripts/build-dmg.sh"
+    fi
 done
 
 # --- 2. ad-hoc codesign (Sequoia provenance fix) --------------------------
