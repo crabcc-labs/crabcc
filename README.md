@@ -264,37 +264,162 @@ cd bench && python3 raw-bench.py /path/to/your/repo && python3 visualize.py
 crates/crabcc-core/   ← extraction, indexing, queries, FTS, tracking
 crates/crabcc-cli/    ← clap CLI; Cmd dispatcher
 crates/crabcc-mcp/    ← stdio JSON-RPC 2.0 MCP server
+crates/crabcc-memory/ ← Palace facade, Backend + Embedder traits, hybrid search
 schema/001_init.sql   ← SQLite schema (files, symbols, edges)
 skill/crabcc/         ← Claude Code skill (auto-routing rules)
 commands/             ← Claude Code slash commands
 bench/                ← raw-CLI A/B benchmark harness + visualize
 ```
 
-- **Indexing**: ignore-walks the repo, runs tree-sitter per file, extracts symbols
-  via per-language rules in `extract.rs`, persists to SQLite.
+### The layers
+
+```
+                         ┌───────────────────────────┐
+  $ crabcc sym Foo       │ crabcc-cli                │  clap dispatch · sonic-rs
+  $ crabcc memory search │   src/main.rs             │  JSON encode · stdout
+                         │   src/memory.rs           │
+                         └─────────────┬─────────────┘
+                                       │
+                ┌──────────────────────┼──────────────────────┐
+                ▼                      ▼                      ▼
+    ┌────────────────────┐ ┌────────────────────┐ ┌────────────────────┐
+    │ crabcc-core        │ │ crabcc-memory      │ │ crabcc-mcp         │
+    │  walker · extract  │ │  Palace · Backend  │ │  JSON-RPC stdio    │
+    │  store · graph     │ │  Embedder · RRF    │ │  tool dispatch     │
+    │  track · fts · fsst│ │  PalaceRegistry    │ │  OpenAPI 3.1 spec  │
+    └─────────┬──────────┘ └──────────┬─────────┘ └─────────┬──────────┘
+              │                       │                     │
+              └───────────────────────┼─────────────────────┘
+                                      ▼
+                       ┌──────────────────────────────┐
+                       │ Per-repo state at .crabcc/   │
+                       │   index.db (FTS5 + symbols)  │
+                       │   tantivy/ (fuzzy + prefix)  │
+                       │   graph.json (call graph)    │
+                       │   memory.db (drawers + vec)  │
+                       │   fsst.symbols (codec)       │
+                       └──────────────────────────────┘
+```
+
+The CLI is a thin dispatcher: clap parses, the matched arm calls into one of three library crates, and `sonic_rs::to_string` encodes the result. The library crates are independent — `crabcc-mcp` runs the same code paths as the CLI but over JSON-RPC 2.0 instead of argv. `crabcc-memory` is the only crate that needs `.crabcc/memory.db`; everything else lives in `index.db`.
+
+### Per-command mechanics
+
+- **Indexing**: ignore-walks the repo, runs tree-sitter per file, extracts symbols via per-language rules in `extract.rs`, persists to SQLite.
 - **`sym`**: SQL lookup, `WHERE name = ?`. Microseconds.
-- **`refs`**: enumerate indexed files, `memchr` prefilter on the byte needle, walk
-  tree-sitter to find identifier nodes equal to the name. Early-stops on `--limit`.
-- **`callers`**: same as refs but uses ast-grep patterns `name($$$)` and
-  `$RECV.name($$$)` to also catch method-receiver calls.
+- **`refs`**: enumerate indexed files, `memchr` prefilter on the byte needle, walk tree-sitter to find identifier nodes equal to the name. Early-stops on `--limit`.
+- **`callers`**: same as refs but uses ast-grep patterns `name($$$)` and `$RECV.name($$$)` to also catch method-receiver calls. Or, on indexes with edges populated, a single SQL scan over the `edges` table (O(callers), not O(files)).
 - **`outline`**: SQL `WHERE file_id = ? ORDER BY line_start`.
 - **`files`**: SQL on the indexed-files table, optionally filtered by prefix/lang/ext.
-- **`fuzzy` / `prefix`**: Tantivy sidecar at `.crabcc/tantivy/`. Rebuilt automatically
-  on `crabcc index`; explicit `crabcc fts-rebuild` for refresh-only flows.
+- **`fuzzy` / `prefix`**: Tantivy sidecar at `.crabcc/tantivy/`. Rebuilt automatically on `crabcc index`; explicit `crabcc fts-rebuild` for refresh-only flows.
+- **`memory search`**: hybrid by default — vector cosine KNN + FTS5 BM25 fused via Reciprocal Rank Fusion (k = 60). `--mode lexical` or `--mode vector` to ablate.
 - **`track`**: appends a JSONL log to `~/.crabcc/usage.log`, summarized by `crabcc track`.
-- **`watch`**: notify-debouncer-mini-based FS watcher running on its own thread.
-  Auto-runs `refresh` on file changes. Feedback-loop guard skips events under `.crabcc/`.
-- **`graph`**: call-graph sidecar persisted at `.crabcc/graph.json`. The graph is
-  built directly from the `edges` table populated at extract time (one SQL scan,
-  O(files); v1.0.0's symbols × files walker is the fallback for un-reindexed DBs).
-  Subcommands:
-  - `crabcc graph build` — write/refresh the sidecar.
-  - `crabcc graph walk NAME [--dir callers|callees] [--depth N]` — BFS expansion.
-  - `crabcc graph cycles` — strongly-connected components of size ≥2.
-  - `crabcc graph orphans` — defined functions with no incoming callers (dead-code triage).
+- **`watch`**: notify-debouncer-mini-based FS watcher on its own thread. Auto-runs `refresh` on file changes. Feedback-loop guard skips events under `.crabcc/`.
+- **`graph`**: call-graph sidecar persisted at `.crabcc/graph.json`, built from the `edges` table populated at extract time (one SQL scan, O(files); v1.0.0's symbols × files walker is the fallback for un-reindexed DBs). Subcommands: `build`, `walk NAME [--dir callers|callees] [--depth N]`, `cycles`, `orphans`.
 
-For deeper architectural detail, mermaid diagrams of the data flow and threading model,
-and runbooks for adding features, see [`ARCHITECTURE.md`](./ARCHITECTURE.md).
+### Trace: what happens internally during a CLI call
+
+#### `crabcc sym Foo` — point lookup
+
+```text
+clap parses argv ─►  Cmd::Sym { name: "Foo", root, compress }
+                                    │
+                     Store::open(.crabcc/index.db)  ─►  WAL · mmap · pragmas
+                                    │
+                     SELECT id, name, kind, signature, parent,
+                            file, line_start, line_end, visibility
+                            FROM symbols WHERE name = ?  ─►  rusqlite prepared stmt
+                                    │
+                     [optional]  Codec::decompress(signature)
+                                    │      (only if FSST is on AND row is encoded)
+                                    │
+                     sonic_rs::to_string(&Vec<Symbol>)  ─►  ~hundreds of µs
+                                    │
+                     println!("{body}")                 ─►  stdout
+```
+
+Cost is dominated by the SQLite open and the prepared-statement execute; the JSON encode is in the noise. Repeated `sym` calls in the same MCP session reuse the cached `Arc<Palace>` (and its `Connection`) via `PalaceRegistry`.
+
+#### `crabcc callers find_by --count` — token-shaped output
+
+```text
+clap parses ─► Cmd::Callers { name: "find_by", mode: Count }
+                  │
+                  query::query_callers(store, "find_by", Mode::Count)
+                  │
+                  ┌─ if `edges` table populated and non-empty:
+                  │    SELECT COUNT(*) FROM edges WHERE dst_name = ?
+                  │    ─► single SQL aggregate, sub-millisecond
+                  │
+                  └─ else (legacy index):
+                       ast-grep patterns `find_by($$$)` and `$R.find_by($$$)`
+                       over every indexed file → count matches
+                       ─► O(files) walk; still fast on 13k-file repos
+                  │
+                  println!("{count}")  ─►  14 bytes total
+```
+
+The `--count` shape is what makes this 5500× faster than `grep -rn` on big monorepos: we never touch source bytes, we just hit a single integer in SQLite.
+
+#### `crabcc refs UserId --files-only --limit 5` — early-stop walk
+
+```text
+clap parses ─► Cmd::Refs { name: "UserId", mode: FilesOnly { limit: 5 } }
+                  │
+                  store.list_indexed_files()  ─►  cheap; SQL projection
+                  │
+                  for file in indexed_files:
+                      bytes  = read(file)
+                      hits   = memchr(name.as_bytes(), &bytes)   ◄── prefilter
+                      if no hits: continue
+                      tree   = parser.parse(&bytes)
+                      for node in tree.walk():
+                          if node.kind == identifier && text == "UserId":
+                              push_dedup(file)
+                              if files.len() == limit: return early   ◄── early stop
+                  │
+                  sonic_rs::to_string(&files)  ─►  ~few hundred bytes
+                  │
+                  println!
+```
+
+`memchr` short-circuits any file that doesn't contain the byte sequence at all, so we only pay the tree-sitter parse for files that might match. The early stop on `--limit` lets agents narrow scope cheaply: `--files-only --limit 5` typically scans a few percent of the repo.
+
+#### `crabcc memory search "the fox"` — hybrid retrieval
+
+```text
+clap parses ─► memory::Cmd::Search { query, limit, wing, room, mode }
+                  │
+                  Palace::open(repo_root)  ─►  .crabcc/memory.db + Embedder + Backend
+                  │
+                  ┌─────────────────────────────┴─────────────────────────────┐
+                  ▼                                                           ▼
+        Embedder::embed_one(query)                              Backend::query_lexical(LexicalQuery)
+        │  HashEmbedder by default                              │  FTS5 MATCH on `drawers_fts`
+        │  FastEmbedder if --features memory-embed              │  BM25 ranking
+        │  CachedEmbedder wraps either: sha256(text) → cached    │  returns Vec<DrawerHit> (lexical)
+        │  Vec<f32> hits skip the inner embedder
+        ▼
+        Backend::query(Query { embedding, limit, … })
+        │  brute-force cosine over `drawers.embedding` blob
+        │  (or sqlite-vec ANN with --features memory-vec)
+        │  returns Vec<DrawerHit> (vector)
+                  │                                                           │
+                  └────────────────────────────┬──────────────────────────────┘
+                                               ▼
+                                rrf_fuse(&[vector_hits, lexical_hits], limit)
+                                  │  k = 60 (Cormack/Clarke/Buettcher 2009)
+                                  │  contribution = 1 / (k + rank)
+                                  │  hits in both rankings stack ─►  top-K
+                                  ▼
+                                sonic_rs::to_string(&QueryResult)
+                                  │
+                                  println!
+```
+
+The two rankers run independently against the same `.crabcc/memory.db`; RRF fuses ranks (not raw scores), which is why hybrid out-performs either ranker alone without needing per-corpus score normalization.
+
+For deeper architectural detail, mermaid diagrams of the data flow and threading model, and runbooks for adding features, see [`ARCHITECTURE.md`](./ARCHITECTURE.md).
 
 ---
 
