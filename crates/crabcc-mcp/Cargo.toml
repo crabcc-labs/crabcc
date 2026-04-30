@@ -14,3 +14,11 @@ tracing       = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# Issue #89 — bench/serve_io.rs measures the optimization delta from the
+# read_until + from_slice + to_writer rewrite vs the read_line + writeln!
+# baseline. Run via `cargo bench -p crabcc-mcp --bench serve_io`.
+criterion = "0.5"
+
+[[bench]]
+name = "serve_io"
+harness = false
