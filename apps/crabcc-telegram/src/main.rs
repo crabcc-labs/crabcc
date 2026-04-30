@@ -7,9 +7,10 @@
 //!
 //! # Optional env vars
 //!   CRABCC_SERVE_URL     — crabcc serve base URL (default http://localhost:8090)
-//!   CRABCC_PUBLIC_URL    — public HTTPS URL for /live dashboard WebApp button
-//!                          e.g. from `ngrok http 8090` or `cloudflared tunnel`
-//!                          If unset, the dashboard button sends a plain link.
+//!   CRABCC_PUBLIC_URL    — public HTTPS URL for /live Mini App
+//!                          Use `ngrok http 8090` or `cloudflared tunnel --url http://localhost:8090`
+//!                          Mini App docs: https://core.telegram.org/bots/webapps
+//!                          Init data validation: https://github.com/escwxyz/init-data-rs
 //!   ALLOWED_TELEGRAM_IDS — comma-separated Telegram user IDs allowed to send
 //!                          commands (empty = open to anyone, not recommended)
 //!
@@ -186,18 +187,27 @@ async fn handle(
         }
 
         Cmd::Dashboard => {
+            // Telegram Mini App requires HTTPS. Set CRABCC_PUBLIC_URL via:
+            //   ngrok:        ngrok http 8090
+            //   cloudflared:  cloudflared tunnel --url http://localhost:8090
+            // Docs: https://core.telegram.org/bots/webapps
             let keyboard = if let Some(ref public_url) = cfg.public_url {
-                // HTTPS available → WebApp button (opens in Telegram's in-app browser)
                 let live_url = format!("{}/live", public_url);
-                InlineKeyboardMarkup::new([[InlineKeyboardButton::web_app(
-                    "📊 Open live dashboard",
-                    WebAppInfo { url: live_url.parse().unwrap() },
-                )]])
+                InlineKeyboardMarkup::new([
+                    [InlineKeyboardButton::web_app(
+                        "📊 Open live dashboard",
+                        WebAppInfo { url: live_url.parse().unwrap() },
+                    )],
+                    [InlineKeyboardButton::url(
+                        "🔗 Direct link",
+                        format!("{}/live", cfg.serve_url).parse().unwrap(),
+                    )],
+                ])
             } else {
-                // No HTTPS — plain URL button
+                // No HTTPS — plain URL button + hint to set CRABCC_PUBLIC_URL
                 let live_url = format!("{}/live", cfg.serve_url);
                 InlineKeyboardMarkup::new([[InlineKeyboardButton::url(
-                    "📊 Open live dashboard (local)",
+                    "📊 Open live dashboard (local only)",
                     live_url.parse().unwrap(),
                 )]])
             };
