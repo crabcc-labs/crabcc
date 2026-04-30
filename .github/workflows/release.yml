@@ -62,13 +62,28 @@ jobs:
       - name: package
         shell: bash
         run: |
-          BIN="target/${{ matrix.target }}/release/crabcc"
+          # Issue #74 — `cargo install --path crates/crabcc-cli` produces
+          # BOTH `crabcc` (low-level surface) and `ccc` (high-level combo
+          # binary). Both ship together; users who installed via tarball
+          # before would otherwise lack `ccc`.
+          BIN_CRABCC="target/${{ matrix.target }}/release/crabcc"
+          BIN_CCC="target/${{ matrix.target }}/release/ccc"
           NAME="crabcc-${{ github.ref_name }}-${{ matrix.target }}"
           mkdir -p "dist/$NAME"
-          cp "$BIN" "dist/$NAME/"
+          cp "$BIN_CRABCC" "dist/$NAME/"
+          if [ -f "$BIN_CCC" ]; then
+            cp "$BIN_CCC" "dist/$NAME/"
+          else
+            echo "::warning::ccc binary missing at $BIN_CCC — pre-#74 build?"
+          fi
           cp README.md LICENSE CHANGELOG.md "dist/$NAME/" 2>/dev/null || true
           tar -czf "dist/$NAME.tar.gz" -C dist "$NAME"
           (cd dist && shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256")
+          # Issue #111 prereq — per-binary SHA-256 manifest the signed
+          # SHA256SUMS.txt + .asc step will subsume; for now the
+          # unsigned per-binary list lets install.sh start verifying
+          # in increments.
+          (cd "dist/$NAME" && shasum -a 256 crabcc ccc 2>/dev/null > "../$NAME.bin-sha256.txt" || true)
           ls -la dist
 
       - uses: actions/upload-artifact@v4
