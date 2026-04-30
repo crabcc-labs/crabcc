@@ -1034,6 +1034,22 @@ tasks:
     cmds:
       - '{{.CRABCC}} openapi'
 
+  openapi-codegen-viz:
+    desc: Regenerate the /live frontend's TS types from crates/crabcc-viz/openapi.yaml (issue #170 phase 0)
+    summary: |
+      Runs `openapi-typescript` against `crates/crabcc-viz/openapi.yaml`
+      and writes the generated types into
+      `crates/crabcc-viz/web/src/api.gen.ts`. This is the same step that
+      `bun run build` runs automatically — the standalone task is
+      useful when you've edited the YAML and want to refresh types
+      without a full bundle build.
+
+      The Rust drift test `openapi_yaml_lists_every_route` (in
+      `crabcc-viz/src/lib.rs`) catches the symmetric case: a new route
+      handler with no schema entry fails CI.
+    cmds:
+      - 'cd crates/crabcc-viz/web && bun install --silent && bun run codegen'
+
   doc:
     desc: Build rustdoc HTML for the workspace (no deps; opens index in browser)
     summary: |

@@ -1,0 +1,696 @@
+openapi: 3.1.0
+
+info:
+  title: crabcc /live dashboard API
+  description: |
+    HTTP/JSON + SSE surface served by `crabcc serve` (issue #17).
+    Hand-maintained source of truth — both the React frontend (via
+    `openapi-typescript` codegen) and any future Rust client (via
+    `progenitor`) consume types from this file.
+
+    See `docs/RESEARCH-rpc-survey.md` for the broader inter-service
+    communication strategy (issue #170).
+
+    A Rust drift test (`openapi_yaml_lists_every_route`) asserts every
+    route registered in `crabcc-viz/src/lib.rs` appears here, so adding
+    a new handler without updating the schema fails CI.
+  version: 0.1.0
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:7878
+    description: Default `crabcc serve` port.
+
+tags:
+  - name: meta
+    description: Build provenance + health.
+  - name: activity
+    description: Recent tool calls + agent runs.
+  - name: agents
+    description: Agent dashboard surfaces (#112).
+  - name: telemetry
+    description: KPI event stream + OTLP health (#86, #90).
+  - name: services
+    description: Service discovery (#143).
+  - name: write
+    description: Write actions (reindex, random-query, agent launch).
+  - name: stream
+    description: Server-Sent Events.
+
+paths:
+
+  /api/health:
+    get:
+      tags: [meta]
+      summary: Liveness probe.
+      operationId: getHealth
+      responses:
+        "200":
+          description: OK.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /api/bootstrap:
+    get:
+      tags: [meta]
+      summary: Repo + version + index status one-shot.
+      operationId: getBootstrap
+      responses:
+        "200":
+          description: Bootstrap snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Bootstrap"
+
+  /api/activity:
+    get:
+      tags: [activity]
+      summary: Recent tool-call activity tail.
+      operationId: getActivity
+      parameters:
+        - $ref: "#/components/parameters/SinceTs"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Activity tail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActivityResponse"
+
+  /api/agents:
+    get:
+      tags: [agents]
+      summary: List agent runs (running + recently exited).
+      operationId: listAgents
+      responses:
+        "200":
+          description: Agents.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentsResponse"
+
+  /api/agents/{id}/log:
+    get:
+      tags: [agents]
+      summary: Tail an agent's log file incrementally.
+      operationId: getAgentLog
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+        - in: query
+          name: since
+          required: false
+          schema: { type: integer, minimum: 0 }
+      responses:
+        "200":
+          description: Log slice.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentLog"
+
+  /api/agents/{id}/tail:
+    get:
+      tags: [agents]
+      summary: Tail diagnostic for an agent run (free-form).
+      operationId: getAgentTail
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Tail snapshot (free-form for now).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /api/agents/{id}/info:
+    get:
+      tags: [agents]
+      summary: Single-agent metadata snapshot.
+      operationId: getAgentInfo
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Agent info (free-form for now).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /api/agents/{id}/kill:
+    post:
+      tags: [write, agents]
+      summary: Send SIGTERM/SIGKILL to a running agent.
+      operationId: killAgent
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Kill snapshot (free-form for now).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /api/agents/launch:
+    post:
+      tags: [write, agents]
+      summary: Launch a new agent run.
+      operationId: launchAgent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentLaunchRequest"
+      responses:
+        "200":
+          description: Launched.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentLaunchResponse"
+
+  /api/agent-profiles:
+    get:
+      tags: [agents]
+      summary: List per-crate agent profiles.
+      operationId: listAgentProfiles
+      responses:
+        "200":
+          description: Profiles.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentProfilesResponse"
+
+  /api/agent-kills:
+    get:
+      tags: [agents]
+      summary: Recent agent-guard kill events.
+      operationId: listAgentKills
+      responses:
+        "200":
+          description: Kills.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentKillsResponse"
+
+  /api/agent-models:
+    get:
+      tags: [agents]
+      summary: List cataloged models.
+      operationId: listAgentModels
+      responses:
+        "200":
+          description: Models.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentModelsResponse"
+
+  /api/ollama-key:
+    get:
+      tags: [meta]
+      summary: Ollama auth-stack key snapshot (mode/mtime/value).
+      operationId: getOllamaKey
+      responses:
+        "200":
+          description: Key snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OllamaKey"
+
+  /api/services:
+    get:
+      tags: [services]
+      summary: Service-discovery report (issue #143).
+      operationId: getServices
+      responses:
+        "200":
+          description: Discovery report.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DiscoveryReport"
+
+  /api/telemetry:
+    get:
+      tags: [telemetry]
+      summary: KPI event stream tail.
+      operationId: getTelemetry
+      parameters:
+        - $ref: "#/components/parameters/SinceTs"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Telemetry tail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TelemetrySnapshot"
+
+  /api/telemetry/otlp-health:
+    get:
+      tags: [telemetry]
+      summary: OTLP collector reachability probe.
+      operationId: getOtlpHealth
+      responses:
+        "200":
+          description: OTLP health.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OtlpHealth"
+
+  /api/reindex:
+    post:
+      tags: [write]
+      summary: Run a full re-index against the server's PWD.
+      operationId: reindexPwd
+      responses:
+        "200":
+          description: Reindex report.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReindexReport"
+
+  /api/random-query:
+    post:
+      tags: [write]
+      summary: Fire one random `crabcc` query — used by the dashboard's
+        "random query" button to exercise the surface.
+      operationId: randomQuery
+      responses:
+        "200":
+          description: Random query echo.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RandomQueryResponse"
+
+  /api/graph:
+    get:
+      tags: [activity]
+      summary: Call-graph snapshot (legacy/internal — schema tracked
+        opaquely until the call-graph viewer migrates fully).
+      operationId: getGraph
+      responses:
+        "200":
+          description: Graph snapshot (free-form JSON for now).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /api/seed-graph:
+    get:
+      tags: [activity]
+      summary: Seed nodes for the graph viewer (legacy).
+      operationId: seedGraph
+      responses:
+        "200":
+          description: Seed nodes (free-form JSON for now).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /api/debug/dump:
+    get:
+      tags: [meta]
+      summary: Diagnostic dump — internal-only debug surface.
+      operationId: debugDump
+      responses:
+        "200":
+          description: Dump (free-form JSON).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /api/memory/recent:
+    get:
+      tags: [meta]
+      summary: Recent crabcc-memory drawers.
+      operationId: getMemoryRecent
+      responses:
+        "200":
+          description: Memory tail (free-form for now; tracked opaquely
+            until the memory dashboard panel ships).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
+  /api/events:
+    get:
+      tags: [stream]
+      summary: "Server-Sent Events stream — event: activity and event: agents topics."
+      operationId: getEvents
+      responses:
+        "200":
+          description: SSE stream (Content-Type text/event-stream).
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+components:
+
+  parameters:
+    SinceTs:
+      in: query
+      name: since
+      required: false
+      description: Unix-seconds cursor — return rows newer than this.
+      schema:
+        type: integer
+        minimum: 0
+    Limit:
+      in: query
+      name: limit
+      required: false
+      description: Max rows to return.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 100
+
+  schemas:
+
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+
+    Bootstrap:
+      type: object
+      required: [repo, root, version]
+      properties:
+        repo: { type: string }
+        root: { type: string }
+        version: { type: string }
+        index:
+          type: object
+          properties:
+            present: { type: boolean }
+            files: { type: integer }
+            symbols: { type: integer }
+
+    ActivityHit:
+      type: object
+      required: [ts, op, query, count]
+      properties:
+        ts: { type: integer, description: "unix seconds" }
+        op: { type: string }
+        query: { type: string }
+        count: { type: integer }
+        source: { type: string }
+
+    ActivityResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/ActivityHit" }
+
+    AgentSummary:
+      type: object
+      required: [id, status]
+      properties:
+        id: { type: string }
+        status:
+          type: string
+          enum: [running, exited]
+        pid: { type: integer }
+        prompt_preview: { type: string }
+        model: { type: string }
+        started_ts: { type: integer }
+        exit_code:
+          type: integer
+          nullable: true
+
+    AgentsResponse:
+      type: object
+      required: [agents]
+      properties:
+        agents:
+          type: array
+          items: { $ref: "#/components/schemas/AgentSummary" }
+
+    AgentLog:
+      type: object
+      required: [body, cursor, total]
+      properties:
+        body: { type: string }
+        cursor: { type: integer }
+        total: { type: integer }
+
+    AgentLaunchRequest:
+      type: object
+      required: [prompt]
+      properties:
+        prompt: { type: string }
+        model: { type: string }
+        backend: { type: string, enum: [ollama, anthropic] }
+
+    AgentLaunchResponse:
+      type: object
+      required: [id]
+      properties:
+        id: { type: string }
+        pid: { type: integer }
+
+    AgentProfileEntry:
+      type: object
+      required: [id, crate_, description, model]
+      properties:
+        id: { type: string }
+        crate_:
+          type: string
+          nullable: true
+          description: |
+            Trailing underscore mirrors the Rust struct field — `crate`
+            is a reserved keyword.
+        description:
+          type: string
+          nullable: true
+        model:
+          type: string
+          nullable: true
+
+    AgentProfilesResponse:
+      type: object
+      required: [dir, profiles]
+      properties:
+        dir: { type: string }
+        profiles:
+          type: array
+          items: { $ref: "#/components/schemas/AgentProfileEntry" }
+
+    AgentKillRow:
+      type: object
+      required: [run_id, reason, pid, detail, killed_at]
+      properties:
+        run_id: { type: string }
+        reason: { type: string }
+        pid:
+          type: integer
+          nullable: true
+        detail:
+          type: string
+          nullable: true
+        killed_at: { type: integer, description: "unix seconds" }
+
+    AgentKillsResponse:
+      type: object
+      required: [db, rows]
+      properties:
+        db: { type: string }
+        rows:
+          type: array
+          items: { $ref: "#/components/schemas/AgentKillRow" }
+
+    AgentModelEntry:
+      type: object
+      required: [file, provider, name, params, context, docs_first]
+      properties:
+        file: { type: string }
+        provider: { type: string }
+        name: { type: string }
+        params:
+          type: string
+          nullable: true
+        context:
+          type: integer
+          nullable: true
+        docs_first:
+          type: string
+          nullable: true
+
+    AgentModelsResponse:
+      type: object
+      required: [dir, models]
+      properties:
+        dir: { type: string }
+        models:
+          type: array
+          items: { $ref: "#/components/schemas/AgentModelEntry" }
+
+    OllamaKey:
+      type: object
+      required: [present, path, mode, mtime_secs, size_bytes, key]
+      properties:
+        present: { type: boolean }
+        path: { type: string }
+        mode:
+          type: string
+          nullable: true
+        mtime_secs:
+          type: integer
+          nullable: true
+        size_bytes:
+          type: integer
+          nullable: true
+        key:
+          type: string
+          nullable: true
+
+    ServiceStatus:
+      type: object
+      required:
+        [name, kind, url, source, host, port, reachable, latency_ms,
+         error, probed_at]
+      properties:
+        name: { type: string }
+        kind:
+          type: string
+          enum:
+            - redis
+            - http_json_api
+            - otlp_grpc
+            - otlp_http
+            - ollama
+            - generic
+        url: { type: string }
+        source:
+          type: string
+          description: Env-var name OR the literal "default".
+        host: { type: string }
+        port: { type: integer }
+        reachable: { type: boolean }
+        latency_ms: { type: integer }
+        error:
+          type: string
+          nullable: true
+        probed_at: { type: integer, description: "unix seconds" }
+
+    DiscoveryReport:
+      type: object
+      required: [services, compose_mode, elapsed_ms]
+      properties:
+        services:
+          type: array
+          items: { $ref: "#/components/schemas/ServiceStatus" }
+        compose_mode: { type: boolean }
+        elapsed_ms: { type: integer }
+
+    TelemetryEvent:
+      type: object
+      required: [ts, level, target, fields]
+      properties:
+        ts: { type: integer, description: "unix seconds" }
+        level:
+          type: string
+          enum: [TRACE, DEBUG, INFO, WARN, ERROR]
+        target: { type: string }
+        fields:
+          type: object
+          additionalProperties: true
+
+    TelemetrySource:
+      type: object
+      required: [path, lines_read, bytes, exists]
+      properties:
+        path: { type: string }
+        lines_read: { type: integer }
+        bytes: { type: integer }
+        exists: { type: boolean }
+
+    TelemetrySnapshot:
+      type: object
+      required: [cursor, events, source]
+      properties:
+        cursor: { type: integer }
+        events:
+          type: array
+          items: { $ref: "#/components/schemas/TelemetryEvent" }
+        source: { $ref: "#/components/schemas/TelemetrySource" }
+
+    OtlpHealth:
+      type: object
+      required: [reachable, endpoint]
+      properties:
+        reachable: { type: boolean }
+        endpoint: { type: string }
+        error:
+          type: string
+          nullable: true
+
+    ReindexReport:
+      type: object
+      required: [root, elapsed_ms, stats, logs]
+      properties:
+        root: { type: string }
+        elapsed_ms: { type: integer }
+        stats:
+          type: object
+          additionalProperties:
+            oneOf:
+              - { type: string }
+              - { type: integer }
+        logs:
+          type: array
+          items: { type: string }
+
+    RandomQueryResponse:
+      type: object
+      required: [op, symbol]
+      properties:
+        op: { type: string }
+        symbol: { type: string }
