@@ -552,12 +552,10 @@ mod tests {
         // With no rows, train_codec should fail
         let result = run(args);
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("no training samples")
-        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("no training samples"));
     }
 
     #[test]

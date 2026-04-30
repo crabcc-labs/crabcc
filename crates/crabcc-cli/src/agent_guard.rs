@@ -307,7 +307,11 @@ mod tests {
         let idle = log_idle_secs(log.to_str().unwrap());
         // A file just written should have idle < 5 seconds
         assert!(idle.is_some());
-        assert!(idle.unwrap() < 5, "expected < 5s idle, got {}", idle.unwrap());
+        assert!(
+            idle.unwrap() < 5,
+            "expected < 5s idle, got {}",
+            idle.unwrap()
+        );
     }
 
     #[test]
