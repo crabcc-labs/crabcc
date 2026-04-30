@@ -2,10 +2,11 @@
   "hooks": {
     "SessionStart": [
       {
+        "matcher": "startup",
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -d .crabcc ]; then crabcc index --refresh >/dev/null 2>&1; else echo 'crabcc: no index in this repo (run /crabcc-init)'; fi"
+            "command": "if [ -d .crabcc ]; then crabcc index --refresh >/dev/null 2>&1; else echo 'crabcc: no index in this repo (run /crabcc-init)' >&2; fi"
           }
         ]
       }
@@ -16,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "echo \"$CLAUDE_HOOK_INPUT\" | grep -qE 'rg [A-Za-z_][A-Za-z0-9_]+|grep -[a-zA-Z]* [A-Za-z_][A-Za-z0-9_]+|find [^|]* -name' && echo 'hint: try `crabcc sym/refs/callers` — symbol-aware and ~10× cheaper on tokens' >&2; exit 0"
+            "command": "jq -r '.tool_input.command // \"\"' | grep -qE '(^| )(rg|grep( -[a-zA-Z]+)?)\\s+[A-Za-z_][A-Za-z0-9_]+|(^| )find\\s+[^|]*-name\\b' && echo 'hint: try `crabcc sym/refs/callers` — symbol-aware and ~10x cheaper on tokens (`crabcc --help` for the full surface)' >&2; exit 0"
           }
         ]
       }
