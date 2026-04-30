@@ -38,3 +38,8 @@ install/ollama-stack/.env
 # location is $CRABCC_HOME/backups/, but defensive ignore is cheap).
 /backups/
 .repomix/
+
+# Python bytecode caches (apps/crabcc-iterm2 and any other Python tooling).
+__pycache__/
+*.pyc
+*.pyo
