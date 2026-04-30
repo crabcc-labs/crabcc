@@ -68,6 +68,12 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 
 [profile.dev]
 split-debuginfo = "unpacked"
+# debug = 1 (line-tables-only) cuts macOS link time substantially on this
+# workspace while still producing file:line backtraces in panics. lldb
+# breakpoints stop working — devs who need them can override locally:
+#   printf '[profile.dev]\ndebug = 2\n' >> .cargo/config.local.toml
+# (config.local.toml is gitignored.)
+debug = 1
 # Nightly-only extras (polonius, randomize-layout) removed — see .cargo/config.toml
 # for how to re-enable locally without breaking stable CI.
 
@@ -93,6 +99,10 @@ split-debuginfo = "unpacked"
 [profile.test]
 opt-level       = 1
 split-debuginfo = "unpacked"
+# Same rationale as `[profile.dev]`: line-tables-only is enough for the
+# panic backtraces nextest prints, and shaves significant link time off
+# the test rebuild loop.
+debug           = 1
 
 [profile.release-native]
 inherits = "release"
