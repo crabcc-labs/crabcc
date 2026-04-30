@@ -33,7 +33,13 @@ use serde::Serialize;
 use tiny_http::{Header, Method, Request, Response, Server};
 
 const BUNDLED_INDEX: &str = include_str!("../assets/index.html");
-const BUNDLED_LIVE: &str = include_str!("../assets/live.html");
+// Phase 1 of #17 ships the React bundle as the dashboard. The legacy
+// hand-rolled `assets/live.html` is kept on disk for one release as a
+// reference and back-compat target — it's no longer referenced from
+// the running server but the file documents the pre-rewrite contract.
+//
+// Regenerate after editing `web/src/`: `cd crates/crabcc-viz/web && bun run build`.
+const BUNDLED_LIVE: &str = include_str!("../web/dist/live.html");
 
 /// Caps that defend a single-user localhost server from accidental fork-bombs
 /// (`?depth=200` returning a 50k-node graph that locks up the page). Exposed
@@ -377,6 +383,7 @@ fn handle(request: Request, root: &Path) -> Result<()> {
         // stays as a back-compat alias for the old URL.
         "/" | "/index.html" | "/live" => respond_html(request, BUNDLED_LIVE),
         "/graph" => respond_html(request, BUNDLED_INDEX),
+        "/api/events" => sse_events(request, root.to_path_buf()),
         "/api/health" => respond_json(request, &serde_json::json!({ "status": "ok" })),
         "/api/graph" => match graph_snapshot(root, query) {
             Ok(snapshot) => respond_json(request, &snapshot),
@@ -1680,6 +1687,82 @@ fn respond_html(request: Request, body: &str) -> Result<()> {
     resp.add_header(header("Cache-Control", "no-store"));
     request.respond(resp)?;
     Ok(())
+}
+
+/// Server-Sent Events handler — collapses the polling triple
+/// (`/api/activity`, `/api/agents`, `/api/memory/recent`) into one
+/// long-lived HTTP response the React frontend subscribes to via
+/// `EventSource`. Per-topic events are emitted as
+/// `event: <topic>\ndata: <json>\n\n` blocks per the SSE spec.
+///
+/// Cadence is the same 1.5 / 2.5 second intervals the legacy poll loop
+/// uses, but routed through one connection — fewer thread wakeups, no
+/// per-request `Store::open`, and the React side can flip its "live"
+/// indicator on `onopen`/`onerror` without a separate health probe.
+///
+/// Event types:
+///   - `event: activity`  — `{items: ActivityHit[]}` (1.5s tick)
+///   - `event: agents`    — `{agents: AgentSummary[]}` (2.5s tick)
+///   - `event: ping`      — empty object every 15s; keeps the
+///     connection alive through any reverse-proxy idle timeout.
+fn sse_events(request: Request, root: std::path::PathBuf) -> Result<()> {
+    use std::io::Write as _;
+    let mut writer = request.into_writer();
+    let header_block = "HTTP/1.1 200 OK\r\n\
+                        Content-Type: text/event-stream; charset=utf-8\r\n\
+                        Cache-Control: no-store\r\n\
+                        Connection: keep-alive\r\n\
+                        X-Accel-Buffering: no\r\n\r\n";
+    writer.write_all(header_block.as_bytes())?;
+    writer.flush()?;
+
+    let mut last_activity = std::time::Instant::now();
+    let mut last_agents = std::time::Instant::now();
+    let mut last_ping = std::time::Instant::now();
+
+    // Initial push so the client renders something on `onopen`.
+    let _ = sse_emit(&mut writer, "activity", &activity_tail(&root, "").ok());
+    let _ = sse_emit(&mut writer, "agents", &agents_list().ok());
+
+    loop {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        let now = std::time::Instant::now();
+        if now.duration_since(last_activity).as_millis() >= 1500 {
+            last_activity = now;
+            if sse_emit(&mut writer, "activity", &activity_tail(&root, "").ok()).is_err() {
+                break;
+            }
+        }
+        if now.duration_since(last_agents).as_millis() >= 2500 {
+            last_agents = now;
+            if sse_emit(&mut writer, "agents", &agents_list().ok()).is_err() {
+                break;
+            }
+        }
+        if now.duration_since(last_ping).as_secs() >= 15 {
+            last_ping = now;
+            if writer.write_all(b": ping\n\n").is_err() {
+                break;
+            }
+            if writer.flush().is_err() {
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn sse_emit<W: std::io::Write, T: Serialize>(
+    writer: &mut W,
+    topic: &str,
+    payload: &Option<T>,
+) -> std::io::Result<()> {
+    let body = match payload {
+        Some(p) => sonic_rs::to_string(p).unwrap_or_else(|_| "null".into()),
+        None => "null".into(),
+    };
+    write!(writer, "event: {topic}\ndata: {body}\n\n")?;
+    writer.flush()
 }
 
 /// Run `crabcc index` against `root` and capture both the structured-JSON

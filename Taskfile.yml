@@ -362,6 +362,28 @@ tasks:
       - sudo install -m 0644 man/crabcc.1 /usr/local/share/man/man1/crabcc.1
       - 'echo "test with: man crabcc"'
 
+  viz-web-build:
+    desc: |
+      Build the React /live dashboard bundle (phase 1 of #17). Outputs
+      a single self-contained HTML at crates/crabcc-viz/web/dist/live.html
+      which the Rust crate include_str!s at compile time. Re-run after
+      editing crates/crabcc-viz/web/src/.
+    cmds:
+      - 'cd crates/crabcc-viz/web && bun install --silent && bun run build'
+
+  viz-web-test:
+    desc: Run the React frontend's bun:test suite + tsgo typecheck.
+    cmds:
+      - 'cd crates/crabcc-viz/web && bun install --silent && bun run typecheck && bun test src'
+
+  viz-web-dev:
+    desc: |
+      Watch crates/crabcc-viz/web/src/ and rebuild dist/live.html on save.
+      Pair with `task viz` in another terminal to see live reloads after
+      Cmd-R in the browser.
+    cmds:
+      - 'cd crates/crabcc-viz/web && bun install --silent && bun run dev'
+
   viz:
     desc: |
       Start the localhost call-graph viewer (issue #64). Builds release,

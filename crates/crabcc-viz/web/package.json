@@ -1,0 +1,24 @@
+{
+  "name": "@crabcc/viz-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "React + TypeScript frontend for crabcc-viz /live dashboard. Bundled via esbuild into a single self-contained HTML file the Rust crate include_str!'s at compile time.",
+  "type": "module",
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "dev": "node esbuild.config.mjs --watch",
+    "typecheck": "tsgo --noEmit",
+    "test": "bun test src",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@typescript/native-preview": "^7.0.0-dev",
+    "esbuild": "^0.24.0"
+  }
+}
