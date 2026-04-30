@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# ---------------------------------------------------------------------------
+# crabcc :: .git/hooks/pre-commit (installed by scripts/install-hooks.sh)
+#
+# Sensible local pre-commit gate. Goals:
+#   * Catch fmt + clippy regressions before they reach CI
+#   * Run the aliases-smoke (cheap shell-only assertion)
+#   * Stay under ~15s on a warm cache so it doesn't impede `git commit`
+#   * No tests (those run in `task ci` / `task local-ci`)
+#
+# Bypass with `git commit --no-verify` if you really need to (rare).
+# Skip entirely with `CRABCC_SKIP_HOOKS=1 git commit ...`.
+# ---------------------------------------------------------------------------
+
+set -uo pipefail
+
+if [ "${CRABCC_SKIP_HOOKS:-0}" = "1" ]; then
+    echo "[crabcc-hooks] CRABCC_SKIP_HOOKS=1 — skipping pre-commit"
+    exit 0
+fi
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT" || exit 1
+
+# Only run if Rust files or shell scripts changed. Doc-only commits skip.
+changed="$(git diff --cached --name-only --diff-filter=ACMR || true)"
+if [ -z "$changed" ]; then
+    exit 0
+fi
+
+run_rust=0
+run_shell=0
+while IFS= read -r f; do
+    case "$f" in
+        *.rs|Cargo.toml|Cargo.lock|crates/*/Cargo.toml) run_rust=1 ;;
+        scripts/install-aliases.sh|scripts/aliases-smoke.sh) run_shell=1 ;;
+    esac
+done <<<"$changed"
+
+if [ "$run_rust" = "0" ] && [ "$run_shell" = "0" ]; then
+    exit 0
+fi
+
+echo "[crabcc-hooks] pre-commit fast gate"
+
+# Autofix mode: rewrite the working tree, then re-stage what changed.
+# This means a hook that "fails" because of formatting will produce a
+# fixed-up index automatically — re-run `git commit` to land it.
+if [ "$run_rust" = "1" ]; then
+    echo "  → cargo fmt --all"
+    if ! cargo fmt --all; then
+        echo "[crabcc-hooks] cargo fmt failed — fix and re-commit" >&2
+        exit 1
+    fi
+    echo "  → cargo clippy --workspace --lib --bins -- -D warnings"
+    if ! cargo clippy --workspace --lib --bins -- -D warnings 2>&1 | tail -20; then
+        echo "[crabcc-hooks] clippy failed — fix and re-commit" >&2
+        exit 1
+    fi
+fi
+
+if [ "$run_shell" = "1" ]; then
+    echo "  → bash scripts/aliases-smoke.sh"
+    if ! bash scripts/aliases-smoke.sh; then
+        echo "[crabcc-hooks] aliases-smoke failed — fix and re-commit" >&2
+        exit 1
+    fi
+fi
+
+# Re-stage any files that fmt rewrote.
+if [ "$run_rust" = "1" ]; then
+    fmt_changed="$(git diff --name-only --diff-filter=M -- '*.rs' || true)"
+    if [ -n "$fmt_changed" ]; then
+        echo "[crabcc-hooks] re-staging fmt-rewritten files:"
+        # shellcheck disable=SC2086
+        git add $fmt_changed
+        echo "$fmt_changed" | sed 's/^/    /'
+    fi
+fi
+
+echo "[crabcc-hooks] ✓ pre-commit passed"
+exit 0

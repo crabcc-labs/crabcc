@@ -46,6 +46,11 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --workspace --lib --bins -- -D warnings
 
+      # Issue #81: shell-only smoke for scripts/install-aliases.sh.
+      # Sub-second; asserts --aggressive verbs and idempotence.
+      - name: aliases-smoke
+        run: bash scripts/aliases-smoke.sh
+
       - name: sccache stats
         if: always()
         run: sccache --show-stats || true

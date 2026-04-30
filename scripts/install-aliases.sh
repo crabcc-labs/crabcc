@@ -7,7 +7,7 @@
 # present, so the rc never breaks if `bat` / `eza` / `rg` aren't yet
 # installed.
 #
-# What this maps:
+# What this maps (always — minimal mode):
 #   grep   → rg          (ripgrep — keeps regex, far faster on big trees)
 #   find   → fd          (saner defaults, gitignore-aware)
 #   cat    → bat         (syntax highlighting, retains pipe-friendliness)
@@ -15,9 +15,9 @@
 #   du     → dust
 #   df     → duf
 #   ps     → procs
-#   top    → btop / htop
-#   tree   → eza --tree  (when eza is installed; falls back to `tree`)
-#   cd     → z           (zoxide — fuzzy `cd` to recent dirs)
+#   top    → btop
+#   tree   → eza --tree
+#   cd     → zoxide
 #   tail   → lnav        (only when called as `tail -f`)
 #
 # Plus a small set of crabcc-specific aliases:
@@ -26,17 +26,33 @@
 #   ccs       → crabcc sym
 #   ccr       → crabcc refs
 #   ccc       → crabcc callers
-#   cm        → crabcc memory
+#   ccm       → crabcc memory
+#
+# --aggressive adds (issue #81):
+#   gr        → crabcc grep
+#   sym       → crabcc sym
+#   refs      → crabcc refs --files-only
+#   callers   → crabcc callers --files-only
+#   outline   → crabcc outline
+#   fuzzy     → crabcc fuzzy
+#   diff      → delta             (when delta is installed)
 #
 # Idempotent: writes a fenced `# >>> crabcc-aliases >>>` block; re-running
 # replaces the block in place. `--remove` strips the block cleanly.
 #
 # Usage:
-#   scripts/install-aliases.sh                 # detect shell, install
-#   scripts/install-aliases.sh --shell zsh     # force target shell
-#   scripts/install-aliases.sh --remove        # strip the block
-#   scripts/install-aliases.sh --print         # echo the block, don't write
-#   scripts/install-aliases.sh --help          # this header
+#   scripts/install-aliases.sh                    # detect shell, install minimal
+#   scripts/install-aliases.sh --aggressive       # add crabcc verbs
+#   scripts/install-aliases.sh --all-shells       # write to both .zshrc + .bashrc
+#   scripts/install-aliases.sh --shell zsh        # force target shell
+#   scripts/install-aliases.sh --remove           # strip the block
+#   scripts/install-aliases.sh --print            # echo the block, don't write
+#   scripts/install-aliases.sh --dry-run          # print rc path + block, no write
+#   scripts/install-aliases.sh --install-tools    # brew/apt install missing modern tools
+#   scripts/install-aliases.sh --help             # this header
+#
+# Flags compose: e.g. `--aggressive --all-shells --dry-run` previews a
+# full install across zsh + bash without touching either rc file.
 #
 # Exit codes:
 #   0  success
@@ -45,13 +61,13 @@
 #
 # ---------------------------------------------------------------------------
 # CHANGELOG
-#   v1.0.0 (2026-04-30) — initial cut. Supports zsh / bash / fish; emits
-#                          guarded aliases (each `command -v X` checked).
+#   v1.0.0 (2026-04-30) — initial cut. zsh / bash / fish; guarded aliases.
+#   v1.1.0 (2026-04-30) — issue #81: --aggressive (crabcc verbs),
+#                          --all-shells, --dry-run, --install-tools.
 # ---------------------------------------------------------------------------
 
 set -uo pipefail
 
-# Pull in the project version so the block carries provenance.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/version.sh" 2>/dev/null || true
@@ -59,26 +75,35 @@ CRABCC_VERSION="${CRABCC_VERSION:-unknown}"
 
 ACTION="install"
 SHELL_OVERRIDE=""
-for arg in "$@"; do
-    case "$arg" in
-        --remove)  ACTION="remove" ;;
-        --print)   ACTION="print" ;;
-        --shell)   ACTION="install" ;; # consumed by the next iteration
-        --shell=*) SHELL_OVERRIDE="${arg#*=}" ;;
+AGGRESSIVE=0
+ALL_SHELLS=0
+DRY_RUN=0
+INSTALL_TOOLS=0
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --remove)         ACTION="remove" ;;
+        --print)          ACTION="print" ;;
+        --dry-run)        DRY_RUN=1 ;;
+        --aggressive)     AGGRESSIVE=1 ;;
+        --all-shells)     ALL_SHELLS=1 ;;
+        --install-tools)  INSTALL_TOOLS=1 ;;
+        --shell)
+            shift
+            SHELL_OVERRIDE="${1:-}"
+            ;;
+        --shell=*)        SHELL_OVERRIDE="${1#*=}" ;;
+        zsh|bash|fish)    SHELL_OVERRIDE="$1" ;;
         --help|-h)
-            sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,55p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *)
-            # Pair value for `--shell zsh` form.
-            if [ "$arg" = "zsh" ] || [ "$arg" = "bash" ] || [ "$arg" = "fish" ]; then
-                SHELL_OVERRIDE="$arg"
-            else
-                echo "unknown arg: $arg (try --help)" >&2
-                exit 2
-            fi
+            echo "unknown arg: $1 (try --help)" >&2
+            exit 2
             ;;
     esac
+    shift
 done
 
 # --- detect shell ---------------------------------------------------------
@@ -99,7 +124,6 @@ rc_path_for() {
     case "$1" in
         zsh)  echo "$HOME/.zshrc" ;;
         bash)
-            # Prefer ~/.bashrc if it exists, else ~/.bash_profile (macOS).
             if [ -f "$HOME/.bashrc" ]; then echo "$HOME/.bashrc"
             else echo "$HOME/.bash_profile"; fi ;;
         fish) echo "$HOME/.config/fish/config.fish" ;;
@@ -108,12 +132,12 @@ rc_path_for() {
 }
 
 # --- alias block (POSIX-compatible alias syntax) -------------------------
-# Each alias is wrapped in `command -v <tool> >/dev/null 2>&1 && alias …`
-# so the rc stays clean even if the modern tool was never installed.
 print_block_zsh_or_bash() {
+    local shell_name="$1"
     cat <<EOF
 # >>> crabcc-aliases >>> (managed by scripts/install-aliases.sh, crabcc v$CRABCC_VERSION)
 # Re-run \`scripts/install-aliases.sh\` to refresh; \`--remove\` to strip.
+# Each alias is gated on \`command -v\` so missing tools never break the rc.
 command -v rg     >/dev/null 2>&1 && alias grep='rg'
 command -v fd     >/dev/null 2>&1 && alias find='fd'
 command -v bat    >/dev/null 2>&1 && alias cat='bat --paging=never'
@@ -123,8 +147,7 @@ command -v dust   >/dev/null 2>&1 && alias du='dust'
 command -v duf    >/dev/null 2>&1 && alias df='duf'
 command -v procs  >/dev/null 2>&1 && alias ps='procs'
 command -v btop   >/dev/null 2>&1 && alias top='btop'
-command -v zoxide >/dev/null 2>&1 && eval "\$(zoxide init "$1" --cmd cd)"
-# Heuristic: when jq is on the path, default a JSON-pipeline-friendly env.
+command -v zoxide >/dev/null 2>&1 && eval "\$(zoxide init "$shell_name" --cmd cd)"
 command -v jq     >/dev/null 2>&1 && alias jq='jq --indent 2'
 
 # crabcc-specific shortcuts.
@@ -136,6 +159,25 @@ command -v crabcc >/dev/null 2>&1 && {
     alias ccc='crabcc callers'
     alias ccm='crabcc memory'
 }
+EOF
+    if [ "$AGGRESSIVE" = "1" ]; then
+        cat <<'EOF'
+
+# --- aggressive (--aggressive) — short crabcc verbs + delta diff ---------
+# Issue #81: route muscle memory ('where is X?', 'what calls Y?') to crabcc
+# instead of grep/find. Each verb is gated on crabcc being on PATH.
+command -v crabcc >/dev/null 2>&1 && {
+    alias gr='crabcc grep'
+    alias sym='crabcc sym'
+    alias refs='crabcc refs --files-only'
+    alias callers='crabcc callers --files-only'
+    alias outline='crabcc outline'
+    alias fuzzy='crabcc fuzzy'
+}
+command -v delta >/dev/null 2>&1 && alias diff='delta'
+EOF
+    fi
+    cat <<EOF
 export CRABCC_VERSION='$CRABCC_VERSION'
 # <<< crabcc-aliases <<<
 EOF
@@ -164,6 +206,23 @@ if type -q crabcc
     alias ccc 'crabcc callers'
     alias ccm 'crabcc memory'
 end
+EOF
+    if [ "$AGGRESSIVE" = "1" ]; then
+        cat <<'EOF'
+
+# --- aggressive (--aggressive) -------------------------------------------
+if type -q crabcc
+    alias gr 'crabcc grep'
+    alias sym 'crabcc sym'
+    alias refs 'crabcc refs --files-only'
+    alias callers 'crabcc callers --files-only'
+    alias outline 'crabcc outline'
+    alias fuzzy 'crabcc fuzzy'
+end
+type -q delta; and alias diff 'delta'
+EOF
+    fi
+    cat <<EOF
 set -gx CRABCC_VERSION '$CRABCC_VERSION'
 # <<< crabcc-aliases <<<
 EOF
@@ -182,7 +241,6 @@ write_block() {
     [ -d "$(dirname "$rc")" ] || mkdir -p "$(dirname "$rc")"
     touch "$rc"
     [ -w "$rc" ] || { echo "rc file not writable: $rc" >&2; return 1; }
-    # Preserve everything outside the fenced block, then append a fresh one.
     local tmp
     tmp="$(mktemp)"
     awk '
@@ -190,7 +248,6 @@ write_block() {
         !skip { print }
         /^# <<< crabcc-aliases <<</ { skip = 0; next }
     ' "$rc" >"$tmp"
-    # Trailing newline normalization.
     if [ -s "$tmp" ] && [ "$(tail -c1 "$tmp" | xxd -p 2>/dev/null)" != "0a" ]; then
         printf "\n" >>"$tmp"
     fi
@@ -211,20 +268,80 @@ remove_block() {
     mv "$tmp" "$rc"
 }
 
+# --- modern-tool installer (--install-tools) -----------------------------
+# Idempotent: skips tools already on PATH. Uses brew on macOS, apt on Linux.
+install_modern_tools() {
+    local tools="ripgrep fd bat eza dust duf procs btop zoxide jq git-delta"
+    local missing=()
+    for t in rg fd bat eza dust duf procs btop zoxide jq delta; do
+        command -v "$t" >/dev/null 2>&1 || missing+=("$t")
+    done
+    if [ "${#missing[@]}" -eq 0 ]; then
+        echo "all modern tools present — nothing to install"
+        return 0
+    fi
+    echo "missing: ${missing[*]}"
+    if command -v brew >/dev/null 2>&1; then
+        # shellcheck disable=SC2086
+        echo "+ brew install $tools"
+        [ "$DRY_RUN" = "1" ] && return 0
+        # shellcheck disable=SC2086
+        brew install $tools
+    elif command -v apt-get >/dev/null 2>&1; then
+        # apt naming differs slightly: bat → batcat, fd → fdfind on Debian.
+        local apt_pkgs="ripgrep fd-find bat eza dust duf procs btop zoxide jq git-delta"
+        echo "+ sudo apt-get install -y $apt_pkgs"
+        [ "$DRY_RUN" = "1" ] && return 0
+        sudo apt-get update && sudo apt-get install -y $apt_pkgs
+    else
+        echo "no supported package manager (brew/apt) found; install manually:" >&2
+        echo "  ${missing[*]}" >&2
+        return 1
+    fi
+}
+
 # --- main ------------------------------------------------------------------
-SHELL_NAME="$(detect_shell)"
-RC_PATH="$(rc_path_for "$SHELL_NAME")"
+SHELLS_TO_INSTALL=()
+if [ "$ALL_SHELLS" = "1" ]; then
+    SHELLS_TO_INSTALL=(zsh bash)
+else
+    SHELLS_TO_INSTALL=("$(detect_shell)")
+fi
+
+if [ "$INSTALL_TOOLS" = "1" ]; then
+    install_modern_tools || true
+fi
 
 case "$ACTION" in
     print)
-        print_block "$SHELL_NAME"
+        for sh in "${SHELLS_TO_INSTALL[@]}"; do
+            echo "# --- $sh ---"
+            print_block "$sh"
+        done
         ;;
     remove)
-        remove_block "$RC_PATH" && echo "removed crabcc-aliases block from $RC_PATH"
+        for sh in "${SHELLS_TO_INSTALL[@]}"; do
+            rc="$(rc_path_for "$sh")"
+            if [ "$DRY_RUN" = "1" ]; then
+                echo "(dry-run) would remove crabcc-aliases block from $rc"
+            else
+                remove_block "$rc" && echo "removed crabcc-aliases block from $rc"
+            fi
+        done
         ;;
     install)
-        write_block "$RC_PATH" "$SHELL_NAME" || exit 1
-        echo "installed crabcc-aliases block in $RC_PATH (shell: $SHELL_NAME)"
-        echo "open a new shell or run: source $RC_PATH"
+        for sh in "${SHELLS_TO_INSTALL[@]}"; do
+            rc="$(rc_path_for "$sh")"
+            if [ "$DRY_RUN" = "1" ]; then
+                echo "(dry-run) target rc: $rc (shell: $sh, aggressive=$AGGRESSIVE)"
+                print_block "$sh"
+            else
+                write_block "$rc" "$sh" || exit 1
+                echo "installed crabcc-aliases block in $rc (shell: $sh, aggressive=$AGGRESSIVE)"
+            fi
+        done
+        if [ "$DRY_RUN" != "1" ]; then
+            echo "open a new shell or source the rc file(s) above"
+        fi
         ;;
 esac
