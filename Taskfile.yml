@@ -261,6 +261,22 @@ tasks:
     cmds:
       - bash scripts/build-dmg.sh {{if .SKIP_BUILD}}--skip-build{{end}}
 
+  setup-orbstack:
+    desc: Install + start OrbStack and link it as the active Docker context (#195)
+    summary: |
+      OrbStack is the recommended Docker daemon for Apple Silicon Mac
+      per apps/CONTAINER-POLICY.md — faster, lighter, arm64-native vs
+      Docker Desktop. Idempotent; safe to re-run.
+
+      Run this once before `task docker-build-crabcc`. The script:
+        1. Installs OrbStack via brew cask (skip if already present)
+        2. Launches OrbStack and waits for the docker daemon
+        3. Switches `docker context` to 'orbstack'
+        4. Ensures a buildx builder exists
+        5. Smoke-tests with `docker run hello-world`
+    cmds:
+      - bash scripts/setup-orbstack.sh
+
   # Container images (#195) — distroless-first per apps/CONTAINER-POLICY.md.
   # Each service gets `task docker-build-<name>`, `docker-push-<name>`, and
   # `docker-sbom-<name>`.

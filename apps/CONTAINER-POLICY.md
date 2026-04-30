@@ -4,6 +4,37 @@
 > Phase 1 deliverable of [#195](https://github.com/peterlodri-sec/gabcc/issues/195).
 > Update this doc *before* changing a Dockerfile or adding a new one.
 
+## Local Docker daemon: OrbStack
+
+On macOS, **OrbStack** is the recommended Docker daemon — not Docker
+Desktop. Reasons:
+
+- arm64-native (matches our [linux/arm64-only](#platform-linuxarm64-only) build target)
+- Materially faster cold-start + image build vs Docker Desktop
+- Lighter on RAM / battery (no fixed-size linux VM)
+- Free for personal use; commercial license available
+
+One-shot install + link:
+
+```bash
+task setup-orbstack         # or: bash scripts/setup-orbstack.sh
+```
+
+The script is idempotent — installs OrbStack via `brew install --cask
+orbstack` if missing, launches it, waits for the docker daemon,
+switches `docker context` to `orbstack`, ensures a `buildx` builder
+exists, and runs `docker run hello-world` as a smoke check.
+
+Verify the link:
+
+```bash
+docker context show         # → orbstack
+docker buildx ls            # default builder present
+```
+
+If a contributor on Linux runs the same Taskfile targets, they get the
+system Docker daemon — no setup script needed.
+
 ## Default: distroless wherever possible
 
 | Runtime | Base image | When to use |
