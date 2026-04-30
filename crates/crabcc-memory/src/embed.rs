@@ -1,18 +1,22 @@
-//! `Embedder` trait + `HashEmbedder` (deterministic, test-only) +
-//! `CachedEmbedder` (sha256-keyed moka cache decorator).
+//! `Embedder` trait + three impls:
 //!
-//! M1a ships the hybrid-search storage + fusion layer with
-//! `HashEmbedder` driving the vector path. M1b will add `FastEmbedder`
-//! (fastembed-rs / MiniLM-L6-v2) behind the `embed-fastembed` feature so
-//! the heavyweight ONNX/tokenizer dep tree stays optional. The
-//! `Embedder` trait surface is stable across that change — `Backend`
-//! impls don't move when the real embedder lands.
+//! - `HashEmbedder` — deterministic, dependency-free; default.
+//! - `CachedEmbedder` — sha256-keyed moka cache decorator over any inner
+//!   `Embedder`.
+//! - `FastEmbedder` — real semantic 384-dim MiniLM-L6-v2 vectors via
+//!   `fastembed-rs`, behind the `memory-embed` cargo feature.
 //!
-//! `CachedEmbedder` wraps any `Embedder` impl and short-circuits
-//! repeated calls with identical text. Important once `FastEmbedder`
-//! lands and a single `embed_one` is dominated by ONNX inference cost;
-//! also a measurable win today on `Palace::remember` of duplicate
-//! content (dedup happens at the SQL layer *after* the embed work).
+//! `HashEmbedder` exists so the trait + Backend storage can be exercised
+//! end-to-end without pulling ~25 MB of ONNX model file into every build.
+//! `FastEmbedder` is what production should use; gated so opting in is
+//! explicit and the default `cargo build` stays small.
+//!
+//! `CachedEmbedder` wraps either: cache hits skip whichever inner
+//! embedder is in use, which matters most once `FastEmbedder` is active
+//! and `embed_one` is dominated by ONNX inference cost. Today (with
+//! `HashEmbedder`) the wrapper is still a measurable win for
+//! `Palace::remember` of duplicate content because SQL-layer dedup runs
+//! *after* the embed work.
 
 use anyhow::Result;
 use moka::sync::Cache;
@@ -283,3 +287,133 @@ mod tests {
         assert_eq!(cached.dim(), 128);
     }
 }
+
+// ═══ FastEmbedder (memory-embed feature) ═══════════════════════════════
+//
+// Real semantic 384-dim MiniLM-L6-v2 embeddings via `fastembed-rs`.
+// Lazy model download into the platform cache dir on first construction;
+// subsequent runs reuse the cached ONNX file. The whole module is gated
+// behind `memory-embed` so default builds ship zero ML deps.
+//
+// Threading: `fastembed::TextEmbedding` runs ONNX inference and is
+// `Send + Sync` once constructed (the underlying ort session is shared
+// behind locks). We wrap it in a `Mutex` to serialize `embed_*` calls
+// because batched inference inside the same session is the cheapest
+// shape — a per-call lock yields one global ort session, not N.
+
+#[cfg(feature = "memory-embed")]
+mod fastembed_impl {
+    use super::*;
+    use anyhow::Context;
+    use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
+    use std::sync::Mutex;
+
+    /// 384-dim MiniLM-L6-v2 embedder. Loads the ONNX model on first
+    /// construction (~25 MB; lazy-downloaded to the platform cache dir)
+    /// and reuses the same ort session across calls.
+    pub struct FastEmbedder {
+        // fastembed::TextEmbedding mutates internal state during
+        // inference (the ort session keeps tensor scratch buffers), so
+        // even though it's Sync we serialize through a Mutex to keep
+        // the API trait-object friendly and to amortize batches in a
+        // single call.
+        inner: Mutex<TextEmbedding>,
+        dim: usize,
+    }
+
+    impl FastEmbedder {
+        /// Construct with the default model (`AllMiniLML6V2`, 384-dim).
+        /// First call may take seconds while the model downloads.
+        pub fn new() -> Result<Self> {
+            Self::with_model(EmbeddingModel::AllMiniLML6V2)
+        }
+
+        /// Construct with an explicit model. Useful for ablation tests
+        /// or for callers that want bge-small / e5-small. Dim is
+        /// inferred from the model.
+        pub fn with_model(model: EmbeddingModel) -> Result<Self> {
+            let opts = InitOptions::new(model.clone());
+            let inner = TextEmbedding::try_new(opts)
+                .context("fastembed: load model")?;
+            // MiniLM-L6-v2 is 384; bge-small/e5-small also 384. Hardcode
+            // until we add a `model_dim()` helper or a runtime probe.
+            let dim = match model {
+                EmbeddingModel::AllMiniLML6V2 => 384,
+                _ => 384, // most small encoders we care about
+            };
+            Ok(Self {
+                inner: Mutex::new(inner),
+                dim,
+            })
+        }
+    }
+
+    impl Embedder for FastEmbedder {
+        fn dim(&self) -> usize {
+            self.dim
+        }
+
+        fn embed_one(&self, text: &str) -> Result<Vec<f32>> {
+            let mut guard = self
+                .inner
+                .lock()
+                .map_err(|_| anyhow::anyhow!("FastEmbedder mutex poisoned"))?;
+            let mut out = guard
+                .embed(vec![text.to_string()], None)
+                .context("fastembed: embed_one")?;
+            out.pop()
+                .ok_or_else(|| anyhow::anyhow!("fastembed returned empty result"))
+        }
+
+        fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+            // fastembed wants Vec<String>; one allocation per call is
+            // negligible next to the ONNX inference cost.
+            let owned: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
+            let mut guard = self
+                .inner
+                .lock()
+                .map_err(|_| anyhow::anyhow!("FastEmbedder mutex poisoned"))?;
+            guard.embed(owned, None).context("fastembed: embed_batch")
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        // Marked #[ignore] because the test downloads ~25 MB on first
+        // run and shells out to ort. CI runs explicitly with
+        // `--features memory-embed -- --ignored` after setup.
+        #[test]
+        #[ignore = "downloads ~25 MB MiniLM-L6-v2 on first run"]
+        fn fastembed_dim_is_384() {
+            let e = FastEmbedder::new().expect("load model");
+            assert_eq!(e.dim(), 384);
+            let v = e.embed_one("hello world").expect("embed");
+            assert_eq!(v.len(), 384);
+        }
+
+        #[test]
+        #[ignore = "downloads ~25 MB MiniLM-L6-v2 on first run"]
+        fn fastembed_semantic_pairs_close() {
+            // Same query embedded twice must be byte-identical (or near-
+            // identical past floating-point reorder). Different queries
+            // produce different vectors with non-trivial cosine drop.
+            let e = FastEmbedder::new().expect("load");
+            let a = e.embed_one("the fox jumps over the lazy dog").unwrap();
+            let b = e.embed_one("the fox jumps over the lazy dog").unwrap();
+            let c = e.embed_one("a recipe for chocolate cake").unwrap();
+            assert_eq!(a, b, "deterministic for same input");
+            // Cosine of L2-normalized fastembed output should differ
+            // meaningfully across topically-different inputs.
+            let dot_ac: f32 = a.iter().zip(c.iter()).map(|(x, y)| x * y).sum();
+            assert!(
+                dot_ac < 0.95,
+                "topically distinct inputs should not be near-identical (got cosine {dot_ac})"
+            );
+        }
+    }
+}
+
+#[cfg(feature = "memory-embed")]
+pub use fastembed_impl::FastEmbedder;

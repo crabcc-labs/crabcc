@@ -65,6 +65,11 @@ sonic-rs = "0.3"
 # pinning a toolchain. See issue #38 for the full nightly comparison.
 bumpalo = { version = "3", features = ["collections"] }
 moka = { version = "0.12", features = ["sync"] }
+# v2.5.2 (#18) — real semantic embeddings via fastembed-rs. ~25 MB MiniLM-L6-v2
+# ONNX model lazy-downloaded into ~/.crabcc/models on first use. Wrapped in the
+# `memory-embed` cargo feature so stable users (and minimal binaries) keep the
+# 0-byte HashEmbedder default.
+fastembed = "5"
 
 [profile.release]
 opt-level     = 3
