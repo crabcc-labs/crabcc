@@ -18,7 +18,7 @@ use crate::backend::{cosine, Backend};
 use crate::types::*;
 use anyhow::{anyhow, Context, Result};
 use crabcc_core::hash::sha256_hex;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -26,6 +26,12 @@ const SCHEMA: &str = include_str!("../../schema/001_init.sql");
 
 pub struct SqliteBackend {
     conn: Mutex<Connection>,
+    /// Optional FSST codec, loaded from `<db_dir>/fsst.symbols` at open time.
+    /// Same on-disk file used by `crabcc-core` for symbol-store compression —
+    /// no second symbol table to maintain. When `Some`, drawer bodies are
+    /// encoded on insert and decoded transparently on read.
+    #[cfg(feature = "compress")]
+    codec: Option<crabcc_core::compress::Codec>,
 }
 
 // `Send` trivially via Mutex<Connection>; rusqlite's Connection is Send.
@@ -52,10 +58,98 @@ impl SqliteBackend {
         conn.pragma_update(None, "cache_size", -16_000_i64).ok();
         conn.busy_timeout(std::time::Duration::from_millis(2_000))?;
         conn.execute_batch(SCHEMA).context("apply memory schema")?;
+
+        // Idempotent additive migration: pre-existing M0 databases lack the
+        // `body_enc` column. Probe via pragma_table_info and ALTER if missing.
+        // Same pattern as crabcc_core::store::Store::open uses for
+        // symbols.signature_enc — keeps old indexes readable without forcing
+        // a rebuild step.
+        let has_enc: bool = conn
+            .query_row(
+                "SELECT 1 FROM pragma_table_info('drawers') WHERE name = 'body_enc'",
+                [],
+                |_| Ok(true),
+            )
+            .optional()?
+            .unwrap_or(false);
+        if !has_enc {
+            conn.execute(
+                "ALTER TABLE drawers ADD COLUMN body_enc INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+
         let _ = conn.execute_batch("PRAGMA optimize;");
-        Ok(Self {
-            conn: Mutex::new(conn),
-        })
+
+        // Codec discovery — sibling `fsst.symbols` next to the DB. Same shape
+        // as the symbol-store's discovery so a single `.crabcc/fsst.symbols`
+        // file serves both stores when they live in the same directory.
+        #[cfg(feature = "compress")]
+        let codec = {
+            let symbols_path = path
+                .parent()
+                .map(|p| p.join("fsst.symbols"))
+                .unwrap_or_else(|| std::path::PathBuf::from("fsst.symbols"));
+            if symbols_path.exists() {
+                Some(
+                    crabcc_core::compress::Codec::load(&symbols_path)
+                        .context("load fsst symbol table for memory backend")?,
+                )
+            } else {
+                None
+            }
+        };
+
+        #[cfg(feature = "compress")]
+        {
+            Ok(Self {
+                conn: Mutex::new(conn),
+                codec,
+            })
+        }
+        #[cfg(not(feature = "compress"))]
+        {
+            Ok(Self {
+                conn: Mutex::new(conn),
+            })
+        }
+    }
+
+    /// Test-only accessor: did we pick up an FSST symbol table at open?
+    #[cfg(feature = "compress")]
+    pub fn has_codec(&self) -> bool {
+        self.codec.is_some()
+    }
+
+    /// Decode a row's `body` column, honoring `body_enc`. Centralized so
+    /// `query()` and `get()` share identical semantics — the alternative was
+    /// copy-pasting the same branch into every callback. Mirrors the helper
+    /// `crabcc_core::store::Store::signature_from_row`.
+    fn body_from_row(
+        &self,
+        row: &rusqlite::Row,
+        body_idx: usize,
+        enc_idx: usize,
+    ) -> rusqlite::Result<String> {
+        let enc: i64 = row.get(enc_idx)?;
+        // Default-features build (compress on): try to decode if enc=1.
+        // No-default-features build: enc must be 0 in any DB we see.
+        #[cfg(feature = "compress")]
+        if enc == 1 {
+            if let Some(codec) = self.codec.as_ref() {
+                let blob: Vec<u8> = row.get(body_idx)?;
+                let plain = codec.decompress(&blob);
+                return Ok(String::from_utf8_lossy(&plain).into_owned());
+            } else {
+                // Encoded row but no codec loaded → return empty string. The
+                // bytes stay correct on disk; rebuilding the codec restores
+                // readability. We don't error so callers walking a query
+                // result aren't blocked by a single unreadable row.
+                return Ok(String::new());
+            }
+        }
+        let _ = enc;
+        row.get::<_, String>(body_idx)
     }
 
     pub fn analyze(&self) -> Result<()> {
@@ -162,11 +256,30 @@ impl Backend for SqliteBackend {
                 Some(r) => Some(ensure_room(&tx, wing_id, r)?),
                 None => None,
             };
-            tx.execute(
-                "INSERT INTO drawers(wing_id, room_id, session_id, source_id, body, created_at, sha256)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![wing_id, room_id, d.session_id, d.source_id, d.body, now, sha],
-            )?;
+            // SQLite type-affinity: BLOB stored in a TEXT column. `body_enc=1`
+            // is the source of truth — we never inspect the column type at
+            // read time, only the enc flag.
+            #[cfg(feature = "compress")]
+            let inserted = if let Some(codec) = self.codec.as_ref() {
+                let encoded = codec.compress(d.body.as_bytes());
+                tx.execute(
+                    "INSERT INTO drawers(wing_id, room_id, session_id, source_id, body, created_at, sha256, body_enc)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1)",
+                    params![wing_id, room_id, d.session_id, d.source_id, encoded, now, sha],
+                )?;
+                true
+            } else {
+                false
+            };
+            #[cfg(not(feature = "compress"))]
+            let inserted = false;
+            if !inserted {
+                tx.execute(
+                    "INSERT INTO drawers(wing_id, room_id, session_id, source_id, body, created_at, sha256, body_enc)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0)",
+                    params![wing_id, room_id, d.session_id, d.source_id, d.body, now, sha],
+                )?;
+            }
             let id = tx.last_insert_rowid();
             tx.execute(
                 "INSERT INTO drawer_embeddings(drawer_id, dim, bytes) VALUES (?1, ?2, ?3)",
@@ -184,7 +297,7 @@ impl Backend for SqliteBackend {
         // compute cosine in Rust, top-K by score. Replaced by sqlite-vec MATCH
         // in M0.5.
         let mut sql = String::from(
-            "SELECT d.id, d.body, d.source_id, w.name AS wing, r.name AS room, e.bytes
+            "SELECT d.id, d.body, d.body_enc, d.source_id, w.name AS wing, r.name AS room, e.bytes
              FROM drawers d
              JOIN wings w ON w.id = d.wing_id
              LEFT JOIN rooms r ON r.id = d.room_id
@@ -205,11 +318,11 @@ impl Backend for SqliteBackend {
             args.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
         let rows = stmt.query_map(params_refs.as_slice(), |row| {
             let id: i64 = row.get(0)?;
-            let body: String = row.get(1)?;
-            let source: String = row.get(2)?;
-            let wing: String = row.get(3)?;
-            let room: Option<String> = row.get(4)?;
-            let bytes: Vec<u8> = row.get(5)?;
+            let body = self.body_from_row(row, 1, 2)?;
+            let source: String = row.get(3)?;
+            let wing: String = row.get(4)?;
+            let room: Option<String> = row.get(5)?;
+            let bytes: Vec<u8> = row.get(6)?;
             Ok((id, body, source, wing, room, bytes))
         })?;
 
@@ -244,7 +357,7 @@ impl Backend for SqliteBackend {
         let conn = self.conn.lock().map_err(|_| anyhow!("poisoned mutex"))?;
         let placeholders = vec!["?"; ids.len()].join(",");
         let sql = format!(
-            "SELECT d.id, w.name, r.name, d.session_id, d.source_id, d.body, d.sha256, d.created_at
+            "SELECT d.id, w.name, r.name, d.session_id, d.source_id, d.body, d.body_enc, d.sha256, d.created_at
              FROM drawers d
              JOIN wings w ON w.id = d.wing_id
              LEFT JOIN rooms r ON r.id = d.room_id
@@ -262,9 +375,9 @@ impl Backend for SqliteBackend {
                 room: row.get(2)?,
                 session_id: row.get(3)?,
                 source_id: row.get(4)?,
-                body: row.get(5)?,
-                sha256: row.get(6)?,
-                created_at: row.get(7)?,
+                body: self.body_from_row(row, 5, 6)?,
+                sha256: row.get(7)?,
+                created_at: row.get(8)?,
             })
         })?;
         let drawers: rusqlite::Result<Vec<Drawer>> = rows.collect();
@@ -593,6 +706,178 @@ mod tests {
             h.join().unwrap();
         }
         assert_eq!(b.count().unwrap(), 50);
+    }
+
+    #[cfg(feature = "compress")]
+    mod fsst {
+        use super::*;
+        use crabcc_core::compress::Codec;
+
+        fn train_codec_for_drawers() -> Codec {
+            // Drawer-shaped samples: research §3.1 projects 1.4–3.1× on
+            // Claude-Code-style transcripts ("I'll help you", code excerpts).
+            let owned: Vec<String> = (0..400)
+                .map(|i| {
+                    format!(
+                        "I'll help you with that. Let me check {}_{}.\nfunction handler_{}(input: string): Promise<Result> {{\n  return new Promise((resolve) => resolve({{ ok: true, id: {} }}));\n}}\nThis returns a Result with the id field set.",
+                        ["loadUser", "saveOrder", "fetchHits", "indexFile"][i % 4],
+                        i,
+                        i,
+                        i,
+                    )
+                })
+                .collect();
+            let refs: Vec<&[u8]> = owned.iter().map(|s| s.as_bytes()).collect();
+            Codec::train(&refs).unwrap()
+        }
+
+        #[test]
+        fn add_query_get_round_trip_with_codec() {
+            let dir = tempdir().unwrap();
+            let db_path = dir.path().join("memory.db");
+            let symbols_path = dir.path().join("fsst.symbols");
+
+            train_codec_for_drawers().save(&symbols_path).unwrap();
+
+            let b = SqliteBackend::open(&db_path).unwrap();
+            assert!(
+                b.has_codec(),
+                "codec must load when fsst.symbols sits next to memory.db"
+            );
+
+            let e = HashEmbedder::new();
+            let bodies = [
+                "I'll help you with that. Let me check loadUser_42.\nfunction handler_42(input: string): Promise<Result> { … }",
+                "Short note.",
+                "Multi-line\nbody with\nseveral\nlines and a unicode burst: 🦀 → 한국어 → mañana",
+            ];
+            let inserts: Vec<DrawerInsert> = bodies
+                .iter()
+                .enumerate()
+                .map(|(i, body)| DrawerInsert {
+                    wing: "drawers-wing".into(),
+                    room: None,
+                    source_id: format!("src-{i}"),
+                    body: (*body).to_string(),
+                    embedding: e.embed_one(body).unwrap(),
+                    session_id: None,
+                })
+                .collect();
+            let ids = b.add(&inserts).unwrap();
+            assert_eq!(ids.len(), bodies.len());
+
+            // get() returns each body byte-identical to what we inserted.
+            let got = b.get(&ids).unwrap();
+            assert_eq!(got.drawers.len(), bodies.len());
+            for (i, drawer) in got.drawers.iter().enumerate() {
+                let expected_idx = inserts
+                    .iter()
+                    .position(|d| d.source_id == drawer.source_id)
+                    .unwrap();
+                assert_eq!(
+                    drawer.body, bodies[expected_idx],
+                    "drawer {i} (src {}) round-trip mismatch",
+                    drawer.source_id
+                );
+            }
+
+            // query() also returns plaintext bodies after decode.
+            let q = Query {
+                embedding: e.embed_one(bodies[0]).unwrap(),
+                limit: bodies.len(),
+                wing: None,
+                room: None,
+            };
+            let r = b.query(&q).unwrap();
+            assert_eq!(r.hits.len(), bodies.len());
+            let returned: std::collections::HashSet<&str> =
+                r.hits.iter().map(|h| h.body.as_str()).collect();
+            for body in bodies {
+                assert!(returned.contains(body), "query() did not return: {body}");
+            }
+        }
+
+        #[test]
+        fn dedup_uses_plaintext_sha_even_when_encoded() {
+            // sha256 must be computed on the plaintext body, not the encoded
+            // bytes — otherwise the same drawer re-inserted after a codec
+            // change would produce a different sha and break dedup.
+            let dir = tempdir().unwrap();
+            let db_path = dir.path().join("memory.db");
+            let symbols_path = dir.path().join("fsst.symbols");
+            train_codec_for_drawers().save(&symbols_path).unwrap();
+
+            let b = SqliteBackend::open(&db_path).unwrap();
+            let e = HashEmbedder::new();
+            let body = "deduplication-target body content";
+            let mk = || DrawerInsert {
+                wing: "w".into(),
+                room: None,
+                source_id: "same-source".into(),
+                body: body.into(),
+                embedding: e.embed_one(body).unwrap(),
+                session_id: None,
+            };
+            let id1 = b.add(&[mk()]).unwrap()[0];
+            let id2 = b.add(&[mk()]).unwrap()[0];
+            assert_eq!(
+                id1, id2,
+                "second insert with identical (source, plaintext) must dedup"
+            );
+            assert_eq!(b.count().unwrap(), 1);
+        }
+
+        #[test]
+        fn open_migrates_pre_existing_db_without_body_enc() {
+            // Simulate a v1 memory.db produced before body_enc landed:
+            // create the table by hand WITHOUT the column, then open via
+            // SqliteBackend and confirm it ALTERs idempotently.
+            let dir = tempdir().unwrap();
+            let path = dir.path().join("memory.db");
+            {
+                let conn = Connection::open(&path).unwrap();
+                conn.execute_batch(
+                    "CREATE TABLE wings (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE,
+                                          kind TEXT NOT NULL, created_at INTEGER NOT NULL);
+                     CREATE TABLE drawers (
+                         id          INTEGER PRIMARY KEY,
+                         wing_id     INTEGER NOT NULL REFERENCES wings(id) ON DELETE CASCADE,
+                         room_id     INTEGER,
+                         session_id  TEXT,
+                         source_id   TEXT NOT NULL,
+                         body        TEXT NOT NULL,
+                         created_at  INTEGER NOT NULL,
+                         sha256      TEXT NOT NULL,
+                         UNIQUE(source_id, sha256)
+                     );",
+                )
+                .unwrap();
+                let has_enc: bool = conn
+                    .query_row(
+                        "SELECT 1 FROM pragma_table_info('drawers') WHERE name = 'body_enc'",
+                        [],
+                        |_| Ok(true),
+                    )
+                    .optional()
+                    .unwrap()
+                    .unwrap_or(false);
+                assert!(!has_enc, "test fixture should lack body_enc to begin with");
+            }
+            // Open via SqliteBackend — schema apply is idempotent (CREATE
+            // IF NOT EXISTS) and our ALTER probe adds the column.
+            let _b = SqliteBackend::open(&path).unwrap();
+            let probe = Connection::open(&path).unwrap();
+            let has_enc: bool = probe
+                .query_row(
+                    "SELECT 1 FROM pragma_table_info('drawers') WHERE name = 'body_enc'",
+                    [],
+                    |_| Ok(true),
+                )
+                .optional()
+                .unwrap()
+                .unwrap_or(false);
+            assert!(has_enc, "Store::open must add body_enc to pre-existing DBs");
+        }
     }
 
     #[test]
