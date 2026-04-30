@@ -7,6 +7,7 @@ mod compress_cmd;
 mod go;
 mod install;
 mod memory;
+mod status;
 
 #[derive(Parser)]
 #[command(name = "crabcc", version, about = "Symbol index for AI coding agents")]
@@ -172,11 +173,28 @@ enum Cmd {
     },
     /// Print build provenance (commit, branch, tag, time, target) plus a
     /// one-line project summary. Compile-time embedded — no runtime git lookup.
+    ///
+    /// Status-line variants (issue #43): `--status-line` emits a terse,
+    /// p95<50ms one-liner suitable for Starship / tmux / VS Code status
+    /// bars. `--is-repo` exits 0 inside a crabcc-indexed repo, 1
+    /// otherwise — used by Starship's `when = …` gate.
     Info {
         /// Print human-readable text instead of JSON. JSON is the default for
         /// machine consumers; pass `--text` for the indented banner.
         #[arg(long)]
         text: bool,
+        /// Emit a render-budget-friendly status-line summary (token savings,
+        /// index age, memory drawers, Claude Code activity). Pair with
+        /// `--json` for a machine-readable shape.
+        #[arg(long)]
+        status_line: bool,
+        /// Exit 0 if cwd is inside a crabcc-indexed repo (`.crabcc/index.db`
+        /// reachable), 1 otherwise. No stdout. Used by Starship `when`.
+        #[arg(long)]
+        is_repo: bool,
+        /// JSON output for status-line. No-op without `--status-line`.
+        #[arg(long)]
+        json: bool,
     },
     /// One-shot: index this repo (or refresh if already initialized),
     /// build the call-graph + memory store, then hand off to
@@ -294,7 +312,21 @@ fn main() -> Result<()> {
     }
     // `info` prints compile-time build provenance — no store, no .crabcc, no
     // working repo required. Run it before any filesystem touches.
-    if let Some(Cmd::Info { text }) = cli.cmd.as_ref() {
+    if let Some(Cmd::Info {
+        text,
+        status_line,
+        is_repo,
+        json,
+    }) = cli.cmd.as_ref()
+    {
+        // --is-repo is the Starship gate: exit code only, no stdout. We
+        // bypass the rest of the binary so the round-trip stays cheap.
+        if *is_repo {
+            std::process::exit(if status::is_repo(&root) { 0 } else { 1 });
+        }
+        if *status_line {
+            return status::run_status_line(&root, *json);
+        }
         return run_info(*text);
     }
 
