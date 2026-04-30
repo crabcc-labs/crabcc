@@ -401,6 +401,13 @@ enum DoctorOp {
     /// Inspect `~/.crabcc.local.api-key` and the auth-stack `.env`:
     /// presence, file mode, master-key parity.
     Keys,
+    /// Agent runtime readiness: `claude` binary on PATH and/or
+    /// `OLLAMA_BASE_URL`+`OLLAMA_API_KEY` env vars set. Doesn't invoke
+    /// the agent — use `crabcc agent --dry-run` for that.
+    Agent,
+    /// Jobs queue reachability: shells out to `redis-cli ping` against
+    /// `$REDIS_URL` (default `redis://127.0.0.1:6379`). Issue #109.
+    Jobs,
 }
 
 #[derive(Subcommand)]
@@ -725,6 +732,8 @@ fn main() -> Result<()> {
             Some(DoctorOp::Docker) => doctor::run_docker(*text),
             Some(DoctorOp::Stack) => doctor::run_stack(*text),
             Some(DoctorOp::Keys) => doctor::run_keys(*text),
+            Some(DoctorOp::Agent) => doctor::run_agent(*text),
+            Some(DoctorOp::Jobs) => doctor::run_jobs(*text),
         };
     }
 
