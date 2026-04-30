@@ -153,6 +153,17 @@ enum Cmd {
         /// Print only the hook JSON to stdout (for piping to a file). Skips symlinks.
         #[arg(long)]
         print_hooks: bool,
+        /// Issue #105 — materialize the Ollama auth stack at
+        /// `$HOME/.crabcc/ollama-stack/` (Compose recipe + Caddyfile +
+        /// LiteLLM config + init-keys.sh + README), then run
+        /// `docker compose up -d --wait`. Requires Docker.
+        #[arg(long)]
+        with_ollama_stack: bool,
+        /// Print the Ollama-stack bring-up commands and exit. Skips
+        /// symlinks AND the materialization step. Counterpart of
+        /// `--print-hooks` for the auth-stack recipe.
+        #[arg(long)]
+        print_stack_instructions: bool,
     },
     /// Train an FSST symbol table from existing index data and write it to
     /// .crabcc/fsst.symbols, then re-encode rows on demand.
@@ -199,6 +210,13 @@ enum Cmd {
         /// or `$CRABCC_UPGRADE_REPO` if set).
         #[arg(long)]
         repo: Option<String>,
+        /// Issue #105 — also refresh the bundled Ollama auth stack:
+        /// `docker compose pull` against `$HOME/.crabcc/ollama-stack/`
+        /// (or wherever `$CRABCC_OLLAMA_STACK_DIR` points). Combine with
+        /// `--apply` to also re-up the stack so changed images are
+        /// picked up.
+        #[arg(long)]
+        with_stack: bool,
     },
     /// Print a shell-completion script for the chosen shell to stdout.
     /// Pipe into the right location, e.g.:
@@ -535,8 +553,19 @@ fn main() -> Result<()> {
     // `install-claude` is a config-only operation — it must run with no
     // store, no .crabcc dir, and no working repo (it resolves its own root
     // via `git rev-parse`). Handle it before we touch the SQLite store.
-    if let Some(Cmd::InstallClaude { yes, print_hooks }) = &cli.cmd {
-        return install::run(*yes, *print_hooks);
+    if let Some(Cmd::InstallClaude {
+        yes,
+        print_hooks,
+        with_ollama_stack,
+        print_stack_instructions,
+    }) = &cli.cmd
+    {
+        return install::run(install::InstallOptions {
+            yes: *yes,
+            print_hooks_only: *print_hooks,
+            with_ollama_stack: *with_ollama_stack,
+            print_stack_instructions: *print_stack_instructions,
+        });
     }
 
     // `upgrade` and `completions` are also config-only — neither needs a
@@ -547,9 +576,10 @@ fn main() -> Result<()> {
         text,
         apply,
         repo,
+        with_stack,
     }) = cli.cmd.as_ref()
     {
-        return run_upgrade(*check, *text, *apply, repo.as_deref(), &root);
+        return run_upgrade(*check, *text, *apply, *with_stack, repo.as_deref(), &root);
     }
     if let Some(Cmd::Completions { shell }) = cli.cmd.as_ref() {
         let mut cmd = <Cli as clap::CommandFactory>::command();
@@ -1223,6 +1253,7 @@ fn run_upgrade(
     check: bool,
     text: bool,
     apply: bool,
+    with_stack: bool,
     repo_override: Option<&str>,
     root: &Path,
 ) -> Result<()> {
@@ -1239,6 +1270,12 @@ fn run_upgrade(
     }
 
     if check {
+        // --check is read-only; --with-stack still pulls fresh image
+        // metadata via `docker compose pull` so the operator sees what
+        // *would* change without us mutating local state.
+        if with_stack {
+            run_upgrade_stack(false, text)?;
+        }
         return Ok(());
     }
 
@@ -1258,6 +1295,45 @@ fn run_upgrade(
                 eprintln!("warning: cleanup failed: {e}");
             }
         }
+    }
+
+    if with_stack {
+        // pull-only when --apply is absent; pull then re-up when --apply
+        // is set. Re-up recreates only services whose image digest
+        // changed, so it's safe to call against an already-running stack.
+        run_upgrade_stack(apply, text)?;
+    }
+    Ok(())
+}
+
+/// Issue #105 — `crabcc upgrade --with-stack` body. Pulls upstream
+/// images for the bundled Compose stack and (when `recreate=true`)
+/// re-ups so changed digests get picked up.
+fn run_upgrade_stack(recreate: bool, text: bool) -> Result<()> {
+    use anyhow::Context;
+    use crabcc_core::ollama_stack as ols;
+    ols::check_docker()?;
+    let opts = ols::Options::new();
+    if text {
+        eprintln!("  → docker compose pull");
+    }
+    ols::pull(&opts).context("ollama-stack pull failed")?;
+    if recreate {
+        if text {
+            eprintln!("  → docker compose up -d --wait");
+        }
+        let up = ols::up(&opts).context("ollama-stack re-up failed")?;
+        if text {
+            eprintln!(
+                "  → stack ready: {} services in {} ms",
+                up.services_healthy.len(),
+                up.duration_ms
+            );
+        } else {
+            println!("{}", sonic_rs::to_string(&up)?);
+        }
+    } else if text {
+        eprintln!("  (pass --apply to also `compose up -d --wait` and pick up new images)");
     }
     Ok(())
 }
