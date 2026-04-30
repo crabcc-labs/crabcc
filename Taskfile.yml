@@ -325,6 +325,74 @@ tasks:
       - 'grep -q "no-op build skip" .summary/install-upgrade-smoke.txt || (echo "FAIL: no-op message not seen on second run" && exit 1)'
       - 'echo "" && echo "✓ upgrade-on-rerun smoke passed"               | tee -a .summary/install-upgrade-smoke.txt'
 
+  # ─── MCP HTTP bridge (for Copilot cloud agent) ────────────────────────────
+  mcp-serve-http:
+    desc: |
+      Expose crabcc --mcp over HTTP/SSE via supergateway (port 8091).
+      Copilot cloud agent requires HTTP — crabcc --mcp is stdio-only.
+      Then tunnel with: cloudflared tunnel --url http://localhost:8091
+    summary: |
+      Uses @modelcontextprotocol/supergateway to bridge:
+        crabcc --mcp (stdio)  →  HTTP/SSE at :8091
+      Set CRABCC_MCP_URL to the tunnel URL in the copilot environment.
+      Run alongside `crabcc serve` (which stays on :8090 for the dashboard).
+    vars:
+      PORT: '{{.PORT | default "8091"}}'
+      ROOT: '{{.ROOT | default "."}}'
+    cmds:
+      - |
+        if ! command -v npx >/dev/null 2>&1; then
+          echo "npx not found — install Node.js: brew install node"
+          exit 1
+        fi
+        echo "▶ MCP HTTP bridge starting on :{{.PORT}}"
+        echo "  Tunnel: cloudflared tunnel --url http://localhost:{{.PORT}}"
+        echo "  Set copilot env secret: CRABCC_MCP_URL=<tunnel-url>"
+        echo ""
+        npx -y @modelcontextprotocol/supergateway \
+          --port {{.PORT}} \
+          --stdio "{{.CRABCC}} --root {{.ROOT}} --mcp"
+    interactive: true
+
+  mcp-tunnel:
+    desc: Start MCP HTTP bridge + cloudflared tunnel in one shot
+    deps: []
+    cmds:
+      - |
+        PORT=8091
+        ROOT="${ROOT:-.}"
+        # Start supergateway in background
+        npx -y @modelcontextprotocol/supergateway \
+          --port "$PORT" \
+          --stdio "{{.CRABCC}} --root $ROOT --mcp" &
+        SGPID=$!
+        sleep 2
+        # Start tunnel and capture URL
+        cloudflared tunnel --url "http://localhost:$PORT" 2>&1 | tee /tmp/crabcc-mcp-tunnel.log &
+        CFPID=$!
+        sleep 3
+        URL=$(grep -o 'https://[^ ]*trycloudflare.com' /tmp/crabcc-mcp-tunnel.log | head -1)
+        if [ -n "$URL" ]; then
+          echo ""
+          echo "✓ MCP tunnel ready:"
+          echo "  URL: $URL"
+          echo ""
+          echo "Paste into copilot environment → MCP configuration:"
+          echo '{'
+          echo '  "mcpServers": {'
+          echo '    "crabcc": {'
+          echo '      "type": "http",'
+          echo "      \"url\": \"$URL/sse\""
+          echo '    }'
+          echo '  }'
+          echo '}'
+          echo ""
+          echo "Set copilot secret: CRABCC_MCP_URL=$URL"
+        fi
+        wait $SGPID $CFPID
+    interactive: true
+
+  # ─── iTerm2 ───────────────────────────────────────────────────────────────
   install-iterm2:
     desc: Install crabcc iTerm2 daemon into AutoLaunch + print activation steps (issue #132)
     summary: |

@@ -2,15 +2,7 @@
   "mcpServers": {
     "crabcc": {
       "type": "http",
-      "url": "${CRABCC_MCP_URL}/mcp/sse",
-      "description": "crabcc symbol index — sym, refs, callers, outline, memory, graph",
-      "env": {
-        "ANTHROPIC_AUTH_TOKEN": "${CRABCC_AUTH_TOKEN}"
-      }
-    },
-    "playwright": {
-      "type": "http",
-      "url": "https://playwright.microsoft.com/mcp"
+      "url": "${{ secrets.CRABCC_MCP_URL }}/sse"
     }
   }
 }
