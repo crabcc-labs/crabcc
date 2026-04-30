@@ -508,7 +508,12 @@ mod tests {
 
     #[test]
     fn recommend_unknown_returns_no_recommendations() {
-        let recs = recommend(&VersionDelta::Unknown { reason: "test".into() }, None);
+        let recs = recommend(
+            &VersionDelta::Unknown {
+                reason: "test".into(),
+            },
+            None,
+        );
         assert!(recs.is_empty(), "unknown delta should produce no recs");
     }
 }
