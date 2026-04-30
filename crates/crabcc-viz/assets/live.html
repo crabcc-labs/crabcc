@@ -78,6 +78,29 @@
     70%  { box-shadow: 0 0 0 8px rgba(39,174,96,0);   }
     100% { box-shadow: 0 0 0 0   rgba(39,174,96,0);   }
   }
+  /* 1-minute random-query burst — animates the empty-state panel
+     while #burstBtn is firing. Three-dot loader cycles through
+     opacity to suggest "queries in flight". */
+  @keyframes burst-loader {
+    0%, 100% { opacity: .25; }
+    50%      { opacity: 1;   }
+  }
+  .burst-loader {
+    display: flex; align-items: center; gap: 8px; padding: 14px;
+    color: var(--accent); font-style: normal; font-size: 12px;
+  }
+  .burst-loader .dots {
+    display: inline-flex; gap: 3px;
+  }
+  .burst-loader .dots span {
+    width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+    animation: burst-loader 1.1s infinite ease-in-out;
+  }
+  .burst-loader .dots span:nth-child(2) { animation-delay: .15s; }
+  .burst-loader .dots span:nth-child(3) { animation-delay: .30s; }
+  .burst-loader progress {
+    flex: 1; height: 4px; accent-color: var(--accent);
+  }
   header .stats { display: flex; gap: 14px; font-size: 12px; }
   header .stats span { color: var(--muted); }
   header .stats span b { color: var(--fg); font-weight: 600; }
@@ -278,7 +301,7 @@
   <span class="actions">
     <button id="btnRandomQuery" title="Run a random crabcc query against this repo">⚡ Random query</button>
     <button id="btnDumpDebug" title="Download full debug snapshot as JSON">💾 Dump debug</button>
-    <a href="/" title="Open the interactive call-graph viewer">interactive ›</a>
+    <a href="/graph" title="Open the interactive call-graph viewer">interactive ›</a>
   </span>
 </header>
 <main>
@@ -322,6 +345,7 @@
             <option value="claude-haiku-4-5-20251001">claude-haiku-4-5</option>
           </select>
           <button id="launchBtn">Launch</button>
+          <button id="burstBtn" title="Fire random queries for 60 seconds — populates the activity log + relations graph without burning Claude tokens">🎲 1-min burst</button>
           <span class="hint" id="launchHint"></span>
         </div>
         <div class="warn">
@@ -331,7 +355,7 @@
         </div>
       </div>
       <div class="scroll" id="agents">
-        <div class="empty">No agent runs yet.</div>
+        <div class="empty" id="agentsEmpty">No agent runs yet.</div>
       </div>
     </div>
 
@@ -372,9 +396,11 @@
     agents: document.getElementById("agents"),
     graphEmpty: document.getElementById("graph-empty"),
     launchBtn: document.getElementById("launchBtn"),
+    burstBtn: document.getElementById("burstBtn"),
     launchPrompt: document.getElementById("launchPrompt"),
     launchModel: document.getElementById("launchModel"),
     launchHint: document.getElementById("launchHint"),
+    agentsEmpty: document.getElementById("agentsEmpty"),
     logView: document.getElementById("logView"),
     logTitle: document.getElementById("logTitle"),
     logBody: document.getElementById("logBody"),
@@ -845,6 +871,59 @@ meta:   ${j.paths.meta}`);
   els.launchPrompt.addEventListener("keydown", (e) => {
     if ((e.metaKey || e.ctrlKey) && e.key === "Enter") els.launchBtn.click();
   });
+
+  // ── 1-minute random-query burst (closes #64) ─────────────────────────────
+  // Fires /api/random-query at ~2 Hz for 60 seconds. The activity log + the
+  // relations graph light up without burning Claude tokens — useful for
+  // demos and for stress-testing the live overlay's render budget. While
+  // running, the right-side "No agent runs yet." panel swaps to a loader
+  // with progress bar so the user can see how much time is left.
+  let burstTimer = null;
+  function startBurst() {
+    if (burstTimer) return; // already running — ignore re-clicks
+    const total = 60_000;          // 60s
+    const interval = 500;          // ~2 queries/s
+    const start = Date.now();
+    els.burstBtn.disabled = true;
+    els.launchBtn.disabled = true;
+    els.burstBtn.textContent = "🎲 burst running…";
+
+    // Replace the empty-state with an animated loader. Saved DOM is
+    // restored on stop so re-runs don't accumulate stale nodes.
+    const empty = els.agentsEmpty;
+    let loader = null;
+    if (empty) {
+      loader = document.createElement("div");
+      loader.className = "burst-loader";
+      loader.innerHTML = '<span class="dots"><span></span><span></span><span></span></span><span>random-query burst</span><progress max="60" value="0"></progress><span class="t">60s</span>';
+      empty.replaceWith(loader);
+    }
+
+    const stop = () => {
+      clearInterval(burstTimer);
+      burstTimer = null;
+      els.burstBtn.disabled = false;
+      els.launchBtn.disabled = false;
+      els.burstBtn.textContent = "🎲 1-min burst";
+      if (loader && loader.parentNode) loader.replaceWith(empty);
+      flashHint("burst complete");
+    };
+
+    burstTimer = setInterval(() => {
+      const elapsed = Date.now() - start;
+      if (elapsed >= total) { stop(); return; }
+      // Update loader progress + remaining-seconds label.
+      if (loader) {
+        const prog = loader.querySelector("progress");
+        const t = loader.querySelector(".t");
+        if (prog) prog.value = Math.min(60, Math.floor(elapsed / 1000));
+        if (t) t.textContent = `${Math.max(0, Math.ceil((total - elapsed) / 1000))}s`;
+      }
+      // Fire-and-forget — failures don't abort the burst.
+      fetch("/api/random-query").catch(() => {});
+    }, interval);
+  }
+  if (els.burstBtn) els.burstBtn.addEventListener("click", startBurst);
 
   // ── Page-level actions ──────────────────────────────────────────────────
   els.btnRandomQuery.addEventListener("click", async () => {

@@ -168,10 +168,34 @@ tasks:
 
   viz:
     desc: |
-      Start the localhost call-graph viewer (issue #64). Builds release,
-      makes sure the index + graph sidecar exist, then opens the browser.
-      Pass PORT=NNNN to override the default 7878. Pass NO_OPEN=1 to skip
-      the auto-browser-open (useful over SSH or in test loops).
+      Start the localhost call-graph viewer (issue #64). Uses a debug
+      build — the LTO=fat release was costing 60s+ for an interactive
+      demo whose hot path is IO-bound anyway. Makes sure the index +
+      graph sidecar exist, then opens the browser.
+      Pass PORT=NNNN to override the default 7878. Pass NO_OPEN=1 to
+      skip the auto-browser-open (useful over SSH or in test loops).
+      For a release-quality binary, use `task viz-release`.
+    vars:
+      PORT: '{{.PORT | default "7878"}}'
+      NO_OPEN: '{{.NO_OPEN | default ""}}'
+    cmds:
+      - "{{.CARGO}} build"
+      - |
+        set -e
+        if [ ! -f .crabcc/index.db ]; then
+          echo "no .crabcc/index.db — building one now…" >&2
+          ./target/debug/crabcc index >/dev/null
+        fi
+        if [ ! -f .crabcc/graph.json ]; then
+          echo "no .crabcc/graph.json — building call-graph sidecar…" >&2
+          ./target/debug/crabcc graph build >/dev/null
+        fi
+        ARGS="--port {{.PORT}}"
+        if [ -n "{{.NO_OPEN}}" ]; then ARGS="$ARGS --no-open"; fi
+        exec ./target/debug/crabcc serve $ARGS
+
+  viz-release:
+    desc: Same as `task viz` but with a release-built binary (LTO=fat).
     deps: [build]
     vars:
       PORT: '{{.PORT | default "7878"}}'
@@ -179,14 +203,8 @@ tasks:
     cmds:
       - |
         set -e
-        if [ ! -f .crabcc/index.db ]; then
-          echo "no .crabcc/index.db — building one now…" >&2
-          ./target/release/crabcc index >/dev/null
-        fi
-        if [ ! -f .crabcc/graph.json ]; then
-          echo "no .crabcc/graph.json — building call-graph sidecar…" >&2
-          ./target/release/crabcc graph build >/dev/null
-        fi
+        if [ ! -f .crabcc/index.db ]; then ./target/release/crabcc index >/dev/null; fi
+        if [ ! -f .crabcc/graph.json ]; then ./target/release/crabcc graph build >/dev/null; fi
         ARGS="--port {{.PORT}}"
         if [ -n "{{.NO_OPEN}}" ]; then ARGS="$ARGS --no-open"; fi
         exec ./target/release/crabcc serve $ARGS

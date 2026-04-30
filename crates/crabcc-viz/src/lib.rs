@@ -367,8 +367,12 @@ fn handle(request: Request, root: &Path) -> Result<()> {
     }
 
     match path {
-        "/" | "/index.html" => respond_html(request, BUNDLED_INDEX),
-        "/live" => respond_html(request, BUNDLED_LIVE),
+        // Live monitoring dashboard is the front-door for `crabcc serve`
+        // — most users land here to watch agent activity in real time.
+        // The interactive call-graph viewer lives at `/graph`; `/live`
+        // stays as a back-compat alias for the old URL.
+        "/" | "/index.html" | "/live" => respond_html(request, BUNDLED_LIVE),
+        "/graph" => respond_html(request, BUNDLED_INDEX),
         "/api/health" => respond_json(request, &serde_json::json!({ "status": "ok" })),
         "/api/graph" => match graph_snapshot(root, query) {
             Ok(snapshot) => respond_json(request, &snapshot),
