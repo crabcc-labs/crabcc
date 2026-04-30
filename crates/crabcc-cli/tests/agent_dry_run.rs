@@ -131,6 +131,10 @@ fn agent_dry_run_uses_default_model_when_unset() {
     let home = tempfile::tempdir().unwrap();
     let repo = tempfile::tempdir().unwrap();
 
+    // Backend default flipped to `ollama` in v2.8.x (issue #105). Pass
+    // `--backend claude` explicitly to keep this test pinned to the
+    // Anthropic-default code path. The ollama default's own coverage
+    // lives in `agent_dry_run_ollama_default_uses_qwen_coder` below.
     let out = Command::new(crabcc_bin())
         .arg("--root")
         .arg(repo.path())
@@ -139,6 +143,8 @@ fn agent_dry_run_uses_default_model_when_unset() {
         .arg("hi")
         .arg("--dry-run")
         .arg("--no-refresh")
+        .arg("--backend")
+        .arg("claude")
         .env("HOME", home.path())
         .output()
         .expect("spawn crabcc");
@@ -155,6 +161,33 @@ fn agent_dry_run_uses_default_model_when_unset() {
     assert!(
         stdout.contains("(default)"),
         "banner should mark the default origin: {stdout}"
+    );
+}
+
+#[test]
+fn agent_dry_run_ollama_default_uses_qwen_coder() {
+    let home = tempfile::tempdir().unwrap();
+    let repo = tempfile::tempdir().unwrap();
+
+    // Default backend is now ollama; this test pins the default model
+    // for the ollama path so a stale constant doesn't silently regress.
+    let out = Command::new(crabcc_bin())
+        .arg("--root")
+        .arg(repo.path())
+        .arg("agent")
+        .arg("--run")
+        .arg("hi")
+        .arg("--dry-run")
+        .arg("--no-refresh")
+        .env("HOME", home.path())
+        .output()
+        .expect("spawn crabcc");
+
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("ollama/qwen2.5-coder"),
+        "default ollama model should be qwen2.5-coder: {stdout}"
     );
 }
 

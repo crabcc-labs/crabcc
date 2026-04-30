@@ -273,3 +273,154 @@ main {
   word-break: break-all;
 }
 .debug-table code { font-size: 10px; }
+
+/* ───────── Cyberpunk skin for agent panels (issue #112 follow-up) ─────────
+ * Scoped to the new dashboards (profiles / kills / models) so the rest of
+ * the UI stays calm. Animations are reduced-motion aware: the keyframes
+ * only run when prefers-reduced-motion is unset.
+ */
+
+@keyframes crabcc-scan {
+  0%   { transform: translateY(-100%); opacity: 0.0; }
+  20%  { opacity: 0.45; }
+  100% { transform: translateY(120%); opacity: 0.0; }
+}
+@keyframes crabcc-flicker {
+  0%, 19%, 21%, 23%, 25%, 54%, 56%, 100% { opacity: 1; }
+  20%, 24%, 55% { opacity: 0.55; }
+}
+@keyframes crabcc-pulse-ring {
+  0%   { box-shadow: 0 0 0 0 rgba(0, 240, 255, 0.55); }
+  70%  { box-shadow: 0 0 0 6px rgba(0, 240, 255, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(0, 240, 255, 0); }
+}
+
+.profiles-dir {
+  position: relative;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  padding: 4px 8px;
+  margin-bottom: 6px;
+  background: linear-gradient(90deg, #0c0f1f, #131838 60%, #0c0f1f);
+  border: 1px solid #1c2658;
+  border-left: 3px solid #00f0ff;
+  color: #6df0ff;
+  overflow: hidden;
+}
+.profiles-dir::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, transparent 0%, rgba(0, 240, 255, 0.08) 50%, transparent 100%);
+  animation: crabcc-scan 4s linear infinite;
+  pointer-events: none;
+}
+
+.profile-row,
+.kill-row,
+.model-row {
+  position: relative;
+  padding: 6px 10px;
+  margin-bottom: 4px;
+  background: linear-gradient(180deg, #0a0f1e 0%, #0d1428 100%);
+  border: 1px solid #1a2348;
+  border-left: 2px solid #ff2a6d;
+  transition: border-left-color 120ms ease, background 120ms ease;
+}
+.profile-row:hover,
+.kill-row:hover,
+.model-row:hover {
+  border-left-color: #00f0ff;
+  background: linear-gradient(180deg, #0d1428 0%, #11193a 100%);
+}
+
+.profile-id {
+  color: #ff2a6d;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-shadow: 0 0 6px rgba(255, 42, 109, 0.5);
+}
+.profile-meta {
+  display: flex;
+  gap: 0.8em;
+  font-size: 11px;
+  color: #6df0ff;
+  margin-top: 2px;
+}
+.profile-desc {
+  font-size: 11px;
+  color: #c8d4ff;
+  margin-top: 4px;
+  opacity: 0.85;
+}
+
+.kill-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6em;
+  font-size: 11px;
+}
+.kill-reason {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 2px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 10px;
+}
+.kill-reason.zombie { background: #2d0c1a; color: #ff4d8a; border: 1px solid #ff2a6d; }
+.kill-reason.stuck  { background: #2c1a0a; color: #ffb85a; border: 1px solid #ff8c2a; animation: crabcc-flicker 2.5s infinite; }
+.kill-reason.manual { background: #0a1c2c; color: #6df0ff; border: 1px solid #00f0ff; }
+.kill-runid { color: #c8d4ff; font-family: ui-monospace, SFMono-Regular, monospace; }
+.kill-pid   { color: #6df0ff; font-family: ui-monospace, SFMono-Regular, monospace; }
+.kill-ts    { color: #6a7aa8; margin-left: auto; }
+.kill-detail {
+  font-size: 10.5px;
+  color: #8aa0d8;
+  margin-top: 3px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+
+.model-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6em;
+  font-size: 11px;
+}
+.model-provider {
+  color: #00f0ff;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.model-name {
+  color: #ff2a6d;
+  font-weight: 600;
+  text-shadow: 0 0 4px rgba(255, 42, 109, 0.4);
+}
+.model-params,
+.model-ctx {
+  color: #c8d4ff;
+  font-size: 10px;
+  padding: 0 4px;
+  border-left: 1px solid #1a2348;
+}
+.model-docs {
+  display: inline-block;
+  margin-top: 3px;
+  font-size: 10.5px;
+  color: #6df0ff;
+  text-decoration: none;
+  border-bottom: 1px dashed #1c2658;
+  word-break: break-all;
+}
+.model-docs:hover {
+  color: #ffffff;
+  border-bottom-color: #00f0ff;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .profiles-dir::after,
+  .kill-reason.stuck { animation: none; }
+}

@@ -405,6 +405,18 @@ fn handle(request: Request, root: &Path) -> Result<()> {
             Ok(snap) => respond_json(request, &snap),
             Err(e) => respond_status(request, 500, &format!("agents list failed: {e}")),
         },
+        "/api/agent-profiles" => match agent_profiles_list(root) {
+            Ok(snap) => respond_json(request, &snap),
+            Err(e) => respond_status(request, 500, &format!("agent-profiles failed: {e}")),
+        },
+        "/api/agent-kills" => match agent_kills_list() {
+            Ok(snap) => respond_json(request, &snap),
+            Err(e) => respond_status(request, 500, &format!("agent-kills failed: {e}")),
+        },
+        "/api/agent-models" => match agent_models_list() {
+            Ok(snap) => respond_json(request, &snap),
+            Err(e) => respond_status(request, 500, &format!("agent-models failed: {e}")),
+        },
         "/api/debug/dump" => match debug_dump(root) {
             Ok(snap) => respond_json(request, &snap),
             Err(e) => respond_status(request, 500, &format!("dump failed: {e}")),
@@ -1687,6 +1699,209 @@ struct DebugDump {
 /// downloads this. Combines bootstrap + agent list + the last hour of
 /// activity into a single JSON, suitable for attaching to a bug
 /// report or a perf review thread.
+// ----- agent-dashboard endpoints (issue #112 follow-up) -------------------
+
+#[derive(Serialize)]
+struct AgentProfile {
+    id: String,
+    crate_: Option<String>,
+    description: Option<String>,
+    model: Option<String>,
+}
+
+#[derive(Serialize)]
+struct AgentProfilesList {
+    dir: String,
+    profiles: Vec<AgentProfile>,
+}
+
+/// List `internal_agents/*.profile.toml` files. Cheap directory walk
+/// + per-file TOML parse. Empty list when the directory doesn't exist.
+fn agent_profiles_list(root: &Path) -> Result<AgentProfilesList> {
+    let dir = root.join("internal_agents");
+    let mut out: Vec<AgentProfile> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            let n = e.file_name().to_string_lossy().to_string();
+            let id = match n.strip_suffix(".profile.toml") {
+                Some(s) => s.to_string(),
+                None => continue,
+            };
+            let body = std::fs::read_to_string(e.path()).unwrap_or_default();
+            // Cheap field probe — avoid pulling toml as a viz dep just
+            // for two strings. The frontend can call /api/agent-profiles
+            // and re-parse if it needs the full schema.
+            let crate_field = grep_toml_field(&body, "crate");
+            let description = grep_toml_field(&body, "description");
+            let model = grep_toml_field(&body, "model");
+            out.push(AgentProfile {
+                id,
+                crate_: crate_field,
+                description,
+                model,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    Ok(AgentProfilesList {
+        dir: dir.display().to_string(),
+        profiles: out,
+    })
+}
+
+/// Pull `key = "value"` from a TOML body. Strict: skips section
+/// headers, requires top-level key. Good enough for the dashboard's
+/// "show description" surface; not a full TOML parser.
+fn grep_toml_field(body: &str, key: &str) -> Option<String> {
+    for line in body.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            return None; // entered a section — top-level only
+        }
+        if let Some(rest) = t.strip_prefix(key) {
+            let rest = rest.trim_start();
+            if let Some(rest) = rest.strip_prefix('=') {
+                let rest = rest.trim().trim_matches('"');
+                return Some(rest.to_string());
+            }
+        }
+    }
+    None
+}
+
+#[derive(Serialize)]
+struct AgentKillRow {
+    run_id: String,
+    reason: String,
+    pid: Option<i64>,
+    detail: Option<String>,
+    killed_at: i64,
+}
+
+#[derive(Serialize)]
+struct AgentKillsList {
+    db: String,
+    rows: Vec<AgentKillRow>,
+}
+
+/// Read the most recent rows from `agent_kill_events` in the singleton
+/// `~/.crabcc/_internal.db`. Empty list when the DB doesn't exist yet.
+fn agent_kills_list() -> Result<AgentKillsList> {
+    let home = runtime::home_dir()?;
+    let db_path = home.join(".crabcc").join("_internal.db");
+    if !db_path.exists() {
+        return Ok(AgentKillsList {
+            db: db_path.display().to_string(),
+            rows: vec![],
+        });
+    }
+    let conn = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    let mut stmt = conn.prepare(
+        "SELECT run_id, reason, pid, detail, killed_at \
+         FROM agent_kill_events ORDER BY killed_at DESC LIMIT 100",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(AgentKillRow {
+                run_id: r.get(0)?,
+                reason: r.get(1)?,
+                pid: r.get(2)?,
+                detail: r.get(3)?,
+                killed_at: r.get(4)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(AgentKillsList {
+        db: db_path.display().to_string(),
+        rows,
+    })
+}
+
+#[derive(Serialize)]
+struct AgentModel {
+    file: String,
+    provider: String,
+    name: String,
+    params: Option<String>,
+    context: Option<u64>,
+    docs_first: Option<String>,
+}
+
+#[derive(Serialize)]
+struct AgentModelsList {
+    dir: String,
+    models: Vec<AgentModel>,
+}
+
+/// Walk `$HOME/.crabcc/models/.model.*.info` and surface each entry.
+/// Used by the dashboard's model picker. The exact filename
+/// (`.model.<provider>.<name>.info`) is parsed back into provider /
+/// name; we don't re-read the TOML body for the basic listing.
+fn agent_models_list() -> Result<AgentModelsList> {
+    let home = runtime::home_dir()?;
+    let dir = home.join(".crabcc").join("models");
+    let mut out: Vec<AgentModel> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            let fname = e.file_name().to_string_lossy().to_string();
+            // Pattern: .model.<provider>.<name>.info
+            let stripped = match fname.strip_prefix(".model.") {
+                Some(s) => s,
+                None => continue,
+            };
+            let stripped = match stripped.strip_suffix(".info") {
+                Some(s) => s,
+                None => continue,
+            };
+            let mut parts = stripped.splitn(2, '.');
+            let provider = parts.next().unwrap_or("?").to_string();
+            let name = parts.next().unwrap_or("?").to_string();
+            let body = std::fs::read_to_string(e.path()).unwrap_or_default();
+            let params = grep_toml_field(&body, "params");
+            let context = grep_toml_field(&body, "context").and_then(|s| s.parse().ok());
+            let docs_first = grep_toml_array_first(&body, "docs");
+            out.push(AgentModel {
+                file: fname,
+                provider,
+                name,
+                params,
+                context,
+                docs_first,
+            });
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(AgentModelsList {
+        dir: dir.display().to_string(),
+        models: out,
+    })
+}
+
+/// Cheap scan for the first string in `key = ["..."]`. Used for the
+/// model `docs` array surface; kept small + non-allocating-loop.
+fn grep_toml_array_first(body: &str, key: &str) -> Option<String> {
+    for line in body.lines() {
+        let t = line.trim();
+        if let Some(rest) = t.strip_prefix(key) {
+            let rest = rest
+                .trim_start()
+                .strip_prefix('=')?
+                .trim()
+                .strip_prefix('[')?;
+            let first = rest.split(',').next()?.trim();
+            let first = first.trim_matches('"').trim_matches('\'');
+            if !first.is_empty() && !first.starts_with(']') {
+                return Some(first.to_string());
+            }
+        }
+    }
+    None
+}
+
 fn debug_dump(root: &Path) -> Result<DebugDump> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
