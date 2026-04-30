@@ -12,8 +12,15 @@
 #     --platform linux/amd64,linux/arm64 \
 #     -t ghcr.io/peterlodri-sec/crabcc:$VERSION --push .
 
-ARG RUST_VERSION=1.87
+ARG RUST_VERSION=1.90
 ARG DEBIAN_VERSION=bookworm
+#
+# Why 1.90 even though workspace MSRV is 1.87: transitive deps move
+# faster than our declared MSRV. `time@0.3.47` requires rustc 1.88+
+# (per `cargo build --locked` failure 2026-04-30). Pinning the
+# Dockerfile a couple of releases above MSRV gives headroom for the
+# next transitive bump without churn. Bump again if a future build
+# fails on a rustc version constraint.
 
 # Image-metadata args — Taskfile passes the live values; defaults keep
 # `docker build` invocations outside the Taskfile self-contained.
