@@ -18,6 +18,11 @@ use std::path::Path;
 
 pub mod memory;
 
+/// The MCP server's canonical OpenAPI 3.1 description, embedded at
+/// compile time. Source of truth: `crates/crabcc-mcp/openapi.yaml`.
+/// Surfaced via `crabcc openapi` (CLI) and the `_openapi` MCP tool.
+pub const OPENAPI_YAML: &str = include_str!("../openapi.yaml");
+
 pub fn serve_stdio(root: &Path) -> Result<()> {
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
@@ -92,7 +97,36 @@ pub fn handle(req: &Value, root: &Path) -> Value {
 pub fn tools_def() -> Vec<Value> {
     let mut all = tools_def_symbol();
     all.extend(memory::tools_def());
+    all.extend(tools_def_meta());
     all
+}
+
+/// Meta tools — describe the server itself rather than the underlying
+/// repo. Underscored prefix keeps them visually distinct from
+/// repo-scoped tools and out of name-collision range with future
+/// language-extractor tools.
+fn tools_def_meta() -> Vec<Value> {
+    vec![
+        tool_schema(
+            "_openapi",
+            "Return the embedded OpenAPI 3.1 description of this MCP \
+             server's tool surface (YAML, byte-identical to the source \
+             file at crates/crabcc-mcp/openapi.yaml). Useful for SDK \
+             generators and for agents that want to introspect their own \
+             toolbox at runtime. Pipe through `yq -o json` if you need \
+             JSON.",
+            json!({}),
+            &[],
+        ),
+        tool_schema(
+            "_health",
+            "Liveness + capability probe. Returns server name, semver, \
+             protocol version, and the count of tools currently exposed. \
+             No filesystem touches — safe to poll cheaply.",
+            json!({}),
+            &[],
+        ),
+    ]
 }
 
 // The symbol-side tools above are wrapped here so the public `tools_def()`
@@ -249,6 +283,25 @@ fn tool_schema(name: &str, desc: &str, props: Value, required: &[&str]) -> Value
     })
 }
 
+/// Dispatch the server-meta tools. Returns `Ok(Some(text))` when handled,
+/// `Ok(None)` when the tool isn't a meta tool (caller continues routing).
+fn dispatch_meta(tool: &str, _args: &Value) -> Result<Option<String>> {
+    match tool {
+        "_openapi" => Ok(Some(OPENAPI_YAML.to_string())),
+        "_health" => {
+            let body = json!({
+                "status": "ok",
+                "server": "crabcc-mcp",
+                "version": env!("CARGO_PKG_VERSION"),
+                "protocol_version": "2024-11-05",
+                "tool_count": tools_def().len(),
+            });
+            Ok(Some(body.to_string()))
+        }
+        _ => Ok(None),
+    }
+}
+
 fn dispatch_tool(params: Option<&Value>, root: &Path) -> Result<String> {
     let p = params.ok_or_else(|| anyhow::anyhow!("missing params"))?;
     let tool = p
@@ -256,6 +309,13 @@ fn dispatch_tool(params: Option<&Value>, root: &Path) -> Result<String> {
         .and_then(|s| s.as_str())
         .ok_or_else(|| anyhow::anyhow!("missing tool name"))?;
     let args = p.get("arguments").cloned().unwrap_or(json!({}));
+
+    // Meta tools are dispatched before any filesystem work: they describe
+    // the server itself (OpenAPI surface, version, tool count) and must
+    // succeed even on a non-repo cwd.
+    if let Some(meta) = dispatch_meta(tool, &args)? {
+        return Ok(meta);
+    }
 
     // Memory tools open .crabcc/memory.db directly via Palace; no symbol
     // Store needed. Route them first so we don't pay Store::open on a
@@ -865,5 +925,91 @@ mod tests {
         let parsed: Value = serde_json::from_str(content).unwrap();
         // The fixture has no mutual recursion, so cycles should be empty.
         assert_eq!(parsed.as_array().unwrap().len(), 0, "got: {parsed}");
+    }
+
+    // ---- OpenAPI spec drift gate ---------------------------------------
+    //
+    // Every tool exposed by `tools_def()` MUST have a matching
+    // `operationId:` in the embedded OpenAPI spec. Conversely, every
+    // operationId in the spec MUST correspond to a real tool. Either
+    // direction's drift fails this test, so adding a tool without
+    // updating the spec (or vice versa) blocks `task prep-pr`.
+
+    fn tool_names_from_def() -> std::collections::BTreeSet<String> {
+        // Normalise `.` → `_` so MCP tool names like `memory.search`
+        // align with their OpenAPI operationId (`memory_search`). The
+        // OpenAPI 3.1 spec disallows `.` in operationId values, so
+        // dotted MCP names get renamed; the spec's path retains the
+        // dotted form.
+        tools_def()
+            .iter()
+            .filter_map(|t| t.get("name").and_then(|v| v.as_str()).map(String::from))
+            .map(|n| n.replace('.', "_"))
+            .collect()
+    }
+
+    fn operation_ids_from_spec() -> std::collections::BTreeSet<String> {
+        // Hand-roll a parser. We don't depend on serde_yaml here (would
+        // pull in another transitive dep tree); instead grep for lines
+        // shaped exactly `      operationId: <id>` at the canonical
+        // 6-space indent we use in the file. If the spec ever
+        // re-formats, this regex stays trivial to update.
+        OPENAPI_YAML
+            .lines()
+            .filter_map(|l| l.trim_start().strip_prefix("operationId:"))
+            .map(|rest| rest.trim().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn openapi_spec_lists_every_tool() {
+        let in_def = tool_names_from_def();
+        let in_spec = operation_ids_from_spec();
+        let missing_in_spec: Vec<&String> = in_def.difference(&in_spec).collect();
+        let missing_in_def: Vec<&String> = in_spec.difference(&in_def).collect();
+        assert!(
+            missing_in_spec.is_empty() && missing_in_def.is_empty(),
+            "OpenAPI spec drift detected.\n  \
+             Tools missing from openapi.yaml: {missing_in_spec:?}\n  \
+             operationIds missing from tools_def(): {missing_in_def:?}\n  \
+             Run `task openapi` after editing tools to refresh the spec."
+        );
+    }
+
+    #[test]
+    fn handle_tools_call_openapi_returns_yaml() {
+        let dir = fixture_root();
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 16,
+            "method": "tools/call",
+            "params": { "name": "_openapi", "arguments": {} }
+        });
+        let resp = handle(&req, dir.path());
+        let content = resp["result"]["content"][0]["text"].as_str().unwrap();
+        // Sanity — the embedded spec starts with `openapi: 3.1.0`.
+        assert!(
+            content.starts_with("openapi: 3.1.0"),
+            "got: {}",
+            &content[..40]
+        );
+    }
+
+    #[test]
+    fn handle_tools_call_health_returns_status_ok() {
+        let dir = fixture_root();
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 17,
+            "method": "tools/call",
+            "params": { "name": "_health", "arguments": {} }
+        });
+        let resp = handle(&req, dir.path());
+        let content = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(content).unwrap();
+        assert_eq!(parsed["status"], "ok");
+        assert_eq!(parsed["server"], "crabcc-mcp");
+        assert_eq!(parsed["protocol_version"], "2024-11-05");
+        assert!(parsed["tool_count"].as_u64().unwrap() > 0);
     }
 }

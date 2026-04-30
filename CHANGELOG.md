@@ -6,6 +6,33 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+### Added — OpenAPI 3.1 spec for the MCP server (`v2.4.0`)
+- **`crates/crabcc-mcp/openapi.yaml`** — canonical, hand-maintained
+  OpenAPI 3.1 description of the MCP tool surface. 23 operations across
+  six tags: `symbol-index`, `graph`, `indexer`, `meta`, `memory`,
+  `server`. Components include `Symbol`, `Edge`, `GraphHit`,
+  `IndexStats`, `RefreshStats`, `UpgradeReport`, `Drawer`, `DrawerHit`,
+  `QueryResult`, `HealthReport`.
+- **`crabcc openapi`** CLI subcommand — prints the spec verbatim to
+  stdout. `crabcc openapi > spec.yaml` is the easy dump path; pipe
+  through `yq -o json` for JSON.
+- **`task openapi`** — Taskfile target that routes through `crabcc
+  openapi` for parity with the rest of the dev surface.
+- **`_openapi` MCP tool** — returns the spec as a YAML text blob over
+  the JSON-RPC `tools/call` channel. Useful for SDK generators and for
+  agents that want to introspect their own toolbox at runtime.
+- **`_health` MCP tool** — liveness + capability probe. Returns
+  `{status, server, version, protocol_version, tool_count}`. No
+  filesystem touches; safe to poll cheaply.
+- **Drift gate** — new unit test
+  `openapi_spec_lists_every_tool` cross-checks that every tool in
+  `tools_def()` has a matching `operationId:` in the embedded spec
+  (and vice versa). Adding/removing a tool without updating the spec
+  fails the test, which fails `task prep-pr`.
+- `scripts/prep-pr.sh` prints a heads-up note when `crabcc-mcp/src/lib.rs`
+  is staged but `openapi.yaml` is not.
+- Workspace bumped 2.3.0 → 2.4.0.
+
 ### Added — `docs/GRAPH.md` + `docs/RESEARCH-graph-prompt.md`
 - New per-feature doc explaining the call-graph sidecar
   (`.crabcc/graph.json`): on-disk shape, build paths

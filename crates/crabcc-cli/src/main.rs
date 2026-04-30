@@ -180,6 +180,10 @@ enum Cmd {
     /// --no-chrome` so the LLM session starts pre-loaded with the
     /// crabcc primer + repo context.
     Go,
+    /// Print the embedded OpenAPI 3.1 description of the MCP tool
+    /// surface to stdout (canonical YAML). Pipe through `yq -o json`
+    /// if you need JSON.
+    Openapi,
 }
 
 #[derive(Subcommand)]
@@ -297,6 +301,13 @@ fn main() -> Result<()> {
     // repo — pre-opening the store here would be wasted work.
     if let Some(Cmd::Go) = cli.cmd.as_ref() {
         return go::run(&root, &db);
+    }
+
+    // `openapi` is a config-only operation — embedded constant. Run it
+    // before the store to keep it usable in non-repo cwds.
+    if let Some(Cmd::Openapi) = cli.cmd.as_ref() {
+        print!("{}", crabcc_mcp::OPENAPI_YAML);
+        return Ok(());
     }
 
     // `compress` is a meta-operation on the index. It owns its own codec
@@ -524,6 +535,7 @@ fn main() -> Result<()> {
         Cmd::Compress { .. } => unreachable!("compress handled before store init"),
         Cmd::Memory { .. } => unreachable!("memory handled before store init"),
         Cmd::Go => unreachable!("go handled before store init"),
+        Cmd::Openapi => unreachable!("openapi handled before store init"),
         Cmd::Upgrade { .. } => unreachable!("upgrade handled before store init"),
         Cmd::Completions { .. } => unreachable!("completions handled before store init"),
         Cmd::Info { .. } => unreachable!("info handled before store init"),
