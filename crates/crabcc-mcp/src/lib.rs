@@ -388,13 +388,26 @@ fn dispatch_meta(tool: &str, _args: &Value) -> Result<Option<String>> {
 }
 
 fn dispatch_tool_with(params: Option<&Value>, root: &Path, dev: bool) -> Result<String> {
+    let started = std::time::Instant::now();
     let p = params.ok_or_else(|| anyhow::anyhow!("missing params"))?;
     let tool = p
         .get("name")
         .and_then(|s| s.as_str())
         .ok_or_else(|| anyhow::anyhow!("missing tool name"))?;
     let args = p.get("arguments").cloned().unwrap_or(json!({}));
+    tracing::debug!(target: "crabcc_mcp", tool, "dispatch: enter");
+    let result = dispatch_tool_inner(tool, args, root, dev);
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    match &result {
+        Ok(_) => tracing::info!(target: "crabcc_mcp", tool, elapsed_ms, "dispatch: ok"),
+        Err(e) => {
+            tracing::warn!(target: "crabcc_mcp", tool, elapsed_ms, error = %e, "dispatch: error")
+        }
+    }
+    result
+}
 
+fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Result<String> {
     // Meta tools are dispatched before any filesystem work: they describe
     // the server itself (OpenAPI surface, version, tool count) and must
     // succeed even on a non-repo cwd. Gated behind the dev surface — a

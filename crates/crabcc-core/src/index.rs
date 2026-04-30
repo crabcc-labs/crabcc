@@ -120,9 +120,19 @@ pub fn build_index(root: &Path, store: &Store) -> Result<IndexStats> {
 /// consistent through the per-file replace; if it was '0' (v1.0.0 upgrade),
 /// only changed files got edges and the SQL path would lie.
 pub fn full_index(root: &Path, store: &Store) -> Result<IndexStats> {
+    let started = std::time::Instant::now();
+    tracing::info!(target: "crabcc_core::index", path = %root.display(), "full_index: start");
     store.clear_all()?;
     let stats = build_index(root, store)?;
     store.meta_set("edges_populated", "1")?;
+    tracing::info!(
+        target: "crabcc_core::index",
+        files = stats.files_indexed,
+        symbols = stats.symbols,
+        edges = stats.edges,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "full_index: done"
+    );
     Ok(stats)
 }
 
@@ -143,6 +153,8 @@ pub fn refresh(root: &Path, store: &Store) -> Result<RefreshStats> {
 /// file lists (`added` / `modified` / `removed`). New surface for agents
 /// that want to re-read only what changed.
 pub fn refresh_delta(root: &Path, store: &Store) -> Result<RefreshDelta> {
+    let started = std::time::Instant::now();
+    tracing::info!(target: "crabcc_core::index", path = %root.display(), "refresh_delta: start");
     let mut delta = RefreshDelta::default();
     let in_db = store.list_files_with_meta()?;
     let mut seen: HashSet<String> = HashSet::with_capacity(in_db.len());
@@ -263,6 +275,15 @@ pub fn refresh_delta(root: &Path, store: &Store) -> Result<RefreshDelta> {
     delta.modified.sort();
     delta.removed.sort();
 
+    tracing::info!(
+        target: "crabcc_core::index",
+        added = delta.added.len(),
+        modified = delta.modified.len(),
+        removed = delta.removed.len(),
+        unchanged = delta.stats.unchanged,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "refresh_delta: done"
+    );
     Ok(delta)
 }
 
