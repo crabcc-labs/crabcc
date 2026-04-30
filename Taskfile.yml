@@ -1452,6 +1452,45 @@ tasks:
     cmds:
       - 'RUST_LOG=crabcc_telegram=debug {{.CARGO}} run -p crabcc-telegram'
 
+  telegram-bot-container:
+    desc: |
+      Build + run CrabCC_bot as a container (Apple Containers → Docker).
+      Status UI: http://localhost:8092  Live dashboard iframe: embedded.
+    vars:
+      COMPOSE_FILE: apps/crabcc-telegram/docker-compose.yml
+    cmds:
+      - |
+        if [ ! -f apps/crabcc-telegram/.env ]; then
+          cp apps/crabcc-telegram/.env.example apps/crabcc-telegram/.env
+          echo "▶ Created apps/crabcc-telegram/.env — fill in TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID"
+          exit 1
+        fi
+        if command -v container &>/dev/null; then
+          COMPOSE="container compose"
+          echo "▶ Using Apple Containers"
+        else
+          COMPOSE="docker compose"
+          echo "▶ Using Docker"
+        fi
+        $COMPOSE -f {{.COMPOSE_FILE}} up -d --build --wait
+        echo "✓ CrabCC_bot running"
+        echo "  Status UI: http://localhost:${BOT_WEB_PORT:-8092}"
+        echo "  Logs:      docker compose -f {{.COMPOSE_FILE}} logs -f bot"
+
+  telegram-bot-container-down:
+    desc: Stop CrabCC_bot container
+    cmds:
+      - |
+        CMD="docker compose"; command -v container &>/dev/null && CMD="container compose"
+        $CMD -f apps/crabcc-telegram/docker-compose.yml down
+
+  telegram-bot-logs:
+    desc: Follow CrabCC_bot container logs
+    cmds:
+      - |
+        CMD="docker compose"; command -v container &>/dev/null && CMD="container compose"
+        $CMD -f apps/crabcc-telegram/docker-compose.yml logs -f bot
+
   telegram-setup:
     desc: Get your Telegram chat ID and set it as TELEGRAM_CHAT_ID repo secret
     summary: |

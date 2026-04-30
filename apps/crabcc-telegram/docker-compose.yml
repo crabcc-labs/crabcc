@@ -1,0 +1,56 @@
+# crabcc-telegram — continuous bot + live status web view
+#
+# Bring up:
+#   cp .env.example .env && vi .env
+#   docker compose up -d --wait          # Docker / OrbStack
+#   container compose up -d --wait       # Apple Containers (macOS 26)
+# Status:
+#   open http://localhost:8092            # live chat + status web view
+# Logs:
+#   docker compose logs -f bot
+
+name: crabcc-telegram
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: crabcc-telegram:local
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    ports:
+      - "${BOT_WEB_PORT:-8092}:8092"
+    environment:
+      TZ: "Europe/Budapest"
+      LANG: "en_US.UTF-8"
+      # Connect to crabcc serve on the host (or ollama-stack network)
+      CRABCC_SERVE_URL: "${CRABCC_SERVE_URL:-http://host.docker.internal:8090}"
+    # Give the bot read access to the crabcc index for context (optional)
+    volumes:
+      - "${HOME}/.crabcc:/home/bot/.crabcc:ro"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8092/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging: *logging
+    # Share network with ollama-stack so the bot can reach LiteLLM + crabcc serve
+    networks:
+      - default
+      - crabcc-shared
+
+networks:
+  default:
+    name: crabcc-telegram
+  crabcc-shared:
+    name: crabcc-shared
+    external: true

@@ -20,7 +20,8 @@
 //!   task telegram-bot
 
 use std::process::Stdio;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use teloxide::{
@@ -31,12 +32,129 @@ use teloxide::{
 use tokio::io::AsyncReadExt;
 use tokio::process::Command as TokioCommand;
 
+// ── chat log (in-memory ring buffer for status web UI) ───────────────────────
+
+#[derive(Clone, serde::Serialize)]
+struct LogEntry {
+    ts: u64,
+    user: String,
+    command: String,
+    reply_preview: String,
+}
+
+type ChatLog = Arc<Mutex<Vec<LogEntry>>>;
+
+fn new_chat_log() -> ChatLog {
+    Arc::new(Mutex::new(Vec::new()))
+}
+
+fn log_entry(log: &ChatLog, user: &str, command: &str, reply_preview: &str) {
+    let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    let entry = LogEntry {
+        ts,
+        user: user.to_string(),
+        command: command.to_string(),
+        reply_preview: reply_preview.chars().take(80).collect(),
+    };
+    if let Ok(mut l) = log.lock() {
+        l.push(entry);
+        if l.len() > 200 { l.remove(0); }   // ring buffer cap
+    }
+}
+
+// ── status web server (port 8092) ─────────────────────────────────────────────
+
+fn status_html(log: &[LogEntry], serve_url: &str) -> String {
+    let rows: String = log.iter().rev().take(50).map(|e| {
+        format!(
+            "<tr><td>{}</td><td>{}</td><td><code>{}</code></td><td>{}</td></tr>",
+            e.ts, e.user, html_escape(&e.command), html_escape(&e.reply_preview)
+        )
+    }).collect();
+
+    format!(r#"<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>CrabCC_bot</title>
+  <meta http-equiv="refresh" content="5"/>
+  <style>
+    body{{font-family:monospace;background:#0d1117;color:#e6edf3;margin:2rem}}
+    h1{{color:#58a6ff}}a{{color:#58a6ff}}
+    table{{width:100%;border-collapse:collapse;margin-top:1rem}}
+    th{{background:#161b22;text-align:left;padding:.4rem .6rem;color:#8b949e}}
+    td{{padding:.35rem .6rem;border-bottom:1px solid #21262d;vertical-align:top}}
+    code{{background:#161b22;padding:.1rem .3rem;border-radius:3px}}
+    .badge{{display:inline-block;padding:.1rem .4rem;border-radius:3px;font-size:.75rem}}
+    .ok{{background:#1f6f1f;color:#aff5af}}.warn{{background:#5a4000;color:#ffe066}}
+    iframe{{width:100%;height:600px;border:1px solid #30363d;border-radius:6px;margin-top:1rem}}
+  </style>
+</head>
+<body>
+  <h1>🦀 CrabCC_bot — live status</h1>
+  <p>
+    <span class="badge ok">● running</span>
+    &nbsp; <a href="{serve_url}/live" target="_blank">/live dashboard ↗</a>
+    &nbsp; Auto-refreshes every 5 s.
+  </p>
+  <h2>Recent commands</h2>
+  <table>
+    <thead><tr><th>ts</th><th>user</th><th>command</th><th>reply preview</th></tr></thead>
+    <tbody>{rows}</tbody>
+  </table>
+  <h2>Live dashboard</h2>
+  <iframe src="{serve_url}/live" title="crabcc /live"></iframe>
+</body>
+</html>"#, serve_url = serve_url, rows = rows)
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+async fn run_status_server(log: ChatLog, serve_url: String, port: u16) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let listener = match TcpListener::bind(format!("0.0.0.0:{port}")).await {
+        Ok(l) => l,
+        Err(e) => { tracing::error!("status server bind :{port} failed: {e}"); return; }
+    };
+    tracing::info!("status web UI at http://localhost:{port}");
+
+    loop {
+        let Ok((mut stream, _)) = listener.accept().await else { continue };
+        let log = log.clone();
+        let serve_url = serve_url.clone();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 512];
+            let _ = stream.read(&mut buf).await;
+            let req = String::from_utf8_lossy(&buf);
+            let path = req.split_whitespace().nth(1).unwrap_or("/");
+            let (status, body) = if path == "/healthz" {
+                ("200 OK", "ok".to_string())
+            } else {
+                let entries = log.lock().map(|l| l.clone()).unwrap_or_default();
+                ("200 OK", status_html(&entries, &serve_url))
+            };
+            let ct = if path == "/healthz" { "text/plain" } else { "text/html; charset=utf-8" };
+            let resp = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: {ct}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(resp.as_bytes()).await;
+        });
+    }
+}
+
 // ── env config ────────────────────────────────────────────────────────────────
 
 struct Config {
     serve_url: String,
     public_url: Option<String>,
     allowed_ids: Vec<i64>,
+    status_port: u16,
 }
 
 impl Config {
@@ -50,6 +168,10 @@ impl Config {
                 .split(',')
                 .filter_map(|s| s.trim().parse().ok())
                 .collect(),
+            status_port: std::env::var("BOT_WEB_PORT")
+                .ok()
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(8092),
         }
     }
 
@@ -276,20 +398,39 @@ async fn main() {
         .init();
 
     let cfg = Arc::new(Config::from_env());
+    let log: ChatLog = new_chat_log();
 
     tracing::info!(
         serve_url = %cfg.serve_url,
         has_public_url = cfg.public_url.is_some(),
         allowed_ids = cfg.allowed_ids.len(),
+        status_port = cfg.status_port,
         "CrabCC_bot starting"
     );
 
-    let bot = Bot::from_env(); // reads TELEGRAM_BOT_TOKEN
+    // Start status web server (http://localhost:8092) in background
+    {
+        let log2 = log.clone();
+        let url2 = cfg.serve_url.clone();
+        let port = cfg.status_port;
+        tokio::spawn(async move { run_status_server(log2, url2, port).await });
+    }
 
+    let bot = Bot::from_env();
+
+    let log_for_handler = log.clone();
     let handler = Update::filter_message()
         .filter_command::<Cmd>()
         .endpoint(move |bot: Bot, msg: Message, cmd: Cmd| {
-            handle(bot, msg, cmd, Arc::clone(&cfg))
+            let log = log_for_handler.clone();
+            let cfg = Arc::clone(&cfg);
+            async move {
+                let user = msg.from().map(|u| u.first_name.clone()).unwrap_or_default();
+                let cmd_str = format!("{cmd:?}");
+                let result = handle(bot, msg, cmd, cfg).await;
+                log_entry(&log, &user, &cmd_str, if result.is_ok() { "ok" } else { "err" });
+                result
+            }
         });
 
     Dispatcher::builder(bot, handler)
