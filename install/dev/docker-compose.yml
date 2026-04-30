@@ -1,14 +1,17 @@
 # crabcc dev Compose stack — issues #105 / #107.
 #
-# Two services for local-dev convenience:
-#   crabcc    — built from the multi-stage install/Dockerfile.crabcc, runs
-#               `crabcc serve` against a bind-mounted repo at /workspace
-#   viz-web   — bun-based fast-reload container running esbuild --watch on
-#               crates/crabcc-viz/web/, dist/ written back to host so
-#               `crabcc serve` picks it up via include_str!-rebuild
+# Services:
+#   crabcc      — crabcc serve (--root /workspace)
+#   viz-web     — esbuild --watch for the /live dashboard
+#   redis       — BullMQ backend        [--profile jobs]
+#   jobs-worker — BullMQ worker          [--profile jobs]
+#   bull-board  — job queue dashboard    [--profile dev-tools]
 #
 # Run from repo root:
 #   docker compose -f install/dev/docker-compose.yml up --build
+#   docker compose -f install/dev/docker-compose.yml --profile jobs up --build
+#   # Bull Board at :3001:
+#   docker compose -f install/dev/docker-compose.yml --profile jobs --profile dev-tools up --build
 #
 # Hot iteration:
 #   - Edit crates/crabcc-viz/web/src/* on host → esbuild --watch rebuilds
@@ -234,8 +237,21 @@ services:
         condition: service_healthy
     environment:
       REDIS_URL: redis://redis:6379
+    environment:
+      REDIS_URL: redis://redis:6379
+      CRABCC_BIN: /usr/local/bin/crabcc
+      CRABCC_ROOT: /workspace
+      CRABCC_AGENT_BACKEND: ollama
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://litellm:4000}
+      WORKER_CONCURRENCY: "2"
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    volumes:
+      # Bind repo so agent:run / repo:index can operate on it.
+      - ../..:/workspace:rw
+      # Mount host crabcc binary so handlers can shell out.
+      - ${CRABCC_BIN_HOST:-~/.cargo/bin/crabcc}:/usr/local/bin/crabcc:ro
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f 'bun.*jobs-worker' >/dev/null || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3002/healthz >/dev/null 2>&1 || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -248,6 +264,34 @@ services:
     networks:
       - dev
       - crabcc-shared
+
+  # ── Bull Board — job queue dashboard (:3001) — profile: dev-tools ──────────
+  bull-board:
+    image: ghcr.io/taskforcesh/bullboard:latest
+    profiles:
+      - dev-tools
+    restart: unless-stopped
+    init: true
+    labels:
+      <<: *labels
+      com.crabcc.role: "jobs-dashboard"
+      com.crabcc.issue: "#109"
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      BULL_PREFIX: bull
+    ports:
+      - "${BULL_BOARD_PORT:-3001}:3000"
+    deploy:
+      resources:
+        limits:
+          memory: 256mb
+    logging: *logging
+    networks:
+      - dev
 
 volumes:
   crabcc_cache:

@@ -132,13 +132,21 @@ impl RunDir {
         let log_path = dir.join("log");
         let meta_path = dir.join("meta.json");
 
-        // Touch the lock + log so they exist before the child spawns.
-        // Keeps `tail -f` happy when the user starts watching before the
-        // first byte of output.
+        // Create lock + log + pid atomically before the child spawns.
+        //   lock  — presence signals "run in flight"; removal = graceful exit;
+        //           leftover after crash = the "previous run died" signal.
+        //   log   — open early so `tail -f` works from the first byte.
+        //   pid   — written with "0\n" now; overwritten with the real PID in
+        //           write_pid(). This guarantees pid always exists while the
+        //           run-dir exists, even during the brief window between
+        //           RunDir::create and child.spawn (important for jobs-worker
+        //           correlation via agent_folder).
         File::create(&lock_path)
             .with_context(|| format!("create lock file {}", lock_path.display()))?;
         File::create(&log_path)
             .with_context(|| format!("create log file {}", log_path.display()))?;
+        std::fs::write(&pid_path, "0\n")
+            .with_context(|| format!("create pid file {}", pid_path.display()))?;
 
         Ok(RunDir {
             id,

@@ -32,6 +32,7 @@ mod compress_cmd;
 mod doctor;
 mod go;
 mod install;
+mod jobs_cmd;
 mod memory;
 mod model_info;
 mod status;
@@ -422,6 +423,10 @@ enum Cmd {
         #[command(subcommand)]
         op: BackupOp,
     },
+    /// BullMQ job queue — submit / inspect / cancel jobs (issue #109).
+    /// Requires Redis running (task jobs-up).
+    #[command(subcommand)]
+    Jobs(JobsCmd),
 }
 
 #[derive(Subcommand)]
@@ -486,6 +491,64 @@ enum ModelInfoOp {
     Ls {
         #[arg(long)]
         json: bool,
+    },
+}
+
+/// `crabcc jobs` — submit, inspect, and cancel BullMQ jobs (issue #109).
+#[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
+enum JobsCmd {
+    /// Submit a job to a queue.
+    Submit {
+        /// Queue name: agent:run | agent:flow | repo:index | repo:reindex
+        #[arg(long)]
+        queue: String,
+        /// Job name (label for the worker).
+        #[arg(long)]
+        name: String,
+        /// Job data as JSON (e.g. '{"prompt":"audit this repo"}').
+        #[arg(long, default_value = "{}")]
+        data: String,
+        /// Optional delay in milliseconds before the job becomes active.
+        #[arg(long)]
+        delay_ms: Option<u64>,
+        /// Job priority (lower = higher priority).
+        #[arg(long)]
+        priority: Option<u32>,
+        /// Max retry attempts.
+        #[arg(long)]
+        attempts: Option<u32>,
+        /// Human-readable agent identifier (shown in Bull Board / /live).
+        #[arg(long)]
+        agent_name: Option<String>,
+        /// Repo path this job operates on.
+        #[arg(long)]
+        repo_path: Option<String>,
+        /// GitHub URL for this repo (surfaced in dashboard links).
+        #[arg(long)]
+        github_url: Option<String>,
+        /// Agent run-dir path (contains lock, pid, log — for correlation).
+        #[arg(long)]
+        agent_folder: Option<String>,
+    },
+    /// Query the current state of a job.
+    Status {
+        #[arg(long)]
+        queue: String,
+        #[arg(long)]
+        id: String,
+    },
+    /// List waiting jobs in a queue (shows depth, not full payloads).
+    List {
+        /// Queue to inspect. Omit to list all queues.
+        queue: Option<String>,
+    },
+    /// Cancel (remove) a waiting or delayed job.
+    Cancel {
+        #[arg(long)]
+        queue: String,
+        #[arg(long)]
+        id: String,
     },
 }
 
@@ -871,6 +934,11 @@ fn main() -> Result<()> {
         return run_ollama_stack(op);
     }
 
+    // `jobs` — BullMQ submit/status/list/cancel (issue #109).
+    if let Some(Cmd::Jobs(op)) = cli.cmd.as_ref() {
+        return jobs_cmd::run(op);
+    }
+
     // `doctor` is the diagnostic surface (issue #107 Phase 5a). No Store
     // touched; each subcommand is read-only against the local environment.
     if let Some(Cmd::Doctor { op, text }) = cli.cmd.as_ref() {
@@ -1169,6 +1237,7 @@ fn main() -> Result<()> {
         Cmd::Backup { .. } => unreachable!("backup handled before store init"),
         Cmd::OllamaStack { .. } => unreachable!("ollama-stack handled before store init"),
         Cmd::Doctor { .. } => unreachable!("doctor handled before store init"),
+        Cmd::Jobs(_) => unreachable!("jobs handled before store init"),
     }
     Ok(())
 }
@@ -1509,6 +1578,7 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::InstallClaude { .. } => "install-claude",
         Cmd::OllamaStack { .. } => "ollama-stack",
         Cmd::Doctor { .. } => "doctor",
+        Cmd::Jobs(_) => "jobs",
     }
 }
 

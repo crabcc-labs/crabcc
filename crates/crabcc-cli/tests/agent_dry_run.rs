@@ -86,10 +86,13 @@ fn agent_dry_run_creates_rundir_and_banner_lists_paths() {
     );
     let run = entries[0].path();
     assert!(run.join("log").exists(), "log file should remain after run");
-    // dry_run never spawns, so no pid is written; that's the contract.
-    assert!(
-        !run.join("pid").exists(),
-        "dry-run should NOT have written a pid file"
+    // dry_run never spawns a real child — pid file exists but contains "0\n"
+    // (the placeholder written at RunDir::create so the file always exists).
+    let pid_content = std::fs::read_to_string(run.join("pid")).unwrap_or_default();
+    assert_eq!(
+        pid_content.trim(),
+        "0",
+        "dry-run pid file should contain placeholder '0', got: {pid_content:?}"
     );
     // Graceful exit removes the lock.
     assert!(
