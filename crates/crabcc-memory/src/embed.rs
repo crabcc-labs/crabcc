@@ -1,8 +1,11 @@
 //! `Embedder` trait + `HashEmbedder` (deterministic, test-only).
 //!
-//! M1 swaps in `FastEmbedEmbedder` (fastembed-rs / MiniLM-L6-v2) for
-//! semantically meaningful 384-dim vectors. The trait surface is stable
-//! so the `Backend` impls don't change when the real embedder lands.
+//! M1a (this PR) ships the hybrid-search storage + fusion layer with
+//! `HashEmbedder` driving the vector path. M1b will add `FastEmbedder`
+//! (fastembed-rs / MiniLM-L6-v2) behind the `embed-fastembed` feature so
+//! the heavyweight ONNX/tokenizer dep tree stays optional. The `Embedder`
+//! trait surface is stable across that change — `Backend` impls do not
+//! move when the real embedder lands.
 
 use anyhow::Result;
 

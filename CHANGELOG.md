@@ -6,6 +6,52 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+### Added — M1a: hybrid memory search (issue #2)
+- **FTS5 lexical index** for `drawers.body` (contentless `drawers_fts`
+  virtual table keyed on drawer id) so KNN ids and BM25 ids share one
+  namespace.
+- **`Palace::search_hybrid`** issues both rankers and blends via
+  Reciprocal Rank Fusion (k = 60). `Palace::search` now defaults to
+  hybrid; ablation is exposed via
+  `Palace::search_with_mode(SearchMode::{Hybrid,Lexical,Vector})`.
+- **`crabcc memory search --mode {hybrid,lexical,vector}`** CLI flag and
+  the matching `mode` arg on the `memory.search` MCP tool.
+- **Backfill on open**: v2.1 databases (no FTS at write time) are detected
+  and populated in one pass when `SqliteBackend::open` runs. Idempotent on
+  subsequent reopens.
+- 24 new unit tests across `palace.rs`, `backend/sqlite.rs`, and
+  `backend/in_memory.rs` (RRF math, mode parsing, FTS round-trip,
+  apostrophe / quote sanitisation, FTS backfill, FTS row drop on delete).
+- *Deferred to M1b*: `FastEmbedder` (fastembed-rs / MiniLM-L6-v2) — gated
+  behind a future `embed-fastembed` feature flag to keep the ONNX dep tree
+  out of the default build.
+
+### Added — `scripts/check-deps.sh` + `task check-deps`
+- Portable doctor for external dev tools (cargo, jq, yq, rg, fd, gh,
+  claude, repomix, …). Knows brew / apt / dnf / pacman / apk / zypper.
+  Three modes: interactive (default), `--strict` for CI, `--json` for
+  hooks. Header carries its own changelog block.
+
+### Added — `scripts/doctor.sh` + `task doctor`
+- Diagnostic for the crabcc toolchain itself: `crabcc` CLI on PATH,
+  binary version vs. latest GitHub release, MCP server registration in
+  `~/.claude.json`, slash-command + skill symlinks in `~/.claude/`,
+  Taskfile hook health, smoke-test of `crabcc index` against a tempdir.
+  Optional `--upgrade` runs `crabcc upgrade --apply`. Optional `--install`
+  re-creates Claude Code MCP / commands / skill / hooks. Writes a full
+  debug log to `.summary/doctor-YYYYMMDDHHMMSS.log` you can paste into a
+  bug report.
+
+### Added — `task docs-refresh`
+- Spawns a detached `claude -p` session that rewrites README / AGENTS /
+  CHANGELOG / CLAUDE / `commands/*.md` to match the current source tree.
+  Output goes to `.summary/docs-refresh.log`. Idempotent.
+
+### Added — `task local-ci`
+- Standalone target that mirrors GitHub `ci.yml` (fmt-check + lint +
+  test) and saves output to `.summary/local-ci.txt`. Used in PR
+  descriptions when upstream CI is rate-limited.
+
 ## [2.2.0] — 2026-04-30
 
 ### Added — `crabcc info` + build labels embedded in the binary

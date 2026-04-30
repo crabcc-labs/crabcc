@@ -52,6 +52,19 @@ CREATE TABLE IF NOT EXISTS drawer_embeddings (
     bytes     BLOB    NOT NULL
 );
 
+-- FTS5 contentless index over drawer bodies (M1). Keyed on drawers.id via
+-- the `rowid` alias so KNN ids and BM25 ids share a namespace — RRF in
+-- Palace::search_hybrid blends them by drawer id directly. Contentless
+-- (`content=''`) keeps storage modest and side-steps the read-back path
+-- needed for body_enc/FSST-encoded rows: we look up bodies in `drawers`
+-- via the regular `body_from_row` decoder rather than reconstructing
+-- through FTS auxiliary functions.
+CREATE VIRTUAL TABLE IF NOT EXISTS drawers_fts USING fts5(
+    body,
+    content='',
+    tokenize='unicode61'
+);
+
 -- Knowledge graph schema is included now so the file is forward-compatible.
 -- KG operations are M4 work — these tables stay empty until then.
 CREATE TABLE IF NOT EXISTS kg_triples (
