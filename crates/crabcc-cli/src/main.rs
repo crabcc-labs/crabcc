@@ -9,6 +9,7 @@ mod go;
 mod install;
 mod memory;
 mod status;
+mod telemetry;
 
 #[derive(Parser)]
 #[command(name = "crabcc", version, about = "Symbol index for AI coding agents")]
@@ -395,11 +396,12 @@ fn emit_hits_ndjson(out: &query::Output) -> Result<()> {
 }
 
 fn main() -> Result<()> {
-    // Default to warn — tantivy emits INFO chatter on every commit otherwise.
-    // Override with RUST_LOG=info for debugging.
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
-    tracing_subscriber::fmt().with_env_filter(filter).init();
+    // Issue #90 — KPI-focused tracing init. Default release filter is
+    // `crabcc*=info,warn` so MCP tool calls + graph stats surface but
+    // third-party chatter (tantivy commits, sqlite stmts) stays at warn.
+    // Hold the guard for the lifetime of main so the non-blocking
+    // writer flushes on shutdown.
+    let _telemetry = telemetry::init();
     // Closed-pipe (e.g. piping to `head`) should exit silently, not panic.
     reset_sigpipe();
 

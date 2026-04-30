@@ -443,6 +443,53 @@ For deeper architectural detail, mermaid diagrams of the data flow and threading
 
 ---
 
+## Telemetry / KPI logs
+
+Issue #90 — crabcc emits structured KPI events at `info` level on
+release builds. The default filter is **KPI-only** (no generic
+chatter); flip with `RUST_LOG` for full traces.
+
+### What lands at info by default
+
+| Event              | Target              | Fields                                     |
+|--------------------|---------------------|--------------------------------------------|
+| MCP tool dispatch  | `crabcc_mcp`        | `tool, elapsed_ms, ok\|error`              |
+| Graph build        | `crabcc_core::graph`| `kpi=graph.build, edges, nodes, duration_ms` |
+| Graph walk         | `crabcc_core::graph`| `kpi=graph.walk, direction, depth, frontier, duration_ms` |
+| Graph cycles       | `crabcc_core::graph`| `kpi=graph.cycles, count, duration_ms`     |
+| Graph orphans      | `crabcc_core::graph`| `kpi=graph.orphans, count, duration_ms`    |
+
+### Overriding the filter
+
+```bash
+# Default — KPI events only:
+crabcc graph cycles
+# → INFO crabcc_core::graph: graph cycles done kpi="graph.cycles" count=1 duration_ms=0
+
+# Full crabcc-side trace (every span, debug + info):
+RUST_LOG=crabcc=debug crabcc graph cycles
+
+# Silent (only warn / error):
+RUST_LOG=warn crabcc graph cycles
+
+# Just the MCP tool calls (no graph events):
+RUST_LOG=crabcc_mcp=info crabcc --mcp
+```
+
+### Hot-path discipline
+
+- Field-based logging (`info!(kpi = "foo", duration_ms = ms)`) — no
+  inline `format!()` on the call site.
+- Non-blocking writer via `tracing-appender::non_blocking`; the call
+  site enqueues and returns in O(ns), I/O happens on a worker thread.
+  `TelemetryGuard` returned from `telemetry::init()` flushes on drop.
+- The default filter compiles call sites below `info` to a single
+  atomic-load + branch when filtered out — zero allocation.
+
+OTLP / rotel export lands behind a future `--features otlp` (issue #86).
+
+---
+
 ## When NOT to use crabcc
 
 | Situation                                     | Reach for                              |
