@@ -20,6 +20,12 @@ struct Cli {
     #[arg(long, global = true)]
     mcp: bool,
 
+    /// MCP server only — expose the dev / diagnostic surface
+    /// (`_openapi`, `_health`). Default is the slimmer agent-facing
+    /// surface (issue #59). Equivalent to setting `CRABCC_MCP_DEV=1`.
+    #[arg(long, global = true)]
+    dev: bool,
+
     /// Enable FSST compression at the storage layer (default: true).
     /// Pass `--compress=false` (or `--compress false`) to force plain text
     /// even if `.crabcc/fsst.symbols` exists. Read-side: encoded rows in the
@@ -370,7 +376,11 @@ fn main() -> Result<()> {
     let db = root.join(".crabcc").join("index.db");
 
     if cli.mcp {
-        return crabcc_mcp::serve_stdio(&root);
+        // `--dev` flag OR `CRABCC_MCP_DEV=1` env both flip the dev surface
+        // on. The CLI flag wins because it's more explicit; if neither is
+        // set, the slim default surface is used (issue #59).
+        let dev = cli.dev || crabcc_mcp::dev_mode_from_env();
+        return crabcc_mcp::serve_stdio_with(&root, dev);
     }
 
     // `install-claude` is a config-only operation — it must run with no
