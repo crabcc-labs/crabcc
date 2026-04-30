@@ -6,6 +6,61 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+## [2.5.0] — 2026-04-30
+
+First tagged release of the 2.5 line. The version was set in
+`Cargo.toml` when M1 hybrid search landed (#48); v2.5.0 now ships
+the full body of work that has stacked on `main` since.
+
+### Added — agent-friendly query surface (#63, #67)
+- `--summary` mode on `refs` / `callers` (and MCP `mode: "summary"`).
+  Returns `{by_file, top_files, top_symbols}` — distribution shape
+  for agents that need shape, not individual matches. ~95% bytes
+  saved vs raw hits. `top_symbols` resolves the innermost enclosing
+  symbol per hit via `Store::symbols_in_file` so agents see *which
+  functions or classes* contain the matches.
+- `--if-changed FINGERPRINT` cache-revalidation envelope on
+  `refs` / `callers`. Match → `{unchanged: true, fingerprint}`.
+  Mismatch → `{fingerprint, result}`. Default omitted = byte-identical
+  to existing surface.
+- `crabcc refresh --delta` — returns `{added, modified, removed,
+  stats}` instead of bare counts. Lists are sorted (byte-stable
+  output). `touched` files (mtime-only changes) intentionally
+  excluded.
+- `--since SHA` filter on `sym` / `refs` / `callers` (CLI + MCP).
+  Resolves via `git diff --name-only --diff-filter=AMR
+  <since>...HEAD` (new `crabcc_core::gitdiff` module — shells out
+  to user's `git`; no libgit2 dep). Filter is applied *before* any
+  IO — walker skips non-matching files, edges path filters
+  `edge_hits` upfront.
+- `--ndjson` (CLI) / `stream: true` (MCP) on `refs` / `callers` —
+  NDJSON output (one hit per line) for streaming consumers.
+  Hits-mode only.
+
+### Added — localhost call-graph viewer (`crabcc serve`, closes [#64](https://github.com/peterlodri-sec/crabcc/issues/64)) (#66)
+- `crabcc serve [--port 7878] [--no-open]` — single self-contained
+  HTML page with a force-directed call-graph rendered on Canvas.
+  Bound to `127.0.0.1` only. Zero external network calls; assets
+  bundled in the binary.
+- HTTP routes: `GET /` (page), `GET /api/graph?root_symbol&depth&dir`,
+  `GET /api/sym?name`, `GET /api/files?under`. `WS /api/live` pushes
+  re-render hints when `crabcc refresh` runs in another shell.
+
+### Added — devx: profiling profile + Taskfile targets (#65)
+- New `[profile.profiling]` in Cargo.toml — release-like with
+  `debug = true` so profilers see the symbols.
+- Taskfile targets: `task profile-samply CMD=...` and
+  `task profile-flamegraph CMD=...` install + run the profiler
+  against the chosen subcommand.
+
+### Added — bench rerun + README refresh (closes [#28](https://github.com/peterlodri-sec/crabcc/issues/28)) (#56)
+- Re-ran `task bench-compress` and the e2e benchmarks against the
+  v2.5.0-shaped index; refreshed README headline numbers.
+
+### Fixed — Claude Code hooks integration (closes [#29](https://github.com/peterlodri-sec/crabcc/issues/29)) (#61)
+- `hooks-claude.json`: stdin / `jq` plumbing corrected,
+  SessionStart matcher uses an anchored regex.
+
 ### Added — Test coverage for `memory forget` (follow-up to [#26](https://github.com/peterlodri-sec/crabcc/issues/26))
 - PR #55 landed the `memory forget` CLI + `memory.forget` MCP tool
   but shipped no tests. This change closes that gap:
