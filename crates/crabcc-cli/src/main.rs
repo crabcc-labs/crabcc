@@ -229,17 +229,23 @@ enum GraphOp {
     Orphans,
 }
 
-/// Shaping flags for refs/callers. `--files-only` and `--count` are
-/// mutually exclusive output shapes; `--limit` modifies whichever shape
-/// you picked (or the default hit-list shape).
+/// Shaping flags for refs/callers. `--files-only`, `--summary`, and
+/// `--count` are mutually exclusive output shapes; `--limit` modifies
+/// whichever shape you picked (or the default hit-list shape).
 #[derive(Args, Debug, Clone)]
 struct ResultOpts {
-    /// Cap result size at N. 0 = unlimited. Applies to hits or file list.
+    /// Cap result size at N. 0 = unlimited. Applies to hits, files, or
+    /// (for `--summary`) the per-file count map (keys sorted by path).
     #[arg(long, default_value_t = 0)]
     limit: usize,
     /// Emit deduped JSON array of file paths only — no line/col/snippet.
-    #[arg(long, conflicts_with = "count")]
+    #[arg(long, conflicts_with_all = ["count", "summary"])]
     files_only: bool,
+    /// Emit `{"by_file": {"path": N, ...}}` — per-file hit-count
+    /// distribution. Useful when an agent needs distribution-shape, not
+    /// individual matches. ~95% bytes saved vs raw hits.
+    #[arg(long, conflicts_with_all = ["count", "files_only"])]
+    summary: bool,
     /// Emit `{"count": N}` only — no per-hit payload.
     #[arg(long)]
     count: bool,
@@ -249,6 +255,10 @@ impl ResultOpts {
     fn to_mode(&self) -> query::Mode {
         if self.count {
             query::Mode::Count
+        } else if self.summary {
+            query::Mode::Summary {
+                limit: opt(self.limit),
+            }
         } else if self.files_only {
             query::Mode::FilesOnly {
                 limit: opt(self.limit),
