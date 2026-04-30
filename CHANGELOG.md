@@ -6,6 +6,84 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+## [2.11.0] — 2026-04-30
+
+Operations + ergonomics. macOS-first session focused on the
+container layer, the Ollama auth stack's run-time defaults, and
+making the keys + state files seamless to the dashboard.
+
+### Added — Apple `container` integration (issue #112 follow-up)
+- `install/internal-agents/{Containerfile,compose.yml}` gain
+  `init: true`, `mem_limit: 12g`, `cpus: 6`, `cap_drop: ALL`
+  (with a minimal re-add list), and SSH-agent passthrough so
+  agents can clone via `git@github.com:...` without baked keys.
+- `scripts/install-container-completions.sh` — generates
+  zsh/bash/fish completion via `container --generate-completion-script`,
+  drops it into the right autoload location, writes a fenced alias
+  block (`c` / `cps` / `clog` / `cstats`), prints a clear "RELOAD
+  CLAUDE CODE" warning at the end.
+- `scripts/container-zombie-guard.sh` — host-side janitor
+  complementing the in-VM `init: true` reaper. Removes exited > 24h,
+  force-stops respawn-loop containers (≥3 consecutive restarts).
+- `scripts/install-gitify.sh` — checks for + brew-installs
+  [gitify-app/gitify](https://github.com/gitify-app/gitify), the
+  open-source macOS GitHub-notifications menubar app. Pairs with
+  crabcc's own menubar (different concerns: gitify shows remote
+  GH state, ours shows local agent / index / backup state).
+  --check / --launch / --json modes; macOS-only.
+- README "Useful run-time flags" table for ad-hoc `container run`
+  (`--memory`, `--cpus`, `--init`, `--ssh`, `--volume`, cap controls,
+  `--publish`, `--rm`).
+
+### Added — Ollama-stack operational tuning (issue #105)
+- ollama: 16 GB → 24 GB; new env: `OLLAMA_NUM_PARALLEL=4`,
+  `OLLAMA_NUM_THREAD=0`, `OLLAMA_KEEP_ALIVE=30m`,
+  `OLLAMA_MAX_LOADED_MODELS=2`, `OLLAMA_FLASH_ATTENTION=1`
+- LiteLLM proxy: 1 GB → 2 GB, `--num_workers 1 → 2`, per-model
+  `timeout: 600`, `stream_timeout: 60`, `max_parallel_requests: 8`,
+  in-memory `cache: type=local, ttl=600`,
+  `default_litellm_params: temperature 0.2, top_p 0.9` (matches the
+  bundled qwen2.5-coder model-info baseline).
+- caddy stays at 256 MB; **dropped security headers** (local
+  loopback only, bearer-token gate already covers auth — headers
+  were noise). Added `encode zstd gzip`, dial 5s + response-header 5m
+  + read/write 10m, `flush_interval -1` for token-by-token streaming,
+  `X-Request-Id` correlation forwarded downstream, JSON access log.
+
+### Added — Ollama API key seamlessness
+- `init-keys.sh` now WRITES `~/.crabcc.local.api-key` (chmod 0400) on
+  every run. Was instructions-only; required users to copy/paste the
+  printf+chmod block. The user-facing message reflects whether the
+  key was generated this run or pre-existed.
+- New `/api/ollama-key` endpoint in crabcc-viz returns
+  `{present, path, mode, mtime_secs, size_bytes, key}`. Loopback-only
+  dashboard, file already chmod 0400 in $HOME — exposing here is
+  no worse than `cat`.
+- New `OllamaKeyPanel.tsx` in /live: masked-by-default key display,
+  eye-toggle reveal, copy-to-clipboard button (1.5s "copied!"
+  feedback), generated-N-hours-ago badge, mode-warn pill if
+  permissions aren't 0400.
+
+### Added — Per-stage manual test scripts (issue #105 follow-up)
+- `taskfiles/manual-local-stack-setup/` — the 12-section manual
+  checklist plus Appendix B.2 decomposed into 14 runnable bash
+  scripts, each emitting `✓ PASS` / `✗ FAIL` lines. `lib.sh` is
+  the shared header. `run-all.sh` orchestrates with `--keep-going`
+  and `--only=03,05` filtering.
+- `scripts/verify-agent-chain.sh` — 8-step end-to-end smoke for
+  the agent → LiteLLM → Caddy → ollama path. JSON output for
+  scripting; `--skip-live` to avoid token spend.
+
+### Added — `internal_agents/macos-sync`
+- 6th internal-agent profile (was deferred from #125's set). Owns
+  the CLI ↔ macOS menubar feature-parity contract, the .app bundle
+  layout, and the Apple `container` files. References gitify as a
+  companion app.
+
+### Changed
+- Workspace 2.9.0 → **2.11.0** (skipping 2.10.0; reserved for
+  PR #128's `feat/backup-crabcc-state` branch which lands separately).
+
 ## [2.9.0] — 2026-04-30
 
 Minor bump capturing the Ollama auth-stack work (issue
