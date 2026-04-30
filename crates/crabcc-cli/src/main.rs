@@ -3,6 +3,7 @@ use clap::{Args, Parser, Subcommand};
 use crabcc_core::{query, store::Store};
 use std::path::{Path, PathBuf};
 
+mod agent;
 mod compress_cmd;
 mod go;
 mod install;
@@ -223,6 +224,30 @@ enum Cmd {
     /// surface to stdout (canonical YAML). Pipe through `yq -o json`
     /// if you need JSON.
     Openapi,
+    /// Drive an LLM agent through one round of tool-use against the
+    /// crabcc MCP surface (issue #62). Today the runtime is a host
+    /// subprocess (same trust as `crabcc go`); a microsandbox-backed
+    /// runtime drops in under the `agent-sandbox` cargo feature for v3.0
+    /// — see `install/agent-runtime.md` for the design + threat model.
+    Agent {
+        /// The user prompt — the agent's first turn. Quote freely.
+        #[arg(long, value_name = "PROMPT")]
+        run: String,
+        /// Print the planned invocation (binary, system prompt, model)
+        /// instead of spawning the agent. Lets you verify wiring + the
+        /// resolved AGENTS.md without burning tokens.
+        #[arg(long)]
+        dry_run: bool,
+        /// Override the model the agent uses. None = the agent CLI's
+        /// default (Claude Code = whatever `claude` was last configured
+        /// with, typically the latest Sonnet/Opus).
+        #[arg(long, value_name = "ID")]
+        model: Option<String>,
+        /// Skip the implicit `crabcc refresh` before launch. Useful when
+        /// a wrapping script has already brought the index up to date.
+        #[arg(long)]
+        no_refresh: bool,
+    },
     /// Start the localhost call-graph viewer (issue #64). Binds to
     /// 127.0.0.1 by default — pass `--bind 0.0.0.0` only on a trusted
     /// LAN; the server is unauthenticated and exposes architecture.
@@ -444,6 +469,26 @@ fn main() -> Result<()> {
     }) = cli.cmd.as_ref()
     {
         return run_serve(&root, *port, bind, *no_open);
+    }
+
+    // `agent --run` (issue #62) execs an agent CLI in the user's shell;
+    // we deliberately don't open the symbol Store here because the agent
+    // owns its lifecycle through MCP tool calls. `agent::run` handles a
+    // best-effort `crabcc refresh` itself when `--no-refresh` is absent.
+    if let Some(Cmd::Agent {
+        run,
+        dry_run,
+        model,
+        no_refresh,
+    }) = cli.cmd.as_ref()
+    {
+        return agent::run(agent::AgentRequest {
+            prompt: run,
+            root: &root,
+            dry_run: *dry_run,
+            model: model.clone(),
+            no_refresh: *no_refresh,
+        });
     }
 
     // `compress` is a meta-operation on the index. It owns its own codec
@@ -707,6 +752,7 @@ fn main() -> Result<()> {
         Cmd::Completions { .. } => unreachable!("completions handled before store init"),
         Cmd::Info { .. } => unreachable!("info handled before store init"),
         Cmd::Serve { .. } => unreachable!("serve handled before store init"),
+        Cmd::Agent { .. } => unreachable!("agent handled before store init"),
     }
     Ok(())
 }

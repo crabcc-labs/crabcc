@@ -1,0 +1,591 @@
+//! `crabcc agent --run <prompt>` — drive an LLM agent through one round
+//! of tool-use against the crabcc MCP surface.
+//!
+//! The runtime sits behind an [`AgentRuntime`] trait so we can swap the
+//! current-day "exec claude as a subprocess on the host" implementation
+//! for a sandboxed one (issue #62, v3.0). The default keeps trust scoped
+//! exactly like `crabcc go` already does — agent processes run with the
+//! invoking user's privileges, full filesystem + network access. The
+//! sandbox impl will reduce that to "this temp dir + crabcc MCP socket
+//! only" once microsandbox (or an alternative) stabilizes; see
+//! `install/agent-runtime.md` for the v3.0 plan.
+//!
+//! Each run gets its own state directory at `~/.crabcc/agents/<id>/`:
+//!
+//! ```text
+//! ~/.crabcc/agents/<id>/
+//!   lock         empty file present while the run is in flight
+//!   pid          PID of the spawned agent process
+//!   log          tee'd stdout+stderr stream (tail -f from another shell)
+//!   meta.json    {id, started_ts, prompt_preview, model, root, runtime}
+//! ```
+//!
+//! The IDs are 16 hex chars sourced from `/dev/urandom` (collision-resistant
+//! enough for single-user developer use; if /dev/urandom is unavailable we
+//! fall back to timestamp_ms+pid). The file shape is deliberately simple so
+//! shell scripts can grep + `tail -f` without a custom client.
+
+use anyhow::{anyhow, Context, Result};
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+const AGENTS_FILE_CANDIDATES: &[&str] = &["AGENTS.md", ".crabcc/AGENTS.md"];
+
+/// Default model when the caller doesn't pass `--model`. Opus 4.7 is the
+/// strongest agentic model in the Claude 4.x family at the time `crabcc
+/// agent` shipped; bump this in lockstep with the project README's
+/// recommended model. `claude` (the CLI) ignores `--model` it doesn't
+/// recognize and falls through to the user's configured default, so a
+/// stale id here degrades gracefully.
+const DEFAULT_MODEL: &str = "claude-opus-4-7";
+
+/// Where Claude Code looks for skills. `crabcc install-claude` symlinks
+/// `skill/crabcc/SKILL.md` into the directory below; if that file is
+/// missing we warn the user (without aborting — agent will still run,
+/// just without the crabcc primer auto-loaded).
+const SKILL_RELATIVE_PATH: &str = ".claude/skills/crabcc/SKILL.md";
+
+pub struct AgentRequest<'a> {
+    pub prompt: &'a str,
+    pub root: &'a Path,
+    pub dry_run: bool,
+    pub model: Option<String>,
+    pub no_refresh: bool,
+}
+
+pub trait AgentRuntime {
+    fn run(&self, request: &AgentRequest<'_>, run: &RunDir) -> Result<i32>;
+    fn label(&self) -> &'static str;
+}
+
+/// Per-invocation state directory under `~/.crabcc/agents/<id>/`.
+///
+/// Created up-front so we can print the path in the launch banner —
+/// the user can `tail -f ~/.crabcc/agents/<id>/log` from another shell
+/// before the agent has produced a single byte of output.
+pub struct RunDir {
+    pub id: String,
+    pub dir: PathBuf,
+    pub lock_path: PathBuf,
+    pub pid_path: PathBuf,
+    pub log_path: PathBuf,
+    pub meta_path: PathBuf,
+}
+
+impl RunDir {
+    /// Create the run dir + the bookkeeping files. Caller is responsible
+    /// for cleaning up `lock` via [`RunDir::finalize`] on graceful exit;
+    /// a leftover `lock` after a crash is the canonical "this run died"
+    /// signal.
+    pub fn create(home: &Path) -> Result<Self> {
+        let id = generate_id();
+        let dir = home.join(".crabcc").join("agents").join(&id);
+        std::fs::create_dir_all(&dir)
+            .with_context(|| format!("create agent run dir {}", dir.display()))?;
+        let lock_path = dir.join("lock");
+        let pid_path = dir.join("pid");
+        let log_path = dir.join("log");
+        let meta_path = dir.join("meta.json");
+
+        // Touch the lock + log so they exist before the child spawns.
+        // Keeps `tail -f` happy when the user starts watching before the
+        // first byte of output.
+        File::create(&lock_path)
+            .with_context(|| format!("create lock file {}", lock_path.display()))?;
+        File::create(&log_path)
+            .with_context(|| format!("create log file {}", log_path.display()))?;
+
+        Ok(RunDir {
+            id,
+            dir,
+            lock_path,
+            pid_path,
+            log_path,
+            meta_path,
+        })
+    }
+
+    pub fn write_meta(&self, req: &AgentRequest<'_>, runtime_label: &str) -> Result<()> {
+        let started = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        // Truncate the prompt for the meta record — full prompts can be
+        // huge (`--run "$(cat huge.md)"` is a real call shape) and we
+        // don't want meta.json to grow unbounded.
+        let prompt_preview: String = req.prompt.chars().take(240).collect();
+        let meta = serde_json::json!({
+            "id":             self.id,
+            "started_ts":     started,
+            "root":           req.root.display().to_string(),
+            "model":          req.model,
+            "runtime":        runtime_label,
+            "prompt_chars":   req.prompt.chars().count(),
+            "prompt_preview": prompt_preview,
+        });
+        let body = sonic_rs::to_string_pretty(&meta)?;
+        std::fs::write(&self.meta_path, body)
+            .with_context(|| format!("write meta {}", self.meta_path.display()))?;
+        Ok(())
+    }
+
+    pub fn write_pid(&self, pid: u32) -> Result<()> {
+        std::fs::write(&self.pid_path, format!("{pid}\n"))
+            .with_context(|| format!("write pid file {}", self.pid_path.display()))?;
+        Ok(())
+    }
+
+    /// Remove the in-flight `lock` marker. Leftover lock = previous run
+    /// crashed without finalizing, which is the signal a future
+    /// `crabcc agent list` will use.
+    pub fn finalize(&self) {
+        let _ = std::fs::remove_file(&self.lock_path);
+    }
+}
+
+/// 16-char lowercase hex id. Reads 8 bytes from `/dev/urandom` when it
+/// can; falls back to `timestamp_ms ^ pid` otherwise. Adequate for
+/// single-user developer use — we don't need cryptographic uniqueness.
+fn generate_id() -> String {
+    let mut bytes = [0u8; 8];
+    let ok = std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut bytes))
+        .is_ok();
+    if !ok {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        let pid = std::process::id() as u64;
+        let mix = ts ^ (pid.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        bytes.copy_from_slice(&mix.to_le_bytes());
+    }
+    let mut out = String::with_capacity(16);
+    for b in bytes {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
+}
+
+/// Host-subprocess runtime. Looks up `claude` (or `claude-code`) on
+/// PATH, builds an argv with `--print "$prompt"` (one-shot mode) plus
+/// any system-prompt file the repo ships, tees stdout+stderr into the
+/// run-dir log, and waits on the child.
+///
+/// Auth pass-through: we explicitly pass `HOME` (and the `XDG_*` vars,
+/// when set) into the child so Claude Code finds the user's existing
+/// `~/.claude/` config — *no separate login flow*. Other env is
+/// inherited via `Command`'s default so things like `PATH`, `SHELL`,
+/// `TERM` keep working without a per-var allowlist.
+pub struct SubprocessRuntime;
+
+impl AgentRuntime for SubprocessRuntime {
+    fn label(&self) -> &'static str {
+        "subprocess (host)"
+    }
+
+    fn run(&self, req: &AgentRequest<'_>, run: &RunDir) -> Result<i32> {
+        let claude = find_claude().ok_or_else(|| {
+            anyhow!(
+                "`claude` CLI not on PATH; install Claude Code first \
+                 (https://claude.ai/code) and re-run `crabcc agent --run …`"
+            )
+        })?;
+        let system_prompt = read_system_prompt(req.root);
+
+        let mut cmd = Command::new(&claude);
+        cmd.arg("--print").arg(req.prompt);
+        if let Some(spp) = &system_prompt {
+            cmd.arg("--append-system-prompt").arg(&spp.body);
+        }
+        // Always pass `--model`. Defaults to `DEFAULT_MODEL` so each
+        // invocation is reproducible — relying on the agent CLI's
+        // ambient config means two devs on the same prompt can get
+        // different answers depending on whose `claude config` we ask.
+        let model = req.model.as_deref().unwrap_or(DEFAULT_MODEL);
+        cmd.arg("--model").arg(model);
+        cmd.arg("--no-chrome");
+        cmd.current_dir(req.root);
+
+        // Auth pass-through. `Command` already inherits env by default,
+        // so HOME is forwarded — but be explicit because it's a contract:
+        // a future `SandboxRuntime` will need to bind-mount $HOME/.claude/
+        // into the sandbox, and grepping for the env-var names here is
+        // how that future code will know which vars to plumb.
+        for var in [
+            "HOME",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "ANTHROPIC_API_KEY",
+        ] {
+            if let Ok(v) = std::env::var(var) {
+                cmd.env(var, v);
+            }
+        }
+
+        if req.dry_run {
+            print_dry_run(self.label(), &claude, req, system_prompt.as_ref(), run);
+            return Ok(0);
+        }
+
+        // Pipe both child streams so we can tee into the log file AND
+        // forward to the parent's stdout/stderr. The user sees output
+        // in real time; the log is a faithful rerun-able transcript.
+        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+        let mut child = cmd
+            .spawn()
+            .with_context(|| format!("spawn {}", claude.display()))?;
+        run.write_pid(child.id())?;
+        run.write_meta(req, self.label())?;
+
+        // Two background threads: one tee's stdout, the other stderr.
+        // Each appends to `log` and forwards to the corresponding
+        // parent fd. We open the log file twice (once per thread) so
+        // we don't need a Mutex around a single shared writer; each
+        // append is line-aligned-enough for a transcript.
+        let log_for_out = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&run.log_path)?;
+        let log_for_err = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&run.log_path)?;
+        let stdout = child.stdout.take().expect("piped stdout");
+        let stderr = child.stderr.take().expect("piped stderr");
+        let h_out = std::thread::spawn(move || tee(stdout, log_for_out, std::io::stdout()));
+        let h_err = std::thread::spawn(move || tee(stderr, log_for_err, std::io::stderr()));
+
+        let status = child.wait().context("wait on agent process")?;
+        let _ = h_out.join();
+        let _ = h_err.join();
+        Ok(status.code().unwrap_or(1))
+    }
+}
+
+/// Copy `src` into `log` AND `out` simultaneously, byte-for-byte.
+/// `log` and `out` are independent file handles; we don't need
+/// synchronization because each tee thread writes to its own log
+/// handle (POSIX guarantees per-write atomicity for small writes
+/// up to PIPE_BUF, which 4 KiB chunks comfortably fit under).
+fn tee<R: Read, A: Write, B: Write>(mut src: R, mut log: A, mut out: B) {
+    let mut buf = [0u8; 4096];
+    loop {
+        match src.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                let _ = log.write_all(&buf[..n]);
+                let _ = log.flush();
+                let _ = out.write_all(&buf[..n]);
+                let _ = out.flush();
+            }
+            Err(_) => break,
+        }
+    }
+}
+
+#[cfg(feature = "agent-sandbox")]
+pub struct SandboxRuntime;
+
+#[cfg(feature = "agent-sandbox")]
+impl AgentRuntime for SandboxRuntime {
+    fn label(&self) -> &'static str {
+        "microsandbox (v3.0 — stub)"
+    }
+    fn run(&self, _req: &AgentRequest<'_>, _run: &RunDir) -> Result<i32> {
+        anyhow::bail!(
+            "sandbox runtime is not yet implemented — see \
+             https://github.com/peterlodri-sec/crabcc/issues/62 (v3.0). \
+             For v2.5.x, omit `--sandbox` to use the host subprocess runtime."
+        )
+    }
+}
+
+struct SystemPrompt {
+    path: PathBuf,
+    body: String,
+}
+
+fn read_system_prompt(root: &Path) -> Option<SystemPrompt> {
+    for name in AGENTS_FILE_CANDIDATES {
+        let path = root.join(name);
+        if let Ok(body) = std::fs::read_to_string(&path) {
+            return Some(SystemPrompt { path, body });
+        }
+    }
+    None
+}
+
+fn print_dry_run(
+    runtime_label: &str,
+    binary: &Path,
+    req: &AgentRequest<'_>,
+    sp: Option<&SystemPrompt>,
+    run: &RunDir,
+) {
+    println!("crabcc agent — dry run (no agent invoked)");
+    println!("  runtime         : {runtime_label}");
+    println!("  binary          : {}", binary.display());
+    println!("  cwd             : {}", req.root.display());
+    println!("  run id          : {}", run.id);
+    println!("  run dir         : {}", run.dir.display());
+    println!("  log (tail -f)   : {}", run.log_path.display());
+    let model_resolved = req.model.as_deref().unwrap_or(DEFAULT_MODEL);
+    let model_origin = if req.model.is_some() {
+        "explicit"
+    } else {
+        "default"
+    };
+    println!("  model           : {model_resolved} ({model_origin})");
+    println!(
+        "  system prompt   : {}",
+        sp.map(|s| format!("{} ({} bytes)", s.path.display(), s.body.len()))
+            .unwrap_or_else(|| "(none — agent default)".to_string())
+    );
+    let preview: String = req.prompt.chars().take(160).collect();
+    let suffix = if req.prompt.chars().count() > 160 {
+        "…"
+    } else {
+        ""
+    };
+    println!(
+        "  prompt          : {} chars — \"{preview}{suffix}\"",
+        req.prompt.chars().count()
+    );
+    let auth_status = if std::env::var_os("HOME").is_some() {
+        "$HOME present (Claude Code auth at ~/.claude/ inherited)"
+    } else {
+        "$HOME unset — agent will fail to authenticate"
+    };
+    println!("  auth            : {auth_status}");
+    println!(
+        "  refresh first?  : {}",
+        if req.no_refresh { "no" } else { "yes" }
+    );
+    println!();
+    println!("(no spawn — re-run without `--dry-run` to actually invoke the agent)");
+}
+
+fn find_claude() -> Option<PathBuf> {
+    for name in ["claude", "claude-code"] {
+        if let Ok(path_var) = std::env::var("PATH") {
+            for dir in std::env::split_paths(&path_var) {
+                let candidate = dir.join(name);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn home_dir() -> Result<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow!("HOME not set; cannot locate ~/.crabcc/agents/"))
+}
+
+pub fn run(req: AgentRequest<'_>) -> Result<()> {
+    let home = home_dir()?;
+    let run_dir = RunDir::create(&home)?;
+    println!(
+        "crabcc agent: id={}  log={}",
+        run_dir.id,
+        run_dir.log_path.display()
+    );
+
+    // Skill check is cheap (one stat); print a hint when missing so a
+    // fresh dev who hasn't run `crabcc install-claude` yet gets a
+    // breadcrumb instead of a silently-uninformed agent. Don't auto-
+    // install — the install path needs the source repo, which the
+    // user may not have checked out at a stable location.
+    let skill = home.join(SKILL_RELATIVE_PATH);
+    if !skill.exists() && !req.dry_run {
+        eprintln!(
+            "crabcc agent: warning — skill not found at {}; \
+             run `crabcc install-claude` once to load the crabcc primer \
+             into Claude Code (the agent will still work, just without \
+             the auto-loaded skill)",
+            skill.display()
+        );
+    }
+
+    // Make sure the agent lands in a fully-initialized repo: index built,
+    // graph sidecar present, memory db open. We reuse `go::init` so the
+    // initialization contract is identical between `crabcc go` and
+    // `crabcc agent` — a future bump to either picks the other up.
+    if !req.dry_run {
+        let db = req.root.join(".crabcc").join("index.db");
+        if req.no_refresh {
+            // Honour --no-refresh literally: only open existing state,
+            // don't run a full_index even if .crabcc is missing. Agents
+            // that wrap `crabcc agent` in a script may have already
+            // brought the index up to date and want no extra work.
+            tracing::debug!("crabcc agent: --no-refresh set; skipping ensure-initialized");
+        } else {
+            match crate::go::init(req.root, &db) {
+                Ok(report) => {
+                    eprintln!(
+                        "crabcc agent: index ready ({} files, {} symbols, {} graph edges)",
+                        report.files_indexed, report.symbols, report.graph_edges
+                    );
+                }
+                Err(e) => {
+                    // Non-fatal — agent can still run without an index,
+                    // crabcc MCP will just return empty results. Surface
+                    // the error so the user knows why the agent's tool
+                    // calls aren't finding anything.
+                    eprintln!("crabcc agent: warning — init failed: {e:#}");
+                }
+            }
+        }
+    }
+
+    let runtime = SubprocessRuntime;
+    let result = runtime.run(&req, &run_dir);
+    run_dir.finalize();
+    let code = result?;
+    if code != 0 {
+        anyhow::bail!(
+            "agent exited with status {code} (logs: {})",
+            run_dir.log_path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn rundir_create_makes_lock_and_log() {
+        let home = tempdir().unwrap();
+        let run = RunDir::create(home.path()).unwrap();
+        assert!(run.dir.starts_with(home.path()));
+        assert!(run.dir.exists(), "run dir must exist");
+        assert!(run.lock_path.exists(), "lock must be present at start");
+        assert!(
+            run.log_path.exists(),
+            "log must be touched up-front for tail -f"
+        );
+        // ID shape: 16 lowercase hex chars.
+        assert_eq!(run.id.len(), 16, "id should be 16 hex chars: {}", run.id);
+        assert!(
+            run.id.chars().all(|c| c.is_ascii_hexdigit()),
+            "id should be hex: {}",
+            run.id
+        );
+    }
+
+    #[test]
+    fn rundir_finalize_removes_lock() {
+        let home = tempdir().unwrap();
+        let run = RunDir::create(home.path()).unwrap();
+        assert!(run.lock_path.exists());
+        run.finalize();
+        assert!(!run.lock_path.exists(), "finalize must remove lock");
+    }
+
+    #[test]
+    fn rundir_write_pid_persists_pid_file() {
+        let home = tempdir().unwrap();
+        let run = RunDir::create(home.path()).unwrap();
+        run.write_pid(12345).unwrap();
+        let body = std::fs::read_to_string(&run.pid_path).unwrap();
+        assert_eq!(body.trim(), "12345");
+    }
+
+    #[test]
+    fn rundir_write_meta_includes_prompt_preview_and_runtime() {
+        let home = tempdir().unwrap();
+        let root = tempdir().unwrap();
+        let run = RunDir::create(home.path()).unwrap();
+        let req = AgentRequest {
+            prompt: "tell me about Store::open",
+            root: root.path(),
+            dry_run: true,
+            model: Some("claude-sonnet-4-6".into()),
+            no_refresh: true,
+        };
+        run.write_meta(&req, "subprocess (host)").unwrap();
+        let body = std::fs::read_to_string(&run.meta_path).unwrap();
+        assert!(body.contains("Store::open"), "meta missing prompt: {body}");
+        assert!(body.contains("subprocess"), "meta missing runtime: {body}");
+        assert!(
+            body.contains("claude-sonnet-4-6"),
+            "meta missing model: {body}"
+        );
+    }
+
+    #[test]
+    fn generate_id_is_unique_across_calls() {
+        // Even at /dev/urandom failures, the timestamp+pid fallback
+        // varies across calls. We guard the test by sleeping for a
+        // submillisecond's worth of wall-clock between calls — enough
+        // for nanos to advance even on a fast loop.
+        let a = generate_id();
+        std::thread::sleep(std::time::Duration::from_micros(50));
+        let b = generate_id();
+        assert_ne!(a, b, "two consecutive ids should differ ({a} == {b})");
+        assert_eq!(a.len(), 16);
+        assert_eq!(b.len(), 16);
+    }
+
+    #[test]
+    fn read_system_prompt_finds_agents_md_at_root() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("AGENTS.md"), "be terse\n").unwrap();
+        let sp = read_system_prompt(dir.path()).expect("AGENTS.md should be picked up");
+        assert!(sp.path.ends_with("AGENTS.md"));
+        assert_eq!(sp.body, "be terse\n");
+    }
+
+    #[test]
+    fn read_system_prompt_falls_back_to_crabcc_dir() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".crabcc")).unwrap();
+        std::fs::write(
+            dir.path().join(".crabcc").join("AGENTS.md"),
+            "scoped to .crabcc\n",
+        )
+        .unwrap();
+        let sp = read_system_prompt(dir.path()).expect(".crabcc/AGENTS.md should be picked up");
+        assert!(sp.path.to_string_lossy().contains(".crabcc"));
+    }
+
+    #[test]
+    fn read_system_prompt_prefers_root_over_crabcc_dir() {
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".crabcc")).unwrap();
+        std::fs::write(dir.path().join("AGENTS.md"), "root wins\n").unwrap();
+        std::fs::write(
+            dir.path().join(".crabcc").join("AGENTS.md"),
+            "scoped loses\n",
+        )
+        .unwrap();
+        let sp = read_system_prompt(dir.path()).unwrap();
+        assert_eq!(sp.body, "root wins\n");
+    }
+
+    #[test]
+    fn read_system_prompt_returns_none_when_absent() {
+        let dir = tempdir().unwrap();
+        assert!(read_system_prompt(dir.path()).is_none());
+    }
+
+    #[test]
+    fn tee_copies_to_both_destinations() {
+        let mut log = Vec::<u8>::new();
+        let mut out = Vec::<u8>::new();
+        tee(&b"hello, world\n"[..], &mut log, &mut out);
+        assert_eq!(log, b"hello, world\n");
+        assert_eq!(out, b"hello, world\n");
+    }
+}
