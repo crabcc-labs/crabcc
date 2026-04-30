@@ -35,6 +35,13 @@ anyhow = "1"
 # loops). Mirrors what tantivy / serde_json already use internally.
 ahash = "0.8"
 clap = { version = "4", features = ["derive"] }
+# CommonMark / GFM parser by wooorm — same author as the unified /
+# micromark JS ecosystem. Pinned to v1.x; mdast node shape is stable
+# but we re-check on every minor bump (issue #54). Adopted as the
+# *only* markdown dep in the workspace — avoid pulldown-cmark and
+# comrak. Gated behind crabcc-core's `markdown` cargo feature so
+# default builds stay markdown-free.
+markdown = { version = "1", default-features = false }
 rusqlite = { version = "0.31", features = ["bundled"] }
 # v2.5.1 (#17) — bundled sqlite-vec C extension (FFI). Optional in
 # crabcc-memory under the `memory-vec` cargo feature. Linked statically;

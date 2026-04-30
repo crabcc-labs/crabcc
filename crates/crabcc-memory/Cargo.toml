@@ -29,6 +29,13 @@ simd-cosine = []
 # off the workspace ships zero ML deps and HashEmbedder remains the only
 # Embedder impl.
 memory-embed = ["dep:fastembed"]
+# v2.5.x (#54) — drawer-body sanitization via wooorm/markdown-rs.
+# When enabled, `Palace::remember_in_session` strips markdown syntax
+# (code fences, heading markers, list bullets) from `body` before
+# storage, so BM25/FTS5 ranks on content tokens — not on ` ``` ` /
+# `###` artefacts. Default OFF until measured against the recall@5
+# golden test from #20. Requires `crabcc-core/markdown`.
+markdown = ["crabcc-core/markdown"]
 
 [dependencies]
 # Reuse: hash::sha256_hex, store pragma pattern, walker/watch/fts in later phases.

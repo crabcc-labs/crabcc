@@ -1,0 +1,44 @@
+# cargo-deny configuration — banlist + license policy.
+#
+# Run locally: `cargo deny check bans` (after `cargo install cargo-deny`).
+# Wired into `task local-ci` once cargo-deny is bootstrapped on host.
+#
+# Issue #54 — keep markdown processing on a single dependency
+# (wooorm/markdown-rs, the `markdown` crate). Reject pulldown-cmark
+# and comrak so a future contributor can't quietly add a parallel
+# markdown stack.
+
+[graph]
+all-features = true
+
+[bans]
+# Hard-fail on any of these direct or transitive — pick `markdown`.
+deny = [
+    { name = "pulldown-cmark" },
+    { name = "comrak" },
+]
+# Allow multiple versions of the same crate by default; flip to
+# "deny" once we audit transitive trees.
+multiple-versions = "warn"
+# `wildcards = "deny"` would catch `version = "*"` deps. Our deps
+# are pinned via workspace, so leaving as warn is fine.
+wildcards = "warn"
+
+[licenses]
+# Permissive licenses we accept. `confidence-threshold = 0.8` makes
+# fuzzy SPDX matches require strong text overlap.
+allow = [
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MIT",
+    "MIT-0",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "Zlib",
+    "CC0-1.0",
+    "0BSD",
+]
+confidence-threshold = 0.8
