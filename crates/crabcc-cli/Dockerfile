@@ -87,6 +87,14 @@ RUN cargo build --release --bin crabcc --locked || true
 COPY crates/ crates/
 COPY apps/   apps/
 
+# Workspace-root-relative include_str! / include_bytes! targets. These
+# don't live under crates/ so they need explicit COPY directives:
+#   - crates/crabcc-core/src/store.rs:6  → ../../../schema/001_init.sql
+#   - crates/crabcc-memory/src/backend/sqlite.rs:25 → ../../schema/001_init.sql
+#   - crates/crabcc-cli/src/install.rs   → ../../../install/{hooks-claude.json, ollama-stack/*}
+COPY schema/  schema/
+COPY install/ install/
+
 # Touch every workspace member's src to force re-build of the workspace
 # crates only (deps stay cached from above). Without this, `cargo`
 # sometimes thinks the stub src is fresher than the real one.
