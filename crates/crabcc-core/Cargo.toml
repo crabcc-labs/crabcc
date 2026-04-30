@@ -29,6 +29,12 @@ markdown = ["dep:markdown"]
 # methodology recommendation: tokio enters the workspace ONLY through
 # this feature, never workspace-wide.
 jobs = ["dep:tokio", "dep:redis"]
+# Issue #161 — gates the testcontainers-rs e2e suite for
+# `service_discovery`. Default OFF; spinning up Docker containers on
+# every `cargo test` would defeat fast unit-test feedback. Run with
+#   cargo test --features testcontainers -p crabcc-core --test service_discovery_e2e
+# Requires Docker (or OrbStack on macOS) on the host.
+testcontainers = []
 
 [dependencies]
 ahash = { workspace = true }
@@ -64,6 +70,14 @@ redis = { workspace = true, optional = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 criterion = "0.5"
+# Issue #161 — testcontainers-rs e2e for service_discovery. Pulled
+# in unconditionally as dev-deps; the actual test files are gated by
+# `#[cfg(feature = "testcontainers")]` so a default `cargo test`
+# doesn't compile or run them.
+testcontainers = "0.27"
+testcontainers-modules = { version = "0.15", features = ["redis"] }
+serial_test = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 
 # Wired now so `cargo bench` finds Agent C's harness once `benches/symbols.rs`
 # lands (T71). Gated behind the `bench` feature so `cargo check --benches`

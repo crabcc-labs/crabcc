@@ -44,6 +44,39 @@ tasks:
     cmds:
       - "{{.CARGO}} test --workspace"
 
+  test-e2e:
+    desc: Run the testcontainers e2e suite (#161). Requires Docker. Pass FORCE=1 to first free common service ports.
+    summary: |
+      Spins up real Redis (and, in Phase 2, Ollama + LiteLLM) via
+      testcontainers-rs and asserts `service_discovery::discover_all()`
+      surfaces them correctly.
+
+      Pass FORCE=1 to kill any host-side process on the standard service
+      ports before running — useful when a prior crash left a stale
+      container, or a host-side `redis-server` is squatting on 6379:
+
+        task test-e2e FORCE=1
+
+      Without FORCE, the suite uses ephemeral host ports (so port
+      conflicts are rare) but the safety net is here for the bad days.
+    vars:
+      FORCE: '{{.FORCE | default ""}}'
+    preconditions:
+      - sh: 'command -v docker >/dev/null'
+        msg: "Docker not on PATH — install OrbStack (macOS) or Docker Engine (Linux)"
+    cmds:
+      - cmd: |
+          if [ -n "{{.FORCE}}" ]; then
+            for port in 6379 11434 11435 4000 4317 4318; do
+              pids=$(lsof -ti tcp:$port 2>/dev/null || true)
+              if [ -n "$pids" ]; then
+                echo "force-closing pids $pids on port $port"
+                echo "$pids" | xargs kill -9 2>/dev/null || true
+              fi
+            done
+          fi
+      - "{{.CARGO}} test --features testcontainers -p crabcc-core --test service_discovery_e2e"
+
   fmt:
     desc: Format all Rust files
     cmds:
