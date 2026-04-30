@@ -1,0 +1,125 @@
+# Dev-loop tasks: build, test, lint, fmt, smoke, coverage, fuzz, agent-status.
+# Included into the root Taskfile via `includes: build:` with flatten:true,
+# so task names stay flat (e.g. `task build`, not `task build:build`).
+version: '3'
+
+vars:
+  CARGO: cargo
+  CRABCC: ~/.cargo/bin/crabcc
+
+tasks:
+  build:
+    desc: Release build (LTO=fat — slower compile, ~5–10% faster runtime)
+    cmds:
+      - "{{.CARGO}} build --release"
+
+  build-fast:
+    desc: Iteration-friendly build (-O1, minimal debug info, ~half the time)
+    cmds:
+      - "{{.CARGO}} build --profile dev-fast"
+
+  build-native:
+    desc: Native-CPU release build (issue #112) — local-only; do NOT ship
+    summary: |
+      Builds with the `release-native` profile (inherits from `release`)
+      plus `RUSTFLAGS=-C target-cpu=native`. Lets LLVM specialise on
+      every instruction set the local CPU exposes (AVX2/AVX-512/NEON/...).
+      The resulting binary is faster (~5-15% on hot paths in our benches)
+      but will SIGILL on any CPU that doesn't share the same feature set.
+
+      Use for personal dev builds and local benchmarks ONLY. The
+      published release binary stays portable (plain `task build`).
+    cmds:
+      - 'RUSTFLAGS="-C target-cpu=native" {{.CARGO}} build --profile release-native'
+      - 'echo "Built with target-cpu=native — local use only, do not redistribute"'
+
+  test:
+    desc: Run all 60 unit tests across the workspace
+    cmds:
+      - "{{.CARGO}} test --workspace"
+
+  fmt:
+    desc: Format all Rust files
+    cmds:
+      - "{{.CARGO}} fmt --all"
+
+  fmt-check:
+    desc: Check formatting without modifying files (CI gate)
+    cmds:
+      - "{{.CARGO}} fmt --all -- --check"
+
+  lint:
+    desc: Strict clippy — fails on any warning
+    cmds:
+      - "{{.CARGO}} clippy --workspace --all-targets -- -D warnings"
+
+  chore:
+    desc: All-in-one DX chore — fmt, lint, test, dmg, doctor. Use before opening a release PR.
+    summary: |
+      Runs the full validation chain that gates a release-ready PR:
+      fmt-check → clippy (-D warnings) → tests → DMG build →
+      doctor --quiet. Each step short-circuits on failure so you see
+      the first thing that broke. Stand-alone — does not run prep-pr
+      or write any artifacts beyond dist/crabcc-<version>.dmg.
+    cmds:
+      - task: fmt-check
+      - task: lint
+      - task: test
+      - task: dmg
+      - task: doctor
+      - task: agent-status
+
+  agent-status:
+    desc: Snapshot of the singleton agent-runs DB — active, recent, and kill events.
+    cmds:
+      - "{{.CRABCC}} agent-ls --limit 10"
+      - "{{.CRABCC}} agent-kills --limit 10"
+
+  ci:
+    desc: Local CI dry-run — fmt + clippy + test + smoke
+    cmds:
+      - task: fmt-check
+      - task: lint
+      - task: test
+      - task: smoke
+      - task: memory-smoke
+
+  smoke:
+    desc: Index a tiny fixture + assert sym/callers/refs return data
+    deps: [install]
+    cmds:
+      - |
+        mkdir -p /tmp/crabcc-smoke
+        cat > /tmp/crabcc-smoke/a.ts <<'EOF'
+        export function hello(name: string) { return name; }
+        hello("world");
+        EOF
+      - "( cd /tmp/crabcc-smoke && {{.CRABCC}} index >/dev/null )"
+      - "{{.CRABCC}} --root /tmp/crabcc-smoke sym hello | jq -e '.[0].name == \"hello\"'"
+      - "{{.CRABCC}} --root /tmp/crabcc-smoke callers hello --count | jq -e '.count >= 1'"
+      - rm -rf /tmp/crabcc-smoke
+
+  fuzz-check:
+    desc: Compile-check the cargo-fuzz target (full run requires nightly + cargo-fuzz)
+    cmds:
+      - "(cd crates/crabcc-core/fuzz && {{.CARGO}} check)"
+
+  coverage:
+    desc: Generate code-coverage report (cargo-llvm-cov). FORMAT=html (default), lcov, text, or json
+    summary: |
+      Auto-installs cargo-llvm-cov on first run. Output lands in
+      .summary/coverage/ (html, lcov.info, coverage.json). Use FORMAT=text
+      for a quick console summary.
+    vars:
+      FORMAT: '{{.FORMAT | default "html"}}'
+    cmds:
+      - 'command -v cargo-llvm-cov >/dev/null 2>&1 || {{.CARGO}} install cargo-llvm-cov --locked'
+      - 'mkdir -p .summary/coverage'
+      - 'bash scripts/coverage.sh {{.FORMAT}}'
+
+  verify-gate:
+    desc: Local re-run of the v2.0.0-alpha release gate (lint + test + bench-compress)
+    cmds:
+      - task: lint
+      - task: test
+      - task: bench-compress

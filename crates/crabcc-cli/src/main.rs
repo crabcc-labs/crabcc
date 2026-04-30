@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 mod agent;
 mod agent_guard;
+mod agent_profile;
 mod agent_runs_db;
 mod compress_cmd;
 mod doctor;
@@ -304,6 +305,15 @@ enum Cmd {
         /// auto-brought-up before spawn via `ollama_stack::ensure_up`.
         #[arg(long, value_name = "BACKEND", default_value = "claude")]
         backend: String,
+        /// Internal-agent profile to load (issue #112 follow-up). Pass
+        /// `internal/<name>` to load the matching profile from
+        /// internal_agents/. The shared preamble + per-crate prompt are
+        /// composed and fed into --append-system-prompt; the profile's
+        /// [env] block is exported to the spawned agent. Built-ins:
+        /// internal/crabcc-core, internal/crabcc-cli, internal/crabcc-mcp,
+        /// internal/crabcc-memory, internal/crabcc-viz.
+        #[arg(long, value_name = "NAME")]
+        profile: Option<String>,
     },
     /// Start the localhost call-graph viewer (issue #64). Binds to
     /// 127.0.0.1 by default — pass `--bind 0.0.0.0` only on a trusted
@@ -678,17 +688,39 @@ fn main() -> Result<()> {
         model,
         no_refresh,
         backend,
+        profile,
     }) = cli.cmd.as_ref()
     {
         let backend = agent::Backend::from_str(backend)?;
-        return agent::run(agent::AgentRequest {
-            prompt: run,
-            root: &root,
-            dry_run: *dry_run,
-            model: model.clone(),
-            no_refresh: *no_refresh,
-            backend,
-        });
+
+        // Resolve the optional internal-agent profile. The CLI accepts
+        // `--profile internal/<name>`; bare names without the namespace
+        // prefix are rejected so a future `customer/<name>` form has a
+        // clean place to land.
+        let loaded_profile = match profile.as_deref() {
+            None => None,
+            Some(p) => {
+                let id = agent_profile::parse_internal_profile_id(p).ok_or_else(|| {
+                    anyhow::anyhow!("--profile must use the 'internal/<name>' form (got '{p}')")
+                })?;
+                Some(agent_profile::load(&root, id)?)
+            }
+        };
+        let model_override = model
+            .clone()
+            .or_else(|| loaded_profile.as_ref().and_then(|p| p.model.clone()));
+
+        return agent::run_with_profile(
+            agent::AgentRequest {
+                prompt: run,
+                root: &root,
+                dry_run: *dry_run,
+                model: model_override,
+                no_refresh: *no_refresh,
+                backend,
+            },
+            loaded_profile,
+        );
     }
 
     // agent-ls / agent-guard / agent-kills — no Store needed, all read

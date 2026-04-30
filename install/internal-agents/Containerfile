@@ -1,0 +1,60 @@
+# Containerfile — internal-agents runner.
+#
+# OCI-standard image used by both Apple `container` (preferred on
+# macOS arm64; Mac-native via Virtualization.framework) and Docker /
+# Podman elsewhere. Single Containerfile, no platform forks.
+#
+# Build:
+#   container build -t crabcc-internal-agents:dev -f install/internal-agents/Containerfile .
+#   # (or `docker build` — same syntax)
+#
+# Run a single per-crate agent:
+#   container run --rm -it \
+#       -v "$PWD":/workspace \
+#       -e CRABCC_PROFILE=internal/crabcc-core \
+#       crabcc-internal-agents:dev
+
+# Multi-arch base. Apple `container` natively lands on arm64; the
+# linux/amd64 variant exists for the rare CI runner that's x86.
+FROM --platform=$BUILDPLATFORM rust:1.86-slim AS toolchain
+
+# System deps. We keep the surface tiny — agents call out to host
+# `claude` / `gh` which are bind-mounted at run time, not baked in.
+RUN apt-get update -qq && apt-get install -y --no-install-recommends \
+        bash \
+        ca-certificates \
+        curl \
+        git \
+        sqlite3 \
+        jq \
+        ripgrep \
+        fd-find \
+        gh \
+    && rm -rf /var/lib/apt/lists/*
+
+# Repomix for per-crate bundle generation. Pinned to the same major as
+# the host to avoid surprises across profile-driven runs.
+RUN curl -fsSL https://nodejs.org/dist/v20.18.1/node-v20.18.1-linux-arm64.tar.xz \
+    | tar -xJ -C /usr/local --strip-components=1 \
+    || curl -fsSL https://nodejs.org/dist/v20.18.1/node-v20.18.1-linux-x64.tar.xz \
+       | tar -xJ -C /usr/local --strip-components=1
+RUN npm i -g repomix@1
+
+# go-task — `task <profile>` entry point inside the container.
+RUN curl -fsSL https://taskfile.dev/install.sh | sh -s -- -b /usr/local/bin
+
+# Workspace mount point. Compose maps the host repo here.
+WORKDIR /workspace
+
+# Default cargo cache lives on a named volume in compose.yml so per-agent
+# runs share dep compiles (~5x faster on warm cache).
+ENV CARGO_HOME=/cargo \
+    CARGO_TARGET_DIR=/workspace/target \
+    CRABCC_NO_HINT=1
+
+# Default entrypoint launches the agent specified by CRABCC_PROFILE.
+# Compose typically overrides this per-service; the default is the
+# crabcc-core specialist for ad-hoc `container run` use.
+ENV CRABCC_PROFILE=internal/crabcc-core
+ENTRYPOINT ["bash", "-c", "crabcc agent --profile \"$CRABCC_PROFILE\" --run \"$@\"", "crabcc-internal-agents"]
+CMD ["help me audit the crate I own — start with the Done = green checklist"]

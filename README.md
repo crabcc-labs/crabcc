@@ -318,6 +318,85 @@ cd bench && python3 raw-bench.py /path/to/your/repo && python3 visualize.py
 
 ---
 
+## Internal agents (per-crate specialists)
+
+`crabcc agent --profile internal/<name>` loads a per-crate agent profile
+from `internal_agents/`. Each profile pairs a TOML config (model,
+max-iterations, env, gate commands) with a Markdown system prompt that
+specialises an agent for one crate. Five profiles ship today:
+
+| Profile | Owns | Bench gates |
+|---|---|---|
+| `internal/crabcc-core`   | indexing + storage + query primitives | `task bench-compress`, `task bench` |
+| `internal/crabcc-cli`    | clap surface + agent runtime + manager | — |
+| `internal/crabcc-mcp`    | stdio MCP server + tool surface | `cargo bench -p crabcc-mcp` |
+| `internal/crabcc-memory` | AI memory layer + miners + embedders | `task memory-bench` |
+| `internal/crabcc-viz`    | localhost dashboard + sync HTTP | — |
+
+Each profile pulls in `internal_agents/shared.agent.md` as a preamble
+(rebase-first workflow, lint/test/PR contract, manager coordination).
+Missing profiles error hard with the available list — typos never
+silently fall through to "no profile". Profile env (default
+`CRABCC_BUILD_PROFILE=release-native`) is exported to the spawned
+agent's child process.
+
+```bash
+# Drive a single crate-specialist on the host:
+crabcc agent --profile internal/crabcc-core --run "audit hot loops in extract.rs"
+
+# Per-crate repomix bundle (much smaller than full repo) for the agent:
+task repomix-crate CRATE=crabcc-core
+```
+
+### Running all five in parallel via Apple `container`
+
+[Apple's `container`](https://github.com/apple/container) is a Mac-native
+OCI runtime backed by Virtualization.framework — drop-in for Docker on
+arm64. The bundled `install/internal-agents/{Containerfile,compose.yml}`
+work with both.
+
+```bash
+# 1. Install Apple container (one-time, macOS 15+):
+brew install apple/container/container          # Homebrew tap
+# Or from the official release: https://github.com/apple/container/releases
+
+# 2. Build the image (uses the BuildKit-style Containerfile):
+container build -t crabcc-internal-agents:dev \
+    -f install/internal-agents/Containerfile .
+
+# 3. Bring up all five per-crate agents:
+container compose -f install/internal-agents/compose.yml up
+
+# 4. Stream one agent's logs:
+container compose -f install/internal-agents/compose.yml logs -f crabcc-core
+
+# 5. Bash into a running agent:
+container exec -it crabcc-agent-core bash
+
+# 6. Tear down:
+container compose -f install/internal-agents/compose.yml down
+```
+
+Same compose file works under Docker / Podman without changes — every
+service entry is OCI-compatible, no Apple-specific keys.
+
+### Verifying agents work inside the container
+
+The `Containerfile` bakes in `cargo`, `task`, `gh`, `repomix`, plus a
+`CARGO_HOME=/cargo` named volume so agents share dep compiles
+(~5× faster on a warm cache). Quick smoke:
+
+```bash
+container run --rm \
+    -v "$PWD":/workspace \
+    -e CRABCC_PROFILE=internal/crabcc-core \
+    crabcc-internal-agents:dev \
+    "noop"           # runs `crabcc agent --profile internal/crabcc-core --run noop`
+```
+
+A successful run prints `crabcc agent: id=<hex>` and writes a row to
+`~/.crabcc/_internal.db` (host-visible because the repo is bind-mounted).
+
 ## Architecture
 
 ```
@@ -325,7 +404,10 @@ crates/crabcc-core/   ← extraction, indexing, queries, FTS, tracking
 crates/crabcc-cli/    ← clap CLI; Cmd dispatcher
 crates/crabcc-mcp/    ← stdio JSON-RPC 2.0 MCP server
 crates/crabcc-memory/ ← Palace facade, Backend + Embedder traits, hybrid search
+crates/crabcc-viz/    ← localhost call-graph dashboard (issue #64)
 schema/001_init.sql   ← SQLite schema (files, symbols, edges)
+internal_agents/      ← per-crate agent profiles + system prompts (Ask B)
+installer/Crabcc.app/ ← macOS .app bundle (issue #107)
 skill/crabcc/         ← Claude Code skill (auto-routing rules)
 commands/             ← Claude Code slash commands
 bench/                ← raw-CLI A/B benchmark harness + visualize
