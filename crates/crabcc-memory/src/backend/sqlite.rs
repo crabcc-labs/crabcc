@@ -79,6 +79,39 @@ impl SqliteBackend {
             )?;
         }
 
+        // v2.5.3 (#19) — `drawer_embeddings.embedding_model` + `embedded_at`.
+        // Prep for sqlite-vec (M0.5, #17) and fastembed-rs (M1, #18) cohabiting
+        // with the M0 hash embedder. Defaults map old rows to 'hash-m0' / 0,
+        // which is correct: every pre-2.5.3 vector came from `HashEmbedder`.
+        let has_emb_model: bool = conn
+            .query_row(
+                "SELECT 1 FROM pragma_table_info('drawer_embeddings') WHERE name = 'embedding_model'",
+                [],
+                |_| Ok(true),
+            )
+            .optional()?
+            .unwrap_or(false);
+        if !has_emb_model {
+            conn.execute(
+                "ALTER TABLE drawer_embeddings ADD COLUMN embedding_model TEXT NOT NULL DEFAULT 'hash-m0'",
+                [],
+            )?;
+        }
+        let has_emb_at: bool = conn
+            .query_row(
+                "SELECT 1 FROM pragma_table_info('drawer_embeddings') WHERE name = 'embedded_at'",
+                [],
+                |_| Ok(true),
+            )
+            .optional()?
+            .unwrap_or(false);
+        if !has_emb_at {
+            conn.execute(
+                "ALTER TABLE drawer_embeddings ADD COLUMN embedded_at INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+
         let _ = conn.execute_batch("PRAGMA optimize;");
 
         // Codec discovery — sibling `fsst.symbols` next to the DB. Same shape
@@ -706,6 +739,88 @@ mod tests {
             h.join().unwrap();
         }
         assert_eq!(b.count().unwrap(), 50);
+    }
+
+    // v2.5.3 (#19) — drawer_embeddings schema migration tests.
+
+    #[test]
+    fn migration_adds_embedding_model_and_embedded_at_to_pre_existing_db() {
+        // Pre-2.5.3 dbs have a `drawer_embeddings` table without the
+        // `embedding_model` / `embedded_at` columns. SqliteBackend::open
+        // must detect the missing columns and ALTER them in.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("memory.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE drawer_embeddings (
+                    drawer_id INTEGER PRIMARY KEY,
+                    dim       INTEGER NOT NULL,
+                    bytes     BLOB    NOT NULL
+                 );",
+            )
+            .unwrap();
+        }
+
+        let _ = SqliteBackend::open(&path).unwrap();
+
+        let probe = Connection::open(&path).unwrap();
+        let cols: Vec<String> = probe
+            .prepare("SELECT name FROM pragma_table_info('drawer_embeddings')")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(
+            cols.iter().any(|c| c == "embedding_model"),
+            "embedding_model column missing after open; got: {cols:?}"
+        );
+        assert!(
+            cols.iter().any(|c| c == "embedded_at"),
+            "embedded_at column missing after open; got: {cols:?}"
+        );
+    }
+
+    #[test]
+    fn migration_idempotent_on_repeat_open() {
+        // ALTER TABLE ADD COLUMN must not error when re-running on a db that
+        // already has the columns. Open three times back-to-back.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("memory.db");
+        let _ = SqliteBackend::open(&path).unwrap();
+        let _ = SqliteBackend::open(&path).unwrap();
+        let _ = SqliteBackend::open(&path).unwrap();
+    }
+
+    #[test]
+    fn embedding_columns_default_for_new_rows() {
+        // New inserts (via the M0 add path) don't explicitly set the new
+        // columns yet — that's #18's job. Confirm the SQL DEFAULTs land
+        // 'hash-m0' / 0 so existing add() callers stay correct.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("memory.db");
+        let b = SqliteBackend::open(&path).unwrap();
+        let e = HashEmbedder::new();
+        let id = b.add(&[ins(&e, "src", "body", "wing-d")]).unwrap()[0];
+
+        let probe = Connection::open(&path).unwrap();
+        let model: String = probe
+            .query_row(
+                "SELECT embedding_model FROM drawer_embeddings WHERE drawer_id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(model, "hash-m0");
+        let at: i64 = probe
+            .query_row(
+                "SELECT embedded_at FROM drawer_embeddings WHERE drawer_id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(at, 0);
     }
 
     #[cfg(feature = "compress")]
