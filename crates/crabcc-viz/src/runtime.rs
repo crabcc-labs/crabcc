@@ -89,17 +89,10 @@ pub fn ensure_initialized(root: &Path) -> Result<InitOutcome> {
         out.drawers = palace.count().unwrap_or(0);
     }
 
-    // Service-discovery sidecar (issue #143) — write the resolved URLs +
-    // reachability snapshot to `.crabcc/services.json` so other processes
-    // on the same host (telegram bot, jobs-worker, future Apple Container
-    // sidecar) can read what we resolved without invoking the discovery
-    // module themselves. Best-effort: don't fail serve init if the write
-    // fails (could be readonly fs in a container).
-    let services_path = crabcc_dir.join("services.json");
+    // Service-discovery sidecar (issue #143). Best-effort — readonly fs
+    // in a container shouldn't break serve init.
     let report = crabcc_core::service_discovery::discover_all();
-    if let Ok(s) = serde_json::to_string_pretty(&report) {
-        let _ = std::fs::write(&services_path, s);
-    }
+    let _ = crabcc_core::service_discovery::write_sidecar(root, &report);
 
     Ok(out)
 }
@@ -267,17 +260,10 @@ mod tests {
         assert!(outcome.created_graph);
         assert!(dir.path().join(".crabcc/index.db").exists());
         assert!(dir.path().join(".crabcc/graph.json").exists());
-        // Issue #143 — services.json should land alongside the other
-        // sidecars on serve init. Best-effort write; assert it parses
-        // back to a DiscoveryReport.
-        let services_path = dir.path().join(".crabcc/services.json");
-        assert!(services_path.exists(), "services.json should be written");
-        let body = std::fs::read_to_string(&services_path).unwrap();
-        let report: crabcc_core::service_discovery::DiscoveryReport =
-            serde_json::from_str(&body).expect("services.json must parse");
-        assert!(
-            !report.services.is_empty(),
-            "services.json must list at least one service"
-        );
+        // Issue #143 — services.json sidecar round-trips through the
+        // service_discovery public API.
+        let report =
+            crabcc_core::service_discovery::read_sidecar(dir.path()).expect("services.json");
+        assert!(!report.services.is_empty());
     }
 }

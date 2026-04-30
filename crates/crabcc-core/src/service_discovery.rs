@@ -17,6 +17,7 @@
 //! vars (`REDIS_URL`, `OLLAMA_HOST`, …) always win over the compose default.
 
 use std::net::{TcpStream, ToSocketAddrs};
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -238,6 +239,37 @@ pub fn probe_service(svc: &Service) -> ServiceStatus {
             }
         }
     }
+}
+
+/// Filename of the on-disk sidecar written by `crabcc serve` (issue #143).
+/// Lives at `<repo>/.crabcc/services.json`.
+pub const SIDECAR_FILE: &str = "services.json";
+
+/// Resolve the canonical sidecar path under `<repo>/.crabcc/`.
+pub fn sidecar_path(repo_root: &Path) -> PathBuf {
+    repo_root.join(".crabcc").join(SIDECAR_FILE)
+}
+
+/// Persist a discovery report to `<repo>/.crabcc/services.json`.
+/// Best-effort: returns `Err` only if both the parent dir and the write
+/// failed. Used by `crabcc serve` startup so other host processes can
+/// read what we resolved without re-running the probe themselves.
+pub fn write_sidecar(repo_root: &Path, report: &DiscoveryReport) -> std::io::Result<PathBuf> {
+    let path = sidecar_path(repo_root);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let body = serde_json::to_string_pretty(report)
+        .map_err(|e| std::io::Error::other(format!("serialize: {e}")))?;
+    std::fs::write(&path, body)?;
+    Ok(path)
+}
+
+/// Read a previously-written sidecar back into a `DiscoveryReport`.
+pub fn read_sidecar(repo_root: &Path) -> std::io::Result<DiscoveryReport> {
+    let path = sidecar_path(repo_root);
+    let body = std::fs::read_to_string(&path)?;
+    serde_json::from_str(&body).map_err(|e| std::io::Error::other(format!("parse: {e}")))
 }
 
 /// Discover + probe every known service. Bounded by `PROBE_TIMEOUT` per
