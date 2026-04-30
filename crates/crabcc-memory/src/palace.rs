@@ -341,6 +341,28 @@ impl Palace {
     pub fn health(&self) -> HealthStatus {
         self.backend.health()
     }
+
+    /// Walk a directory and ingest one drawer per text file. Thin wrapper
+    /// over [`crate::mine::project::mine_project`] kept on `Palace` so
+    /// callers stay on the recommended facade.
+    pub fn mine_project(
+        &self,
+        path: &Path,
+        opts: &crate::mine::project::MineProjectOpts,
+    ) -> Result<crate::mine::MineReport> {
+        crate::mine::project::mine_project(self, path, opts)
+    }
+
+    /// Walk a directory of Claude Code JSONL transcripts and ingest one
+    /// drawer per `(user, assistant)` turn pair. See
+    /// [`crate::mine::sessions::mine_sessions`].
+    pub fn mine_sessions(
+        &self,
+        dir: &Path,
+        opts: &crate::mine::sessions::MineSessionsOpts,
+    ) -> Result<crate::mine::MineReport> {
+        crate::mine::sessions::mine_sessions(self, dir, opts)
+    }
 }
 
 /// Walk up from `start` looking for `.git/`. Returns the first ancestor

@@ -168,34 +168,10 @@ tasks:
 
   viz:
     desc: |
-      Start the localhost call-graph viewer (issue #64). Uses a debug
-      build — the LTO=fat release was costing 60s+ for an interactive
-      demo whose hot path is IO-bound anyway. Makes sure the index +
-      graph sidecar exist, then opens the browser.
-      Pass PORT=NNNN to override the default 7878. Pass NO_OPEN=1 to
-      skip the auto-browser-open (useful over SSH or in test loops).
-      For a release-quality binary, use `task viz-release`.
-    vars:
-      PORT: '{{.PORT | default "7878"}}'
-      NO_OPEN: '{{.NO_OPEN | default ""}}'
-    cmds:
-      - "{{.CARGO}} build"
-      - |
-        set -e
-        if [ ! -f .crabcc/index.db ]; then
-          echo "no .crabcc/index.db — building one now…" >&2
-          ./target/debug/crabcc index >/dev/null
-        fi
-        if [ ! -f .crabcc/graph.json ]; then
-          echo "no .crabcc/graph.json — building call-graph sidecar…" >&2
-          ./target/debug/crabcc graph build >/dev/null
-        fi
-        ARGS="--port {{.PORT}}"
-        if [ -n "{{.NO_OPEN}}" ]; then ARGS="$ARGS --no-open"; fi
-        exec ./target/debug/crabcc serve $ARGS
-
-  viz-release:
-    desc: Same as `task viz` but with a release-built binary (LTO=fat).
+      Start the localhost call-graph viewer (issue #64). Builds release,
+      makes sure the index + graph sidecar exist, then opens the browser.
+      Pass PORT=NNNN to override the default 7878. Pass NO_OPEN=1 to skip
+      the auto-browser-open (useful over SSH or in test loops).
     deps: [build]
     vars:
       PORT: '{{.PORT | default "7878"}}'
@@ -203,8 +179,14 @@ tasks:
     cmds:
       - |
         set -e
-        if [ ! -f .crabcc/index.db ]; then ./target/release/crabcc index >/dev/null; fi
-        if [ ! -f .crabcc/graph.json ]; then ./target/release/crabcc graph build >/dev/null; fi
+        if [ ! -f .crabcc/index.db ]; then
+          echo "no .crabcc/index.db — building one now…" >&2
+          ./target/release/crabcc index >/dev/null
+        fi
+        if [ ! -f .crabcc/graph.json ]; then
+          echo "no .crabcc/graph.json — building call-graph sidecar…" >&2
+          ./target/release/crabcc graph build >/dev/null
+        fi
         ARGS="--port {{.PORT}}"
         if [ -n "{{.NO_OPEN}}" ]; then ARGS="$ARGS --no-open"; fi
         exec ./target/release/crabcc serve $ARGS
@@ -284,46 +266,23 @@ tasks:
       - test -f /tmp/crabcc-mem-smoke/.crabcc/memory.db
       - rm -rf /tmp/crabcc-mem-smoke
 
-  aliases-smoke:
-    desc: Smoke — install-aliases.sh emits expected --aggressive verbs + idempotent
+  memory-bench:
+    desc: |
+      LongMemEval R@k bench gate (issue #2). Runs the bundled synthetic
+      fixture by default; pass DATASET=path/to/longmemeval_oracle.json to
+      run against the real held-out 450q set.
+    vars:
+      DATASET: '{{.DATASET | default ""}}'
+      THRESHOLD: '{{.THRESHOLD | default "0.966"}}'
+      MODE: '{{.MODE | default ""}}'
     cmds:
-      - bash scripts/aliases-smoke.sh
-
-  install-hooks:
-    desc: Install the local pre-commit hook (symlink — auto-updates with the repo)
-    cmds:
-      - bash scripts/install-hooks.sh
-
-  install-aliases:
-    desc: Install minimal shell aliases (rg/fd/bat/eza + cc/ccs/ccr verbs)
-    cmds:
-      - bash scripts/install-aliases.sh
-
-  install-aliases-aggressive:
-    desc: Install aggressive aliases (sym/refs/callers/gr) into both zsh + bash
-    cmds:
-      - bash scripts/install-aliases.sh --aggressive --all-shells
-
-  pre-commit-fast:
-    desc: Fast pre-commit gate — fmt-check + clippy + aliases-smoke (~10s, no tests)
-    summary: |
-      Sub-15s gate intended for pre-commit hooks and CI fast-check.
-      Runs fmt-check, clippy (no --all-features to stay on stable), and
-      aliases-smoke. Skips the test suite — that's `task ci` / `task local-ci`.
-    cmds:
-      - task: fmt-check
-      - task: lint
-      - task: aliases-smoke
-
-  pre-commit-fix:
-    desc: Pre-PR autofix — cargo fmt + clippy --fix + aliases-smoke
-    summary: |
-      Run before opening a PR. Applies cargo fmt and clippy auto-fixes
-      to the working tree, then re-runs the fast gate to verify clean.
-    cmds:
-      - "{{.CARGO}} fmt --all"
-      - "{{.CARGO}} clippy --workspace --all-targets --fix --allow-dirty --allow-staged -- -D warnings"
-      - task: aliases-smoke
+      - mkdir -p target/bench
+      - >-
+        cargo run --release -p crabcc-memory-bench --
+        {{if .DATASET}}--dataset {{.DATASET}}{{end}}
+        {{if .MODE}}--mode {{.MODE}}{{end}}
+        --threshold {{.THRESHOLD}}
+        --output target/bench/memory.ndjson
 
   ci:
     desc: Local CI dry-run — fmt + clippy + test + smoke
@@ -333,7 +292,6 @@ tasks:
       - task: test
       - task: smoke
       - task: memory-smoke
-      - task: aliases-smoke
 
   local-ci:
     desc: Full local CI — mirrors GH workflow + prep-pr; pass/fail summary table

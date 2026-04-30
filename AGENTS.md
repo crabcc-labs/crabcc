@@ -116,9 +116,20 @@ callers don't need to upsert sessions explicitly.
 `prefix`) is opt-in via `CRABCC_AUTO_MEMORY=1`. Off by default, zero
 overhead. Set the env var to have queries quietly accumulate as drawers.
 
-Memory roadmap: M0 (trait + persistent backend, merged) → M0.5 (sqlite-vec
-ANN) → M1 (fastembed-rs real embeddings + miner; LongMemEval R@5 ≥ 96.6%
-gate) → M2 (BM25 hybrid) → M3 (full CLI/MCP surface) → M4 (KG ops). See
+**Bulk ingest (M2):** `crabcc memory mine project [PATH]` walks a
+repository via `crabcc_core::walker::walk_repo` and stores one drawer
+per text file under `wing="proj"`. `crabcc memory mine sessions [DIR]`
+parses Claude Code JSONL transcripts (defaults to
+`$HOME/.claude/projects/`) and stores one drawer per
+`(user, assistant)` turn pair under `wing="session"`. Both are
+idempotent — the existing `(source_id, sha256)` UNIQUE constraint
+on `drawers` makes re-runs return the same id without inserting.
+
+Memory roadmap status (issue #2): M0 (persistent backend) ✅ → M0.5
+(`sqlite-vec` ANN, `--features memory-vec`) ✅ → M1a (FTS5 BM25 + RRF
+hybrid) ✅ → M1b (`fastembed-rs`, `--features memory-embed`) ✅ → M2
+(miners) ✅ → bench gate (`task memory-bench`, ≥ 96.6% R@5 on synthetic
+fixture) ✅. Future M3-full (KG ops) tracked separately. See
 `docs/RESEARCH-mempalace.md` for the design.
 
 ## Where things live

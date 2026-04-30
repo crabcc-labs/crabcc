@@ -73,6 +73,7 @@
 
 pub mod backend;
 pub mod embed;
+pub mod mine;
 pub mod palace;
 pub mod types;
 
@@ -80,6 +81,11 @@ pub use backend::{in_memory::InMemoryBackend, sqlite::SqliteBackend, Backend, Le
 #[cfg(feature = "memory-embed")]
 pub use embed::FastEmbedder;
 pub use embed::{CachedEmbedder, Embedder, HashEmbedder, DEFAULT_EMBED_CACHE_CAPACITY};
+pub use mine::{
+    project::{mine_project, MineProjectOpts, DEFAULT_MAX_FILE_BYTES},
+    sessions::{mine_sessions, MineSessionsOpts, DEFAULT_MAX_PAIR_BYTES},
+    MineReport,
+};
 pub use palace::{
     find_git_root, Palace, PalaceRegistry, SearchMode, DEFAULT_PALACE_CACHE_CAPACITY,
     GIT_ROOT_CACHE_TTL, PALACE_CACHE_TTI,

@@ -76,17 +76,30 @@ claude mcp add crabcc -- crabcc --mcp
   to the right `crabcc` subcommand. Symlinked into `~/.claude/skills/crabcc/`
   by `crabcc install-claude`.
 
-## Memory layer — current limits
+## Memory layer — current state
 
-`.crabcc/memory.db` stores per-repo notes. Today it ships **M0 + M3-light**:
-the persistent `SqliteBackend`, the `Palace` facade, the `PalaceRegistry`
-session router, the full CLI surface (`init`, `remember`, `search`, `get`,
-`list`, `delete`, `count`, `health`), and 8 matching `memory.*` MCP tools.
+`.crabcc/memory.db` stores per-repo notes. Issue #2's epic is closed
+end-to-end:
 
-> **Search is keyword-only today.** M0 ships a deterministic-hash
-> `Embedder` so the API works end-to-end and tests are stable. Real
-> semantic search lands in v2.5 via `sqlite-vec` (M0.5) and `fastembed-rs`
-> (M1). See [`docs/ROADMAP-v2.5.md`](./docs/ROADMAP-v2.5.md).
+- **Storage** — `SqliteBackend` (WAL + FSST drawer-body compression)
+  and an optional `sqlite-vec` ANN scaffold behind `--features
+  memory-vec`.
+- **Hybrid search** — FTS5 BM25 ⊕ cosine KNN fused via Reciprocal
+  Rank Fusion (k = 60). `crabcc memory search QUERY [--mode lexical|vector|hybrid]`.
+- **Real embeddings** — `FastEmbedder` (MiniLM-L6-v2, 384-dim) behind
+  `--features memory-embed` (~25 MB ONNX, lazy-downloaded into
+  `~/.cache/crabcc-memory/` on first use).
+- **Miners** — `crabcc memory mine project [PATH]` for repo files,
+  `crabcc memory mine sessions [DIR]` for Claude Code JSONL
+  transcripts. Both idempotent.
+- **Bench gate** — `task memory-bench` runs the LongMemEval R@k
+  harness in `bench/memory/` against a bundled 12-question synthetic
+  fixture; clears R@5 ≥ 96.6% under `lexical` and `hybrid` modes.
+  Real LongMemEval requires `DATASET=path/to/longmemeval_oracle.json`.
+
+CLI surface: `init`, `remember`, `search`, `get`, `list`, `delete`,
+`forget`, `count`, `health`, `mine {project,sessions}`. MCP exposes
+matching `memory.*` tools (10 in total).
 
 Set `CRABCC_AUTO_MEMORY=1` to have query-shaped commands (`sym` / `refs` /
 `callers` / `fuzzy` / `prefix`) silently capture a drawer per call.
@@ -103,6 +116,7 @@ Set `CRABCC_AUTO_MEMORY=1` to have query-shaped commands (`sym` / `refs` /
 | Local CI dry-run | `task ci` |
 | Symbol-index smoke | `task smoke` |
 | Memory CLI smoke | `task memory-smoke` |
+| Memory bench (R@5 gate) | `task memory-bench` (or `task memory-bench DATASET=...`) |
 | FSST gate bench | `task bench-compress REPO_FIXTURE=/path/to/big-repo` |
 | **Token-minimized repo bundle** | **`task repomix`** → `.repomix/crabcc.xml` |
 | Cut a release | `task release VERSION=x.y.z` |

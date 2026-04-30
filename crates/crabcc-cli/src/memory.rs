@@ -9,8 +9,11 @@
 
 use anyhow::{anyhow, Result};
 use clap::Subcommand;
-use crabcc_memory::{DeleteSel, Palace, SearchMode};
-use std::path::Path;
+use crabcc_memory::{
+    mine::{project::MineProjectOpts, sessions::MineSessionsOpts},
+    DeleteSel, Palace, SearchMode, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_PAIR_BYTES,
+};
+use std::path::{Path, PathBuf};
 
 #[derive(Subcommand, Debug)]
 pub enum MemoryCmd {
@@ -87,6 +90,33 @@ pub enum MemoryCmd {
     Count,
     /// Health snapshot.
     Health,
+    /// Bulk-ingest drawers (M2). Idempotent — re-running emits zero new
+    /// drawers when nothing changed.
+    Mine {
+        #[command(subcommand)]
+        kind: MineKind,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum MineKind {
+    /// Walk a repo, store one drawer per text file under `wing="proj"`.
+    /// `[PATH]` defaults to the memory-store root.
+    Project {
+        path: Option<PathBuf>,
+        /// Per-file body cap in bytes; larger files are skipped.
+        #[arg(long, default_value_t = DEFAULT_MAX_FILE_BYTES)]
+        max_bytes: u64,
+    },
+    /// Walk a JSONL directory of Claude Code transcripts and store one
+    /// drawer per `(user, assistant)` turn pair under `wing="session"`.
+    /// `[DIR]` defaults to `$HOME/.claude/projects/`.
+    Sessions {
+        dir: Option<PathBuf>,
+        /// Per-pair body cap in bytes; longer pairs are truncated.
+        #[arg(long, default_value_t = DEFAULT_MAX_PAIR_BYTES)]
+        max_pair_bytes: usize,
+    },
 }
 
 fn parse_before_timestamp(raw: &str) -> Result<i64> {
@@ -225,8 +255,43 @@ pub fn run(root: &Path, cmd: MemoryCmd) -> Result<()> {
         MemoryCmd::Health => {
             println!("{}", sonic_rs::to_string(&palace.health())?);
         }
+        MemoryCmd::Mine { kind } => {
+            let session = std::env::var("TERM_SESSION_ID").ok();
+            let report = match kind {
+                MineKind::Project { path, max_bytes } => {
+                    let target = path.unwrap_or_else(|| root.to_path_buf());
+                    let opts = MineProjectOpts {
+                        max_bytes,
+                        session_id: session,
+                    };
+                    palace.mine_project(&target, &opts)?
+                }
+                MineKind::Sessions {
+                    dir,
+                    max_pair_bytes,
+                } => {
+                    let target = dir.unwrap_or_else(default_sessions_dir);
+                    let opts = MineSessionsOpts {
+                        max_pair_bytes,
+                        session_id: session,
+                    };
+                    palace.mine_sessions(&target, &opts)?
+                }
+            };
+            println!("{}", sonic_rs::to_string(&report)?);
+        }
     }
     Ok(())
+}
+
+/// `~/.claude/projects/` — the default home for Claude Code's per-repo
+/// JSONL transcripts. Falls back to the current working directory if
+/// `$HOME` isn't set (e.g. CI containers without a passwd entry).
+fn default_sessions_dir() -> PathBuf {
+    if let Some(home) = std::env::var_os("HOME") {
+        return PathBuf::from(home).join(".claude").join("projects");
+    }
+    PathBuf::from(".")
 }
 
 /// Best-effort auto-capture for query-shaped commands. Off unless

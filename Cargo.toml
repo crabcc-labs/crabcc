@@ -5,6 +5,7 @@ members = [
     "crates/crabcc-core",
     "crates/crabcc-mcp",
     "crates/crabcc-memory",
+    "crates/crabcc-memory-bench",
     "crates/crabcc-viz",
 ]
 
@@ -65,6 +66,10 @@ ast-grep-core = "0.30"
 ast-grep-language = "0.30"
 sha2 = "0.10"
 tempfile = "3"
+# v2.7.x (#80) — minimal TOML reader for `.crabcc/config.toml`. Only
+# crabcc-cli pulls this in (config is a CLI concern); crabcc-core stays
+# TOML-free.
+toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 libc = "0.2"
