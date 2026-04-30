@@ -409,6 +409,10 @@ fn handle(request: Request, root: &Path) -> Result<()> {
             Ok(snap) => respond_json(request, &snap),
             Err(e) => respond_status(request, 500, &format!("dump failed: {e}")),
         },
+        "/api/telemetry" => match telemetry_tail(root, query) {
+            Ok(snap) => respond_json(request, &snap),
+            Err(e) => respond_status(request, 500, &format!("telemetry tail failed: {e}")),
+        },
         "/api/memory/recent" => match memory_recent(root, query) {
             Ok(snap) => respond_json(request, &snap),
             Err(e) => respond_status(request, 500, &format!("memory snapshot failed: {e}")),
@@ -547,6 +551,193 @@ struct ActivityEvent {
     op: String,
     query: String,
     results: usize,
+}
+
+// =====================================================================
+// Telemetry tail — `<root>/.crabcc/telemetry.jsonl` written by every
+// crabcc invocation via `tracing::info!` events through the JSON file
+// layer in `crabcc-cli/src/telemetry.rs`. Each line is a structured
+// tracing event (`{"timestamp":..,"level":..,"target":..,"fields":{..}}`).
+// The dashboard tails it for "tool calls + graph stats" (issue #90).
+// =====================================================================
+
+#[derive(Serialize)]
+struct TelemetrySnapshot {
+    cursor: u64, // max ts seen, in unix seconds
+    events: Vec<TelemetryEvent>,
+    /// Surfaced for the dashboard "debug" pane: where the file is,
+    /// how many lines we read, whether it's missing.
+    source: TelemetrySource,
+}
+
+#[derive(Serialize, Default)]
+struct TelemetrySource {
+    path: String,
+    lines_read: usize,
+    bytes: u64,
+    exists: bool,
+}
+
+#[derive(Serialize, Clone)]
+struct TelemetryEvent {
+    ts: u64,
+    level: String,
+    target: String,
+    /// Free-form structured fields the producer attached. We pass the
+    /// JSON through unmodified so the frontend can render whatever the
+    /// producer included (kpi name, duration_ms, count, tool, etc.).
+    fields: serde_json::Value,
+}
+
+const TELEMETRY_DEFAULT_LIMIT: usize = 100;
+const TELEMETRY_MAX_LIMIT: usize = 1000;
+const TELEMETRY_MAX_LINES: usize = 5000; // bound the parse work per call
+
+fn telemetry_tail(root: &Path, query: &str) -> Result<TelemetrySnapshot> {
+    let mut since: u64 = 0;
+    let mut limit: usize = TELEMETRY_DEFAULT_LIMIT;
+    for pair in query.split('&').filter(|s| !s.is_empty()) {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        match k {
+            "since" => since = v.parse::<u64>().unwrap_or(0),
+            "limit" => {
+                limit = v
+                    .parse::<usize>()
+                    .unwrap_or(TELEMETRY_DEFAULT_LIMIT)
+                    .clamp(1, TELEMETRY_MAX_LIMIT)
+            }
+            _ => {}
+        }
+    }
+
+    let path = root.join(".crabcc").join("telemetry.jsonl");
+    let mut source = TelemetrySource {
+        path: path.display().to_string(),
+        ..Default::default()
+    };
+
+    if !path.exists() {
+        return Ok(TelemetrySnapshot {
+            cursor: since,
+            events: Vec::new(),
+            source,
+        });
+    }
+    source.exists = true;
+    let bytes = std::fs::read(&path)?;
+    source.bytes = bytes.len() as u64;
+
+    // The file is append-only. Tail the last TELEMETRY_MAX_LINES lines
+    // (cheaper than parsing 100 MB of history every poll). Walk
+    // backwards from EOF counting newlines; slice from that offset.
+    let start = if bytes.len() < 1 << 20 {
+        0
+    } else {
+        let mut nl_count = 0usize;
+        let mut i = bytes.len();
+        while i > 0 && nl_count < TELEMETRY_MAX_LINES {
+            i -= 1;
+            if bytes[i] == b'\n' {
+                nl_count += 1;
+            }
+        }
+        i + (if bytes[i] == b'\n' { 1 } else { 0 })
+    };
+
+    let mut events: Vec<TelemetryEvent> = Vec::new();
+    for line in bytes[start..].split(|b| *b == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+        source.lines_read += 1;
+        let v: serde_json::Value = match serde_json::from_slice(line) {
+            Ok(v) => v,
+            Err(_) => continue, // tolerate the occasional bad line
+        };
+        // The fmt::layer().json() shape:
+        //   {"timestamp":"2026-04-30T08:36:43.674476Z","level":"INFO",
+        //    "fields":{...},"target":"..."}
+        let ts = v
+            .get("timestamp")
+            .and_then(|t| t.as_str())
+            .map(parse_iso8601_unix)
+            .unwrap_or(0);
+        if ts < since {
+            continue;
+        }
+        let level = v
+            .get("level")
+            .and_then(|l| l.as_str())
+            .unwrap_or("INFO")
+            .to_string();
+        let target = v
+            .get("target")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .to_string();
+        let fields = v
+            .get("fields")
+            .cloned()
+            .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
+        events.push(TelemetryEvent {
+            ts,
+            level,
+            target,
+            fields,
+        });
+    }
+
+    events.sort_by_key(|e| e.ts);
+    if events.len() > limit {
+        let drop = events.len() - limit;
+        events.drain(..drop);
+    }
+    let cursor = events.last().map(|e| e.ts).unwrap_or(since);
+    Ok(TelemetrySnapshot {
+        cursor,
+        events,
+        source,
+    })
+}
+
+/// Parse `2026-04-30T08:36:43.674476Z` → unix seconds. Tracing uses a
+/// fixed RFC-3339 shape, so a hand-rolled parser is fine and saves a
+/// chrono / time dep. Fractional seconds are dropped; level granularity
+/// is what the dashboard cares about.
+fn parse_iso8601_unix(s: &str) -> u64 {
+    if s.len() < 19 {
+        return 0;
+    }
+    let bytes = s.as_bytes();
+    let n = |i: usize, len: usize| -> u64 {
+        let mut v = 0u64;
+        for j in 0..len {
+            let c = bytes[i + j];
+            if !c.is_ascii_digit() {
+                return 0;
+            }
+            v = v * 10 + (c - b'0') as u64;
+        }
+        v
+    };
+    let y = n(0, 4) as i64;
+    let mo = n(5, 2) as i64;
+    let d = n(8, 2) as i64;
+    let h = n(11, 2);
+    let mi = n(14, 2);
+    let se = n(17, 2);
+    // Days from civil date (Howard Hinnant's algorithm — same as the
+    // sandbox helper but inlined to keep crabcc-viz dep-free).
+    let y_ = if mo <= 2 { y - 1 } else { y };
+    let era = y_.div_euclid(400);
+    let yoe = (y_ - era * 400) as u64;
+    let mo_u = mo as u64;
+    let d_u = d as u64;
+    let mp = if mo_u >= 3 { mo_u - 3 } else { mo_u + 9 };
+    let doy = (153 * mp + 2) / 5 + d_u - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era as i64 * 146097 + doe as i64 - 719468;
+    (days as u64) * 86400 + h * 3600 + mi * 60 + se
 }
 
 const ACTIVITY_DEFAULT_LIMIT: usize = 100;
@@ -1916,5 +2107,105 @@ mod tests {
         assert_eq!(url_decode("foo%20bar"), "foo bar");
         assert_eq!(url_decode("foo+bar"), "foo bar");
         assert_eq!(url_decode("Mod%3A%3Afn"), "Mod::fn");
+    }
+
+    // =====================================================================
+    // Telemetry tail tests — issue #90 dashboard surface.
+    // =====================================================================
+
+    #[test]
+    fn parse_iso8601_unix_known_values() {
+        // 1970-01-01T00:00:00Z = 0
+        assert_eq!(super::parse_iso8601_unix("1970-01-01T00:00:00Z"), 0);
+        // 2026-04-30T08:36:43Z. Hand-computed via `date -u -j -f ...`
+        // is 1777538203 — must round-trip exactly (drops sub-second).
+        assert_eq!(super::parse_iso8601_unix("2026-04-30T08:36:43Z"), 1777538203);
+        // Sub-second precision is dropped intentionally.
+        assert_eq!(
+            super::parse_iso8601_unix("2026-04-30T08:36:43.674476Z"),
+            1777538203
+        );
+    }
+
+    #[test]
+    fn telemetry_tail_missing_file_returns_empty_with_source_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let snap = super::telemetry_tail(dir.path(), "").unwrap();
+        assert!(snap.events.is_empty());
+        assert!(!snap.source.exists);
+        assert_eq!(snap.source.lines_read, 0);
+        assert!(snap.source.path.ends_with(".crabcc/telemetry.jsonl"));
+    }
+
+    #[test]
+    fn telemetry_tail_parses_jsonl_and_returns_events() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".crabcc")).unwrap();
+        let body = concat!(
+            r#"{"timestamp":"2026-04-30T08:36:43.674476Z","level":"INFO","fields":{"message":"graph build done","kpi":"graph.build","edges":3,"nodes":5,"duration_ms":0},"target":"crabcc_core::graph"}"#, "\n",
+            r#"{"timestamp":"2026-04-30T08:36:44.000000Z","level":"INFO","fields":{"message":"graph cycles done","kpi":"graph.cycles","count":1,"duration_ms":0},"target":"crabcc_core::graph"}"#, "\n",
+        );
+        std::fs::write(dir.path().join(".crabcc/telemetry.jsonl"), body).unwrap();
+        let snap = super::telemetry_tail(dir.path(), "").unwrap();
+        assert_eq!(snap.events.len(), 2);
+        assert!(snap.source.exists);
+        assert_eq!(snap.source.lines_read, 2);
+        // Events sorted by ts ascending; cursor = max ts.
+        assert_eq!(snap.events[0].fields["kpi"], "graph.build");
+        assert_eq!(snap.events[1].fields["kpi"], "graph.cycles");
+        assert_eq!(snap.cursor, snap.events[1].ts);
+    }
+
+    #[test]
+    fn telemetry_tail_filters_by_since() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".crabcc")).unwrap();
+        // Two events; since cuts off the first one.
+        let body = concat!(
+            r#"{"timestamp":"2026-04-30T08:36:43.674476Z","level":"INFO","fields":{"kpi":"graph.build"},"target":"x"}"#, "\n",
+            r#"{"timestamp":"2026-04-30T08:36:44.000000Z","level":"INFO","fields":{"kpi":"graph.cycles"},"target":"x"}"#, "\n",
+        );
+        std::fs::write(dir.path().join(".crabcc/telemetry.jsonl"), body).unwrap();
+        // 1777538203 = exact ts of event 1; since=1777538204 keeps only event 2.
+        let snap = super::telemetry_tail(dir.path(), "since=1777538204").unwrap();
+        assert_eq!(snap.events.len(), 1);
+        assert_eq!(snap.events[0].fields["kpi"], "graph.cycles");
+    }
+
+    #[test]
+    fn telemetry_tail_tolerates_corrupt_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".crabcc")).unwrap();
+        // Mix of valid + invalid lines. Bad lines are skipped, not raised.
+        let body = concat!(
+            "this is not json\n",
+            r#"{"timestamp":"2026-04-30T08:36:43Z","level":"INFO","fields":{"kpi":"x"},"target":"t"}"#, "\n",
+            "{ also: bad\n",
+        );
+        std::fs::write(dir.path().join(".crabcc/telemetry.jsonl"), body).unwrap();
+        let snap = super::telemetry_tail(dir.path(), "").unwrap();
+        assert_eq!(snap.events.len(), 1);
+        // lines_read counts every non-empty line attempted.
+        assert_eq!(snap.source.lines_read, 3);
+    }
+
+    #[test]
+    fn telemetry_tail_respects_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".crabcc")).unwrap();
+        let mut body = String::new();
+        for i in 0..50 {
+            // Vary the timestamp seconds so events are deduplicated by ts.
+            let s = format!("{:02}", i % 60);
+            body.push_str(&format!(
+                r#"{{"timestamp":"2026-04-30T08:36:{s}.000000Z","level":"INFO","fields":{{"kpi":"x","i":{i}}},"target":"t"}}"#
+            ));
+            body.push('\n');
+        }
+        std::fs::write(dir.path().join(".crabcc/telemetry.jsonl"), body).unwrap();
+        let snap = super::telemetry_tail(dir.path(), "limit=5").unwrap();
+        assert_eq!(snap.events.len(), 5);
+        // Events are ts-ascending; tail kept the most recent.
+        assert_eq!(snap.events.last().unwrap().fields["i"], 49);
     }
 }

@@ -57,6 +57,30 @@ async function postJson<T>(path: string, body?: unknown): Promise<T> {
   return (await r.json()) as T;
 }
 
+// Issue #90 → dashboard surface: telemetry events written by every
+// crabcc invocation through the JSON file layer in crabcc-cli's
+// telemetry::init(). One line per event; the dashboard polls every
+// few seconds and re-renders the panel.
+export type TelemetryEvent = {
+  ts: number;       // unix seconds, parsed from the ISO8601 timestamp
+  level: string;    // INFO / WARN / ERROR / DEBUG / TRACE
+  target: string;   // e.g. crabcc_core::graph
+  fields: Record<string, unknown>;
+};
+
+export type TelemetrySource = {
+  path: string;
+  lines_read: number;
+  bytes: number;
+  exists: boolean;
+};
+
+export type TelemetrySnapshot = {
+  cursor: number;
+  events: TelemetryEvent[];
+  source: TelemetrySource;
+};
+
 export const api = {
   bootstrap: () => getJson<Bootstrap>("/api/bootstrap"),
   activity: (sinceTs?: number, limit = 100) =>
@@ -69,4 +93,8 @@ export const api = {
   reindex: () => postJson<ReindexReport>("/api/reindex"),
   randomQuery: () =>
     postJson<{ op: string; symbol: string }>("/api/random-query"),
+  telemetry: (sinceTs?: number, limit = 100) =>
+    getJson<TelemetrySnapshot>(
+      `/api/telemetry?since=${sinceTs ?? 0}&limit=${limit}`,
+    ),
 };
