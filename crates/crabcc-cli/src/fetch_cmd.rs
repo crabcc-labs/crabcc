@@ -16,7 +16,9 @@
 //! for one element.
 
 use anyhow::Result;
+use crabcc_memory::Palace;
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use std::time::Duration;
 
 const USER_AGENT: &str = concat!("crabcc-fetch/", env!("CARGO_PKG_VERSION"));
@@ -38,7 +40,26 @@ pub struct FetchResult {
 pub enum Transport {
     Direct,
     Chrome,
+    /// GitHub repo packed via `repomix --compress --remote …` instead of
+    /// HTML scrape — orders-of-magnitude smaller for code repos.
+    Repomix,
 }
+
+/// Repomix ignore patterns for GitHub repo packing. README.md is intentionally
+/// kept (repomix's defaults preserve it). The list aggressively trims
+/// token-bloat: build manifests, lockfiles, CI workflows, other markdown
+/// (which is usually contributor docs / architecture notes), and binaries
+/// repomix would skip anyway but listed here for clarity.
+const REPOMIX_IGNORE: &str = concat!(
+    "**/*.md,!README.md,!readme.md,!Readme.md,",
+    "**/Cargo.toml,**/Cargo.lock,",
+    "**/package.json,**/package-lock.json,**/yarn.lock,**/bun.lock,**/bun.lockb,**/pnpm-lock.yaml,",
+    "**/pyproject.toml,**/Pipfile,**/Pipfile.lock,**/requirements*.txt,**/setup.py,**/setup.cfg,",
+    "**/Gemfile,**/Gemfile.lock,**/go.sum,**/go.mod,",
+    ".github/**,.gitlab-ci.yml,.circleci/**,.travis.yml,.drone.yml,Jenkinsfile,",
+    "LICENSE*,COPYING*,CHANGELOG*,CHANGES*,CONTRIBUTING*,CODE_OF_CONDUCT*,",
+    "**/*.svg,**/*.png,**/*.jpg,**/*.jpeg,**/*.gif,**/*.ico,**/*.webp",
+);
 
 /// Extract HTTP/HTTPS URLs from arbitrary prose using `linkify`. Order
 /// preserved; duplicates removed by stable de-dup so the caller sees each
@@ -57,7 +78,10 @@ pub fn extract_urls(prompt: &str) -> Vec<String> {
 
 /// Public entry — runs the fetch under a current-thread tokio runtime so
 /// the CLI handler stays sync. Mirrors the pattern in `jobs_cmd.rs`.
-pub fn run(prompt: &str, no_chrome: bool, format: &str) -> Result<()> {
+///
+/// `remember` pipes each successful fetch into `<root>/.crabcc/memory.db`
+/// (BM25 ⊕ vector embedding) under wing="fetch", room=host, source_id=url.
+pub fn run(root: &Path, prompt: &str, no_chrome: bool, format: &str, remember: bool) -> Result<()> {
     let urls = extract_urls(prompt);
     if urls.is_empty() {
         anyhow::bail!("no URLs found in prompt");
@@ -67,20 +91,19 @@ pub fn run(prompt: &str, no_chrome: bool, format: &str) -> Result<()> {
         .enable_all()
         .build()?;
 
+    let chrome_default = !no_chrome;
     let results: Vec<FetchResult> = rt.block_on(async move {
-        let transport = if no_chrome {
-            Transport::Direct
-        } else if chrome_bridge_available().await {
-            Transport::Chrome
+        let chrome_ok = chrome_default && chrome_bridge_available().await;
+        if chrome_ok {
+            fetch_via_chrome(&urls).await
         } else {
-            Transport::Direct
-        };
-
-        match transport {
-            Transport::Chrome => fetch_via_chrome(&urls).await,
-            Transport::Direct => fetch_direct(&urls).await,
+            fetch_direct(&urls).await
         }
     });
+
+    if remember {
+        store_in_memory(root, &results)?;
+    }
 
     match format {
         "text" => render_text(&results),
@@ -90,6 +113,39 @@ pub fn run(prompt: &str, no_chrome: bool, format: &str) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn store_in_memory(root: &Path, results: &[FetchResult]) -> Result<()> {
+    let palace = Palace::open(root)?;
+    let session = std::env::var("TERM_SESSION_ID").ok();
+    for r in results {
+        if r.error.is_some() || r.content_markdown.is_none() {
+            continue;
+        }
+        let host = url_host(&r.url).unwrap_or("unknown");
+        let title = r.title.as_deref().unwrap_or("");
+        let body = if title.is_empty() {
+            r.content_markdown.clone().unwrap_or_default()
+        } else {
+            format!(
+                "# {title}\n\n{}",
+                r.content_markdown.as_deref().unwrap_or("")
+            )
+        };
+        let _ = palace.remember_in_session("fetch", Some(host), &r.url, &body, session.as_deref());
+    }
+    Ok(())
+}
+
+fn url_host(url: &str) -> Option<&str> {
+    let after_scheme = url.split_once("://")?.1;
+    let host_end = after_scheme.find('/').unwrap_or(after_scheme.len());
+    let host = &after_scheme[..host_end];
+    if host.is_empty() {
+        None
+    } else {
+        Some(host)
+    }
 }
 
 fn render_text(results: &[FetchResult]) {
@@ -179,6 +235,9 @@ async fn fetch_direct(urls: &[String]) -> Vec<FetchResult> {
 }
 
 async fn fetch_one(client: &reqwest::Client, url: &str) -> FetchResult {
+    if let Some(repo_coord) = parse_github_repo(url) {
+        return fetch_via_repomix(url, &repo_coord).await;
+    }
     match client.get(url).send().await {
         Err(e) => FetchResult {
             url: url.into(),
@@ -229,6 +288,121 @@ fn extract_title(html: &str) -> Option<String> {
     }
 }
 
+/// Recognise canonical GitHub repo URLs and return `owner/repo`.
+/// Handles `/tree/branch`, `/blob/path`, and `.git` suffixes by trimming
+/// to the first two path segments. Returns `None` for issues, gist,
+/// pulls, anything that's not a plain repo root pointer.
+pub fn parse_github_repo(url: &str) -> Option<String> {
+    // Reserved top-level paths on github.com that aren't repos.
+    const RESERVED_OWNERS: &[&str] = &[
+        "sponsors",
+        "marketplace",
+        "orgs",
+        "topics",
+        "explore",
+        "notifications",
+        "settings",
+        "features",
+        "pricing",
+        "about",
+        "join",
+        "login",
+        "logout",
+        "search",
+        "trending",
+        "collections",
+        "events",
+        "stars",
+        "issues",
+        "pulls",
+        "watching",
+        "new",
+        "organizations",
+    ];
+    let url = url.trim();
+    let path = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("http://github.com/"))?;
+    let path = path.trim_end_matches('/').trim_end_matches(".git");
+    let mut segs = path.split('/');
+    let owner = segs.next()?;
+    let repo = segs.next()?;
+    if owner.is_empty() || repo.is_empty() || RESERVED_OWNERS.contains(&owner) {
+        return None;
+    }
+    // Repos can have any name, but the third segment should be tree/blob/raw
+    // or absent for it to be a repo root pointer (not /issues, /pull, …).
+    if let Some(third) = segs.next() {
+        match third {
+            "tree" | "blob" | "raw" | "" => {}
+            _ => return None,
+        }
+    }
+    Some(format!("{owner}/{repo}"))
+}
+
+async fn fetch_via_repomix(orig_url: &str, coord: &str) -> FetchResult {
+    let coord_owned = coord.to_string();
+    let coord_for_task = coord_owned.clone();
+    let out = tokio::task::spawn_blocking(move || {
+        std::process::Command::new("repomix")
+            .args([
+                "--remote",
+                &coord_for_task,
+                "--compress",
+                "--stdout",
+                "--no-security-check",
+                "--ignore",
+                REPOMIX_IGNORE,
+            ])
+            .output()
+    })
+    .await;
+    let coord = coord_owned;
+
+    match out {
+        Ok(Ok(o)) if o.status.success() => {
+            let stdout = String::from_utf8_lossy(&o.stdout).into_owned();
+            FetchResult {
+                url: orig_url.into(),
+                status: 200,
+                title: Some(format!("github:{coord} (repomix --compress)")),
+                content_markdown: Some(stdout),
+                via: Transport::Repomix,
+                error: None,
+            }
+        }
+        Ok(Ok(o)) => FetchResult {
+            url: orig_url.into(),
+            status: 0,
+            title: None,
+            content_markdown: None,
+            via: Transport::Repomix,
+            error: Some(format!(
+                "repomix exited {}: {}",
+                o.status,
+                String::from_utf8_lossy(&o.stderr).trim()
+            )),
+        },
+        Ok(Err(e)) => FetchResult {
+            url: orig_url.into(),
+            status: 0,
+            title: None,
+            content_markdown: None,
+            via: Transport::Repomix,
+            error: Some(format!("repomix spawn failed: {e} (is `repomix` on PATH?)")),
+        },
+        Err(e) => FetchResult {
+            url: orig_url.into(),
+            status: 0,
+            title: None,
+            content_markdown: None,
+            via: Transport::Repomix,
+            error: Some(format!("blocking task join error: {e}")),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,5 +448,51 @@ mod tests {
     #[test]
     fn title_extraction_missing() {
         assert_eq!(extract_title("<html><body>no title</body></html>"), None);
+    }
+
+    #[test]
+    fn parse_github_repo_canonical() {
+        assert_eq!(
+            parse_github_repo("https://github.com/owner/repo").as_deref(),
+            Some("owner/repo")
+        );
+        assert_eq!(
+            parse_github_repo("https://github.com/owner/repo/").as_deref(),
+            Some("owner/repo")
+        );
+        assert_eq!(
+            parse_github_repo("https://github.com/owner/repo.git").as_deref(),
+            Some("owner/repo")
+        );
+    }
+
+    #[test]
+    fn parse_github_repo_with_tree() {
+        assert_eq!(
+            parse_github_repo("https://github.com/rust-lang/rust/tree/master").as_deref(),
+            Some("rust-lang/rust")
+        );
+    }
+
+    #[test]
+    fn parse_github_repo_rejects_non_repo_paths() {
+        assert_eq!(
+            parse_github_repo("https://github.com/owner/repo/issues/42"),
+            None
+        );
+        assert_eq!(
+            parse_github_repo("https://github.com/owner/repo/pull/1"),
+            None
+        );
+        assert_eq!(parse_github_repo("https://github.com/sponsors/owner"), None);
+        assert_eq!(parse_github_repo("https://example.com/owner/repo"), None);
+    }
+
+    #[test]
+    fn url_host_extracts_authority() {
+        assert_eq!(url_host("https://example.com/path"), Some("example.com"));
+        assert_eq!(url_host("https://example.com"), Some("example.com"));
+        assert_eq!(url_host("http://localhost:7878/x"), Some("localhost:7878"));
+        assert_eq!(url_host("not-a-url"), None);
     }
 }

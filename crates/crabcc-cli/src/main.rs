@@ -395,6 +395,11 @@ enum Cmd {
         /// Output format: `json` (default) or `text`.
         #[arg(long, default_value = "json")]
         format: String,
+        /// Pipe each successful fetch into the memory layer (BM25 ⊕ vector
+        /// embedding). Drawer key: `fetch:<url>`, wing: `fetch`, room: host.
+        /// Search later via `crabcc memory search <query> --wing fetch`.
+        #[arg(long)]
+        remember: bool,
     },
     /// Start the localhost call-graph viewer (issue #64). Binds to 127.0.0.1
     /// by default — pass `--bind 0.0.0.0` only on a trusted LAN; the server
@@ -1113,14 +1118,16 @@ fn main() -> Result<()> {
         return go::run(&root, &db);
     }
 
-    // `fetch` is pure I/O — no Store, no index, no daemon required.
+    // `fetch` is pure I/O. With --remember, opens the memory Palace at
+    // <root>/.crabcc/memory.db so each result is stored as a drawer.
     if let Some(Cmd::Fetch {
         prompt,
         no_chrome,
         format,
+        remember,
     }) = cli.cmd.as_ref()
     {
-        return fetch_cmd::run(prompt, *no_chrome, format);
+        return fetch_cmd::run(&root, prompt, *no_chrome, format, *remember);
     }
 
     // `serve` boots crabcc-viz; doesn't need the symbol Store opened
