@@ -477,3 +477,42 @@ main {
 }
 .key-mode.ok   { color: #6df0ff; }
 .key-mode.warn { color: #ff8c2a; font-weight: 700; }
+
+/* Issue #143 — service-discovery panel. Compact reachability table with
+   per-row up/down highlight + tooltip-on-hover for the error blob. */
+.services-panel { margin-top: 6px; }
+.services-meta {
+  font-size: 11px;
+  color: #8aa0d8;
+  margin-bottom: 6px;
+}
+.services-table {
+  width: 100%;
+  font-size: 12px;
+  border-collapse: collapse;
+}
+.services-table th {
+  text-align: left;
+  font-weight: 600;
+  color: #c8d4ff;
+  padding: 4px 6px;
+  border-bottom: 1px solid rgba(200, 212, 255, 0.15);
+}
+.services-table td {
+  padding: 3px 6px;
+  border-bottom: 1px solid rgba(200, 212, 255, 0.05);
+  vertical-align: middle;
+}
+.services-table tr.service-ok   { color: #c8d4ff; }
+.services-table tr.service-down { color: #8a92a8; }
+.services-table code {
+  font-size: 11px;
+  color: #6df0ff;
+}
+.service-source {
+  font-size: 11px;
+  color: #ffb547;
+  font-family: ui-monospace, monospace;
+}
+.service-state.ok   { color: #6df0ff; }
+.service-state.down { color: #ff8c2a; font-weight: 600; }

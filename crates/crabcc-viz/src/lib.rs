@@ -421,6 +421,10 @@ fn handle(request: Request, root: &Path) -> Result<()> {
             Ok(snap) => respond_json(request, &snap),
             Err(e) => respond_status(request, 500, &format!("ollama-key failed: {e}")),
         },
+        "/api/services" => {
+            let report = crabcc_core::service_discovery::discover_all();
+            respond_json(request, &report)
+        }
         "/api/debug/dump" => match debug_dump(root) {
             Ok(snap) => respond_json(request, &snap),
             Err(e) => respond_status(request, 500, &format!("dump failed: {e}")),
