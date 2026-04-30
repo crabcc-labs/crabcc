@@ -38,6 +38,14 @@ pub fn run(yes: bool, print_hooks_only: bool) -> Result<()> {
             repo_root.join("commands/crabcc-init.md"),
             home.join(".claude/commands/crabcc-init.md"),
         ),
+        (
+            repo_root.join("commands/crabcc-upgrade.md"),
+            home.join(".claude/commands/crabcc-upgrade.md"),
+        ),
+        (
+            repo_root.join("commands/crabcc-install.md"),
+            home.join(".claude/commands/crabcc-install.md"),
+        ),
     ];
 
     for (src, dst) in pairs {
