@@ -100,11 +100,16 @@ if ! command -v swiftc >/dev/null 2>&1; then
     exit 1
 fi
 
-log "swiftc menubar.swift -> Crabcc"
-swiftc -O -target arm64-apple-macos13.0 \
+log "swiftc menubar.swift sticky.swift -> Crabcc"
+# `-parse-as-library` is required once the source set crosses one file
+# (sticky.swift was added in #189 phase 0). Top-level expressions move
+# into `@main` inside menubar.swift.
+swiftc -O -parse-as-library -target arm64-apple-macos13.0 \
     -o "$APP_STAGE/Contents/MacOS/Crabcc" \
-    "$APP_STAGE/Contents/MacOS/menubar.swift"
-rm "$APP_STAGE/Contents/MacOS/menubar.swift"
+    "$APP_STAGE/Contents/MacOS/menubar.swift" \
+    "$APP_STAGE/Contents/MacOS/sticky.swift"
+rm "$APP_STAGE/Contents/MacOS/menubar.swift" \
+   "$APP_STAGE/Contents/MacOS/sticky.swift"
 
 chmod 0755 "$APP_STAGE/Contents/MacOS/Crabcc"
 chmod 0644 "$APP_STAGE/Contents/Resources/scripts/"*.sh

@@ -403,10 +403,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(killsItem)
 
         menu.addItem(.separator())
-        menu.addItem(item("Reindex Now",         #selector(reindexNow)))
-        menu.addItem(item("Run Guard Now",       #selector(runGuardNow)))
-        menu.addItem(item("Open Logs",           #selector(openLogs)))
-        menu.addItem(item("Reinstall / Update…", #selector(reinstall)))
+        menu.addItem(item("Reindex Now",                #selector(reindexNow)))
+        menu.addItem(item("Run Guard Now",              #selector(runGuardNow)))
+        menu.addItem(item("New Sticky from Clipboard",  #selector(newStickyFromClipboard), key: "n"))
+        menu.addItem(item("Open Logs",                  #selector(openLogs)))
+        menu.addItem(item("Reinstall / Update…",        #selector(reinstall)))
         menu.addItem(.separator())
         menu.addItem(item("About Crabcc…",       #selector(showAbout)))
         menu.addItem(item("Quit Crabcc",         #selector(NSApplication.terminate(_:)), key: "q"))
@@ -466,6 +467,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func openLogs() {
         try? FileManager.default.createDirectory(atPath: kLogsDir, withIntermediateDirectories: true)
         runDetached(["/usr/bin/open", kLogsDir])
+    }
+
+    @objc func newStickyFromClipboard() {
+        emitEvent("sticky.new_from_clipboard")
+        StickyManager.shared.openFromClipboard()
     }
 
     @objc func showAbout() {
@@ -548,8 +554,23 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
 // MARK: - main
 
-let app = NSApplication.shared
-app.setActivationPolicy(.accessory)
-let delegate = AppDelegate()
-app.delegate = delegate
-app.run()
+// `@main` + `-parse-as-library` is the multi-file entry point. We split
+// menubar.swift / sticky.swift in #189 phase 0 — once the source set
+// crosses one file, swiftc disallows top-level expressions and demands a
+// designated entry. The `delegate` is stored statically so it outlives
+// the `main()` stack frame (NSApp holds the delegate, but holding a
+// strong ref here is a belt-and-braces guard against AppKit version
+// differences in delegate retention).
+@main
+enum CrabccMenubarApp {
+    static var delegate: AppDelegate?
+
+    static func main() {
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+        let d = AppDelegate()
+        delegate = d
+        app.delegate = d
+        app.run()
+    }
+}
