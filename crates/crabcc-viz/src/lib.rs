@@ -5,12 +5,20 @@
 //! `assets/index.html` is bundled into the binary with `include_str!`.
 //!
 //! Routes:
-//!   GET /                            -> bundled HTML page
-//!   GET /api/graph?root=&dir=&depth= -> JSON snapshot of call-graph BFS
-//!   GET /api/health                  -> `{ "status": "ok" }`
+//!   GET /                              -> bundled HTML page
+//!   GET /api/graph?root=&dir=&depth=   -> JSON snapshot of call-graph BFS
+//!   GET /api/activity?since=&limit=    -> tail of ~/.crabcc/usage.log filtered
+//!                                         to this repo (drives the live
+//!                                         agent-activity overlay)
+//!   GET /api/health                    -> `{ "status": "ok" }`
 //!
-//! See issue #64 for the full design and Phase 2/3/4 follow-ons (WebSocket
-//! push, file-browser sidebar, inspector pane, dark-mode polish, snapshots).
+//! "Live" today is implemented as 1.5s polling against `/api/activity` (a
+//! single-user localhost dashboard doesn't need SSE/WebSocket, and tiny_http
+//! doesn't have native WS support). Phase 2 promotes this to SSE — the
+//! polling cadence is fast enough that human users perceive it as live.
+//!
+//! See issue #64 for the full design and follow-on slices (file-browser
+//! sidebar, inspector pane, snapshot export, native SSE push).
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
@@ -84,6 +92,11 @@ fn print_banner(cfg: &Config, addr: SocketAddr) {
     routes.push_str(&format!("  {} {}/\n", c.dim("GET"), url));
     routes.push_str(&format!(
         "  {} {}/api/graph?root=NAME&dir=callers|callees&depth=N\n",
+        c.dim("GET"),
+        url
+    ));
+    routes.push_str(&format!(
+        "  {} {}/api/activity?since=TS&limit=N\n",
         c.dim("GET"),
         url
     ));
@@ -251,6 +264,10 @@ fn handle(request: Request, root: &Path) -> Result<()> {
             Ok(snapshot) => respond_json(request, &snapshot),
             Err(e) => respond_status(request, 400, &format!("bad request: {e}")),
         },
+        "/api/activity" => match activity_tail(root, query) {
+            Ok(activity) => respond_json(request, &activity),
+            Err(e) => respond_status(request, 400, &format!("bad request: {e}")),
+        },
         _ => respond_status(request, 404, "not found"),
     }
 }
@@ -360,6 +377,114 @@ fn graph_snapshot(root: &Path, query: &str) -> Result<GraphSnapshot> {
         truncated,
         nodes,
         edges,
+    })
+}
+
+/// One-shot "what has the agent been doing?" snapshot for the live overlay.
+/// Filters `~/.crabcc/usage.log` (a global JSONL stream written by every
+/// crabcc CLI / MCP query) down to the current repo and the entries newer
+/// than the client's last cursor.
+///
+/// `since` is a Unix-epoch second value; the client persists the maximum
+/// `ts` it has seen across polls and re-sends it as `since` on the next
+/// request. `limit` caps the response size to keep the polling payload
+/// bounded when the agent goes on a fuzzy-search bender.
+#[derive(Serialize)]
+struct ActivitySnapshot {
+    repo: String,
+    cursor: u64,
+    events: Vec<ActivityEvent>,
+}
+
+#[derive(Serialize, Clone)]
+struct ActivityEvent {
+    ts: u64,
+    op: String,
+    query: String,
+    results: usize,
+}
+
+const ACTIVITY_DEFAULT_LIMIT: usize = 100;
+const ACTIVITY_MAX_LIMIT: usize = 500;
+
+fn activity_tail(root: &Path, query: &str) -> Result<ActivitySnapshot> {
+    let q = parse_activity_query(query)?;
+    let repo_label = root
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("?")
+        .to_string();
+    // `read_log` parses the entire file. For a localhost single-user
+    // dashboard polling at ~1Hz this is fine — the log lives in the user's
+    // home dir and even 100k entries parse in single-digit ms. We can swap
+    // in an mtime-aware tail if it ever shows up in a profile.
+    let entries = crabcc_core::track::read_log().unwrap_or_default();
+    let mut events: Vec<ActivityEvent> = entries
+        .into_iter()
+        .filter(|e| e.ts > q.since && (q.repo_filter.is_none() || e.repo == repo_label))
+        .map(|e| ActivityEvent {
+            ts: e.ts,
+            op: e.op,
+            query: e.query,
+            results: e.results,
+        })
+        .collect();
+    // The on-disk log is naturally append-ordered, but we re-sort defensively
+    // so a clock skew or out-of-band write can't ship a non-monotonic batch
+    // to the frontend (which uses the max ts as its cursor).
+    events.sort_by_key(|e| e.ts);
+    if events.len() > q.limit {
+        let drop = events.len() - q.limit;
+        events.drain(..drop);
+    }
+    let cursor = events.last().map(|e| e.ts).unwrap_or(q.since);
+    Ok(ActivitySnapshot {
+        repo: repo_label,
+        cursor,
+        events,
+    })
+}
+
+struct ActivityQuery {
+    since: u64,
+    limit: usize,
+    repo_filter: Option<()>,
+}
+
+fn parse_activity_query(raw: &str) -> Result<ActivityQuery> {
+    let mut since = 0u64;
+    let mut limit = ACTIVITY_DEFAULT_LIMIT;
+    let mut repo_filter: Option<()> = Some(());
+    for pair in raw.split('&').filter(|s| !s.is_empty()) {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        let v = url_decode(v);
+        match k {
+            "since" => {
+                since = v
+                    .parse::<u64>()
+                    .map_err(|_| anyhow::anyhow!("since must be a Unix-epoch second"))?;
+            }
+            "limit" => {
+                limit = v
+                    .parse::<usize>()
+                    .map_err(|_| anyhow::anyhow!("limit must be a positive integer"))?
+                    .clamp(1, ACTIVITY_MAX_LIMIT);
+            }
+            // Pass `repo=*` to disable the per-repo filter (useful when the
+            // viewer is bound to a workspace root that doesn't match the
+            // repo label recorded in usage.log entries).
+            "repo" => {
+                if v == "*" {
+                    repo_filter = None;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(ActivityQuery {
+        since,
+        limit,
+        repo_filter,
     })
 }
 
