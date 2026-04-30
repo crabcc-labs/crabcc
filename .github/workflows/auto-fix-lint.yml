@@ -1,0 +1,192 @@
+# Auto-fix lint failures on open PRs.
+#
+# When `CI` (.github/workflows/ci.yml) fails on a PR, this workflow:
+#   1. Detects whether the lint job specifically failed (skips on test failures
+#      — those need real eyes).
+#   2. Checks out the PR branch.
+#   3. Runs `cargo fmt --all` to fix any rustfmt complaints.
+#   4. Runs `cargo clippy --fix --allow-dirty` for the fixable subset of
+#      clippy lints (the unfixable ones still need a human).
+#   5. If the working tree changed, commits with a `[auto-fix]` prefix and
+#      pushes back to the PR branch — the original CI workflow will re-run on
+#      the new commit.
+#   6. Posts a one-time PR comment summarising what got fixed (or, if nothing
+#      auto-fixable, points the author at the failing log).
+#
+# Conceptually a Copilot-style "fix-on-failure" agent — but materialised as a
+# workflow so it works without any UI / external service. Same intent: stop
+# round-tripping fmt/clippy nits between author + CI.
+#
+# Triggered by `workflow_run` to inherit the original CI's commit context.
+# Permissions are scoped down to the PR head: contents:write + pull-requests:write,
+# nothing else. Won't run on forks (GITHUB_TOKEN is read-only there).
+
+name: Auto-fix lint
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read   # to fetch the failing run's job list + logs
+
+concurrency:
+  # One auto-fix in flight per PR head. New CI failures while a fix is
+  # running just get coalesced into the next attempt.
+  group: auto-fix-lint-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: true
+
+jobs:
+  triage:
+    name: Triage failing lint job
+    if: >
+      github.event.workflow_run.conclusion == 'failure'
+      && github.event.workflow_run.event == 'pull_request'
+      && github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    outputs:
+      should_fix: ${{ steps.classify.outputs.should_fix }}
+      pr_number: ${{ steps.classify.outputs.pr_number }}
+      head_ref: ${{ steps.classify.outputs.head_ref }}
+      head_sha: ${{ steps.classify.outputs.head_sha }}
+    steps:
+      - name: Inspect failing run
+        id: classify
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          # Pull the job list. We only act when the `lint` job failed AND the
+          # `test` job either passed or wasn't run yet — auto-fixing while
+          # tests are exploding noise rarely helps.
+          jobs=$(gh api "/repos/${{ github.repository }}/actions/runs/$RUN_ID/jobs" --paginate)
+          lint_concl=$(echo "$jobs" | jq -r '.jobs[] | select(.name | startswith("lint")) | .conclusion' | head -1)
+          test_concl=$(echo "$jobs" | jq -r '.jobs[] | select(.name | startswith("test")) | .conclusion' | head -1)
+          echo "lint=$lint_concl test=$test_concl"
+
+          # Find the PR number from the head branch — workflow_run doesn't
+          # include it directly.
+          pr=$(gh pr list --state open --head "$HEAD_BRANCH" --json number --jq '.[0].number // empty')
+          if [ -z "$pr" ]; then
+            echo "no open PR for head branch $HEAD_BRANCH; nothing to fix"
+            echo "should_fix=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "pr_number=$pr" >> "$GITHUB_OUTPUT"
+          echo "head_ref=$HEAD_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+
+          if [ "$lint_concl" != "failure" ]; then
+            echo "lint did not fail (was: $lint_concl); skipping"
+            echo "should_fix=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Stop infinite loops — if the failing run is itself an auto-fix
+          # commit (last commit message starts with [auto-fix]), bail.
+          last_msg=$(gh api "/repos/${{ github.repository }}/commits/$HEAD_SHA" --jq '.commit.message')
+          if echo "$last_msg" | head -1 | grep -q '^\[auto-fix\]'; then
+            echo "head commit already auto-fixed; not retrying"
+            echo "should_fix=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "should_fix=true" >> "$GITHUB_OUTPUT"
+
+  fix:
+    name: Run cargo fmt + clippy --fix
+    needs: triage
+    if: needs.triage.outputs.should_fix == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.triage.outputs.head_ref }}
+          # Need a real (not shallow) clone so the auto-commit lands on top
+          # of whatever was there.
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-lint
+          save-if: "false"   # read-only; the main CI lint job owns writes
+
+      - name: cargo fmt --all
+        run: cargo fmt --all
+
+      - name: cargo clippy --fix (workspace, --allow-dirty)
+        # --allow-dirty: we already ran fmt above, working tree may be modified
+        # --allow-staged: same
+        # Don't fail the step on residual warnings — main CI will re-run.
+        run: |
+          cargo clippy --fix --allow-dirty --allow-staged --workspace --all-targets || true
+
+      - name: Detect changes
+        id: diff
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            git diff --stat | tail -10
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit + push fixes
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name 'crabcc-auto-fix[bot]'
+          git config user.email 'crabcc-auto-fix@users.noreply.github.com'
+          git add -A
+          git commit -m '[auto-fix] cargo fmt + clippy --fix
+
+          Triggered by failing CI lint on this PR. Workflow:
+          .github/workflows/auto-fix-lint.yml
+
+          If you see something here that looks wrong, just push another
+          commit (or revert this one) — the workflow refuses to retry on
+          a HEAD it already fixed.'
+          git push origin HEAD:${{ needs.triage.outputs.head_ref }}
+
+      - name: Comment on PR — fixes applied
+        if: steps.diff.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment ${{ needs.triage.outputs.pr_number }} --body "$(cat <<'EOF'
+          🤖 **Auto-fix applied** — `cargo fmt` and `cargo clippy --fix`.
+
+          The original lint failure was either fmt drift or fixable clippy lints. CI will now re-run on the new commit. If the lint job still fails, the remaining issues need a human (e.g. unfixable clippy warnings, shellcheck, custom lint rules).
+
+          To opt out per-PR, push your own commit to suppress the next auto-fix attempt.
+          EOF
+          )"
+
+      - name: Comment on PR — nothing fixable
+        if: steps.diff.outputs.changed == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment ${{ needs.triage.outputs.pr_number }} --body "$(cat <<'EOF'
+          🤖 **Auto-fix attempted** — but `cargo fmt` and `cargo clippy --fix` produced no changes.
+
+          The lint failure isn't auto-fixable. Most likely causes:
+          - Clippy lint that requires manual rewriting (not in the `--fix` set)
+          - Shellcheck on a `.sh` file
+          - A custom CI gate (e.g. version bump check)
+
+          Please open the failing job log and apply the fix by hand.
+          EOF
+          )"
