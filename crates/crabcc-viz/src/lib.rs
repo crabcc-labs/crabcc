@@ -24,6 +24,8 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+pub mod runtime;
+
 use anyhow::{Context, Result};
 use crabcc_core::graph::{CallGraph, GraphHit};
 use crabcc_core::store::Store;
@@ -31,6 +33,7 @@ use serde::Serialize;
 use tiny_http::{Header, Method, Request, Response, Server};
 
 const BUNDLED_INDEX: &str = include_str!("../assets/index.html");
+const BUNDLED_LIVE: &str = include_str!("../assets/live.html");
 
 /// Caps that defend a single-user localhost server from accidental fork-bombs
 /// (`?depth=200` returning a 50k-node graph that locks up the page). Exposed
@@ -45,6 +48,10 @@ pub struct Config {
     pub port: u16,
     pub root: PathBuf,
     pub no_open: bool,
+    /// If true, run `runtime::ensure_initialized` at startup so the live
+    /// dashboard's first bootstrap call has real numbers (not zeros).
+    /// Cheap on warm repos (one mtime sweep + sidecar load).
+    pub init: bool,
 }
 
 impl Config {
@@ -54,6 +61,7 @@ impl Config {
             port,
             root,
             no_open: true,
+            init: true,
         }
     }
 }
@@ -63,9 +71,33 @@ impl Config {
 /// server has shut down — for the smoke-test path where we need the
 /// resolved port up-front, use `bind_listener` + `serve_with_listener`.
 pub fn serve(cfg: Config) -> Result<()> {
+    // Bootstrap before bind: failing to index a fresh repo *here* gives
+    // a clearer error than a 500 on the first /api/bootstrap poll. We
+    // print the outcome inside `print_banner` so the user sees what
+    // landed without an extra log line.
+    let init_outcome = if cfg.init {
+        match runtime::ensure_initialized(&cfg.root) {
+            Ok(o) => Some(o),
+            Err(e) => {
+                eprintln!("crabcc serve: warning — init failed: {e:#}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    if let Ok(home) = runtime::home_dir() {
+        // ~/.crabcc/bin: best-effort. Symlink failures (e.g. read-only
+        // FS) shouldn't block server start; the user can still hit /
+        // and /live and view a static graph.
+        if let Err(e) = runtime::ensure_bin_dir(&home) {
+            tracing::debug!("crabcc serve: ensure_bin_dir failed: {e:#}");
+        }
+    }
+
     let listener = bind_listener(cfg.bind, cfg.port)?;
     let addr = listener.local_addr()?;
-    print_banner(&cfg, addr);
+    print_banner(&cfg, addr, init_outcome.as_ref());
     if !cfg.no_open {
         let url = format!("http://{}:{}", addr.ip(), addr.port());
         if let Err(e) = open_browser(&url) {
@@ -79,7 +111,7 @@ pub fn serve(cfg: Config) -> Result<()> {
 /// presence, and a few quick links. Goes to stderr so a piping invocation
 /// like `crabcc serve --no-open 2>/dev/null` is silent. ANSI colors honor
 /// `NO_COLOR` (https://no-color.org) and are stripped if stderr isn't a tty.
-fn print_banner(cfg: &Config, addr: SocketAddr) {
+fn print_banner(cfg: &Config, addr: SocketAddr, init: Option<&runtime::InitOutcome>) {
     let c = Style::for_stderr();
     let url = format!("http://{}:{}", addr.ip(), addr.port());
     let index_db = cfg.root.join(".crabcc").join("index.db");
@@ -89,9 +121,18 @@ fn print_banner(cfg: &Config, addr: SocketAddr) {
     let graph_state = describe_path(&graph_json);
 
     let mut routes = String::new();
-    routes.push_str(&format!("  {} {}/\n", c.dim("GET"), url));
     routes.push_str(&format!(
-        "  {} {}/api/graph?root=NAME&dir=callers|callees&depth=N\n",
+        "  {} {}/                         (interactive call-graph viewer)\n",
+        c.dim("GET"),
+        url
+    ));
+    routes.push_str(&format!(
+        "  {} {}/live                     (live monitoring dashboard)\n",
+        c.dim("GET"),
+        url
+    ));
+    routes.push_str(&format!(
+        "  {} {}/api/graph?root=&dir=&depth=\n",
         c.dim("GET"),
         url
     ));
@@ -100,6 +141,12 @@ fn print_banner(cfg: &Config, addr: SocketAddr) {
         c.dim("GET"),
         url
     ));
+    routes.push_str(&format!(
+        "  {} {}/api/memory/recent?since=TS&limit=N\n",
+        c.dim("GET"),
+        url
+    ));
+    routes.push_str(&format!("  {} {}/api/bootstrap\n", c.dim("GET"), url));
     routes.push_str(&format!("  {} {}/api/health\n", c.dim("GET"), url));
 
     eprintln!();
@@ -119,6 +166,24 @@ fn print_banner(cfg: &Config, addr: SocketAddr) {
         c.label("threads"),
         c.dim("tiny_http default pool")
     );
+    if let Some(o) = init {
+        let bits = format!(
+            "{} files, {} symbols, {} graph edges, {} drawers",
+            o.files, o.symbols, o.graph_edges, o.drawers
+        );
+        let action = if o.created_index {
+            "indexed"
+        } else {
+            "refreshed"
+        };
+        eprintln!("  {}      {} ({bits})", c.label("init"), action);
+    } else if !cfg.init {
+        eprintln!(
+            "  {}      {}",
+            c.label("init"),
+            c.dim("skipped (--no-init)")
+        );
+    }
     eprintln!();
     eprintln!("{}", c.dim("routes"));
     eprint!("{routes}");
@@ -259,6 +324,7 @@ fn handle(request: Request, root: &Path) -> Result<()> {
 
     match path {
         "/" | "/index.html" => respond_html(request, BUNDLED_INDEX),
+        "/live" => respond_html(request, BUNDLED_LIVE),
         "/api/health" => respond_json(request, &serde_json::json!({ "status": "ok" })),
         "/api/graph" => match graph_snapshot(root, query) {
             Ok(snapshot) => respond_json(request, &snapshot),
@@ -267,6 +333,14 @@ fn handle(request: Request, root: &Path) -> Result<()> {
         "/api/activity" => match activity_tail(root, query) {
             Ok(activity) => respond_json(request, &activity),
             Err(e) => respond_status(request, 400, &format!("bad request: {e}")),
+        },
+        "/api/bootstrap" => match bootstrap_snapshot(root) {
+            Ok(snap) => respond_json(request, &snap),
+            Err(e) => respond_status(request, 500, &format!("bootstrap failed: {e}")),
+        },
+        "/api/memory/recent" => match memory_recent(root, query) {
+            Ok(snap) => respond_json(request, &snap),
+            Err(e) => respond_status(request, 500, &format!("memory snapshot failed: {e}")),
         },
         _ => respond_status(request, 404, "not found"),
     }
@@ -485,6 +559,219 @@ fn parse_activity_query(raw: &str) -> Result<ActivityQuery> {
         since,
         limit,
         repo_filter,
+    })
+}
+
+// ── /api/bootstrap ──────────────────────────────────────────────────────
+//
+// One-shot "what does the live dashboard need to know on first paint?"
+// snapshot. Combines repo metadata with index sidecar stats so the
+// header section can render before we wait on /api/activity. Fast: a
+// cold call against an indexed repo on this machine measures sub-50ms.
+
+#[derive(Serialize)]
+struct BootstrapSnapshot {
+    repo: String,
+    root: String,
+    version: &'static str,
+    index: IndexState,
+    graph: GraphState,
+    memory: MemoryState,
+}
+
+#[derive(Serialize)]
+struct IndexState {
+    present: bool,
+    files: usize,
+    symbols: usize,
+    edges: usize,
+    db_bytes: u64,
+    db_mtime: u64,
+}
+
+#[derive(Serialize)]
+struct GraphState {
+    present: bool,
+    edges: usize,
+    callers: usize,
+    callees: usize,
+}
+
+#[derive(Serialize)]
+struct MemoryState {
+    present: bool,
+    drawers: usize,
+}
+
+fn bootstrap_snapshot(root: &Path) -> Result<BootstrapSnapshot> {
+    let repo = root
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("?")
+        .to_string();
+    let db_path = root.join(".crabcc").join("index.db");
+    let graph_path = root.join(".crabcc").join("graph.json");
+    let memory_path = root.join(".crabcc").join("memory.db");
+
+    let mut index = IndexState {
+        present: db_path.exists(),
+        files: 0,
+        symbols: 0,
+        edges: 0,
+        db_bytes: 0,
+        db_mtime: 0,
+    };
+    if let Ok(meta) = std::fs::metadata(&db_path) {
+        index.db_bytes = meta.len();
+        index.db_mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+    }
+    if index.present {
+        // Open in read-only-ish fashion via Store — costs about a stat
+        // plus three count(*) round-trips, all cheap on an indexed db.
+        if let Ok(store) = crabcc_core::store::Store::open(&db_path) {
+            index.files = store.list_files().map(|v| v.len()).unwrap_or(0);
+            index.symbols = store.iter_all_symbols().map(|v| v.len()).unwrap_or(0);
+            index.edges = store.edge_count().map(|n| n as usize).unwrap_or(0);
+        }
+    }
+
+    let mut graph = GraphState {
+        present: graph_path.exists(),
+        edges: 0,
+        callers: 0,
+        callees: 0,
+    };
+    if graph.present {
+        if let Ok(g) = crabcc_core::graph::CallGraph::load(&graph_path) {
+            graph.edges = g.edge_count;
+            graph.callers = g.callers.len();
+            graph.callees = g.callees.len();
+        }
+    }
+
+    let mut memory = MemoryState {
+        present: memory_path.exists(),
+        drawers: 0,
+    };
+    if memory.present {
+        // Palace::open does its own bootstrap; we don't want a fresh
+        // schema-create as a side effect of a viewer GET. Drop into the
+        // raw rusqlite path used by the backend instead.
+        if let Ok(conn) = rusqlite::Connection::open_with_flags(
+            &memory_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ) {
+            if let Ok(n) =
+                conn.query_row("select count(*) from drawers", [], |r| r.get::<_, i64>(0))
+            {
+                memory.drawers = n as usize;
+            }
+        }
+    }
+
+    Ok(BootstrapSnapshot {
+        repo,
+        root: root.display().to_string(),
+        version: env!("CARGO_PKG_VERSION"),
+        index,
+        graph,
+        memory,
+    })
+}
+
+// ── /api/memory/recent ──────────────────────────────────────────────────
+//
+// Returns the most-recently-created memory drawers for the live feed's
+// "new entries" column. Uses raw SQL against the memory db (read-only
+// flags) rather than `Palace::list_drawers` because we don't want the
+// schema-bootstrap side effects of `Palace::open` on every poll.
+
+#[derive(Serialize)]
+struct MemoryRecentSnapshot {
+    present: bool,
+    cursor: i64,
+    drawers: Vec<DrawerOut>,
+}
+
+#[derive(Serialize)]
+struct DrawerOut {
+    id: i64,
+    wing: String,
+    room: Option<String>,
+    source_id: String,
+    body_preview: String,
+    created_at: i64,
+}
+
+fn memory_recent(root: &Path, query: &str) -> Result<MemoryRecentSnapshot> {
+    let mut since: i64 = 0;
+    let mut limit: usize = 20;
+    for pair in query.split('&').filter(|s| !s.is_empty()) {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        let v = url_decode(v);
+        match k {
+            "since" => since = v.parse().unwrap_or(0),
+            "limit" => limit = v.parse::<usize>().unwrap_or(20).clamp(1, 200),
+            _ => {}
+        }
+    }
+    let memory_path = root.join(".crabcc").join("memory.db");
+    if !memory_path.exists() {
+        return Ok(MemoryRecentSnapshot {
+            present: false,
+            cursor: since,
+            drawers: vec![],
+        });
+    }
+    let conn = rusqlite::Connection::open_with_flags(
+        &memory_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    // The drawer body can be huge; preview only the first ~240 chars
+    // for the live feed. Clients that want the full body call
+    // `crabcc memory get <id>` (a separate, more expensive path).
+    // The drawers schema uses FKs to `wings` + `rooms` (not flat columns),
+    // so we LEFT JOIN to surface human-readable names. body_enc != 0
+    // means FSST-compressed; we skip those rows in the preview because
+    // decoding requires the codec from `~/.crabcc/fsst.symbols` and we
+    // don't want the live feed to depend on optional sidecars. The
+    // count line above already includes them, so the preview just
+    // shows fewer rows than `count` when compression is on — that's
+    // fine for a live dashboard.
+    let mut stmt = conn.prepare(
+        "SELECT d.id, w.name, r.name, d.source_id, substr(d.body, 1, 240), d.created_at \
+         FROM drawers d \
+         LEFT JOIN wings w ON w.id = d.wing_id \
+         LEFT JOIN rooms r ON r.id = d.room_id \
+         WHERE d.created_at > ?1 AND d.body_enc = 0 \
+         ORDER BY d.created_at DESC \
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(rusqlite::params![since, limit as i64], |r| {
+        Ok(DrawerOut {
+            id: r.get(0)?,
+            wing: r.get::<_, Option<String>>(1)?.unwrap_or_else(|| "?".into()),
+            room: r.get::<_, Option<String>>(2)?,
+            source_id: r.get(3)?,
+            body_preview: r.get(4)?,
+            created_at: r.get(5)?,
+        })
+    })?;
+    let mut drawers: Vec<DrawerOut> = rows.filter_map(|r| r.ok()).collect();
+    let cursor = drawers.iter().map(|d| d.created_at).max().unwrap_or(since);
+    // Reverse so the JSON is oldest-first within the page; the
+    // frontend prepends each event to its list which gives the user
+    // the natural "newest at top" ordering after concatenation.
+    drawers.reverse();
+    Ok(MemoryRecentSnapshot {
+        present: true,
+        cursor,
+        drawers,
     })
 }
 

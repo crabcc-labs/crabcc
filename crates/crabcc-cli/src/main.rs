@@ -262,6 +262,13 @@ enum Cmd {
         /// Skip auto-opening the system browser after the server starts.
         #[arg(long)]
         no_open: bool,
+        /// Skip the `go::init`-equivalent index/graph/memory bootstrap
+        /// at startup. Default behaviour brings the repo to a fully-
+        /// initialized state so the live dashboard's first /api/bootstrap
+        /// poll has real numbers; pass this when wrapping `crabcc serve`
+        /// in a supervisor that's already done it.
+        #[arg(long)]
+        no_init: bool,
     },
 }
 
@@ -466,9 +473,10 @@ fn main() -> Result<()> {
         port,
         bind,
         no_open,
+        no_init,
     }) = cli.cmd.as_ref()
     {
-        return run_serve(&root, *port, bind, *no_open);
+        return run_serve(&root, *port, bind, *no_open, !*no_init);
     }
 
     // `agent --run` (issue #62) execs an agent CLI in the user's shell;
@@ -757,7 +765,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn run_serve(root: &Path, port: u16, bind: &str, no_open: bool) -> Result<()> {
+fn run_serve(root: &Path, port: u16, bind: &str, no_open: bool, init: bool) -> Result<()> {
     let bind: std::net::IpAddr = bind
         .parse()
         .map_err(|e| anyhow::anyhow!("invalid --bind address '{bind}': {e}"))?;
@@ -773,6 +781,7 @@ fn run_serve(root: &Path, port: u16, bind: &str, no_open: bool) -> Result<()> {
         port,
         root: root.to_path_buf(),
         no_open,
+        init,
     })
 }
 

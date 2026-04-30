@@ -1,0 +1,708 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="light dark">
+<title>crabcc · live</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg:        #fafafa;
+    --fg:        #1a1a1a;
+    --muted:     #6a6a6a;
+    --panel:     #ffffff;
+    --border:    #e3e3e3;
+    --accent:    #d35400;
+    --node:      #2c3e50;
+    --node-root: #d35400;
+    --node-hot:  #ff8c42;
+    --edge:      #b8b8b8;
+    --hover-bg:  #fff7e6;
+    --live-ok:   #27ae60;
+    --live-off:  #95a5a6;
+    --col-bg:    #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:        #0e0e10;
+      --fg:        #e8e8e8;
+      --muted:     #8a8a8a;
+      --panel:     #161618;
+      --border:    #2a2a2c;
+      --accent:    #ff8c42;
+      --node:      #cfd6dc;
+      --node-root: #ff8c42;
+      --node-hot:  #ffb380;
+      --edge:      #4a4a4c;
+      --hover-bg:  #2a1f10;
+      --live-ok:   #2ecc71;
+      --live-off:  #6a6a6c;
+      --col-bg:    #131315;
+    }
+  }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 13px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    display: flex; flex-direction: column;
+  }
+  header {
+    display: flex; gap: 14px; align-items: center;
+    padding: 8px 16px; border-bottom: 1px solid var(--border);
+    background: var(--panel); flex-wrap: wrap;
+  }
+  header .brand { font-weight: 700; color: var(--accent); letter-spacing: .04em; }
+  header .crumb { color: var(--muted); font-size: 12px; }
+  header .crumb b { color: var(--fg); font-weight: 600; }
+  header .live {
+    display: inline-flex; gap: 6px; align-items: center;
+  }
+  header .live .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--live-off); transition: background .25s;
+  }
+  header .live.on .dot {
+    background: var(--live-ok);
+    animation: live-pulse 1.6s ease-out infinite;
+  }
+  @keyframes live-pulse {
+    0%   { box-shadow: 0 0 0 0   rgba(39,174,96,.55); }
+    70%  { box-shadow: 0 0 0 8px rgba(39,174,96,0);   }
+    100% { box-shadow: 0 0 0 0   rgba(39,174,96,0);   }
+  }
+  header .stats {
+    display: flex; gap: 14px; margin-left: auto; font-size: 12px;
+  }
+  header .stats span { color: var(--muted); }
+  header .stats span b { color: var(--fg); font-weight: 600; }
+  header a.viewer {
+    margin-left: 8px; color: var(--muted); text-decoration: none;
+    border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px;
+  }
+  header a.viewer:hover { color: var(--accent); border-color: var(--accent); }
+
+  main {
+    flex: 1; display: grid; gap: 1px; min-height: 0;
+    grid-template-columns: 320px 1fr 320px;
+    background: var(--border);
+  }
+  section {
+    background: var(--col-bg); display: flex; flex-direction: column; min-height: 0;
+  }
+  section h2 {
+    font: 600 11px/1 ui-monospace, Menlo, Consolas, monospace;
+    text-transform: uppercase; letter-spacing: .08em;
+    color: var(--muted); margin: 0; padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px;
+  }
+  section h2 .count { margin-left: auto; color: var(--muted); font-weight: 400; }
+  .scroll { flex: 1; overflow-y: auto; padding: 4px 0; }
+  .row {
+    display: grid; grid-template-columns: 56px 60px 1fr;
+    gap: 6px; align-items: baseline;
+    padding: 5px 12px;
+    border-left: 2px solid transparent;
+  }
+  .row:hover { background: var(--hover-bg); }
+  .row.fresh {
+    background: var(--hover-bg);
+    animation: fade-fresh 1.6s ease-out forwards;
+    border-left-color: var(--accent);
+  }
+  @keyframes fade-fresh {
+    to { background: transparent; border-left-color: transparent; }
+  }
+  .row .ts  { color: var(--muted); font-size: 11px; }
+  .row .op  { color: var(--accent); font-size: 11px; text-transform: uppercase; font-weight: 600; }
+  .row .q   { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .res { color: var(--muted); font-size: 11px; }
+  .empty {
+    color: var(--muted); padding: 14px; font-style: italic; font-size: 12px;
+  }
+  .drawer {
+    padding: 8px 12px; border-bottom: 1px solid var(--border);
+  }
+  .drawer.fresh {
+    background: var(--hover-bg);
+    animation: fade-fresh 1.8s ease-out forwards;
+  }
+  .drawer .meta {
+    display: flex; gap: 8px; align-items: baseline; font-size: 11px;
+    color: var(--muted); margin-bottom: 4px;
+  }
+  .drawer .meta .wing { color: var(--accent); font-weight: 600; text-transform: uppercase; }
+  .drawer .body {
+    overflow: hidden; text-overflow: ellipsis; -webkit-line-clamp: 3;
+    display: -webkit-box; -webkit-box-orient: vertical;
+    color: var(--fg); font-size: 12px; line-height: 1.45;
+  }
+  /* ── center column: graph canvas ─────────────────────────────────── */
+  #stage { position: relative; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; }
+  canvas.gl  { position: absolute; inset: 0; }
+  canvas.ovl { position: absolute; inset: 0; pointer-events: none; }
+  #graph-empty {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--muted); pointer-events: none; text-align: center;
+    padding: 20px;
+  }
+  #graph-empty.hidden { display: none; }
+  .legend {
+    position: absolute; bottom: 8px; left: 8px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 4px;
+    padding: 4px 8px; font-size: 11px; color: var(--muted);
+    display: inline-flex; gap: 12px; align-items: center;
+  }
+  .legend .dot {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    margin-right: 4px; vertical-align: middle;
+  }
+  .legend .dot.q { background: var(--node-root); }
+  .legend .dot.r { background: var(--node-hot); }
+  .legend .dot.n { background: var(--node); }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">crabcc · live</span>
+  <span class="live" id="live"><span class="dot"></span><span>live</span></span>
+  <span class="crumb" id="crumb"></span>
+  <span class="stats" id="stats"></span>
+  <a class="viewer" href="/" title="Open the interactive call-graph viewer">interactive view ›</a>
+</header>
+<main>
+  <!-- ── tool calls (left) ─────────────────────────────────────────── -->
+  <section>
+    <h2>tool calls <span class="count" id="actCount">0</span></h2>
+    <div class="scroll" id="activity">
+      <div class="empty">Waiting for agent queries…</div>
+    </div>
+  </section>
+
+  <!-- ── live relations graph (center) ─────────────────────────────── -->
+  <section id="stage">
+    <canvas id="gl"  class="gl"></canvas>
+    <canvas id="ovl" class="ovl"></canvas>
+    <div id="graph-empty">
+      Live relation graph — symbols pop in as the agent queries them.<br>
+      Pop one out by running <code>crabcc sym &lt;Name&gt;</code> from another shell.
+    </div>
+    <div class="legend">
+      <span><span class="dot q"></span>queried</span>
+      <span><span class="dot r"></span>related (cached)</span>
+      <span><span class="dot n"></span>frontier</span>
+    </div>
+  </section>
+
+  <!-- ── new memory entries (right) ────────────────────────────────── -->
+  <section>
+    <h2>new memory entries <span class="count" id="memCount">0</span></h2>
+    <div class="scroll" id="memory">
+      <div class="empty">No memory drawers yet.</div>
+    </div>
+  </section>
+</main>
+<script>
+(() => {
+  "use strict";
+
+  const els = {
+    live: document.getElementById("live"),
+    crumb: document.getElementById("crumb"),
+    stats: document.getElementById("stats"),
+    activity: document.getElementById("activity"),
+    actCount: document.getElementById("actCount"),
+    memory: document.getElementById("memory"),
+    memCount: document.getElementById("memCount"),
+    graphEmpty: document.getElementById("graph-empty"),
+  };
+
+  const glCanvas = document.getElementById("gl");
+  const ovlCanvas = document.getElementById("ovl");
+  const ctx2d = ovlCanvas.getContext("2d");
+  const gl = glCanvas.getContext("webgl", { antialias: true, premultipliedAlpha: false })
+          || glCanvas.getContext("experimental-webgl");
+  if (!gl) {
+    document.getElementById("stage").innerHTML =
+      '<div style="padding:20px;color:var(--muted)">WebGL not available in this browser.</div>';
+  }
+
+  // ── State ───────────────────────────────────────────────────────────────
+  // Relation-graph state. Each agent query for a known symbol-aware op
+  // (`sym`/`refs`/`callers`) becomes a node here, plus its callers/callees
+  // from the cached call-graph as the frontier. Unique by symbol id; node
+  // age controls how warm the color is (recent = orange, decays over ~30s).
+  const nodes = []; // { id, x, y, vx, vy, fx, fy, queried, hotAt }
+  const edges = []; // { src, dst }
+  const nodeIdx = new Map();
+
+  const view = { tx: 0, ty: 0, scale: 1 };
+
+  let cursorActivity = Math.floor(Date.now() / 1000) - 60;
+  let cursorMemory = 0;
+  let totalActivity = 0;
+  let totalMemory = 0;
+  const activityRows = [];
+  const drawerRows = [];
+  const KEEP = 80;
+
+  // Cached graph adjacency from /api/graph snapshots (so we can connect
+  // newly-popped-in nodes to known callers/callees instead of letting the
+  // agent's clicks land in a vacuum). Loaded lazily, never hard-fails.
+  const adj = { callers: new Map(), callees: new Map() };
+
+  // ── Bootstrap ───────────────────────────────────────────────────────────
+  async function bootstrap() {
+    try {
+      const r = await fetch("/api/bootstrap");
+      if (!r.ok) throw new Error(await r.text());
+      const j = await r.json();
+      els.crumb.innerHTML = `<b>${escapeHTML(j.repo)}</b> · ${escapeHTML(j.root)}`;
+      const stats = [
+        `<span>files <b>${j.index.files.toLocaleString()}</b></span>`,
+        `<span>symbols <b>${j.index.symbols.toLocaleString()}</b></span>`,
+        `<span>edges <b>${j.index.edges.toLocaleString()}</b></span>`,
+        `<span>graph <b>${j.graph.edges.toLocaleString()}</b></span>`,
+        `<span>drawers <b>${j.memory.drawers.toLocaleString()}</b></span>`,
+        `<span>v<b>${escapeHTML(j.version)}</b></span>`,
+      ];
+      if (!j.index.present) {
+        stats.unshift(`<span style="color:var(--accent)">⚠ no index</span>`);
+      }
+      els.stats.innerHTML = stats.join("");
+    } catch (e) {
+      els.stats.textContent = `bootstrap error: ${e.message || e}`;
+    }
+  }
+
+  // ── /api/activity polling ───────────────────────────────────────────────
+  async function pollActivity() {
+    try {
+      const r = await fetch(`/api/activity?since=${cursorActivity}&limit=200`);
+      if (!r.ok) throw new Error(await r.text());
+      const j = await r.json();
+      els.live.classList.add("on");
+      if (j.events && j.events.length) {
+        const fresh = new Set();
+        for (const e of j.events) {
+          activityRows.push(e);
+          totalActivity++;
+          fresh.add(e.ts + "·" + e.op + "·" + e.query);
+          maybePopNode(e.op, e.query);
+        }
+        if (activityRows.length > KEEP) {
+          activityRows.splice(0, activityRows.length - KEEP);
+        }
+        renderActivity(fresh);
+      }
+      cursorActivity = j.cursor || cursorActivity;
+    } catch (e) {
+      els.live.classList.remove("on");
+      tracing("activity", e);
+    }
+  }
+
+  function renderActivity(freshKeys) {
+    if (!activityRows.length) {
+      els.activity.innerHTML = '<div class="empty">Waiting for agent queries…</div>';
+      return;
+    }
+    const html = activityRows.slice().reverse().map((r) => {
+      const k = r.ts + "·" + r.op + "·" + r.query;
+      const fresh = freshKeys && freshKeys.has(k) ? " fresh" : "";
+      return `<div class="row${fresh}">
+        <span class="ts">${fmtTs(r.ts)}</span>
+        <span class="op">${escapeHTML(r.op)}</span>
+        <span class="q" title="${escapeAttr(r.query)}">${escapeHTML(r.query)}</span>
+      </div>`;
+    }).join("");
+    els.activity.innerHTML = html;
+    els.actCount.textContent = totalActivity;
+  }
+
+  // ── /api/memory/recent polling ──────────────────────────────────────────
+  async function pollMemory() {
+    try {
+      const r = await fetch(`/api/memory/recent?since=${cursorMemory}&limit=20`);
+      if (!r.ok) throw new Error(await r.text());
+      const j = await r.json();
+      if (!j.present) {
+        els.memory.innerHTML =
+          '<div class="empty">No <code>.crabcc/memory.db</code> in this repo yet. Run <code>crabcc memory remember "…"</code>.</div>';
+        return;
+      }
+      if (j.drawers && j.drawers.length) {
+        const fresh = new Set();
+        for (const d of j.drawers) {
+          drawerRows.push(d);
+          totalMemory++;
+          fresh.add(d.id);
+        }
+        if (drawerRows.length > KEEP) {
+          drawerRows.splice(0, drawerRows.length - KEEP);
+        }
+        renderMemory(fresh);
+      }
+      cursorMemory = j.cursor || cursorMemory;
+    } catch (e) {
+      tracing("memory", e);
+    }
+  }
+
+  function renderMemory(freshSet) {
+    if (!drawerRows.length) {
+      els.memory.innerHTML = '<div class="empty">No memory drawers yet.</div>';
+      return;
+    }
+    const html = drawerRows.slice().reverse().map((d) => {
+      const fresh = freshSet && freshSet.has(d.id) ? " fresh" : "";
+      const room = d.room ? ` · ${escapeHTML(d.room)}` : "";
+      return `<div class="drawer${fresh}">
+        <div class="meta">
+          <span class="wing">${escapeHTML(d.wing)}${room}</span>
+          <span class="ts">${fmtTs(d.created_at)}</span>
+          <span title="${escapeAttr(d.source_id)}" style="margin-left:auto;overflow:hidden;text-overflow:ellipsis">#${escapeHTML(String(d.id))}</span>
+        </div>
+        <div class="body">${escapeHTML(d.body_preview)}</div>
+      </div>`;
+    }).join("");
+    els.memory.innerHTML = html;
+    els.memCount.textContent = totalMemory;
+  }
+
+  // ── Relation graph: agent queries → nodes ───────────────────────────────
+  const SYMBOL_OPS = new Set(["sym", "refs", "callers", "outline", "fuzzy", "prefix"]);
+  function maybePopNode(op, query) {
+    if (!SYMBOL_OPS.has(op) || !query) return;
+    addNode(query, /*queried=*/true);
+    // Pull cached neighbors from the call-graph if we can. Lazy-fetch the
+    // first time a node is added, never blocks on the network.
+    fetchAdjacencyFor(query).then(() => {
+      const callers = adj.callers.get(query) || [];
+      const callees = adj.callees.get(query) || [];
+      callers.forEach(c => { addNode(c, false); addEdge(c, query); });
+      callees.forEach(c => { addNode(c, false); addEdge(query, c); });
+      requestAnimationFrame(simStep);
+    });
+    requestAnimationFrame(simStep);
+  }
+
+  function addNode(id, queried) {
+    if (nodeIdx.has(id)) {
+      const n = nodes[nodeIdx.get(id)];
+      if (queried) { n.queried = true; n.hotAt = performance.now(); }
+      else if (!n.hotAt) n.hotAt = performance.now();
+      return;
+    }
+    const w = glCanvas.clientWidth, h = glCanvas.clientHeight;
+    nodes.push({
+      id, queried,
+      x: w / 2 + (Math.random() - 0.5) * 120,
+      y: h / 2 + (Math.random() - 0.5) * 120,
+      vx: 0, vy: 0, fx: null, fy: null,
+      hotAt: performance.now(),
+    });
+    nodeIdx.set(id, nodes.length - 1);
+    // Cap: cull oldest non-queried nodes if we have too many; keeps the
+    // canvas legible during a long session.
+    if (nodes.length > 200) cullOldest();
+    els.graphEmpty.classList.add("hidden");
+  }
+  function addEdge(src, dst) {
+    if (!nodeIdx.has(src) || !nodeIdx.has(dst)) return;
+    const s = nodeIdx.get(src), d = nodeIdx.get(dst);
+    if (edges.some(e => e.src === s && e.dst === d)) return;
+    edges.push({ src: s, dst: d });
+  }
+  function cullOldest() {
+    // Drop the 20 oldest non-queried nodes + any orphaned edges. We
+    // rebuild the edge index because dropping nodes shifts other indexes.
+    const sortable = nodes.map((n, i) => ({ i, age: n.hotAt || 0, q: n.queried }))
+                          .filter(x => !x.q)
+                          .sort((a, b) => a.age - b.age);
+    const drop = new Set(sortable.slice(0, 20).map(x => x.i));
+    if (!drop.size) return;
+    rebuildAfterDrop(drop);
+  }
+  function rebuildAfterDrop(drop) {
+    const newNodes = [];
+    const oldToNew = new Map();
+    nodes.forEach((n, i) => {
+      if (drop.has(i)) return;
+      oldToNew.set(i, newNodes.length);
+      newNodes.push(n);
+    });
+    nodes.length = 0;
+    nodes.push(...newNodes);
+    nodeIdx.clear();
+    nodes.forEach((n, i) => nodeIdx.set(n.id, i));
+    const newEdges = [];
+    edges.forEach(e => {
+      if (oldToNew.has(e.src) && oldToNew.has(e.dst))
+        newEdges.push({ src: oldToNew.get(e.src), dst: oldToNew.get(e.dst) });
+    });
+    edges.length = 0;
+    edges.push(...newEdges);
+  }
+
+  // The /api/graph endpoint expects `dir=callers|callees`. We make two
+  // calls per new symbol (cached after the first hit) and store both
+  // directions in `adj`. Failure is silent — without graph data the
+  // node still renders, just without edges.
+  const adjFetched = new Set();
+  async function fetchAdjacencyFor(name) {
+    if (adjFetched.has(name)) return;
+    adjFetched.add(name);
+    await Promise.all([
+      fetchDir(name, "callers"),
+      fetchDir(name, "callees"),
+    ]);
+  }
+  async function fetchDir(name, dir) {
+    try {
+      const r = await fetch(`/api/graph?root=${encodeURIComponent(name)}&dir=${dir}&depth=1`);
+      if (!r.ok) return;
+      const j = await r.json();
+      const list = (j.nodes || []).filter(n => n.depth === 1).map(n => n.id);
+      adj[dir].set(name, list);
+    } catch { /* ignore — graph data absent is fine */ }
+  }
+
+  // ── Force simulation (Eades-style) ──────────────────────────────────────
+  function simStep() {
+    if (!nodes.length) return;
+    const w = glCanvas.clientWidth, h = glCanvas.clientHeight;
+    const cx = w / 2, cy = h / 2;
+    const REPULSE = 5500, SPRING = 0.045, REST_LEN = 100, DAMP = 0.78, CENTER = 0.014;
+
+    for (const a of nodes) {
+      if (a.fx != null) continue;
+      let fx = (cx - a.x) * CENTER, fy = (cy - a.y) * CENTER;
+      for (const b of nodes) {
+        if (a === b) continue;
+        const dx = a.x - b.x, dy = a.y - b.y;
+        const d2 = Math.max(dx * dx + dy * dy, 100);
+        const d  = Math.sqrt(d2);
+        const f  = REPULSE / d2;
+        fx += (dx / d) * f;
+        fy += (dy / d) * f;
+      }
+      a._fx = fx; a._fy = fy;
+    }
+    for (const e of edges) {
+      const a = nodes[e.src], b = nodes[e.dst];
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const d  = Math.sqrt(dx * dx + dy * dy) || 1;
+      const f  = SPRING * (d - REST_LEN);
+      const ux = dx / d, uy = dy / d;
+      if (a.fx == null) { a._fx += ux * f; a._fy += uy * f; }
+      if (b.fx == null) { b._fx -= ux * f; b._fy -= uy * f; }
+    }
+    let energy = 0;
+    for (const a of nodes) {
+      if (a.fx != null) { a.x = a.fx; a.y = a.fy; continue; }
+      a.vx = (a.vx + a._fx) * DAMP;
+      a.vy = (a.vy + a._fy) * DAMP;
+      a.x += a.vx; a.y += a.vy;
+      energy += a.vx * a.vx + a.vy * a.vy;
+    }
+    drawGraph();
+    if (energy > 0.5) requestAnimationFrame(simStep);
+  }
+
+  // ── WebGL rendering for the graph ───────────────────────────────────────
+  let progNode, progEdge, bufNode, bufEdge, nodeAttr, edgeAttr;
+  let uNodeView, uNodeRes, uEdgeView, uEdgeRes;
+  if (gl) {
+    const VS_NODE = `attribute vec2 a_pos; attribute vec3 a_color; attribute float a_size;
+      uniform mat3 u_view; uniform vec2 u_res; varying vec3 v_color;
+      void main() {
+        vec3 p = u_view * vec3(a_pos, 1.0);
+        vec2 clip = (p.xy / u_res) * 2.0 - 1.0;
+        gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+        gl_PointSize = a_size; v_color = a_color;
+      }`;
+    const FS_NODE = `precision mediump float; varying vec3 v_color;
+      void main() {
+        vec2 d = gl_PointCoord - vec2(0.5);
+        float r = length(d);
+        float a = smoothstep(0.5, 0.42, r);
+        if (a < 0.01) discard;
+        gl_FragColor = vec4(v_color, a);
+      }`;
+    const VS_EDGE = `attribute vec2 a_pos; attribute vec3 a_color;
+      uniform mat3 u_view; uniform vec2 u_res; varying vec3 v_color;
+      void main() {
+        vec3 p = u_view * vec3(a_pos, 1.0);
+        vec2 clip = (p.xy / u_res) * 2.0 - 1.0;
+        gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0); v_color = a_color;
+      }`;
+    const FS_EDGE = `precision mediump float; varying vec3 v_color;
+      void main() { gl_FragColor = vec4(v_color, 0.55); }`;
+    const compile = (src, type) => {
+      const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+      return s;
+    };
+    const link = (vs, fs) => {
+      const p = gl.createProgram();
+      gl.attachShader(p, compile(vs, gl.VERTEX_SHADER));
+      gl.attachShader(p, compile(fs, gl.FRAGMENT_SHADER));
+      gl.linkProgram(p);
+      if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+      return p;
+    };
+    progNode = link(VS_NODE, FS_NODE);
+    progEdge = link(VS_EDGE, FS_EDGE);
+    nodeAttr = {
+      pos: gl.getAttribLocation(progNode, "a_pos"),
+      color: gl.getAttribLocation(progNode, "a_color"),
+      size: gl.getAttribLocation(progNode, "a_size"),
+    };
+    edgeAttr = {
+      pos: gl.getAttribLocation(progEdge, "a_pos"),
+      color: gl.getAttribLocation(progEdge, "a_color"),
+    };
+    uNodeView = gl.getUniformLocation(progNode, "u_view");
+    uNodeRes = gl.getUniformLocation(progNode, "u_res");
+    uEdgeView = gl.getUniformLocation(progEdge, "u_view");
+    uEdgeRes = gl.getUniformLocation(progEdge, "u_res");
+    bufNode = gl.createBuffer();
+    bufEdge = gl.createBuffer();
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  }
+
+  function rgb(varName) {
+    const v = getComputedStyle(document.documentElement).getPropertyValue(varName).trim() || "#888";
+    const m = v.match(/^#([0-9a-f]{6})$/i);
+    if (!m) return [0.5, 0.5, 0.5];
+    const n = parseInt(m[1], 16);
+    return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+  }
+
+  function drawGraph() {
+    if (!gl) return;
+    const w = glCanvas.clientWidth, h = glCanvas.clientHeight;
+    const dpr = window.devicePixelRatio || 1;
+    const matrix = new Float32Array([dpr, 0, 0, 0, dpr, 0, 0, 0, 1]);
+
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+
+    const edgeRGB = rgb("--edge");
+    const queriedRGB = rgb("--node-root");
+    const recentRGB = rgb("--node-hot");
+    const baseRGB = rgb("--node");
+    const fg = `rgb(${(rgb("--fg").map(v => Math.round(v * 255))).join(",")})`;
+
+    if (edges.length) {
+      const data = new Float32Array(edges.length * 10);
+      let p = 0;
+      for (const e of edges) {
+        const a = nodes[e.src], b = nodes[e.dst];
+        data[p++] = a.x; data[p++] = a.y;
+        data[p++] = edgeRGB[0]; data[p++] = edgeRGB[1]; data[p++] = edgeRGB[2];
+        data[p++] = b.x; data[p++] = b.y;
+        data[p++] = edgeRGB[0]; data[p++] = edgeRGB[1]; data[p++] = edgeRGB[2];
+      }
+      gl.useProgram(progEdge);
+      gl.uniformMatrix3fv(uEdgeView, false, matrix);
+      gl.uniform2f(uEdgeRes, glCanvas.width, glCanvas.height);
+      gl.bindBuffer(gl.ARRAY_BUFFER, bufEdge);
+      gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+      gl.enableVertexAttribArray(edgeAttr.pos);
+      gl.vertexAttribPointer(edgeAttr.pos, 2, gl.FLOAT, false, 5 * 4, 0);
+      gl.enableVertexAttribArray(edgeAttr.color);
+      gl.vertexAttribPointer(edgeAttr.color, 3, gl.FLOAT, false, 5 * 4, 2 * 4);
+      gl.drawArrays(gl.LINES, 0, edges.length * 2);
+    }
+
+    const now = performance.now();
+    if (nodes.length) {
+      const data = new Float32Array(nodes.length * 6);
+      let p = 0;
+      for (const n of nodes) {
+        const ageT = n.hotAt ? Math.max(0, 1 - (now - n.hotAt) / 30000) : 0;
+        let c;
+        if (n.queried)            c = mix(queriedRGB, recentRGB, Math.min(1, ageT * 1.5));
+        else if (ageT > 0)        c = mix(baseRGB, recentRGB, ageT);
+        else                       c = baseRGB;
+        const r = ((n.queried ? 14 : 9) + ageT * 6) * dpr;
+        data[p++] = n.x; data[p++] = n.y;
+        data[p++] = c[0]; data[p++] = c[1]; data[p++] = c[2];
+        data[p++] = r;
+      }
+      gl.useProgram(progNode);
+      gl.uniformMatrix3fv(uNodeView, false, matrix);
+      gl.uniform2f(uNodeRes, glCanvas.width, glCanvas.height);
+      gl.bindBuffer(gl.ARRAY_BUFFER, bufNode);
+      gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW);
+      gl.enableVertexAttribArray(nodeAttr.pos);
+      gl.vertexAttribPointer(nodeAttr.pos, 2, gl.FLOAT, false, 6 * 4, 0);
+      gl.enableVertexAttribArray(nodeAttr.color);
+      gl.vertexAttribPointer(nodeAttr.color, 3, gl.FLOAT, false, 6 * 4, 2 * 4);
+      gl.enableVertexAttribArray(nodeAttr.size);
+      gl.vertexAttribPointer(nodeAttr.size, 1, gl.FLOAT, false, 6 * 4, 5 * 4);
+      gl.drawArrays(gl.POINTS, 0, nodes.length);
+    }
+
+    ctx2d.save();
+    ctx2d.clearRect(0, 0, w, h);
+    ctx2d.font = "12px ui-monospace, Menlo, Consolas, monospace";
+    ctx2d.textAlign = "center"; ctx2d.textBaseline = "top";
+    ctx2d.fillStyle = fg;
+    for (const n of nodes) {
+      const ageT = n.hotAt ? Math.max(0, 1 - (now - n.hotAt) / 30000) : 0;
+      // Only label queried nodes + recent neighbors so the canvas stays
+      // legible. Older frontier nodes drop their label as they age out.
+      if (!n.queried && ageT < 0.25) continue;
+      const label = n.id.length > 24 ? n.id.slice(0, 22) + "…" : n.id;
+      ctx2d.fillText(label, n.x, n.y + (n.queried ? 14 : 11));
+    }
+    ctx2d.restore();
+    // Keep the simulation animating while there are recent (warm) nodes,
+    // so labels and color decay smoothly even without new events.
+    if (nodes.some(n => n.hotAt && now - n.hotAt < 30000))
+      requestAnimationFrame(simStep);
+  }
+
+  function mix(a, b, t) {
+    return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+  }
+
+  function resize() {
+    const dpr = window.devicePixelRatio || 1;
+    const w = glCanvas.clientWidth, h = glCanvas.clientHeight;
+    glCanvas.width = ovlCanvas.width = Math.round(w * dpr);
+    glCanvas.height = ovlCanvas.height = Math.round(h * dpr);
+    if (gl) gl.viewport(0, 0, glCanvas.width, glCanvas.height);
+    ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0);
+    drawGraph();
+  }
+  window.addEventListener("resize", resize);
+
+  // ── Helpers ─────────────────────────────────────────────────────────────
+  function fmtTs(ts) { return new Date(ts * 1000).toTimeString().slice(0, 8); }
+  function escapeHTML(s) {
+    return String(s).replace(/[&<>"]/g, c =>
+      ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
+  }
+  function escapeAttr(s) { return escapeHTML(s).replace(/'/g, "&#39;"); }
+  function tracing(_a, _e) { /* console silent by default */ void _a; void _e; }
+
+  // ── Boot ────────────────────────────────────────────────────────────────
+  resize();
+  bootstrap();
+  pollActivity();
+  pollMemory();
+  setInterval(pollActivity, 1500);
+  setInterval(pollMemory, 2500);
+  setInterval(bootstrap, 15000);
+})();
+</script>
+</body>
+</html>

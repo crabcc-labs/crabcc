@@ -226,6 +226,21 @@ impl AgentRuntime for SubprocessRuntime {
             }
         }
 
+        // PATH bias: prepend ~/.crabcc/bin (which we ensure exists +
+        // contains a `crabcc` symlink) and ~/.cargo/bin / ~/.local/bin
+        // so the agent's Bash tool calls find the bins we expect even
+        // when the user's shell rc differs from ours. We don't replace
+        // PATH — we extend its prefix — so `git`, `gh`, `jq`, `rg`,
+        // etc. that the user already had stay reachable.
+        if let Ok(home) = std::env::var("HOME") {
+            let home_path = std::path::Path::new(&home);
+            // Best-effort bin-dir setup. Failures (read-only FS, broken
+            // symlink) just degrade us to the parent PATH; the agent
+            // still runs, just without our preferred binary order.
+            let _ = crabcc_viz::runtime::ensure_bin_dir(home_path);
+            cmd.env("PATH", crabcc_viz::runtime::agent_path(home_path));
+        }
+
         if req.dry_run {
             print_dry_run(self.label(), &claude, req, system_prompt.as_ref(), run);
             return Ok(0);
