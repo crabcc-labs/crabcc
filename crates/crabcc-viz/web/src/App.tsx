@@ -18,6 +18,7 @@ import {
 } from "./components/SettingsPanel";
 import { usePolling } from "./usePolling";
 import { useEventStream } from "./useEventStream";
+import { updateDebugBridge } from "./debugBridge";
 import { logFetchOk, logUserAction } from "./lifecycle";
 import {
   api,
@@ -34,6 +35,15 @@ export function App() {
   const [settings, setSettings] = useState<Settings>(loadSettings);
   const [activity, setActivity] = useState<ActivityHit[]>([]);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
+
+  // Push the live-web state into window.__crabcc__ so the Chrome
+  // extension (#184) can read it via chrome.scripting.executeScript.
+  useEffect(() => {
+    updateDebugBridge({ activityCount: activity.length });
+  }, [activity.length]);
+  useEffect(() => {
+    updateDebugBridge({ agentCount: agents.length });
+  }, [agents.length]);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
   const bootstrap = usePolling(api.bootstrap, 0, [], {
     source: "/api/bootstrap",
