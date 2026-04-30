@@ -20,11 +20,23 @@
 # sqlite, openssl. Cached via BuildKit `--mount=type=cache` so iterative
 # rebuilds skip the full registry + target tree.
 # ----------------------------------------------------------------------
-ARG RUST_VERSION=1.83
-FROM --platform=$BUILDPLATFORM rust:${RUST_VERSION}-slim-bookworm AS builder
+# 1. Use the nightly channel
+# Stage 1: Build the frontend
+FROM node:18 AS frontend-builder
+WORKDIR /web
+COPY crates/crabcc-viz/web/package*.json ./
+RUN npm install
+COPY crates/crabcc-viz/web/ ./
+RUN npm run build  # This creates the /web/dist folder
+
+ARG RUST_VERSION=nightly
+FROM --platform=$BUILDPLATFORM rustlang/rust:nightly-slim AS builder
+
+# 2. Tell Cargo to allow the unstable 'profile-rustflags' feature globally
+ENV CARGO_UNSTABLE_PROFILE_RUSTFLAGS=true
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
+    apt-get install -y build-essential --no-install-recommends \
       pkg-config \
       libssl-dev \
       libsqlite3-dev \
@@ -36,19 +48,22 @@ RUN apt-get update && \
 WORKDIR /src
 
 # Copy manifests first so dep resolution caches independently of source edits.
-COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+COPY schema ./schema
+COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml Cargo.lock ./
 # AGENTS.md is `include_str!`'d into the binary at compile time.
-COPY AGENTS.md README.md ./
+COPY AGENTS.md ./
 # install/ is bundled — install-claude reads from it at runtime.
 COPY install ./install
 
+COPY --from=frontend-builder /web/dist ./crates/crabcc-viz/web/dist
 # BuildKit cache mounts for cargo registry, git deps, and target tree.
 # Output the binary to /tmp before the cache mount detaches.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/src/target \
-    cargo build --release --bin crabcc && \
+    cargo build -Z unstable-options --release --bin crabcc && \
     cp /src/target/release/crabcc /tmp/crabcc && \
     strip /tmp/crabcc
 
@@ -56,15 +71,16 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # Stage 2: runtime — minimal Debian slim with only the dynamic libraries
 # crabcc actually needs. Non-root user. Healthcheck via `crabcc info`.
 # ----------------------------------------------------------------------
-FROM debian:bookworm-slim AS runtime
+# Use the base image for baked TZ (Europe/Budapest) + locale (en_US.UTF-8)
+# and the pre-created crabcc user. Build it once with:
+#   docker build -t crabcc-base:local -f install/Dockerfile.base .
+FROM crabcc-base:local AS runtime
 
 # Build-time metadata — pass via --build-arg from `task images-build`
-# (which fills git revision + ISO-8601 timestamp).
 ARG GIT_SHA=unknown
 ARG BUILD_DATE=unknown
 ARG VERSION=dev
 
-# OCI Image-Spec annotations + crabcc-specific labels for traceability.
 LABEL org.opencontainers.image.title="crabcc"
 LABEL org.opencontainers.image.description="Symbol index for AI coding agents"
 LABEL org.opencontainers.image.url="https://github.com/peterlodri-sec/crabcc"
@@ -81,12 +97,10 @@ LABEL com.crabcc.build.local="true"
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-      ca-certificates \
       libssl3 \
       libsqlite3-0 \
       git && \
-    rm -rf /var/lib/apt/lists/* && \
-    useradd --create-home --uid 1000 --shell /usr/sbin/nologin crabcc
+    rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /tmp/crabcc /usr/local/bin/crabcc
 

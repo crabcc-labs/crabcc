@@ -44,9 +44,13 @@ set -euo pipefail
 
 TASK=""
 OUTPUT=""
-MODEL="${CRABCC_OLLAMA_MODEL:-voytas26/openclaw-oss-20b-deterministic}"
-HOST="${OLLAMA_HOST:-http://127.0.0.1:11434}"
+MODEL="${CRABCC_OLLAMA_MODEL:-qwen3.5:35b-a3b-coding-nvfp4}"
+HOST="${OLLAMA_HOST:-http://127.0.0.1:4000}"
 TIMEOUT=600
+# Qwen3.5-35B-A3B native context: 262144. Use full window; LiteLLM caps at 128k if OOM.
+NUM_CTX="${OLLAMA_NUM_CTX:-262144}"
+NUM_KEEP=512
+API_KEY="${CRABCC_OLLAMA_API_KEY:-${LITELLM_MASTER_KEY:-ollama}}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -89,107 +93,126 @@ esac
 # ── build the system prompt with the tool catalogue ──────────────────
 SYS=$(jq -r '.system // ""' "$TASK")
 USR=$(jq -r '.user'         "$TASK")
+# Compact JSON — no whitespace waste in the context window.
 TOOLS=$(jq -c '.tools // []' "$TASK")
 
-# The model gets a strict contract: respond with JSON only, one of two
-# shapes. This matches the OpenClaw tool-call training; the
-# `format: "json"` Ollama option then guarantees parse-able JSON.
-read -r -d '' CONTRACT <<'EOF' || true
-You are a tool-using agent. Respond with EXACTLY one JSON object, no prose, no commentary.
-Choose ONE of these two shapes:
+# Build a cheatsheet section from available crabcc context on the host.
+CRABCC_DIR="${HOME}/.crabcc"
+CHEATSHEET=""
+if [ -d "$CRABCC_DIR" ]; then
+  REPOMIX_PATHS=$(find "$CRABCC_DIR" -name "*.xml" -newer "$CRABCC_DIR" -maxdepth 3 2>/dev/null \
+    | head -5 | tr '\n' ' ' || true)
+  HAS_GRAPH=$([ -f "$CRABCC_DIR/graph.json" ] && echo "yes" || echo "no")
+  CHEATSHEET=$(cat <<SHEET
+## Workspace Context
+- crabcc index: $CRABCC_DIR (graph: $HAS_GRAPH, tantivy FTS, sessions/memory)
+$([ -n "$REPOMIX_PATHS" ] && echo "- Repomix packs available: $REPOMIX_PATHS")
 
-  { "tool_call": { "name": "<tool_name>", "args": { /* tool-specific */ } } }
+## Quick Lookup (call these via tool_call or shell-out)
+| Goal | Command |
+|------|---------|
+| Symbol definition | crabcc sym <name> |
+| Callers of a fn | crabcc callers <name> |
+| Fuzzy search | crabcc fuzzy <query> |
+| List module files | crabcc files <path> |
+| References | crabcc refs <name> |
+| Graph overview | crabcc graph |
+| Memory read | crabcc memory get <key> |
+SHEET
+)
+fi
 
-OR
-
-  { "final": "<final answer string>" }
-
-You MAY include an optional "thinking" field with concise reasoning (≤ 200 words).
-Do NOT emit both tool_call and final in the same reply.
-Pick a tool from the supplied catalogue or emit final.
-EOF
+# Strict JSON-only contract. /no_think suppresses Qwen3.5 thinking blocks;
+# stop_words handles older builds that ignore the token.
+CONTRACT='/no_think You are a tool-using agent. Reply with EXACTLY one JSON object, no prose.
+Shape A (use a tool): {"tool_call":{"name":"<tool>","args":{}},"thinking":"<≤100 words>"}
+Shape B (done):       {"final":"<answer>","thinking":"<≤100 words>"}
+thinking is optional. Never emit both tool_call and final.'
 
 FULL_PROMPT=$(jq -n \
-  --arg sys      "$SYS"     \
-  --arg contract "$CONTRACT" \
-  --argjson tools "$TOOLS"   \
-  --arg user     "$USR"      \
-  '"# System\n" + $sys +
-   "\n\n# Contract\n" + $contract +
-   "\n\n# Tools\n" + ($tools | tostring) +
-   "\n\n# User\n" + $user')
+  --arg sys       "$SYS"       \
+  --arg cheat     "$CHEATSHEET" \
+  --arg contract  "$CONTRACT"  \
+  --argjson tools "$TOOLS"     \
+  --arg user      "$USR"       \
+  '(if $sys != "" then "# System\n" + $sys + "\n\n" else "" end) +
+   (if $cheat != "" then $cheat + "\n\n" else "" end) +
+   "# Contract\n" + $contract +
+   "\n\n# Tools\n" + ($tools | tojson) +
+   "\n\n# Task\n" + $user')
 
-# ── call /api/generate ───────────────────────────────────────────────
-# NOTE: do NOT set format:"json". Thinking + tool-calling models
-# (gpt-oss, OpenClaw, Qwen3-Thinking) emit structured output via the
-# native .tool_calls + .thinking fields; format:"json" actively clips
-# them to empty strings. Verified empirically against
-# voytas26/openclaw-oss-20b-deterministic on 2026-04-30.
-body=$(jq -nc --arg m "$MODEL" --argjson p "$FULL_PROMPT" \
-  '{model:$m, prompt:$p, stream:false,
-    options:{num_predict:2048, temperature:0.2}}')
+# ── call /v1/chat/completions via SSE ────────────────────────────────
+# Routes through LiteLLM at HOST (default :4000) for prompt caching.
+# Both LiteLLM and direct Ollama support OpenAI-compat chat completions.
+MESSAGES=$(jq -cn \
+  --arg sys  "$FULL_PROMPT" \
+  --arg user "$USR" \
+  '[{role:"system",content:$sys},{role:"user",content:$user}]')
 
-reply=$(curl -fsS --max-time "$TIMEOUT" \
+body=$(jq -nc \
+  --arg     m    "$MODEL"    \
+  --argjson msgs "$MESSAGES" \
+  --argjson ctx  "$NUM_CTX"  \
+  '{model:$m, messages:$msgs, stream:true, temperature:0.2, max_tokens:4096,
+    options:{num_ctx:$ctx, num_keep:'"$NUM_KEEP"'}}')
+
+# Accumulate SSE stream ("data: {...}" lines; stop on "[DONE]").
+FULL_CONTENT=""
+while IFS= read -r sse_line; do
+  [[ "$sse_line" == "data: [DONE]" ]] && break
+  [[ "$sse_line" != data:* ]] && continue
+  content=$(printf '%s' "${sse_line#data: }" | \
+    jq -r '.choices[0].delta.content // empty' 2>/dev/null || true)
+  [ -n "$content" ] && FULL_CONTENT+="$content"
+done < <(curl -fsS -N --max-time "$TIMEOUT" \
               -H 'Content-Type: application/json' \
+              -H "Authorization: Bearer $API_KEY" \
               -d "$body" \
-              "$HOST/api/generate" 2>&1) || {
-  echo "agent-runtime: /api/generate failed: $reply" >&2
+              "$HOST/v1/chat/completions") || {
+  echo "agent-runtime: /v1/chat/completions failed (HOST=$HOST MODEL=$MODEL)" >&2
   exit 2
 }
 
-# Drop the giant .context array before any further processing so jq
-# stays cheap on big replies.
-reply_trim=$(echo "$reply" | jq -c 'del(.context)')
+# Strip Qwen3.5 <think>…</think> blocks in case /no_think was ignored.
+response=$(printf '%s' "$FULL_CONTENT" | \
+  perl -0777 -pe 's|<think>.*?</think>\s*||gs' 2>/dev/null || \
+  printf '%s' "$FULL_CONTENT")
+thinking=$(printf '%s' "$response" | jq -r '.thinking // empty' 2>/dev/null || true)
+tool_call=$(printf '%s' "$response" | jq -c '.tool_call // null' 2>/dev/null || echo "null")
 
-# Three places the model can put its output:
-#   .response   — free-form text (final answer; "" when tool-calling)
-#   .thinking   — reasoning trace (gpt-oss / OpenClaw native field)
-#   .tool_calls — structured tool calls Ollama auto-extracts; shape:
-#                 [ {function: {name, arguments, index?}} ]
-response=$( echo "$reply_trim" | jq -r '.response // ""')
-thinking=$( echo "$reply_trim" | jq -r '.thinking // ""')
-tool_calls_raw=$(echo "$reply_trim" | jq -c '.tool_calls // []')
-first_call=$(echo "$tool_calls_raw" | jq -c '.[0] // null')
-
-# Normalize the first tool call into our contract shape: {name, args}.
-# Ollama's native shape nests under .function; the contract flattens it
-# so downstream parsers don't need to care about provider quirks.
-if [ "$first_call" != "null" ]; then
-  tool_call=$(echo "$first_call" | jq -c '
-    if   .function then {name: .function.name, args: (.function.arguments // {})}
-    elif .name     then {name: .name,          args: (.arguments // .args // {})}
-    else null end')
-else
-  tool_call="null"
+# Extract final text from the parsed JSON contract (Shape B).
+final_text=$(printf '%s' "$response" | jq -r '.final // empty' 2>/dev/null || true)
+# Fallback: if response isn't valid JSON, treat the whole thing as final.
+if [ -z "$final_text" ] && [ "$tool_call" = "null" ] && [ -n "$response" ]; then
+  final_text="$response"
 fi
 
 # Decide ok/error. The model satisfied the contract iff it produced
 # either a tool_call OR non-empty final text.
-if [ "$tool_call" != "null" ] || [ -n "$response" ]; then
+if [ "$tool_call" != "null" ] || [ -n "$final_text" ]; then
   jq -n \
     --arg model       "$MODEL" \
     --argjson tc      "$tool_call" \
-    --arg final       "$response" \
+    --arg final       "$final_text" \
     --arg thinking    "$thinking" \
-    --argjson raw     "$reply_trim" \
+    --arg raw         "$FULL_CONTENT" \
     '{ok:true, model:$model,
       tool_call: $tc,
       final:     (if $final == "" then null else $final end),
       thinking:  (if $thinking == "" then null else $thinking end),
       raw: $raw}' > "$OUTPUT"
   echo "agent-runtime: ok · model=$MODEL · output=$OUTPUT" >&2
-  echo "agent-runtime: $(if [ "$tool_call" != "null" ]; then echo "tool_call=$(echo "$tool_call" | jq -r .name)"; else echo "final=$(echo "$response" | head -c 60)…"; fi)" >&2
+  echo "agent-runtime: $(if [ "$tool_call" != "null" ]; then echo "tool_call=$(printf '%s' "$tool_call" | jq -r .name)"; else echo "final=$(printf '%s' "$final_text" | head -c 60)…"; fi)" >&2
   exit 0
 else
-  # Neither tool_call nor final — surface every field for diagnosis.
   jq -n \
-    --arg model      "$MODEL" \
-    --argjson raw    "$reply_trim" \
-    --arg thinking   "$thinking" \
+    --arg model     "$MODEL" \
+    --arg raw       "$FULL_CONTENT" \
+    --arg thinking  "$thinking" \
     '{ok:false, model:$model,
-      error:"empty response and no tool_calls (model only thought)",
+      error:"empty response and no tool_call (model only thought or returned nothing)",
       thinking: (if $thinking == "" then null else $thinking end),
       raw: $raw}' > "$OUTPUT"
-  echo "agent-runtime: model produced no actionable output (thinking only); raw written to $OUTPUT" >&2
+  echo "agent-runtime: model produced no actionable output; raw written to $OUTPUT" >&2
   exit 3
 fi

@@ -96,6 +96,40 @@ Knobs (env or `--flag`):
 | `--no-completions` | — | off | skip shell completions |
 | `--no-claude` | — | off | skip ~/.claude/ symlinks |
 
+## Ollama agent backend
+
+`crabcc agent --run` routes through a local LiteLLM proxy to
+**qwen3.5:35b-a3b-coding-nvfp4** (Apple Silicon MoE, 3B active/token, 256k context).
+
+```bash
+# Bootstrap everything (uv, Ollama, model pull, LiteLLM stack)
+task setup
+
+# Run an agent
+crabcc agent --run "trace callers of Store::open" --backend ollama
+
+# Stack management
+task ollama-stack-up       # Apple Containers → Docker, starts LiteLLM :4000
+task ollama-stack-down
+task agent-runtime-smoke   # end-to-end smoke test
+```
+
+## iTerm2 integration
+
+Live status-bar HUD, key-bound RPCs, and control sequences (issue #132).
+
+```bash
+task install-iterm2        # copies daemon → AutoLaunch, prints activation
+crabcc doctor iterm2       # verify
+```
+
+Status bar: `🦀 warp-speed-audit · 4m12s | saved 1.2M tok | 🟢`
+
+See [apps/crabcc-iterm2/README.md](apps/crabcc-iterm2/README.md) for setup guide,
+key binding recommendations, and example use-cases.
+
+---
+
 A small Rust CLI + MCP server that indexes your repo's symbols (functions, classes,
 methods, etc.) into a SQLite store and exposes them via four primitives an agent
 actually wants: `sym`, `refs`, `callers`, `outline`. Plus token-shaping flags

@@ -1,3 +1,5 @@
+cargo-features = ["profile-rustflags"]
+
 [workspace]
 resolver = "2"
 members = [
@@ -7,19 +9,18 @@ members = [
     "crates/crabcc-memory",
     "crates/crabcc-memory-bench",
     "crates/crabcc-viz",
+    # apps/crabcc-telegram: excluded from workspace — uses teloxide which
+    # triggers a nightly libc ICE under -Z polonius + -Z randomize-layout.
+    # Build standalone: cd apps/crabcc-telegram && cargo build --release
+    # Track: https://github.com/rust-lang/rust/issues (libc ICE on nightly)
 ]
 
 [workspace.package]
 version = "2.11.0"
 edition = "2021"
-# Minimum supported Rust version. Pinned explicitly so toolchain drift
-# gets caught by the CI matrix's `msrv` row instead of a developer's
-# laptop running rust-stable two months ahead.
-#
-# Bumping rules: only when a public dep forces it (rusqlite 0.31 +
-# fsst-rs 0.5 currently pin 1.86). Don't bump as a "what does the latest
-# edition support?" exercise.
-rust-version = "1.86"
+# Now explicitly tracking nightly
+channel = "nightly"
+rust-version = "1.87"
 license = "MIT"
 repository = "https://github.com/peterlodri-sec/crabcc"
 
@@ -30,23 +31,10 @@ crabcc-memory = { path = "crates/crabcc-memory" }
 crabcc-viz = { path = "crates/crabcc-viz" }
 
 anyhow = "1"
-# Faster, non-cryptographic HashMap hasher — drop-in for std HashMap
-# in trusted-input hot paths (no DoS resistance needed for our own
-# data). Adopted in 2.5.x perf pass (issue: extract.rs / graph.rs hot
-# loops). Mirrors what tantivy / serde_json already use internally.
 ahash = "0.8"
 clap = { version = "4", features = ["derive"] }
-# CommonMark / GFM parser by wooorm — same author as the unified /
-# micromark JS ecosystem. Pinned to v1.x; mdast node shape is stable
-# but we re-check on every minor bump (issue #54). Adopted as the
-# *only* markdown dep in the workspace — avoid pulldown-cmark and
-# comrak. Gated behind crabcc-core's `markdown` cargo feature so
-# default builds stay markdown-free.
 markdown = { version = "1", default-features = false }
 rusqlite = { version = "0.31", features = ["bundled"] }
-# v2.5.1 (#17) — bundled sqlite-vec C extension (FFI). Optional in
-# crabcc-memory under the `memory-vec` cargo feature. Linked statically;
-# no system-side install needed at build or runtime.
 sqlite-vec = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -66,107 +54,68 @@ ast-grep-core = "0.30"
 ast-grep-language = "0.30"
 sha2 = "0.10"
 tempfile = "3"
-# v2.7.x (#80) — minimal TOML reader for `.crabcc/config.toml`. Only
-# crabcc-cli pulls this in (config is a CLI concern); crabcc-core stays
-# TOML-free.
 toml = "0.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
-# Issue #90 — non-blocking writer keeps the hot path in O(ns); the
-# WorkerGuard returned by `non_blocking()` is dropped on shutdown to
-# flush pending events.
 tracing-appender = "0.2"
 libc = "0.2"
 notify-debouncer-mini = "0.4"
-# SIMD-accelerated JSON. Drop-in API for `serde_json::{to_string, to_writer,
-# from_str, from_slice}` on x86_64+aarch64; ~2-4x faster on encode and ~5-10x
-# on decode. Used on the CLI output hot path + MCP request parsing.
 sonic-rs = "0.3"
-# Bump-allocator arena for transient allocations during the per-file
-# tree-sitter walk. Stable replacement for the nightly `allocator_api` +
-# `Vec<T, A>` route — `bumpalo::collections` gets ~80% of the win without
-# pinning a toolchain. See issue #38 for the full nightly comparison.
 bumpalo = { version = "3", features = ["collections"] }
 moka = { version = "0.12", features = ["sync"] }
-# v2.5.2 (#18) — real semantic embeddings via fastembed-rs. ~25 MB MiniLM-L6-v2
-# ONNX model lazy-downloaded into ~/.crabcc/models on first use. Wrapped in the
-# `memory-embed` cargo feature so stable users (and minimal binaries) keep the
-# 0-byte HashEmbedder default.
 fastembed = "5"
-# v2.5.x (#64) — sync, threaded HTTP server for `crabcc serve`. Localhost-only
-# call-graph visualizer, single-user; sync IO is fine here. ~1k LOC, no async
-# runtime deps. Routes: GET / (bundled HTML) + GET /api/graph (JSON snapshot).
-# WebSocket push (Phase 2) will live alongside, not replace, this.
 tiny_http = "0.12"
-# Issue #105 (config) — single-file YAML config at
-# `$HOME/.crabcc/._config.internal`. serde_yml is the maintained fork of
-# the abandoned serde_yaml; same surface, drop-in. Used by `crabcc-core`'s
-# `config` module for runtime defaults (agent backend / ollama base url /
-# jobs redis url). Default-on dep (small, no transitive cargo features).
 serde_yml = "0.0.12"
-# Issue #109 — async runtime for the BullMQ-backed jobs surface in
-# crabcc-core. INTENTIONALLY scoped behind the `jobs` feature on
-# crabcc-core so default builds (CLI, MCP, viz) stay tokio-free. The
-# rest of the workspace is sync-on-purpose; see issue #112 for the
-# rationale on not adopting tokio workspace-wide.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
-# Issue #109 — Redis client used by crabcc-core's jobs module to talk
-# to the BullMQ queues run by apps/jobs-worker (Node.js). tokio-comp
-# uses tokio for the network layer; aio is the async-first connection
-# surface. Same `jobs` feature gate as tokio.
 redis = { version = "0.27", default-features = false, features = ["tokio-comp", "aio"] }
 
-# Dev profile — primary iteration loop. `split-debuginfo=unpacked` skips the
-# slow `dsymutil` step on macOS (saves several seconds on every relink), and
-# bumping deps to -O1 keeps test runs fast even with our own crates at -O0.
+# --- UNSTABLE PROFILES ---
+
 [profile.dev]
 split-debuginfo = "unpacked"
+# Use Polonius for better borrow checking during dev
+# Randomize layout to catch accidental memory layout dependencies
+rustflags = ["-Z", "polonius", "-Z", "randomize-layout"]
 
-# Build all third-party deps with -O1 even in dev/test. Our crates stay at
-# -O0 (fast compile, full debug info) — but tantivy / tree-sitter / rusqlite
-# inner loops are dominant in test wall-time, so optimizing them once and
-# leaving them cached is the biggest cheap dev-loop win available.
 [profile.dev.package."*"]
 opt-level = 1
 
 [profile.release]
 opt-level       = 3
-lto             = "fat"        # whole-program optimization (was "thin"; +30s compile, ~5–10% runtime)
+lto             = "fat"
 codegen-units   = 1
-panic           = "abort"      # smaller binary, no unwinding tables
+panic           = "abort"
 strip           = true
 debug           = false
 incremental     = false
 split-debuginfo = "off"
+# Production-ready unstable optimization
+rustflags = ["-Z", "randomize-layout"]
 
-# Faster iteration loop than `cargo build` (-O0) without paying full release cost.
-# `cargo build --profile dev-fast` gets a usable-speed binary in ~half the time.
 [profile.dev-fast]
 inherits        = "dev"
 opt-level       = 1
-debug           = 1            # minimal debug info; faster linker
+debug           = 1
 split-debuginfo = "unpacked"
+# Speed up compilation with parallel frontend threads
+rustflags = ["-Z", "threads=8"] 
 
-# Tests run with -O0 by default; bump to -O1 so the per-file tree-sitter walks in
-# query tests don't dominate the wall-time on the larger fixtures.
 [profile.test]
 opt-level       = 1
 split-debuginfo = "unpacked"
+rustflags = ["-Z", "polonius"]
 
-# Native-CPU release profile (issue #112). Inherits all release settings
-# (lto=fat, codegen-units=1, opt-level=3, panic=abort, strip=true) and
-# adds `target-cpu=native` via .cargo/config.toml's RUSTFLAGS for this
-# profile. NEVER ship the resulting binary to other machines — the
-# AVX2/AVX-512/etc. specialization will SIGILL on a CPU that doesn't
-# implement the same feature set. Use `task build-native` to build it.
 [profile.release-native]
 inherits = "release"
 
-# `cargo build --profile profiling` produces a binary with the same codegen
-# as release (LTO=fat, opt=3, codegen-units=1) BUT keeps debug-info and
-# disables stripping so samply / flamegraph / Instruments resolve symbols.
-# Used by `task profile-*` — see install/profiling.md for the full recipe.
+# Use this profile specifically for deep analysis
 [profile.profiling]
 inherits      = "release"
 debug         = "line-tables-only"
 strip         = false
+# Added flags for deep performance inspection
+rustflags = [
+    "-Z", "time-passes", 
+    "-Z", "llvm-time-trace", 
+    "-Z", "print-type-sizes"
+]

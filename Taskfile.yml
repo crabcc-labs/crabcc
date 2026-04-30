@@ -325,6 +325,34 @@ tasks:
       - 'grep -q "no-op build skip" .summary/install-upgrade-smoke.txt || (echo "FAIL: no-op message not seen on second run" && exit 1)'
       - 'echo "" && echo "✓ upgrade-on-rerun smoke passed"               | tee -a .summary/install-upgrade-smoke.txt'
 
+  install-iterm2:
+    desc: Install crabcc iTerm2 daemon into AutoLaunch + print activation steps (issue #132)
+    summary: |
+      Copies apps/crabcc-iterm2/main.py into
+      ~/Library/Application Support/iTerm2/Scripts/AutoLaunch/crabcc.py
+      then prints the remaining two manual steps (Python API pref + Automation).
+    cmds:
+      - |
+        AUTOLAUNCH="$HOME/Library/Application Support/iTerm2/Scripts/AutoLaunch"
+        mkdir -p "$AUTOLAUNCH"
+        if ! pip3 show iterm2 >/dev/null 2>&1; then
+          echo "▶ Installing iterm2 Python package..."
+          pip3 install iterm2
+        fi
+        cp "$(pwd)/apps/crabcc-iterm2/main.py" "$AUTOLAUNCH/crabcc.py"
+        echo "✓ Daemon installed: $AUTOLAUNCH/crabcc.py"
+        echo ""
+        echo "Remaining steps:"
+        echo "  1. iTerm2 → Preferences → General → Magic → ✅ Allow full Python API"
+        echo "  2. System Settings → Privacy & Security → Automation → iTerm2 → ✅"
+        echo "  3. Restart iTerm2"
+        echo "  4. Verify: crabcc doctor iterm2"
+
+  iterm2-test:
+    desc: Run crabcc-iterm2 HUD unit tests (no live iTerm2 required)
+    cmds:
+      - 'python3 -m unittest apps/crabcc-iterm2/tests/test_hud -v'
+
   install-skill:
     desc: Symlink the skill + slash command into ~/.claude/
     cmds:
@@ -375,7 +403,7 @@ tasks:
       the model is already present locally.
     deps: [system-check]
     vars:
-      MODEL: '{{.MODEL | default "voytas26/openclaw-oss-20b-deterministic"}}'
+      MODEL: '{{.MODEL | default "qwen3.5:35b-a3b-coding-nvfp4"}}'
     cmds:
       - |
         if ! command -v ollama >/dev/null 2>&1; then
@@ -512,7 +540,7 @@ tasks:
       Pass HOST=… to test against a remote daemon.
     vars:
       HOST:  '{{.HOST  | default ""}}'
-      MODEL: '{{.MODEL | default "voytas26/openclaw-oss-20b-deterministic"}}'
+      MODEL: '{{.MODEL | default "qwen3.5:35b-a3b-coding-nvfp4"}}'
     cmds:
       - mkdir -p .summary
       - |
@@ -1054,20 +1082,6 @@ tasks:
     cmds:
       - 'bash scripts/setup-gpg-signing.sh{{if eq .MODE "rotate"}} --rotate{{end}}{{if eq .MODE "print"}} --print{{end}}{{if eq .MODE "uninstall"}} --uninstall{{end}}'
 
-  local-ci:
-    desc: Local CI snapshot — fmt-check + lint + test, output to .summary/local-ci.txt
-    summary: |
-      Use this when GitHub CI is unavailable (rate-limited / over budget).
-      The output file is what we attach to PR descriptions in lieu of a green
-      check. Re-runs are idempotent — file is overwritten.
-    cmds:
-      - mkdir -p .summary
-      - 'rm -f .summary/local-ci.txt'
-      - '{{.CARGO}} fmt --all -- --check 2>&1 | tee -a .summary/local-ci.txt'
-      - '{{.CARGO}} clippy --workspace --all-targets -- -D warnings 2>&1 | tee -a .summary/local-ci.txt'
-      - '{{.CARGO}} test --workspace --no-fail-fast 2>&1 | tee -a .summary/local-ci.txt'
-      - 'echo "" && echo "wrote: .summary/local-ci.txt ($(wc -l < .summary/local-ci.txt) lines)"'
-
   docs-refresh:
     desc: Refresh AGENTS / README / CHANGELOG / CLAUDE / commands docs to reflect latest version
     summary: |
@@ -1113,3 +1127,97 @@ tasks:
       - 'echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] starting docs refresh ({{.MODEL}})" > {{.LOG}}'
       - 'nohup claude -p "$(cat {{.PROMPT_FILE}})" --model {{.MODEL}} >> {{.LOG}} 2>&1 &'
       - 'echo "spawned (pid=$!); follow with: tail -f {{.LOG}}"'
+   
+  images-build-nocache-apple:
+    desc: Build crabcc images using Apple Containers (macOS 26 native runtime)
+    vars:
+      GIT_SHA:
+        sh: git rev-parse --short HEAD 2>/dev/null || echo unknown
+      BUILD_DATE:
+        sh: date -u +%Y-%m-%dT%H:%M:%SZ
+      VERSION:
+        sh: bash scripts/version.sh 2>/dev/null || echo dev
+    cmds:
+      - >-
+        container build --no-cache --pull
+        --build-arg "RUST_VERSION=${RUST_VERSION:-1.86}"
+        --build-arg "GIT_SHA={{.GIT_SHA}}"
+        --build-arg "BUILD_DATE={{.BUILD_DATE}}"
+        --build-arg "VERSION={{.VERSION}}"
+        -t crabcc:local
+        -t crabcc:{{.VERSION}}
+        -t crabcc:{{.GIT_SHA}}
+        -f install/Dockerfile.crabcc .
+
+  # ─── setup ───────────────────────────────────────────────────────────────────
+  setup:
+    desc: Bootstrap full dev environment — uv, Rust, Ollama, pull model, start ollama-stack
+    summary: |
+      One-shot setup for a fresh machine. Idempotent — safe to re-run.
+      Steps:
+        1. Install uv (Python pkg manager, needed for free-claude-code)
+        2. Verify Rust/cargo is on PATH (install hint if missing)
+        3. Install Ollama via Homebrew if missing
+        4. Pull the default Apple-optimized model
+        5. Bring up the ollama-stack (Apple Containers → Docker)
+    cmds:
+      - |
+        if ! command -v uv >/dev/null 2>&1; then
+          echo "▶ Installing uv..."
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+        else
+          echo "✓ uv $(uv --version)"
+        fi
+      - |
+        if ! command -v cargo >/dev/null 2>&1; then
+          echo "✗ Rust not found — install: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+          exit 1
+        else
+          echo "✓ $(cargo --version)"
+        fi
+      - |
+        if ! command -v ollama >/dev/null 2>&1; then
+          echo "▶ Installing Ollama..."
+          brew install ollama
+        else
+          echo "✓ ollama $(ollama --version 2>&1 | head -1)"
+        fi
+      - 'ollama pull qwen3.5:35b-a3b-coding-nvfp4'
+      - 'ollama pull qwen2.5-coder'
+      - 'bash install/ollama-stack/start.sh'
+
+  # ─── ollama stack ─────────────────────────────────────────────────────────
+  # ─── telegram bot ─────────────────────────────────────────────────────────
+  telegram-bot:
+    desc: Run CrabCC_bot (Telegram). Reads TELEGRAM_BOT_TOKEN from env.
+    summary: |
+      Required env vars (set in .env or shell):
+        TELEGRAM_BOT_TOKEN   — from BotFather (never commit)
+      Optional:
+        CRABCC_SERVE_URL     — default http://localhost:8090
+        CRABCC_PUBLIC_URL    — public HTTPS URL for WebApp dashboard button
+                               e.g. from `ngrok http 8090` or cloudflared
+        ALLOWED_TELEGRAM_IDS — comma-separated Telegram user IDs (empty = open)
+    cmds:
+      - '{{.CARGO}} run -p crabcc-telegram --release'
+
+  telegram-bot-dev:
+    desc: Run CrabCC_bot in dev mode with RUST_LOG=debug
+    cmds:
+      - 'RUST_LOG=crabcc_telegram=debug {{.CARGO}} run -p crabcc-telegram'
+
+  # ─── ollama stack ─────────────────────────────────────────────────────────
+  ollama-stack-up:
+    desc: Bring up the ollama-stack (Apple Containers → Docker) with LiteLLM + Caddy
+    cmds:
+      - 'bash install/ollama-stack/start.sh'
+
+  ollama-stack-down:
+    desc: Tear down the ollama-stack
+    cmds:
+      - 'bash install/ollama-stack/start.sh --down'
+
+  ollama-stack-status:
+    desc: Show ollama-stack container status
+    cmds:
+      - 'bash install/ollama-stack/start.sh --status'

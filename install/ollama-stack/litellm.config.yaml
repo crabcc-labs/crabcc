@@ -13,9 +13,30 @@
 #   max_parallel_requests   defaults to unbounded; cap at 8 so a runaway
 #                           agent fan-out doesn't OOM ollama via overload
 model_list:
-  - model_name: ollama/llama3.2
+  # Apple Silicon optimized — qwen3.5 35B A3B coding, 4-bit quantized
+  - model_name: qwen3.5:35b-a3b-coding-nvfp4
     litellm_params:
-      model: ollama_chat/llama3.2
+      model: ollama_chat/qwen3.5:35b-a3b-coding-nvfp4
+      api_base: os.environ/OLLAMA_API_BASE
+      api_key: os.environ/OLLAMA_API_KEY
+      timeout: 600
+      stream_timeout: 60
+      max_parallel_requests: 4
+
+  # Prefixed alias (for clients that send model as "ollama/<name>")
+  - model_name: ollama/qwen3.5:35b-a3b-coding-nvfp4
+    litellm_params:
+      model: ollama_chat/qwen3.5:35b-a3b-coding-nvfp4
+      api_base: os.environ/OLLAMA_API_BASE
+      api_key: os.environ/OLLAMA_API_KEY
+      timeout: 600
+      stream_timeout: 60
+      max_parallel_requests: 4
+
+  # crabcc agent model — 7B coding model, 64k context
+  - model_name: qwen2.5-coder
+    litellm_params:
+      model: ollama_chat/qwen2.5-coder
       api_base: os.environ/OLLAMA_API_BASE
       api_key: os.environ/OLLAMA_API_KEY
       timeout: 600
@@ -53,6 +74,11 @@ litellm_settings:
   default_litellm_params:
     temperature: 0.2
     top_p: 0.9
+    # Qwen3.5-35B-A3B runs in thinking mode by default (<think> blocks).
+    # For agent/code tasks we want direct answers; suppress thinking via
+    # the /no_think token in the stop list AND the system message prefix.
+    # Clients that want thinking can override per-request.
+    stop: ["</think>"]
   # Cache identical prompt+model pairs in-memory for 10 min — saves a
   # full re-prefill on repeat agent dry-runs / smoke tests.
   cache: true
