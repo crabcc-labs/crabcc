@@ -184,3 +184,164 @@ Only relevant if you've run `task images-build` (the bundled Compose pulls upstr
 ## Exit criteria
 
 All 12 sections green = stack is good for the issue #105 PR review. Any red box → log details and revert your changes; do not merge.
+
+---
+
+## Appendix B — LiteLLM API-key + model passthrough audit (PR #127 follow-up)
+
+Specifically verifies that `crabcc agent --backend ollama` reaches
+the LiteLLM proxy with the correct `Authorization` header and routes
+to the correct backing model. Independent of the broader
+end-to-end checklist above; runs in ~2 minutes once the stack is up.
+
+The wire path under audit:
+
+```
+crabcc agent --backend ollama
+  → agent.rs SubprocessRuntime::run forwards OLLAMA_BASE_URL +
+    OLLAMA_API_KEY to the spawned `claude` (or future `cua`) child
+  → child issues HTTPS to ${OLLAMA_BASE_URL}/v1/chat/completions
+    with `Authorization: Bearer ${OLLAMA_API_KEY}` (LiteLLM convention)
+  → Caddy on :443 → LiteLLM on :4000 (model alias resolves)
+  → ollama on :11434 (actual generation)
+```
+
+If any of those four hops drops auth or rewrites the model wrong,
+the test fails.
+
+### B.1 — Preflight (the stack must already be up)
+
+- [ ] `crabcc ollama-stack status --json` reports `state="running"` for
+  caddy / litellm / ollama. If not, `crabcc ollama-stack up` first.
+- [ ] `cat ~/.crabcc.local.api-key` exists and is mode `0400`
+  (chmod check; the file is the source of truth for OLLAMA_API_KEY).
+- [ ] `echo $OLLAMA_BASE_URL` and `echo $OLLAMA_API_KEY` resolve in
+  the test shell. If not: `eval "$(install/ollama-stack/init-keys.sh
+  --print-env)"` (or whichever helper your local checkout exposes).
+
+### B.2 — LiteLLM auth + alias (raw curl, no agent)
+
+This isolates the proxy from the agent runtime. Confirms the same
+env vars the runtime forwards work end-to-end against LiteLLM.
+
+```bash
+# 1. With the right key — should return JSON with `choices[0].message.content`.
+curl -sS \
+  -H "Authorization: Bearer $OLLAMA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen2.5-coder","messages":[{"role":"user","content":"reply with the word PONG only"}]}' \
+  "$OLLAMA_BASE_URL/v1/chat/completions" \
+  | jq '.choices[0].message.content'
+# expected: "PONG" (or PONG-with-trailing-text on some quants)
+
+# 2. With a wrong key — must return 401 (proves auth is enforced).
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  -H "Authorization: Bearer NOT-A-REAL-KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"qwen2.5-coder","messages":[{"role":"user","content":"x"}]}' \
+  "$OLLAMA_BASE_URL/v1/chat/completions"
+# expected: 401
+
+# 3. Wrong model name — must return 4xx, NOT silently fall through.
+curl -sS -o /dev/null -w '%{http_code}\n' \
+  -H "Authorization: Bearer $OLLAMA_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"this-model-does-not-exist","messages":[{"role":"user","content":"x"}]}' \
+  "$OLLAMA_BASE_URL/v1/chat/completions"
+# expected: 400 or 404 from LiteLLM, NOT 500 / hang.
+```
+
+- [ ] (1) returns the expected token (`PONG` substring acceptable)
+- [ ] (2) returns HTTP 401
+- [ ] (3) returns HTTP 4xx with a clear LiteLLM error body
+
+### B.3 — Agent-runtime forwarding (dry-run)
+
+The dry-run path doesn't spawn the LLM but DOES surface which env
+vars + model the runtime resolved. Catches regressions in
+`agent.rs::SubprocessRuntime::run`'s `auth_vars.extend(...)` block.
+
+```bash
+crabcc agent --run "noop" --dry-run
+# (default backend is now ollama since v2.8.x)
+```
+
+Expected stdout banner:
+
+- [ ] `runtime: subprocess (host)` line present
+- [ ] `model: ollama/qwen2.5-coder (default)` line present
+- [ ] `crabcc agent: model: ollama:qwen2.5-coder (params: 7B (Q4_K_M
+      default), context: 32k, docs: …)` (the per-model banner from
+      `model_info::banner_line`, gated on the seed file existing —
+      run `crabcc model-info seed-default` once if missing).
+
+### B.4 — Live agent run hits the proxy with the right key
+
+Strace-style check via the proxy's request log instead of the agent
+side. Tail Caddy + LiteLLM logs while the agent runs once, confirm
+exactly one request landed with the right shape.
+
+Terminal A:
+```bash
+crabcc ollama-stack logs --service litellm --follow | tee /tmp/litellm.log
+```
+
+Terminal B (in any indexed crabcc-touched repo):
+```bash
+crabcc agent --run "reply with the word PONG only" \
+            --no-refresh \
+            --no-repomix    # skip the per-agent bundle for a fast loop
+```
+
+After the agent exits, in terminal A:
+
+- [ ] Exactly one `POST /v1/chat/completions` line, status 200
+- [ ] `model="qwen2.5-coder"` (post-LiteLLM-alias resolution — NOT
+      `ollama/qwen2.5-coder` which is the alias name)
+- [ ] No `401 Unauthorized` in the window
+- [ ] `Authorization` header parsed (LiteLLM logs the user id derived
+      from the bearer; should be `crabcc-local` or whichever id the
+      bundled init-keys.sh assigned — NOT `anonymous`)
+
+### B.5 — Override flow (sanity)
+
+Confirm `--model` actually flips the request payload model.
+
+```bash
+crabcc agent --run "say PING" --backend ollama --model ollama/llama3.2 --no-refresh --no-repomix
+```
+
+Watching terminal A:
+
+- [ ] Request payload's `model` field is `llama3.2` (post-alias)
+- [ ] If the model isn't pulled locally: LiteLLM returns 4xx,
+      `crabcc agent-guard` doesn't classify the run as zombie
+      (it exited cleanly with exit code 1).
+
+### B.6 — Negative: run with no env vars
+
+Proves the auth-passthrough block is the only thing between the
+runtime and LiteLLM — i.e. nothing is hardcoded.
+
+```bash
+unset OLLAMA_BASE_URL OLLAMA_API_KEY
+crabcc agent --run "noop" --no-refresh --no-repomix 2>&1 | tail -5
+```
+
+- [ ] Agent exits non-zero
+- [ ] stderr contains an error mentioning either the missing URL or
+      the missing key — NOT a generic "claude binary not found" or a
+      silent fallback to Anthropic.
+
+### Audit verdict
+
+Mark the issue audit complete when:
+
+- [ ] B.1 + B.2 all green (the proxy is wired correctly stand-alone)
+- [ ] B.3 + B.4 green (the runtime forwards the same vars cleanly)
+- [ ] B.5 green (override flow works)
+- [ ] B.6 green (no hidden hardcoded fallback)
+
+If any item is red, the issue #105 audit is **not** complete —
+attach the failing terminal capture to the issue and reopen the
+relevant code path before closing.

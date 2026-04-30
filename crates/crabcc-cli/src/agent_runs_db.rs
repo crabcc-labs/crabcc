@@ -75,9 +75,52 @@ pub fn open(path: &Path) -> Result<Connection> {
            detail       TEXT\n\
          );\n\
          CREATE INDEX IF NOT EXISTS idx_kill_events_run    ON agent_kill_events(run_id);\n\
-         CREATE INDEX IF NOT EXISTS idx_kill_events_at     ON agent_kill_events(killed_at DESC);",
+         CREATE INDEX IF NOT EXISTS idx_kill_events_at     ON agent_kill_events(killed_at DESC);\n\
+         CREATE TABLE IF NOT EXISTS backup_runs (\n\
+           id           INTEGER PRIMARY KEY AUTOINCREMENT,\n\
+           ran_at       INTEGER NOT NULL,\n\
+           repo         TEXT NOT NULL,\n\
+           destination  TEXT NOT NULL,\n\
+           files        INTEGER NOT NULL,\n\
+           dirs         INTEGER NOT NULL,\n\
+           bytes        INTEGER NOT NULL,\n\
+           pruned       INTEGER NOT NULL,\n\
+           trigger      TEXT NOT NULL DEFAULT 'manual'\n\
+         );\n\
+         CREATE INDEX IF NOT EXISTS idx_backup_runs_at   ON backup_runs(ran_at DESC);\n\
+         CREATE INDEX IF NOT EXISTS idx_backup_runs_repo ON backup_runs(repo);",
     )?;
     Ok(conn)
+}
+
+/// Append a row to `backup_runs`. Best-effort; caller is expected to
+/// ignore errors so a transient DB lock never breaks the snapshot path.
+#[allow(clippy::too_many_arguments)]
+pub fn record_backup(
+    conn: &Connection,
+    repo: &str,
+    destination: &str,
+    files: i64,
+    dirs: i64,
+    bytes: i64,
+    pruned: i64,
+    trigger: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO backup_runs (ran_at, repo, destination, files, dirs, bytes, pruned, trigger) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            now_ts(),
+            repo,
+            destination,
+            files,
+            dirs,
+            bytes,
+            pruned,
+            trigger
+        ],
+    )?;
+    Ok(())
 }
 
 #[derive(Debug)]
