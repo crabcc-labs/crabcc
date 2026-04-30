@@ -27,6 +27,43 @@
 #
 #   [profile.profiling]
 #   rustflags = ["-Z", "time-passes", "-Z", "llvm-time-trace", "-Z", "print-type-sizes"]
+#
+# ── Local dev compile-time wins (paste into .cargo/config.local.toml) ─────────
+#
+# 1. ccache the C compilation of tikv-jemalloc-sys / libsqlite3-sys / zstd-sys
+#    / ring / etc. Each is 20-60s on a cold build; ccache makes them sub-second
+#    after the first compile (per source-hash, persists across `cargo clean`).
+#    Install:  brew install ccache  (macOS) or apt/dnf (Linux).
+#
+#      [env]
+#      CC = "ccache cc"
+#      CXX = "ccache c++"
+#
+# 2. Cranelift codegen backend — 20-40% faster cold dev builds on macOS where
+#    LLVM dominates. Nightly only.
+#
+#      rustup toolchain install nightly
+#      rustup component add rustc-codegen-cranelift-preview --toolchain nightly
+#
+#      [unstable]
+#      codegen-backend = true
+#
+#      [profile.dev]
+#      codegen-backend = "cranelift"
+#
+# 3. Parallel rustc front-end — 20-50% on front-end-bound crates (syn, tantivy,
+#    sonic-rs heavy generic code). Nightly only.
+#
+#      [build]
+#      rustflags = ["-Z", "threads=8"]
+#
+# 4. Full debug info for lldb breakpoints (we ship `debug = 1` in Cargo.toml):
+#
+#      [profile.dev]
+#      debug = 2
+#
+# All four are local-only because they need nightly / external tools; we keep
+# the checked-in config stable for new contributors and CI.
 
 # rustdoc-on-docs.rs gets the same workspace-wide opt as cargo doc here.
 [doc]

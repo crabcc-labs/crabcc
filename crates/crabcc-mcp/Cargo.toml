@@ -4,11 +4,15 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Gates the criterion bench so CI's `--all-targets` doesn't compile it.
+# Run locally with `cargo bench -p crabcc-mcp --features bench`.
+bench = []
+
 [dependencies]
 crabcc-core   = { workspace = true }
 crabcc-memory = { workspace = true }
 anyhow        = { workspace = true }
-serde         = { workspace = true }
 serde_json    = { workspace = true }
 tracing       = { workspace = true }
 
@@ -22,3 +26,4 @@ criterion = "0.5"
 [[bench]]
 name = "serve_io"
 harness = false
+required-features = ["bench"]

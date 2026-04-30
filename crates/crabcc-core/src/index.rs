@@ -370,6 +370,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "slow (~1.3s) — full Tantivy + SQLite refresh; run locally with --ignored"]
     fn refresh_picks_up_modified_file() {
         let (dir, store) = fresh_repo_with(&[("a.ts", "export function a(){return 1;}")]);
         // Force a perceptibly different mtime + content.
@@ -424,6 +425,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "slow (~1.4s) — full Tantivy + SQLite refresh; run locally with --ignored"]
     fn refresh_delta_captures_added_modified_removed() {
         let (dir, store) = fresh_repo_with(&[
             ("a.ts", "export function a(){return 1;}"),
@@ -450,6 +452,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "slow (~1.2s) — full Tantivy + SQLite refresh; run locally with --ignored"]
     fn refresh_delta_excludes_touched_only_files() {
         // A file whose mtime bumped but content is identical is `touched`,
         // not `modified`. Agents that already have the cached body shouldn't

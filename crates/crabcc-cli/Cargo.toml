@@ -16,7 +16,12 @@ name = "ccc"
 path = "src/bin/ccc.rs"
 
 [features]
+# Off in dev (saves ~60s on cold builds — tikv-jemalloc-sys's build
+# script compiles jemalloc 5.x from C, single-translation-unit). Release
+# builds enable it via `task build` / `task release` so the shipped
+# binary still gets the +5-12% on alloc-heavy hot paths.
 default = []
+jemalloc = ["dep:tikv-jemallocator"]
 # v3.0 (#62) — surfaces the SandboxRuntime stub. The actual microsandbox
 # integration is deferred per `install/agent-runtime.md`; this feature
 # only flips on the trait impl + a clearer "not yet implemented" error
@@ -49,9 +54,11 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tracing-appender = { workspace = true }
 # Issue #112 follow-up — jemalloc as the global allocator on the binary
 # crate. ~5-12% on alloc-heavy paths (extract.rs, MCP serve_io). MSVC
-# targets fall back to system allocator (cfg gate in main.rs).
+# targets fall back to system allocator (cfg gate in main.rs). Optional
+# behind the `jemalloc` feature so dev builds skip the 60s C-source
+# build script; release/install paths enable it.
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
-tikv-jemallocator = "0.6"
+tikv-jemallocator = { version = "0.6", optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
