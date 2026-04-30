@@ -103,6 +103,10 @@ pub fn run(opts: InstallOptions) -> Result<()> {
             repo_root.join("commands/crabcc-install.md"),
             home.join(".claude/commands/crabcc-install.md"),
         ),
+        (
+            repo_root.join("commands/crabcc/generate/context.md"),
+            home.join(".claude/commands/crabcc/generate/context.md"),
+        ),
     ];
 
     for (src, dst) in pairs {
