@@ -180,7 +180,7 @@ pub fn list(home: &Path, repo_root: &Path) -> Result<Vec<BackupEntry>> {
             bytes,
         });
     }
-    out.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    out.sort_by_key(|a| std::cmp::Reverse(a.timestamp));
     Ok(out)
 }
 

@@ -379,10 +379,7 @@ pub fn find_git_root(start: &Path) -> Option<PathBuf> {
         if p.join(".git").exists() {
             return Some(p);
         }
-        match p.parent() {
-            Some(parent) => p = parent.to_path_buf(),
-            None => return None,
-        }
+        p = p.parent()?.to_path_buf();
     }
 }
 

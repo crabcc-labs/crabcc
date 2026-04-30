@@ -41,10 +41,7 @@ pub fn locate_repo(start: &Path) -> Option<PathBuf> {
         if p.join(".crabcc").join("index.db").exists() {
             return Some(p);
         }
-        match p.parent() {
-            Some(parent) => p = parent.to_path_buf(),
-            None => return None,
-        }
+        p = p.parent()?.to_path_buf();
     }
 }
 

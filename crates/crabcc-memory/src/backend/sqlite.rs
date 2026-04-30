@@ -678,7 +678,7 @@ impl Backend for SqliteBackend {
             args.push(r.clone().into());
         }
         sql.push_str(" ORDER BY rank LIMIT ?");
-        args.push((q.limit.max(0) as i64).into());
+        args.push((q.limit as i64).into());
 
         let mut stmt = conn.prepare(&sql)?;
         let params_refs: Vec<&dyn rusqlite::ToSql> =

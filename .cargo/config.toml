@@ -11,7 +11,22 @@
 # Wired via `task build-native` (see taskfiles/build.yml). Wrapping it
 # in a Taskfile target keeps the env-var plumbing out of muscle memory.
 [target.'cfg(all())']
-# (no global rustflags — keeps the default release portable)
+# No global rustflags — keeps the default release portable.
+#
+# Nightly-only dev extras (removed from Cargo.toml profiles to unblock stable CI):
+# Copy the block below into .cargo/config.local.toml (gitignored) to re-enable:
+#
+#   [profile.dev]
+#   rustflags = ["-Z", "polonius", "-Z", "randomize-layout"]
+#
+#   [profile.dev-fast]
+#   rustflags = ["-Z", "polonius", "-Z", "threads=8"]
+#
+#   [profile.test]
+#   rustflags = ["-Z", "polonius"]
+#
+#   [profile.profiling]
+#   rustflags = ["-Z", "time-passes", "-Z", "llvm-time-trace", "-Z", "print-type-sizes"]
 
 # rustdoc-on-docs.rs gets the same workspace-wide opt as cargo doc here.
 [doc]

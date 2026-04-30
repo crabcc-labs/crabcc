@@ -825,10 +825,8 @@ fn parse_activity_query(raw: &str) -> Result<ActivityQuery> {
             // Pass `repo=*` to disable the per-repo filter (useful when the
             // viewer is bound to a workspace root that doesn't match the
             // repo label recorded in usage.log entries).
-            "repo" => {
-                if v == "*" {
-                    repo_filter = None;
-                }
+            "repo" if v == "*" => {
+                repo_filter = None;
             }
             _ => {}
         }
@@ -1349,7 +1347,7 @@ fn agents_list() -> Result<AgentsList> {
         });
     }
     // Most recent first; the dashboard shows running runs at the top.
-    agents.sort_by(|a, b| b.started_ts.cmp(&a.started_ts));
+    agents.sort_by_key(|a| std::cmp::Reverse(a.started_ts));
     Ok(AgentsList { agents })
 }
 
