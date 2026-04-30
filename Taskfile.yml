@@ -162,6 +162,154 @@ tasks:
       - ln -sf "$(pwd)/commands/crabcc-install.md" ~/.claude/commands/crabcc-install.md
       - 'echo "skill + 3 commands symlinked. Add the MCP server to ~/.claude.json manually if needed."'
 
+  system-check:
+    desc: Verify host (RAM / disk / arch / daemon) can run the configured Ollama model
+    summary: |
+      Pre-flight gate for the audit skills. Pass MODEL=… to check a
+      specific tag, or rely on $CRABCC_OLLAMA_MODEL.
+        exit 0 → OK
+        exit 1 → WARN (model will run but slowly)
+        exit 2 → FAIL (red item must be fixed)
+    vars:
+      MODEL: '{{.MODEL | default ""}}'
+    cmds:
+      - 'bash scripts/ollama-system-check.sh{{if .MODEL}} --model {{.MODEL}}{{end}}'
+
+  ollama-bootstrap:
+    desc: System-check + install Ollama (macOS) + pull the OpenClaw model used by audit skills
+    summary: |
+      Replaces Claude-Code-`Agent`-tool sub-agent fan-out with a local
+      Ollama backend. The audit skills (warp-speed-audit, rust-logging-
+      audit) call scripts/ollama-fanout.sh which POSTs each cluster's
+      prompt to /api/generate in parallel.
+
+      Runs `task system-check` first — refuses to proceed on FAIL (exit
+      2), warns on WARN (exit 1) but continues. Pass IGNORE_SYSTEM=1 to
+      bypass the gate entirely.
+
+      Default model: voytas26/openclaw-oss-20b-deterministic — gpt-oss
+      20B fine-tune for OpenClaw autonomous agents. Per the model card:
+      "Designed for autonomous agents, strict tool schema adherence,
+      concise outputs, and stable behavior in automation workflows."
+      Needs ~13 GB disk + ~16 GB RAM (32 GB Apple Silicon: comfortable).
+
+      Override the default with CRABCC_OLLAMA_MODEL=… or MODEL=…
+        - voytas26/openclaw-qwen3vl-8b-opt          (8B, 8 GB RAM)
+        - 64500165/openclaw-omnicoder-2             (Qwen3.5-9B, long loops)
+        - qwen2.5-coder:7b                          (no agent tuning)
+
+      Idempotent: skips install if `ollama` is on PATH; skips pull if
+      the model is already present locally.
+    deps: [system-check]
+    vars:
+      MODEL: '{{.MODEL | default "voytas26/openclaw-oss-20b-deterministic"}}'
+    cmds:
+      - |
+        if ! command -v ollama >/dev/null 2>&1; then
+          echo "ollama not on PATH — installing via Homebrew (macOS)…"
+          if command -v brew >/dev/null 2>&1; then
+            brew install ollama
+          else
+            echo "no brew. Install Ollama manually: https://ollama.com/download"
+            exit 1
+          fi
+        else
+          echo "✓ ollama already installed: $(ollama --version 2>&1 | head -1)"
+        fi
+      - |
+        if ! curl -fsS --max-time 5 "${OLLAMA_HOST:-http://127.0.0.1:11434}/api/version" >/dev/null 2>&1; then
+          echo "ollama daemon not reachable — start it with:  ollama serve  (or run the desktop app)"
+          echo "(continuing — pull will fail if daemon stays down)"
+        else
+          echo "✓ ollama daemon reachable at ${OLLAMA_HOST:-http://127.0.0.1:11434}"
+        fi
+      - 'ollama pull {{.MODEL}}'
+      - 'echo "" && echo "✓ ready: scripts/ollama-fanout.sh --prompts … --output … --json-mode"'
+
+  ollama-smoke:
+    desc: Smoke-test scripts/ollama-fanout.sh with a 2-prompt fixture (uses default model)
+    summary: |
+      Verifies Ollama is reachable, the model is present, and the
+      fan-out script returns merged JSON on the contract the audit
+      skills expect. Builds a tiny 2-prompt fixture, fires it, jq-asserts
+      both replies came back ok=true. Cleans up after itself.
+    vars:
+      MODEL: '{{.MODEL | default "voytas26/openclaw-oss-20b-deterministic"}}'
+    cmds:
+      - mkdir -p .summary
+      - |
+        cat > /tmp/crabcc-ollama-smoke-prompts.json <<'EOF'
+        [
+          {"name":"A","prompt":"Reply with valid JSON only. Schema: {\"agent\":\"A\",\"ok\":true}. Do not add commentary."},
+          {"name":"B","prompt":"Reply with valid JSON only. Schema: {\"agent\":\"B\",\"ok\":true}. Do not add commentary."}
+        ]
+        EOF
+      - 'CRABCC_OLLAMA_MODEL={{.MODEL}} bash scripts/ollama-fanout.sh --prompts /tmp/crabcc-ollama-smoke-prompts.json --output .summary/ollama-smoke.json --json-mode --parallel 2'
+      - 'jq -e ''length == 2 and (map(.ok) | all)'' .summary/ollama-smoke.json >/dev/null && echo "✓ ollama fan-out smoke passed"'
+      - 'rm -f /tmp/crabcc-ollama-smoke-prompts.json'
+
+  ollama-models:
+    desc: List installed Ollama models on $OLLAMA_HOST with size + modified date
+    cmds:
+      - 'curl -fsS "${OLLAMA_HOST:-http://127.0.0.1:11434}/api/tags" | jq -r ''.models[] | "\(.name)\t\((.size/1e9)|floor)GB\t\(.modified_at[:10])"'' | column -t'
+
+  ollama-network-check:
+    desc: Probe a network-exposed Ollama daemon (LAN / VPN / mDNS); pass HOST=… or set $OLLAMA_HOST
+    summary: |
+      For setups where Ollama runs off-box (e.g. on a Mac Studio while
+      dev happens on a laptop). Distinct from `task system-check` which
+      runs on the Ollama host itself.
+
+      Checks (fail-fast):
+        1. URL parse + DNS / mDNS / hosts resolution
+        2. TCP reachability on the daemon port
+        3. /api/version returns a real Ollama version
+        4. /api/tags lists at least one model
+        5. Configured model is present in the tag list
+        6. (--smoke) /api/generate round-trip with a 1-token completion
+
+      Pass HOST=http://… to override $OLLAMA_HOST inline. Pass
+      SMOKE=1 to include the /api/generate round-trip.
+
+      Exit: 0 OK · 1 WARN (model missing) · 2 FAIL (daemon unreachable)
+        · 3 SMOKE-FAIL (listed but inference broken).
+    vars:
+      HOST:  '{{.HOST  | default ""}}'
+      MODEL: '{{.MODEL | default ""}}'
+      SMOKE: '{{.SMOKE | default ""}}'
+    cmds:
+      - 'bash scripts/ollama-network-check.sh{{if .HOST}} --host {{.HOST}}{{end}}{{if .MODEL}} --model {{.MODEL}}{{end}}{{if .SMOKE}} --smoke{{end}}'
+
+  agent-runtime-smoke:
+    desc: Smoke-test scripts/ollama-agent-runtime.sh — single-shot tool-calling round-trip
+    summary: |
+      Builds a 1-tool fixture (crabcc.fuzzy), asks the model "find the
+      Store symbol", parses the JSON reply. Validates the agent
+      runtime's JSON contract (tool_call XOR final + optional
+      thinking) end-to-end against the local or network Ollama.
+
+      Pass HOST=… to test against a remote daemon.
+    vars:
+      HOST:  '{{.HOST  | default ""}}'
+      MODEL: '{{.MODEL | default "voytas26/openclaw-oss-20b-deterministic"}}'
+    cmds:
+      - mkdir -p .summary
+      - |
+        cat > /tmp/crabcc-agent-task.json <<'EOF'
+        {
+          "system": "You are a code-search agent for the crabcc repo. Use crabcc.fuzzy to locate symbols.",
+          "user":   "Find the Store symbol in this repo.",
+          "tools": [
+            {"name":"crabcc.fuzzy",
+             "description":"Levenshtein-2 fuzzy search over indexed symbol names",
+             "schema":{"type":"object","properties":{"query":{"type":"string"}},"required":["query"]}}
+          ]
+        }
+        EOF
+      - '{{if .HOST}}OLLAMA_HOST={{.HOST}} {{end}}CRABCC_OLLAMA_MODEL={{.MODEL}} bash scripts/ollama-agent-runtime.sh --task /tmp/crabcc-agent-task.json --output .summary/agent-runtime-smoke.json'
+      - 'jq -e ''.ok == true and (.tool_call != null or .final != null)'' .summary/agent-runtime-smoke.json >/dev/null && echo "✓ agent runtime smoke passed: $(jq -c ''{tool_call:.tool_call, final:.final}'' .summary/agent-runtime-smoke.json)"'
+      - 'rm -f /tmp/crabcc-agent-task.json'
+
   bench:
     desc: Run the raw-CLI A/B benchmark against REPO_FIXTURE
     deps: [install]
