@@ -325,72 +325,208 @@ tasks:
       - 'grep -q "no-op build skip" .summary/install-upgrade-smoke.txt || (echo "FAIL: no-op message not seen on second run" && exit 1)'
       - 'echo "" && echo "✓ upgrade-on-rerun smoke passed"               | tee -a .summary/install-upgrade-smoke.txt'
 
-  # ─── MCP HTTP bridge (for Copilot cloud agent) ────────────────────────────
+  # ─── MCP HTTP bridge (for Copilot cloud agent + remote clients) ───────────
+  # Bridges crabcc --mcp (stdio) → HTTP via supergateway.
+  # Docs: install/mcp-bridge/README.md
   mcp-serve-http:
-    desc: |
-      Expose crabcc --mcp over HTTP/SSE via supergateway (port 8091).
-      Copilot cloud agent requires HTTP — crabcc --mcp is stdio-only.
-      Then tunnel with: cloudflared tunnel --url http://localhost:8091
+    desc: Expose crabcc --mcp as Streamable HTTP on :8091 (Copilot-compatible)
     summary: |
-      Uses @modelcontextprotocol/supergateway to bridge:
-        crabcc --mcp (stdio)  →  HTTP/SSE at :8091
-      Set CRABCC_MCP_URL to the tunnel URL in the copilot environment.
-      Run alongside `crabcc serve` (which stays on :8090 for the dashboard).
+      Wraps `crabcc --mcp` (stdio) as Streamable HTTP at http://localhost:8091/mcp.
+      Transport: streamableHttp (MCP 2025-03-26, required by Copilot cloud agent).
+      Health: GET http://localhost:8091/healthz → "ok"
+      Tunnel: task mcp-tunnel (cloudflared, auto-prints copilot config JSON)
+      Docs:   install/mcp-bridge/README.md
     vars:
       PORT: '{{.PORT | default "8091"}}'
       ROOT: '{{.ROOT | default "."}}'
     cmds:
       - |
-        if ! command -v npx >/dev/null 2>&1; then
-          echo "npx not found — install Node.js: brew install node"
-          exit 1
-        fi
-        echo "▶ MCP HTTP bridge starting on :{{.PORT}}"
-        echo "  Tunnel: cloudflared tunnel --url http://localhost:{{.PORT}}"
-        echo "  Set copilot env secret: CRABCC_MCP_URL=<tunnel-url>"
+        command -v npx >/dev/null || { echo "npx missing: brew install node"; exit 1; }
+        echo "▶ MCP Streamable HTTP bridge  :{{.PORT}}/mcp"
+        echo "  health:  http://localhost:{{.PORT}}/healthz"
+        echo "  tunnel:  task mcp-tunnel"
         echo ""
         npx -y @modelcontextprotocol/supergateway \
+          --stdio "{{.CRABCC}} --root {{.ROOT}} --mcp" \
           --port {{.PORT}} \
-          --stdio "{{.CRABCC}} --root {{.ROOT}} --mcp"
+          --outputTransport streamableHttp \
+          --streamableHttpPath /mcp \
+          --healthEndpoint /healthz \
+          --cors \
+          --logLevel info
+    interactive: true
+
+  mcp-serve-sse:
+    desc: Expose crabcc --mcp as SSE on :8091 (legacy Claude.ai / LiteLLM clients)
+    vars:
+      PORT: '{{.PORT | default "8091"}}'
+      ROOT: '{{.ROOT | default "."}}'
+    cmds:
+      - |
+        npx -y @modelcontextprotocol/supergateway \
+          --stdio "{{.CRABCC}} --root {{.ROOT}} --mcp" \
+          --port {{.PORT}} \
+          --outputTransport sse \
+          --ssePath /sse \
+          --messagePath /message \
+          --healthEndpoint /healthz \
+          --cors \
+          --logLevel info
+    interactive: true
+
+  mcp-serve-stateful:
+    desc: Stateful Streamable HTTP — reuses crabcc process per session (faster, more memory)
+    vars:
+      PORT: '{{.PORT | default "8091"}}'
+      ROOT: '{{.ROOT | default "."}}'
+      TIMEOUT: '{{.TIMEOUT | default "120000"}}'
+    cmds:
+      - |
+        npx -y @modelcontextprotocol/supergateway \
+          --stdio "{{.CRABCC}} --root {{.ROOT}} --mcp" \
+          --port {{.PORT}} \
+          --outputTransport streamableHttp \
+          --streamableHttpPath /mcp \
+          --stateful \
+          --sessionTimeout {{.TIMEOUT}} \
+          --healthEndpoint /healthz \
+          --cors \
+          --logLevel info
     interactive: true
 
   mcp-tunnel:
-    desc: Start MCP HTTP bridge + cloudflared tunnel in one shot
-    deps: []
+    desc: MCP bridge + cloudflared tunnel — prints copilot config JSON + sets secret
+    summary: |
+      Starts supergateway (Streamable HTTP) then cloudflared tunnel.
+      Waits for the tunnel URL, prints the copilot MCP config to paste,
+      and optionally sets CRABCC_MCP_URL as a GitHub repo secret.
+    vars:
+      PORT: '{{.PORT | default "8091"}}'
+      ROOT: '{{.ROOT | default "."}}'
     cmds:
       - |
-        PORT=8091
-        ROOT="${ROOT:-.}"
-        # Start supergateway in background
+        PORT={{.PORT}}
+        ROOT={{.ROOT}}
+        LOGFILE="/tmp/crabcc-cf-tunnel.log"
+
+        command -v npx >/dev/null          || { echo "npx missing: brew install node";        exit 1; }
+        command -v cloudflared >/dev/null  || { echo "cloudflared missing: brew install cloudflared"; exit 1; }
+
+        # Start supergateway (Streamable HTTP)
         npx -y @modelcontextprotocol/supergateway \
+          --stdio "{{.CRABCC}} --root $ROOT --mcp" \
           --port "$PORT" \
-          --stdio "{{.CRABCC}} --root $ROOT --mcp" &
+          --outputTransport streamableHttp \
+          --streamableHttpPath /mcp \
+          --healthEndpoint /healthz \
+          --cors \
+          --logLevel info &
         SGPID=$!
-        sleep 2
-        # Start tunnel and capture URL
-        cloudflared tunnel --url "http://localhost:$PORT" 2>&1 | tee /tmp/crabcc-mcp-tunnel.log &
+
+        # Wait for bridge to be ready
+        until curl -sf "http://localhost:$PORT/healthz" >/dev/null; do sleep 0.5; done
+        echo "▶ Bridge ready at http://localhost:$PORT/mcp"
+
+        # Start cloudflared tunnel
+        cloudflared tunnel --url "http://localhost:$PORT" 2>&1 | tee "$LOGFILE" &
         CFPID=$!
-        sleep 3
-        URL=$(grep -o 'https://[^ ]*trycloudflare.com' /tmp/crabcc-mcp-tunnel.log | head -1)
-        if [ -n "$URL" ]; then
-          echo ""
-          echo "✓ MCP tunnel ready:"
-          echo "  URL: $URL"
-          echo ""
-          echo "Paste into copilot environment → MCP configuration:"
-          echo '{'
-          echo '  "mcpServers": {'
-          echo '    "crabcc": {'
-          echo '      "type": "http",'
-          echo "      \"url\": \"$URL/sse\""
-          echo '    }'
-          echo '  }'
-          echo '}'
-          echo ""
-          echo "Set copilot secret: CRABCC_MCP_URL=$URL"
+
+        # Wait for tunnel URL
+        URL=""
+        for i in $(seq 1 20); do
+          URL=$(grep -o 'https://[^ ]*trycloudflare\.com' "$LOGFILE" | head -1)
+          [ -n "$URL" ] && break
+          sleep 1
+        done
+
+        if [ -z "$URL" ]; then
+          echo "✗ Tunnel URL not found — check cloudflared auth"; kill $SGPID $CFPID 2>/dev/null; exit 1
         fi
+
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "✓ MCP tunnel: $URL"
+        echo ""
+        echo "Paste into Settings → Environments → copilot → MCP config:"
+        echo '{'
+        echo '  "mcpServers": {'
+        echo '    "crabcc": {'
+        echo '      "type": "http",'
+        printf '      "url": "%s/mcp"\n' "$URL"
+        echo '    }'
+        echo '  }'
+        echo '}'
+        echo ""
+        echo "Add to copilot environment → Environment secrets:"
+        echo "  CRABCC_MCP_URL = $URL"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+        # Set as GitHub secret if gh is available
+        if command -v gh >/dev/null 2>&1; then
+          echo ""
+          echo "Setting CRABCC_MCP_URL as repo secret..."
+          gh secret set CRABCC_MCP_URL --repo peterlodri-sec/crabcc --body "$URL" && \
+            echo "✓ CRABCC_MCP_URL set on peterlodri-sec/crabcc" || true
+        fi
+
         wait $SGPID $CFPID
     interactive: true
+
+  mcp-health:
+    desc: Check MCP bridge health (local + tunnel)
+    vars:
+      PORT: '{{.PORT | default "8091"}}'
+    cmds:
+      - |
+        echo "▶ Local bridge health..."
+        curl -sf "http://localhost:{{.PORT}}/healthz" && echo " ✓ local ok" || echo " ✗ not running"
+        echo "▶ MCP tools/list..."
+        curl -sf -X POST "http://localhost:{{.PORT}}/mcp" \
+          -H "Content-Type: application/json" \
+          -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | python3 -c "
+        import sys,json
+        d=json.load(sys.stdin)
+        tools=d.get('result',{}).get('tools',[])
+        print(f'  tools ({len(tools)}): {[t[\"name\"] for t in tools]}')
+        " 2>/dev/null || echo "  (bridge not running)"
+
+  mcp-smoke:
+    desc: Smoke-test the MCP bridge — sym lookup round-trip
+    vars:
+      PORT: '{{.PORT | default "8091"}}'
+    cmds:
+      - |
+        curl -fsS -X POST "http://localhost:{{.PORT}}/mcp" \
+          -H "Content-Type: application/json" \
+          -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"sym","arguments":{"name":"Store"}}}' \
+        | python3 -c "
+        import sys,json
+        d=json.load(sys.stdin)
+        content=d.get('result',{}).get('content',[])
+        print('MCP smoke result:', content[0]['text'][:120] if content else d)
+        " && echo "✓ mcp-smoke passed" || echo "✗ mcp-smoke failed"
+
+  mcp-integration:
+    desc: Full MCP bridge integration test (starts supergateway, exercises all tools)
+    cmds:
+      - 'bash tests/integration/test_mcp_bridge.sh'
+
+  # ─── Telegram integration tests ────────────────────────────────────────────
+  telegram-smoke:
+    desc: Telegram bot API connectivity + sendMessage smoke (no bot process needed)
+    cmds:
+      - 'bash tests/integration/test_telegram_bot.sh'
+
+  telegram-e2e:
+    desc: Full Telegram e2e — send /status and wait for bot reply (requires task telegram-bot running)
+    cmds:
+      - 'LIVE=1 bash tests/integration/test_telegram_bot.sh'
+
+  integration:
+    desc: Run all integration tests (MCP bridge + Telegram connectivity)
+    cmds:
+      - task: mcp-integration
+      - task: telegram-smoke
 
   # ─── iTerm2 ───────────────────────────────────────────────────────────────
   install-iterm2:
@@ -1325,7 +1461,7 @@ tasks:
          so the TelegramBridge CI action can notify you
     cmds:
       - |
-        TOKEN="${TELEGRAM_BOT_TOKEN:-8723906293:AAHrAFP6-HPQA5FXEiTYKa4iqtay9dFVwyY}"
+        TOKEN="${TELEGRAM_BOT_TOKEN:?set TELEGRAM_BOT_TOKEN in .env}"
         RESULT=$(curl -sf "https://api.telegram.org/bot${TOKEN}/getUpdates")
         CHAT_ID=$(echo "$RESULT" | python3 -c "
         import sys,json
