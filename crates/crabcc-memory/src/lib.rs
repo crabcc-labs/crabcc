@@ -67,7 +67,7 @@
 //!   the same FSST codec used by the symbol-store. Default ON.
 //! - `memory-vec` — link the bundled `sqlite-vec` extension for ANN
 //!   queries. Default OFF.
-//! - `memory-embed` — pull in `fastembed-rs` and expose [`FastEmbedder`]
+//! - `memory-embed` — pull in `fastembed-rs` and expose `FastEmbedder`
 //!   for real semantic 384-dim MiniLM-L6-v2 vectors. Default OFF
 //!   (~25 MB ONNX model file lazy-downloaded on first use).
 
@@ -77,9 +77,9 @@ pub mod palace;
 pub mod types;
 
 pub use backend::{in_memory::InMemoryBackend, sqlite::SqliteBackend, Backend, LexicalQuery};
-pub use embed::{CachedEmbedder, Embedder, HashEmbedder, DEFAULT_EMBED_CACHE_CAPACITY};
 #[cfg(feature = "memory-embed")]
 pub use embed::FastEmbedder;
+pub use embed::{CachedEmbedder, Embedder, HashEmbedder, DEFAULT_EMBED_CACHE_CAPACITY};
 pub use palace::{
     find_git_root, Palace, PalaceRegistry, SearchMode, DEFAULT_PALACE_CACHE_CAPACITY,
     GIT_ROOT_CACHE_TTL, PALACE_CACHE_TTI,

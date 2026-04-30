@@ -6,6 +6,38 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+### Added — Starship status-line surface (closes [#43](https://github.com/peterlodri-sec/crabcc/issues/43))
+- `crabcc info --status-line` — terse one-liner suitable for
+  Starship / tmux / VS Code status bars: `crabcc 87.2k · idx 12s ·
+  mem 1.4k · 4 tools`. Position is the schema (tokens saved → index
+  age → memory drawers → Claude Code tool calls), no qualifier text.
+- `crabcc info --is-repo` — exit-only Starship gate. Returns 0 inside
+  a crabcc-indexed repo (`.crabcc/index.db` reachable via walk-up from
+  cwd), 1 otherwise. No stdout.
+- `crabcc info --status-line --json` — same data as machine-readable
+  JSON for editor plugins / VS Code statusline extensions.
+- p95 ~10–20ms on M-series Mac after binary cache warm — fits inside
+  Starship's 50ms render budget. Cold first-shot ~200ms (dyld map).
+- Each segment degrades gracefully — a missing source drops that
+  segment, never errors. Starship hides the whole module via
+  `--is-repo` so "not in a crabcc repo" renders nothing.
+- New `crates/crabcc-cli/src/status.rs` module with 12 unit tests
+  (compact-number formatting, age formatting, CC project-path
+  encoding, repo detection at root + walk-up, format-text dropping).
+
+### Added — `docs/INTEGRATIONS.md`
+- Worked Starship + tmux + VS Code configs side-by-side. Documents
+  the four-segment shape, render-budget reasoning, and the JSON
+  output schema.
+
+### Added — `commands/crabcc-install.md` slash command
+- Drop-in `/crabcc-install` for use inside a Claude Code session.
+  Walks the user through the one-line `gh api …/install.sh | bash`
+  install, the env knobs (`CRABCC_INSTALL_DIR`, `--no-completions`,
+  `--no-claude`, `--check`, `--version=`), and a verification triple
+  (`crabcc --version`, `crabcc info --status-line`, `crabcc go`).
+
+
 ### Added — `install.sh` upgrade-on-rerun (closes [#24](https://github.com/peterlodri-sec/crabcc/issues/24))
 - Re-running `install.sh` is now a fast no-op when the local install is
   already current. The script probes for an existing `crabcc` at
