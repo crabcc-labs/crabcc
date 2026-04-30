@@ -4,6 +4,7 @@ use crabcc_core::{query, store::Store};
 use std::path::{Path, PathBuf};
 
 mod compress_cmd;
+mod go;
 mod install;
 mod memory;
 
@@ -173,6 +174,12 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// One-shot: index this repo (or refresh if already initialized),
+    /// build the call-graph + memory store, then hand off to
+    /// `claude --effort max --append-system-prompt <AGENTS.md>
+    /// --no-chrome` so the LLM session starts pre-loaded with the
+    /// crabcc primer + repo context.
+    Go,
 }
 
 #[derive(Subcommand)]
@@ -281,6 +288,15 @@ fn main() -> Result<()> {
     // working repo required. Run it before any filesystem touches.
     if let Some(Cmd::Info { json }) = cli.cmd.as_ref() {
         return run_info(*json);
+    }
+
+    // `go` is a top-level orchestrator that opens its own Store, indexes,
+    // builds the graph, opens the memory palace, and execs claude. We
+    // handle it before the global Store::open below because the indexing
+    // step inside `go::run` is the canonical bootstrap path on a fresh
+    // repo — pre-opening the store here would be wasted work.
+    if let Some(Cmd::Go) = cli.cmd.as_ref() {
+        return go::run(&root, &db);
     }
 
     // `compress` is a meta-operation on the index. It owns its own codec
@@ -507,6 +523,7 @@ fn main() -> Result<()> {
         Cmd::InstallClaude { .. } => unreachable!("install-claude handled before store init"),
         Cmd::Compress { .. } => unreachable!("compress handled before store init"),
         Cmd::Memory { .. } => unreachable!("memory handled before store init"),
+        Cmd::Go => unreachable!("go handled before store init"),
         Cmd::Upgrade { .. } => unreachable!("upgrade handled before store init"),
         Cmd::Completions { .. } => unreachable!("completions handled before store init"),
         Cmd::Info { .. } => unreachable!("info handled before store init"),

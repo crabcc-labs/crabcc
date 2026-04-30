@@ -26,22 +26,35 @@
 
 ---
 
-## Install (private repo — needs `gh auth login` first)
+## Install (one line)
 
 ```bash
-# 1. one-time auth (private repo, so the install path needs your token)
-gh auth login
-
-# 2. one-line install — pulls source via gh, builds with cargo, installs to ~/.cargo/bin/crabcc
-gh repo clone peterlodri-sec/crabcc /tmp/crabcc-install \
-  && (cd /tmp/crabcc-install && cargo install --path crates/crabcc-cli --locked) \
-  && rm -rf /tmp/crabcc-install
-
-# 3. zsh shell completion (one-time — tab-complete crabcc <subcmd>, --flag, etc.)
-crabcc completions zsh > "${fpath[1]}/_crabcc" && exec zsh
+gh api -H 'Accept: application/vnd.github.v3.raw' /repos/peterlodri-sec/crabcc/contents/install.sh | bash
 ```
 
-For bash/fish/elvish, swap the last command's `zsh` for the target shell.
+That's it. The installer:
+
+- prompts for `gh auth login` if you aren't authenticated yet
+- builds `crabcc` from source via `cargo install --locked`
+- writes shell completions for your current shell (zsh / bash / fish)
+- links the Claude Code skill + slash commands into `~/.claude/` (when
+  the `claude` CLI is present)
+- prints a `crabcc go` hint so the next thing you do is the right thing
+
+```bash
+# follow up with one more line: bootstrap a repo + open a Claude session
+cd <your-repo>
+crabcc go        # index + graph + memory + claude --effort max --no-chrome
+```
+
+Knobs (env or `--flag`):
+
+| flag | env | default | what |
+|---|---|---|---|
+| `--bin-dir=DIR` | `CRABCC_INSTALL_DIR` | `~/.cargo/bin` | install target |
+| `--version=TAG` | — | main HEAD | install a specific release |
+| `--no-completions` | — | off | skip shell completions |
+| `--no-claude` | — | off | skip ~/.claude/ symlinks |
 
 A small Rust CLI + MCP server that indexes your repo's symbols (functions, classes,
 methods, etc.) into a SQLite store and exposes them via four primitives an agent

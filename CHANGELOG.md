@@ -6,6 +6,34 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+## [2.3.0] — 2026-04-30
+
+### Added — modernized `install.sh` + one-line install
+- One-line install: `gh api -H 'Accept: application/vnd.github.v3.raw'
+  /repos/peterlodri-sec/crabcc/contents/install.sh | bash`. The script
+  prompts for `gh auth login` if needed, clones via `gh`, builds with
+  `cargo install --locked`, wires shell completions for the user's
+  current shell (zsh/bash/fish), links the Claude Code skill + slash
+  commands under `~/.claude/`, and prints a `crabcc go` next-step.
+- Flags: `--no-completions`, `--no-claude`, `--version=`, `--bin-dir=`.
+  Honours `CRABCC_INSTALL_DIR` and `CRABCC_REPO` env.
+- README install section collapsed from a 3-step recipe to one line.
+
+### Added — `crabcc go` one-shot init + Claude launch
+- New zero-arg subcommand: `crabcc go`. In one breath it (a) detects whether
+  the repo is initialized, (b) runs `full_index` (fresh) or `refresh`
+  (warm), (c) rebuilds the Tantivy fuzzy/prefix sidecar, (d) rebuilds the
+  call-graph sidecar, (e) opens or creates the per-repo memory palace at
+  `.crabcc/memory.db`, (f) prints a stable status block (`✓ files / ✓
+  symbols / ✓ edges / ✓ graph / ✓ drawers`), and (g) execs
+  `claude --effort max --append-system-prompt <AGENTS.md> --no-chrome`
+  so the LLM session starts pre-loaded with the crabcc primer.
+- Falls back to a minimal hardcoded primer if `AGENTS.md` is absent.
+- Friendly error path when `claude` is not on PATH — points at
+  https://claude.ai/code and re-suggests `crabcc go`.
+- 8 new unit tests covering init / idempotency / TS indexing / fallback
+  prompt / `claude` discovery on empty PATH / report formatting.
+
 ### Added — `scripts/version.sh` + globalized `CRABCC_VERSION`
 - Single source of truth for the workspace version. Parses
   `[workspace.package].version` from `Cargo.toml` once and exports
@@ -70,6 +98,7 @@ All notable changes to crabcc are documented here. Format follows
 - Standalone target that mirrors GitHub `ci.yml` (fmt-check + lint +
   test) and saves output to `.summary/local-ci.txt`. Used in PR
   descriptions when upstream CI is rate-limited.
+
 ## [2.2.2] — 2026-04-30
 
 ### Added — `sqlite-vec` ANN backend behind `memory-vec` feature ([#17](https://github.com/peterlodri-sec/crabcc/issues/17))
