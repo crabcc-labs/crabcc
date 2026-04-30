@@ -16,6 +16,8 @@ use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 
+pub mod memory;
+
 pub fn serve_stdio(root: &Path) -> Result<()> {
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
@@ -88,6 +90,15 @@ pub fn handle(req: &Value, root: &Path) -> Value {
 }
 
 pub fn tools_def() -> Vec<Value> {
+    let mut all = tools_def_symbol();
+    all.extend(memory::tools_def());
+    all
+}
+
+// The symbol-side tools above are wrapped here so the public `tools_def()`
+// can concat them with the memory-side tools without restructuring the
+// existing schema literals.
+fn tools_def_symbol() -> Vec<Value> {
     let mode_field = json!({
         "type": "string",
         "enum": ["hits", "files", "count"],
@@ -216,6 +227,13 @@ fn dispatch_tool(params: Option<&Value>, root: &Path) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("missing tool name"))?;
     let args = p.get("arguments").cloned().unwrap_or(json!({}));
 
+    // Memory tools open .crabcc/memory.db directly via Palace; no symbol
+    // Store needed. Route them first so we don't pay Store::open on a
+    // memory-only call.
+    if tool.starts_with("memory.") {
+        return memory::dispatch(tool, &args, root);
+    }
+
     let db = root.join(".crabcc").join("index.db");
     std::fs::create_dir_all(db.parent().unwrap())?;
     let store = Store::open(&db)?;
@@ -228,17 +246,23 @@ fn dispatch_tool(params: Option<&Value>, root: &Path) -> Result<String> {
 
     match tool {
         "sym" => {
-            let r = query::find_symbol(&store, arg_str(&args, "name")?)?;
+            let name = arg_str(&args, "name")?;
+            let r = query::find_symbol(&store, name)?;
+            memory::auto_capture(root, "sym", name, r.len(), &args);
             Ok(serde_json::to_string(&r)?)
         }
         "refs" => {
+            let name = arg_str(&args, "name")?;
             let mode = parse_mode(&args);
-            let r = query::query_refs(&store, root, arg_str(&args, "name")?, mode)?;
+            let r = query::query_refs(&store, root, name, mode)?;
+            memory::auto_capture(root, "refs", name, r.count(), &args);
             Ok(serde_json::to_string(&r)?)
         }
         "callers" => {
+            let name = arg_str(&args, "name")?;
             let mode = parse_mode(&args);
-            let r = query::query_callers(&store, root, arg_str(&args, "name")?, mode)?;
+            let r = query::query_callers(&store, root, name, mode)?;
+            memory::auto_capture(root, "callers", name, r.count(), &args);
             Ok(serde_json::to_string(&r)?)
         }
         "outline" => {
@@ -262,13 +286,17 @@ fn dispatch_tool(params: Option<&Value>, root: &Path) -> Result<String> {
             Ok(serde_json::to_string(&r)?)
         }
         "fuzzy" => {
+            let q = arg_str(&args, "query")?;
             let fts = Fts::open(&root.join(".crabcc").join("tantivy"))?;
-            let r = fts.fuzzy(arg_str(&args, "query")?, 20)?;
+            let r = fts.fuzzy(q, 20)?;
+            memory::auto_capture(root, "fuzzy", q, r.len(), &args);
             Ok(serde_json::to_string(&r)?)
         }
         "prefix" => {
+            let q = arg_str(&args, "query")?;
             let fts = Fts::open(&root.join(".crabcc").join("tantivy"))?;
-            let r = fts.prefix(arg_str(&args, "query")?, 20)?;
+            let r = fts.prefix(q, 20)?;
+            memory::auto_capture(root, "prefix", q, r.len(), &args);
             Ok(serde_json::to_string(&r)?)
         }
         "graph" => {
@@ -450,6 +478,178 @@ mod tests {
         });
         let resp = handle(&req, dir.path());
         assert!(resp["error"].is_object());
+    }
+
+    fn call_tool(root: &std::path::Path, tool: &str, args: Value) -> Value {
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 100,
+            "method": "tools/call",
+            "params": { "name": tool, "arguments": args }
+        });
+        handle(&req, root)
+    }
+
+    fn parse_text_content(resp: &Value) -> Value {
+        let s = resp["result"]["content"][0]["text"].as_str().unwrap();
+        serde_json::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn tools_list_includes_memory_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let req = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"});
+        let resp = handle(&req, dir.path());
+        let tools = resp["result"]["tools"].as_array().unwrap();
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+        for expected in [
+            "memory.init",
+            "memory.remember",
+            "memory.search",
+            "memory.get",
+            "memory.list",
+            "memory.delete",
+            "memory.count",
+            "memory.health",
+        ] {
+            assert!(names.contains(&expected), "missing memory tool: {expected}");
+        }
+    }
+
+    #[test]
+    fn memory_remember_then_list_via_handle() {
+        let dir = tempfile::tempdir().unwrap();
+        // remember
+        let r = call_tool(
+            dir.path(),
+            "memory.remember",
+            json!({"source": "doc:1", "body": "hello world", "session_id": "s1"}),
+        );
+        let parsed = parse_text_content(&r);
+        assert!(parsed["id"].as_i64().unwrap() >= 1);
+
+        // list
+        let r = call_tool(dir.path(), "memory.list", json!({}));
+        let parsed = parse_text_content(&r);
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["body"], "hello world");
+        assert_eq!(arr[0]["session_id"], "s1");
+    }
+
+    #[test]
+    fn memory_search_via_handle() {
+        let dir = tempfile::tempdir().unwrap();
+        call_tool(
+            dir.path(),
+            "memory.remember",
+            json!({"source": "1", "body": "fox jumps"}),
+        );
+        call_tool(
+            dir.path(),
+            "memory.remember",
+            json!({"source": "2", "body": "cat sleeps"}),
+        );
+        let r = call_tool(
+            dir.path(),
+            "memory.search",
+            json!({"query": "fox jumps", "limit": 1}),
+        );
+        let parsed = parse_text_content(&r);
+        let hits = parsed["hits"].as_array().unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0]["source_id"], "1");
+    }
+
+    #[test]
+    fn memory_count_and_delete_via_handle() {
+        let dir = tempfile::tempdir().unwrap();
+        call_tool(
+            dir.path(),
+            "memory.remember",
+            json!({"source": "x", "body": "one"}),
+        );
+        call_tool(
+            dir.path(),
+            "memory.remember",
+            json!({"source": "y", "body": "two"}),
+        );
+        let c = parse_text_content(&call_tool(dir.path(), "memory.count", json!({})));
+        assert_eq!(c["count"], 2);
+
+        let d = parse_text_content(&call_tool(
+            dir.path(),
+            "memory.delete",
+            json!({"source": "x"}),
+        ));
+        assert_eq!(d["deleted"], 1);
+
+        let c = parse_text_content(&call_tool(dir.path(), "memory.count", json!({})));
+        assert_eq!(c["count"], 1);
+    }
+
+    #[test]
+    fn memory_dispatch_resolves_cwd_arg_to_git_root() {
+        // cwd points into a nested dir under a git root; dispatch should
+        // walk up to the root and write memory.db there, not under the
+        // server's startup root.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        let nested = dir.path().join("a/b/c");
+        std::fs::create_dir_all(&nested).unwrap();
+
+        let server_root = tempfile::tempdir().unwrap();
+        call_tool(
+            server_root.path(),
+            "memory.remember",
+            json!({
+                "cwd": nested.display().to_string(),
+                "source": "doc:1",
+                "body": "hi"
+            }),
+        );
+
+        // memory.db must exist under the git-root, not under server_root.
+        assert!(dir.path().join(".crabcc").join("memory.db").exists());
+        assert!(!server_root
+            .path()
+            .join(".crabcc")
+            .join("memory.db")
+            .exists());
+    }
+
+    #[test]
+    fn memory_remember_propagates_session_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = call_tool(
+            dir.path(),
+            "memory.remember",
+            json!({"source": "d", "body": "b", "session_id": "mcp:conv-42"}),
+        );
+        let id = parse_text_content(&r)["id"].as_i64().unwrap();
+        let g = parse_text_content(&call_tool(dir.path(), "memory.get", json!({"id": id})));
+        assert_eq!(g["session_id"], "mcp:conv-42");
+    }
+
+    #[test]
+    fn memory_dispatch_health_returns_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = call_tool(dir.path(), "memory.health", json!({}));
+        let parsed = parse_text_content(&r);
+        assert_eq!(parsed.as_str().unwrap(), "Ok");
+    }
+
+    #[test]
+    fn auto_capture_inner_via_mcp_creates_drawer() {
+        // Bypasses the env-var gate by calling auto_capture_inner directly.
+        let dir = tempfile::tempdir().unwrap();
+        memory::auto_capture_inner(dir.path(), &json!({}), "sym", "Foo", 7, Some("mcp:conv-99"));
+        let r = call_tool(dir.path(), "memory.list", json!({}));
+        let parsed = parse_text_content(&r);
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["session_id"], "mcp:conv-99");
+        assert_eq!(arr[0]["room"], "sym");
     }
 
     #[test]

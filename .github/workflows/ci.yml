@@ -121,6 +121,21 @@ jobs:
           wait $WATCH_PID 2>/dev/null || true
           # Fuzzy + prefix sidecar.
           "$BIN" prefix hello | jq -e 'length >= 1'
+          # Memory subcommands (M3-light).
+          "$BIN" memory init | jq -e '.status == "ok"'
+          "$BIN" memory remember "doc:1" "the quick brown fox" | jq -e '.id >= 1'
+          "$BIN" memory remember "doc:2" "lazy dogs" --room animals | jq -e '.id >= 1'
+          "$BIN" memory count | jq -e '.count == 2'
+          "$BIN" memory search "fox" --limit 5 | jq -e '.hits | length >= 1'
+          "$BIN" memory list --limit 10 | jq -e 'length == 2'
+          "$BIN" memory get 1 | jq -e '.id == 1'
+          "$BIN" memory delete --source "doc:1" | jq -e '.deleted == 1'
+          "$BIN" memory health | jq -e '. == "Ok"'
+          # Memory.db lives at .crabcc/memory.db (per-repo).
+          test -f .crabcc/memory.db
+          # Auto-capture: with CRABCC_AUTO_MEMORY=1, sym should record a drawer.
+          CRABCC_AUTO_MEMORY=1 "$BIN" sym hello > /dev/null
+          "$BIN" memory list --wing default | jq -e 'any(.[]; .source_id == "query:sym:hello")'
 
       - name: sccache stats
         if: always()

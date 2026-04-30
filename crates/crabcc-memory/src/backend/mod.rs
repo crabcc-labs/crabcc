@@ -22,6 +22,10 @@ pub trait Backend: Send + Sync {
     fn delete(&self, sel: &DeleteSel) -> Result<usize>;
     fn count(&self) -> Result<usize>;
     fn health(&self) -> HealthStatus;
+    /// Enumerate drawers without a similarity query. Optional wing filter.
+    /// Order is implementation-defined but stable per call (id ASC for SQLite).
+    /// `limit == 0` means unlimited.
+    fn list_drawers(&self, wing: Option<&str>, limit: usize) -> Result<Vec<Drawer>>;
 }
 
 /// L2-cosine similarity. Returns 0.0 for length-mismatched or zero vectors.
