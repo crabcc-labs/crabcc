@@ -315,6 +315,12 @@ impl tracing::field::Visit for FieldCollector {
 }
 
 fn try_init_telegram() -> Option<(TelegramHandle, TelegramLayer)> {
+    // EXPLICIT OPT-IN required: set CRABCC_TELEGRAM_NOTIFY=1.
+    // Having the token in the environment is not enough — prevents
+    // accidental notification spam in CI or shared environments.
+    if std::env::var("CRABCC_TELEGRAM_NOTIFY").as_deref() != Ok("1") {
+        return None;
+    }
     let token = std::env::var("TELEGRAM_BOT_TOKEN").ok()?;
     let chat_id = std::env::var("TELEGRAM_CHAT_ID").ok()?;
     if token.is_empty() || chat_id.is_empty() {
