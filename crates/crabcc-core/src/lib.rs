@@ -67,6 +67,8 @@ pub mod gitdiff;
 pub mod graph;
 pub mod hash;
 pub mod index;
+#[cfg(feature = "markdown")]
+pub mod md;
 pub mod outline;
 pub mod pattern;
 pub mod query;

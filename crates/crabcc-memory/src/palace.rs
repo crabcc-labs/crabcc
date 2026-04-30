@@ -175,6 +175,15 @@ impl Palace {
 
     /// Same as `remember`, with an explicit session id. Used by auto-capture
     /// hooks that pass through `$TERM_SESSION_ID` or an MCP-supplied id.
+    ///
+    /// When the `markdown` feature is on (issue #54), the body is run
+    /// through [`crabcc_core::md::sanitize_drawer_body`] before storage
+    /// — strips code-fence backticks, heading markers, list bullets,
+    /// link/image URLs etc. so BM25 / FTS5 ranks on the textual
+    /// content rather than markdown syntax artefacts. The embedding
+    /// is computed against the *sanitized* body too, so vector hits
+    /// match the keyword path. With the feature off, the body is
+    /// stored verbatim (default).
     pub fn remember_in_session(
         &self,
         wing: &str,
@@ -183,12 +192,19 @@ impl Palace {
         body: &str,
         session_id: Option<&str>,
     ) -> Result<DrawerId> {
-        let emb = self.embedder.embed_one(body)?;
+        #[cfg(feature = "markdown")]
+        let normalised: String = crabcc_core::md::sanitize_drawer_body(body);
+        #[cfg(feature = "markdown")]
+        let body_for_storage: &str = &normalised;
+        #[cfg(not(feature = "markdown"))]
+        let body_for_storage: &str = body;
+
+        let emb = self.embedder.embed_one(body_for_storage)?;
         let ids = self.backend.add(&[DrawerInsert {
             wing: wing.into(),
             room: room.map(str::to_string),
             source_id: source_id.into(),
-            body: body.into(),
+            body: body_for_storage.into(),
             embedding: emb,
             session_id: session_id.map(str::to_string),
         }])?;
@@ -1480,6 +1496,49 @@ mod tests {
             p.count().unwrap(),
             1,
             "drawer survives an empty-window forget"
+        );
+    }
+
+    // ---- markdown sanitization (issue #54) ---------------------------------
+
+    #[cfg(feature = "markdown")]
+    #[test]
+    fn remember_sanitizes_drawer_body_with_markdown_feature() {
+        // The body arrives with code-fence noise + a heading marker.
+        // After remember(), the stored body should be the sanitized
+        // form: fence backticks gone, `###` gone, but the identifiers
+        // and prose preserved. BM25 / lexical search must still find
+        // the content tokens.
+        let dir = tempdir().unwrap();
+        let p = Palace::open(dir.path()).unwrap();
+        let raw = "### Connection pool\n\nUse `Store::open` to create a pool:\n\n```rust\nlet s = Store::open(path)?;\n```\n";
+        let id = p.remember("default", None, "doc:md", raw).unwrap();
+
+        let drawer = p.get(id).unwrap().expect("drawer present");
+        // Markdown syntax tokens stripped.
+        assert!(
+            !drawer.body.contains("```"),
+            "fences leaked: {:?}",
+            drawer.body
+        );
+        assert!(
+            !drawer.body.contains("###"),
+            "heading marker leaked: {:?}",
+            drawer.body
+        );
+        // Content tokens preserved — these are what BM25 should rank on.
+        assert!(drawer.body.contains("Store::open"));
+        assert!(drawer.body.contains("Connection pool"));
+
+        // Lexical search still finds the drawer by an identifier that
+        // was previously buried inside a code fence.
+        let r = p
+            .search_with_mode(SearchMode::Lexical, "Store", 5, None, None)
+            .unwrap();
+        assert!(
+            r.hits.iter().any(|h| h.source_id == "doc:md"),
+            "lexical search must find the sanitized drawer; hits: {:?}",
+            r.hits
         );
     }
 }
