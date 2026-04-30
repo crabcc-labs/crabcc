@@ -252,3 +252,123 @@ fn write_kill_log(home: &Path, run_id: &str, act: &Action) -> Result<()> {
     std::fs::write(path, body)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guard_config_default_values() {
+        let cfg = GuardConfig::default();
+        assert_eq!(cfg.idle_secs, 1800);
+        assert_eq!(cfg.term_grace_ms, 5000);
+        assert!(!cfg.json);
+    }
+
+    #[test]
+    fn pid_alive_none_returns_false() {
+        assert!(!pid_alive(None));
+    }
+
+    #[test]
+    fn pid_alive_zero_returns_false() {
+        assert!(!pid_alive(Some(0)));
+    }
+
+    #[test]
+    fn pid_alive_negative_returns_false() {
+        assert!(!pid_alive(Some(-1)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pid_alive_current_process() {
+        let pid = std::process::id() as i64;
+        assert!(pid_alive(Some(pid)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn pid_alive_nonexistent_pid() {
+        // PID 2^30 is very unlikely to exist
+        assert!(!pid_alive(Some(1_073_741_824)));
+    }
+
+    #[test]
+    fn log_idle_secs_nonexistent_file() {
+        assert_eq!(log_idle_secs("/nonexistent/path/to/logfile.log"), None);
+    }
+
+    #[test]
+    fn log_idle_secs_fresh_file_is_small() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("test.log");
+        std::fs::write(&log, "some log content").unwrap();
+        let idle = log_idle_secs(log.to_str().unwrap());
+        // A file just written should have idle < 5 seconds
+        assert!(idle.is_some());
+        assert!(idle.unwrap() < 5, "expected < 5s idle, got {}", idle.unwrap());
+    }
+
+    #[test]
+    fn write_kill_log_creates_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let act = Action {
+            run_id: "test-run-123".to_string(),
+            pid: Some(12345),
+            reason: "zombie".to_string(),
+            detail: "PID gone".to_string(),
+            log_path: None,
+        };
+        write_kill_log(home, "test-run-123", &act).unwrap();
+
+        let expected = home
+            .join(".crabcc")
+            .join("agents")
+            .join("test-run-123")
+            .join(".agent-test-run-123-kill-log");
+        assert!(expected.exists());
+        let content = std::fs::read_to_string(expected).unwrap();
+        assert!(content.contains("reason: zombie"));
+        assert!(content.contains("pid: 12345"));
+        assert!(content.contains("detail: PID gone"));
+    }
+
+    #[test]
+    fn write_kill_log_no_pid() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        let act = Action {
+            run_id: "run-no-pid".to_string(),
+            pid: None,
+            reason: "stuck".to_string(),
+            detail: "log stale".to_string(),
+            log_path: Some("/tmp/fake.log".to_string()),
+        };
+        write_kill_log(home, "run-no-pid", &act).unwrap();
+
+        let path = home
+            .join(".crabcc")
+            .join("agents")
+            .join("run-no-pid")
+            .join(".agent-run-no-pid-kill-log");
+        let content = std::fs::read_to_string(path).unwrap();
+        assert!(content.contains("pid: n/a"));
+    }
+
+    #[test]
+    fn run_with_no_db_exits_cleanly() {
+        // When HOME points to an empty dir (no _internal.db), agent-guard
+        // should exit successfully with no actions.
+        let dir = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", dir.path());
+        let cfg = GuardConfig {
+            json: true,
+            ..Default::default()
+        };
+        let result = run(cfg);
+        assert!(result.is_ok());
+        // Restore HOME isn't strictly needed in tests but good practice
+    }
+}
