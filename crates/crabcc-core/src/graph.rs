@@ -47,10 +47,25 @@ impl CallGraph {
     /// and ast-grep — kept as a transparent fallback so upgrading users
     /// don't have to re-index before `graph-build` works.
     pub fn build(store: &Store, root: &Path) -> Result<Self> {
-        if store.meta_get("edges_populated")?.as_deref() == Some("1") {
-            return Self::build_from_edges(store);
-        }
-        Self::build_legacy(store, root)
+        // Issue #90 — KPI: time the whole build + log edges/nodes once
+        // it finishes. One info event per build; child build_from_edges
+        // / build_legacy paths stay debug.
+        let t0 = std::time::Instant::now();
+        let g = if store.meta_get("edges_populated")?.as_deref() == Some("1") {
+            Self::build_from_edges(store)?
+        } else {
+            Self::build_legacy(store, root)?
+        };
+        let nodes = g.callees.len() + g.callers.len();
+        tracing::info!(
+            target: "crabcc_core::graph",
+            kpi = "graph.build",
+            edges = g.edge_count,
+            nodes,
+            duration_ms = t0.elapsed().as_millis() as u64,
+            "graph build done"
+        );
+        Ok(g)
     }
 
     /// Pure-SQL build path. Each `(caller, callee)` row already represents one
@@ -105,12 +120,34 @@ impl CallGraph {
 
     /// BFS over outgoing edges starting at `name`.
     pub fn outgoing(&self, name: &str, depth: usize) -> Vec<GraphHit> {
-        bfs(&self.callees, name, depth)
+        let t0 = std::time::Instant::now();
+        let r = bfs(&self.callees, name, depth);
+        tracing::info!(
+            target: "crabcc_core::graph",
+            kpi = "graph.walk",
+            direction = "outgoing",
+            depth,
+            frontier = r.len(),
+            duration_ms = t0.elapsed().as_millis() as u64,
+            "graph walk done"
+        );
+        r
     }
 
     /// BFS over reverse edges (who calls `name`?).
     pub fn incoming(&self, name: &str, depth: usize) -> Vec<GraphHit> {
-        bfs(&self.callers, name, depth)
+        let t0 = std::time::Instant::now();
+        let r = bfs(&self.callers, name, depth);
+        tracing::info!(
+            target: "crabcc_core::graph",
+            kpi = "graph.walk",
+            direction = "incoming",
+            depth,
+            frontier = r.len(),
+            duration_ms = t0.elapsed().as_millis() as u64,
+            "graph walk done"
+        );
+        r
     }
 
     /// Strongly connected components of size >= 2 (mutual recursion / cycles).
@@ -119,12 +156,20 @@ impl CallGraph {
     /// codebase?". Returned components are sorted alphabetically; the outer
     /// list is sorted by first-element name for stable output.
     pub fn cycles(&self) -> Vec<Vec<String>> {
+        let t0 = std::time::Instant::now();
         let mut sccs = tarjan_scc(&self.callees);
         sccs.retain(|c| c.len() >= 2);
         for c in &mut sccs {
             c.sort();
         }
         sccs.sort_by(|a, b| a[0].cmp(&b[0]));
+        tracing::info!(
+            target: "crabcc_core::graph",
+            kpi = "graph.cycles",
+            count = sccs.len(),
+            duration_ms = t0.elapsed().as_millis() as u64,
+            "graph cycles done"
+        );
         sccs
     }
 
@@ -134,6 +179,7 @@ impl CallGraph {
     /// points like main / handlers) are not included; you have to filter by
     /// the symbols table to add those.
     pub fn orphans(&self) -> Vec<String> {
+        let t0 = std::time::Instant::now();
         let mut out: Vec<String> = self
             .callees
             .keys()
@@ -141,6 +187,13 @@ impl CallGraph {
             .cloned()
             .collect();
         out.sort();
+        tracing::info!(
+            target: "crabcc_core::graph",
+            kpi = "graph.orphans",
+            count = out.len(),
+            duration_ms = t0.elapsed().as_millis() as u64,
+            "graph orphans done"
+        );
         out
     }
 
