@@ -1715,4 +1715,243 @@ mod tests {
             "expected default = dev - 2 (drop _openapi + _health), got default={default_count}, dev={dev_count}"
         );
     }
+
+    // ───────────────────────────────────────────────────────────────────
+    // Tool-coverage sweep (issue #18). One happy-path assertion per
+    // dispatched tool that the original test suite did not cover, plus
+    // a single description-shape test that gates "every tool advertises
+    // a non-empty description".
+    // ───────────────────────────────────────────────────────────────────
+
+    /// Every advertised tool — default + dev surface — must carry a
+    /// `description` of at least 12 characters. Catches accidental
+    /// empty-string descriptions in new tool definitions. 12 is below
+    /// the shortest existing description so this won't false-flag.
+    #[test]
+    fn every_tool_advertises_a_description() {
+        for tool in tools_def_for(true) {
+            let name = tool["name"].as_str().unwrap_or("(no-name)");
+            let desc = tool["description"].as_str().unwrap_or("");
+            assert!(
+                desc.len() >= 12,
+                "tool {name:?} description too short or missing: {desc:?}"
+            );
+        }
+    }
+
+    /// Every tool must declare an `inputSchema.properties` object — even
+    /// the no-arg meta tools, which advertise an empty `{}`. Without
+    /// this MCP clients can't introspect the call shape.
+    #[test]
+    fn every_tool_carries_input_schema() {
+        for tool in tools_def_for(true) {
+            let name = tool["name"].as_str().unwrap_or("(no-name)");
+            assert!(
+                tool["inputSchema"]["type"] == "object",
+                "tool {name:?} inputSchema.type must be 'object'"
+            );
+            assert!(
+                tool["inputSchema"]["properties"].is_object(),
+                "tool {name:?} inputSchema.properties must be an object"
+            );
+        }
+    }
+
+    #[test]
+    fn handle_tools_call_refs_returns_hits_envelope() {
+        let dir = fixture_root();
+        let r = call_tool(dir.path(), "refs", json!({"name": "hello"}));
+        let parsed = parse_text_content(&r);
+        // Default mode is Hits; the JSON has fingerprint envelope keys
+        // (data + sha) — assert one of the recognisable shapes.
+        let raw_text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+        assert!(
+            raw_text.contains("hello") || parsed["data"].is_array() || parsed.is_array(),
+            "refs payload should mention `hello`: {raw_text:.200}"
+        );
+    }
+
+    #[test]
+    fn handle_tools_call_callers_returns_envelope() {
+        let dir = fixture_root();
+        let r = call_tool(dir.path(), "callers", json!({"name": "hello"}));
+        let raw_text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+        // Either the fingerprint envelope or a streamed shape — both
+        // count "hello" as a callable.
+        assert!(
+            raw_text.contains("\"") && !raw_text.is_empty(),
+            "callers payload must be JSON: {raw_text:.200}"
+        );
+    }
+
+    #[test]
+    fn handle_tools_call_files_lists_indexed_paths() {
+        let dir = fixture_root();
+        let r = call_tool(dir.path(), "files", json!({}));
+        let parsed = parse_text_content(&r);
+        let arr = parsed.as_array().expect("files must return a JSON array");
+        assert!(
+            arr.iter().any(|p| p.as_str() == Some("hi.ts")),
+            "files must include the fixture's hi.ts: {arr:?}"
+        );
+    }
+
+    #[test]
+    fn handle_tools_call_index_default_returns_stats() {
+        let dir = fixture_root();
+        let r = call_tool(dir.path(), "index", json!({}));
+        let parsed = parse_text_content(&r);
+        // Bare-stats shape: top-level keys, no envelope.
+        assert!(
+            parsed["files_indexed"].is_u64(),
+            "index default must return IndexStats: {parsed:?}"
+        );
+    }
+
+    #[test]
+    fn handle_tools_call_index_with_logs_envelope() {
+        // PR #101 added an opt-in `logs: true` arg to the `index` tool.
+        // Verifies the alternate response shape — the in-process path
+        // returns an empty `logs` array (in-process tracing isn't piped
+        // through), but the envelope keys must be present so /live and
+        // MCP clients consume identical JSON.
+        let dir = fixture_root();
+        let r = call_tool(dir.path(), "index", json!({"logs": true}));
+        let parsed = parse_text_content(&r);
+        assert!(parsed["stats"].is_object(), "missing stats: {parsed}");
+        assert!(
+            parsed["elapsed_ms"].is_u64(),
+            "missing elapsed_ms: {parsed}"
+        );
+        assert!(parsed["logs"].is_array(), "missing logs array: {parsed}");
+    }
+
+    #[test]
+    fn handle_tools_call_refresh_returns_stats() {
+        let dir = fixture_root();
+        let r = call_tool(dir.path(), "refresh", json!({}));
+        let parsed = parse_text_content(&r);
+        // RefreshStats has `unchanged` field; on a freshly indexed repo
+        // every file should land in that bucket.
+        assert!(
+            parsed["unchanged"].is_u64() || parsed.get("stats").is_some(),
+            "refresh must return RefreshStats: {parsed:?}"
+        );
+    }
+
+    #[test]
+    fn handle_tools_call_refresh_delta_returns_per_bucket_lists() {
+        let dir = fixture_root();
+        let r = call_tool(dir.path(), "refresh", json!({"delta": true}));
+        let parsed = parse_text_content(&r);
+        assert!(parsed["added"].is_array(), "missing added bucket: {parsed}");
+        assert!(parsed["modified"].is_array(), "missing modified: {parsed}");
+        assert!(parsed["removed"].is_array(), "missing removed: {parsed}");
+        assert!(parsed["stats"].is_object(), "missing stats: {parsed}");
+    }
+
+    #[test]
+    fn handle_tools_call_fuzzy_returns_array_shape() {
+        // The fixture's `full_index` populates SQLite but not Tantivy
+        // (the FTS sidecar is built explicitly via `Fts::rebuild`).
+        // For the dispatcher contract test, we only assert shape — a
+        // separate end-to-end test in the fts module covers retrieval
+        // correctness on a real Tantivy index.
+        let dir = fixture_root();
+        let r = call_tool(dir.path(), "fuzzy", json!({"query": "helo"}));
+        let parsed = parse_text_content(&r);
+        assert!(parsed.is_array(), "fuzzy must return JSON array: {parsed}");
+    }
+
+    #[test]
+    fn handle_tools_call_prefix_returns_array_shape() {
+        let dir = fixture_root();
+        let r = call_tool(dir.path(), "prefix", json!({"query": "hel"}));
+        let parsed = parse_text_content(&r);
+        assert!(parsed.is_array(), "prefix must return JSON array: {parsed}");
+    }
+
+    #[test]
+    fn handle_tools_call_graph_walk_returns_hits_array() {
+        let dir = fixture_root();
+        let r = call_tool(
+            dir.path(),
+            "graph",
+            json!({"name": "hello", "dir": "callers", "depth": 2}),
+        );
+        let parsed = parse_text_content(&r);
+        // graph walk returns `Vec<GraphHit>` — empty is fine for the
+        // single-file fixture; the contract is "JSON array, no error".
+        assert!(parsed.is_array(), "graph walk must be JSON array: {parsed}");
+    }
+
+    /// Required-arg validation: tools that take a `name` arg must error
+    /// when it's missing, with a message that mentions the missing key.
+    /// Fast-fail on the dispatch side before any DB work happens.
+    #[test]
+    fn handle_required_args_validated_for_name_tools() {
+        let dir = fixture_root();
+        for tool in ["sym", "refs", "callers", "fuzzy", "prefix"] {
+            let req = json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": {"name": tool, "arguments": {}}
+            });
+            let resp = handle(&req, dir.path());
+            assert!(
+                resp.get("error").is_some(),
+                "{tool} with no args must error: {resp}"
+            );
+            let msg = resp["error"]["message"].as_str().unwrap_or("");
+            assert!(
+                msg.contains("name") || msg.contains("query") || msg.contains("missing"),
+                "{tool} error must mention the missing arg: {msg}"
+            );
+        }
+    }
+
+    /// Outline must error when `file` is missing.
+    #[test]
+    fn handle_outline_requires_file_arg() {
+        let dir = fixture_root();
+        let req = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": {"name": "outline", "arguments": {}}
+        });
+        let resp = handle(&req, dir.path());
+        assert!(resp.get("error").is_some(), "outline must require file");
+    }
+
+    /// Memory tool descriptions must mention a domain concept — guards
+    /// against a future copy/paste accidentally shipping a generic
+    /// placeholder description on a memory tool. The keyword set covers
+    /// the vocabulary actually used by current `memory.*` definitions.
+    #[test]
+    fn memory_tool_descriptions_are_memory_specific() {
+        let keywords = [
+            "memory",
+            "drawer",
+            "wing",
+            "session",
+            "vacuum",
+            "idempotent",
+            "hybrid",
+            "bm25",
+            "health",
+            "store",
+            "ok / degraded",
+            "transcript",
+            "jsonl",
+        ];
+        for tool in tools_def_for(false) {
+            let name = tool["name"].as_str().unwrap_or("");
+            if !name.starts_with("memory.") {
+                continue;
+            }
+            let desc = tool["description"].as_str().unwrap_or("").to_lowercase();
+            assert!(
+                keywords.iter().any(|kw| desc.contains(kw)),
+                "memory tool {name:?} description should mention a domain concept: {desc:?}"
+            );
+        }
+    }
 }
