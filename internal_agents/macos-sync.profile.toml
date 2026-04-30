@@ -1,0 +1,38 @@
+name        = "macos-sync"
+crate       = "crabcc-cli"   # closest owning crate; menubar.swift lives in installer/
+description = "Sync the macOS app surface (menubar, .app bundle, Apple container layer) with the host CLI surface."
+
+model           = "claude-opus-4-7"
+max_iterations  = 25
+timeout_secs    = 1800
+
+[env]
+CRABCC_BUILD_PROFILE  = "release-native"
+CRABCC_NO_HINT        = "1"
+RUST_LOG              = "crabcc_cli=info,warn"
+
+[tools]
+allowed = [
+    "Bash",
+    "Read",
+    "Edit",
+    "Write",
+    "Grep",
+    "Glob",
+    "mcp__crabcc__sym",
+    "mcp__crabcc__refs",
+    "mcp__crabcc__callers",
+    "mcp__crabcc__outline",
+]
+
+[gates]
+bench       = []
+test        = [
+    "cargo test -p crabcc-cli --release",
+]
+lint        = [
+    "cargo clippy -p crabcc-cli -p crabcc-viz --all-targets -- -D warnings",
+]
+fmt         = [
+    "cargo fmt -p crabcc-cli -p crabcc-viz -- --check",
+]
