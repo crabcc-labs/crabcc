@@ -93,23 +93,72 @@ cp "$REPO_ROOT/scripts/install-aliases.sh" "$APP_STAGE/Contents/Resources/instal
 cp "$REPO_ROOT/scripts/version.sh"         "$APP_STAGE/Contents/Resources/version.sh" 2>/dev/null || true
 chmod 0755 "$APP_STAGE/Contents/Resources/install-aliases.sh"
 
-# --- 3. compile menubar.swift ---------------------------------------------
+# --- 3. produce the menubar binary ----------------------------------------
+#
+# Default path (Phase 1 of #192): consume the Tuist-built Crabcc.app from
+# apps/macos/. The Swift sources live under apps/macos/Sources/; the
+# legacy installer/Crabcc.app/Contents/MacOS/*.swift files are kept as a
+# rollback target only (USE_LEGACY_SWIFT=1).
+#
+# The legacy .swift sources copied via `cp -R "$SRC_APP" "$APP_STAGE"`
+# are removed below regardless of which path is taken — they're never
+# the production source after Phase 1.
 
-if ! command -v swiftc >/dev/null 2>&1; then
-    echo "swiftc not found — install Xcode Command Line Tools (xcode-select --install)" >&2
-    exit 1
+USE_LEGACY_SWIFT="${USE_LEGACY_SWIFT:-0}"
+
+# Always purge any .swift files that came along via the cp -R. The
+# Tuist binary doesn't need them in the bundle, and the legacy swiftc
+# path will read from the original installer/Crabcc.app/ directly.
+shopt -s nullglob
+STAGE_SWIFT_SRCS=( "$APP_STAGE/Contents/MacOS"/*.swift )
+shopt -u nullglob
+if [ "${#STAGE_SWIFT_SRCS[@]}" -gt 0 ]; then
+    rm "${STAGE_SWIFT_SRCS[@]}"
 fi
 
-log "swiftc menubar.swift sticky.swift -> Crabcc"
-# `-parse-as-library` is required once the source set crosses one file
-# (sticky.swift was added in #189 phase 0). Top-level expressions move
-# into `@main` inside menubar.swift.
-swiftc -O -parse-as-library -target arm64-apple-macos13.0 \
-    -o "$APP_STAGE/Contents/MacOS/Crabcc" \
-    "$APP_STAGE/Contents/MacOS/menubar.swift" \
-    "$APP_STAGE/Contents/MacOS/sticky.swift"
-rm "$APP_STAGE/Contents/MacOS/menubar.swift" \
-   "$APP_STAGE/Contents/MacOS/sticky.swift"
+if [[ "$USE_LEGACY_SWIFT" == "1" ]]; then
+    log "USE_LEGACY_SWIFT=1 — falling back to swiftc *.swift compile"
+    if ! command -v swiftc >/dev/null 2>&1; then
+        echo "swiftc not found — install Xcode Command Line Tools" >&2
+        exit 1
+    fi
+    shopt -s nullglob
+    LEGACY_SWIFT_SRCS=( "$REPO_ROOT/installer/Crabcc.app/Contents/MacOS"/*.swift )
+    shopt -u nullglob
+    if [ "${#LEGACY_SWIFT_SRCS[@]}" -eq 0 ]; then
+        echo "no legacy Swift sources to fall back to" >&2
+        exit 1
+    fi
+    swiftc -O -parse-as-library -target arm64-apple-macos13.0 \
+        -o "$APP_STAGE/Contents/MacOS/Crabcc" \
+        "${LEGACY_SWIFT_SRCS[@]}"
+else
+    log "tuist install + generate + xcodebuild (apps/macos)"
+    if ! command -v tuist >/dev/null 2>&1; then
+        echo "tuist not found — install via 'mise install tuist@4' or 'brew install tuist'" >&2
+        echo "or set USE_LEGACY_SWIFT=1 to fall back to the legacy swiftc path" >&2
+        exit 1
+    fi
+    (
+        cd "$REPO_ROOT/apps/macos"
+        tuist install
+        tuist generate --no-open
+        xcodebuild \
+            -project Crabcc.xcodeproj \
+            -scheme Crabcc \
+            -configuration Release \
+            -skipMacroValidation \
+            build
+    )
+    TUIST_APP="$REPO_ROOT/apps/macos/Derived/Build/Products/Release/Crabcc.app"
+    TUIST_BIN="$TUIST_APP/Contents/MacOS/Crabcc"
+    if [[ ! -x "$TUIST_BIN" ]]; then
+        echo "tuist build did not produce $TUIST_BIN" >&2
+        exit 1
+    fi
+    log "copying Tuist binary -> $APP_STAGE/Contents/MacOS/Crabcc"
+    cp "$TUIST_BIN" "$APP_STAGE/Contents/MacOS/Crabcc"
+fi
 
 chmod 0755 "$APP_STAGE/Contents/MacOS/Crabcc"
 chmod 0644 "$APP_STAGE/Contents/Resources/scripts/"*.sh
