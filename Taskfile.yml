@@ -26,8 +26,39 @@ version: '3'
 
 vars:
   REPO_FIXTURE: '{{.REPO_FIXTURE | default "/Users/peter.lodri/workspace/mc-mothership"}}'
+
+  # Toolchain entry points. Centralized so a swap (e.g. `cross` for
+  # cross-compilation) ripples to every task without find/replace.
   CARGO: cargo
-  CRABCC: ~/.cargo/bin/crabcc
+  RUSTC: rustc
+  GH:    gh
+
+  # Binaries we ship + the conventional install location.
+  CARGO_BIN:    ~/.cargo/bin
+  CRABCC:       ~/.cargo/bin/crabcc
+  CCC:          ~/.cargo/bin/ccc
+
+  # State directories. Per-repo .crabcc/ holds the symbol index and graph
+  # sidecar; ~/.crabcc/ holds the singleton _internal.db (agent runs,
+  # cli_calls, manager heartbeats) shared across repos.
+  REPO_CRABCC_DIR:   .crabcc
+  INDEX_DB:          .crabcc/index.db
+  GRAPH_JSON:        .crabcc/graph.json
+  USER_CRABCC_DIR:   '{{.HOME}}/.crabcc'
+  INTERNAL_DB:       '{{.HOME}}/.crabcc/_internal.db'
+
+  # macOS surfaces (issue #107). Build outputs land in dist/; the .app
+  # bundle source lives under installer/.
+  DMG_DIR:           dist
+  DMG_OUT:           'dist/crabcc-{{.CRABCC_VERSION}}.dmg'
+  APP_BUNDLE_SRC:    installer/Crabcc.app
+  APP_INSTALLED:     /Applications/Crabcc.app
+  LOGS_DIR:          '{{.HOME}}/Library/Logs/Crabcc'
+  LAUNCH_AGENTS_DIR: '{{.HOME}}/Library/LaunchAgents'
+
+  # Repomix output (token-minimized bundle for LLM ingestion).
+  REPOMIX_OUT: .repomix/crabcc.xml
+
   # Single source of truth for the workspace version. Other tasks read
   # through {{.CRABCC_VERSION}} so bumping Cargo.toml flips banners,
   # release messages, and `task version` automatically.
@@ -656,7 +687,7 @@ tasks:
       OUT: '{{.OUT | default ".repomix/crabcc.xml"}}'
     cmds:
       - mkdir -p $(dirname {{.OUT}})
-      - 'repomix --compress --remove-comments --remove-empty-lines --no-file-summary --no-directory-structure --style xml --ignore "**/*.md,**/*.lock,**/target/**,**/.crabcc/**,bench/results/**,assets/**,.repomix/**" --output {{.OUT}}'
+      - 'repomix --compress --remove-comments --remove-empty-lines --no-file-summary --no-directory-structure --style xml --ignore "**/*.md,**/*.lock,**/target/**,**/.crabcc/**,bench/results/**,assets/**,.repomix/**,**/web/dist/**,**/dist/**,**/*.html" --output {{.OUT}}'
       - 'wc -c {{.OUT}} | awk ''{ printf "size: %.1f KiB\n", $1/1024 }'''
 
   clean:
