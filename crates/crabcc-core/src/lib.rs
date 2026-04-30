@@ -69,6 +69,7 @@ pub mod hash;
 pub mod index;
 #[cfg(feature = "markdown")]
 pub mod md;
+pub mod ollama_stack;
 pub mod outline;
 pub mod pattern;
 pub mod query;
