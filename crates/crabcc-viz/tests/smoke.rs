@@ -162,3 +162,20 @@ fn unknown_route_is_404() {
     let (status, _body) = http_get(port, "/does-not-exist");
     assert_eq!(status, 404);
 }
+
+#[test]
+fn activity_endpoint_returns_snapshot_shape() {
+    let (_dir, port) = boot_test_server();
+    let (status, body) = http_get(port, "/api/activity?since=0&limit=10");
+    assert_eq!(status, 200, "activity must succeed: {body}");
+    let v: serde_json::Value = serde_json::from_str(&body).expect("activity must be valid JSON");
+    // Shape contract: `repo`, `cursor`, `events` are always present, and
+    // `events` is always an array (possibly empty when there's been no
+    // recorded activity for this repo). The frontend depends on this.
+    assert!(v.get("repo").is_some(), "missing repo: {body}");
+    assert!(v.get("cursor").is_some(), "missing cursor: {body}");
+    assert!(
+        v.get("events").and_then(|e| e.as_array()).is_some(),
+        "events must be an array: {body}"
+    );
+}
