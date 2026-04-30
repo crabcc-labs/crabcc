@@ -6,6 +6,7 @@ import { AgentProfilesPanel } from "./components/AgentProfilesPanel";
 import { AgentKillsPanel } from "./components/AgentKillsPanel";
 import { AgentModelsPanel } from "./components/AgentModelsPanel";
 import { OllamaKeyPanel } from "./components/OllamaKeyPanel";
+import { ServicesPanel } from "./components/ServicesPanel";
 import { ReindexDialog } from "./components/ReindexDialog";
 import { TelemetryPanel } from "./components/TelemetryPanel";
 import { DebugPanel } from "./components/DebugPanel";
@@ -125,6 +126,10 @@ export function App() {
             models
           </h2>
           <AgentModelsPanel />
+          <h2 style={{ marginTop: "1.2em" }}>
+            services
+          </h2>
+          <ServicesPanel />
           <h2 style={{ marginTop: "1.2em" }}>
             ollama api key
           </h2>

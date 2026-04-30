@@ -111,6 +111,33 @@ export type AgentModelEntry = {
   docs_first: string | null;
 };
 
+// Issue #143 — service discovery surface for the /live dashboard.
+// Mirrors crabcc_core::service_discovery::{ServiceStatus, DiscoveryReport}.
+export type ServiceStatus = {
+  name: string;
+  kind:
+    | "redis"
+    | "http_json_api"
+    | "otlp_grpc"
+    | "otlp_http"
+    | "ollama"
+    | "generic";
+  url: string;
+  source: string;          // env var name OR "default"
+  host: string;
+  port: number;
+  reachable: boolean;
+  latency_ms: number;
+  error: string | null;
+  probed_at: number;
+};
+
+export type DiscoveryReport = {
+  services: ServiceStatus[];
+  compose_mode: boolean;
+  elapsed_ms: number;
+};
+
 export const api = {
   bootstrap: () => getJson<Bootstrap>("/api/bootstrap"),
   activity: (sinceTs?: number, limit = 100) =>
@@ -137,6 +164,7 @@ export const api = {
       size_bytes: number | null;
       key: string | null;
     }>("/api/ollama-key"),
+  services: () => getJson<DiscoveryReport>("/api/services"),
   reindex: () => postJson<ReindexReport>("/api/reindex"),
   randomQuery: () =>
     postJson<{ op: string; symbol: string }>("/api/random-query"),
