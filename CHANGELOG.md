@@ -6,6 +6,8 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+## [2.1.0] — 2026-04-30
+
 ### Added — `crabcc upgrade` + shell completions
 - **`crabcc upgrade`** (CLI + MCP tool + `/crabcc-upgrade` slash command) —
   checks GitHub for a newer release. Repo is private, so the implementation
