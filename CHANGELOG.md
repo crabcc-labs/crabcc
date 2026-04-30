@@ -6,6 +6,22 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+## [2.2.0] — 2026-04-30
+
+### Added — `crabcc info` + build labels embedded in the binary
+- **`build.rs` in `crabcc-cli`** captures git provenance at compile time and
+  emits five `cargo:rustc-env=` lines: `CRABCC_BUILD_COMMIT` (12-char sha),
+  `CRABCC_BUILD_BRANCH`, `CRABCC_BUILD_TAG` (empty when HEAD isn't tagged),
+  `CRABCC_BUILD_TIME` (UTC ISO-8601), `CRABCC_BUILD_TARGET` (Cargo's TARGET
+  triple). Robust against shallow / detached / no-git checkouts: every git
+  failure falls back to "unknown" or "" so the build never breaks.
+  `cargo:rerun-if-changed=.git/HEAD,refs` triggers rebuild on commit-on-branch
+  or branch-switch, so dev rebuilds always reflect the current sha.
+- **`crabcc info` + `crabcc info --json`** — prints version, commit, branch,
+  tag, build-time, target, plus a hand-curated one-line project summary
+  (langs / MCP tools / token-shaping / speedup), suitable for status lines,
+  bug reports, and paste-into-issue contexts.
+
 ## [2.1.0] — 2026-04-30
 
 ### Added — `crabcc upgrade` + shell completions
