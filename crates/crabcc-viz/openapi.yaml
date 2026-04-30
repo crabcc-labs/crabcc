@@ -53,6 +53,24 @@ paths:
               schema:
                 $ref: "#/components/schemas/HealthResponse"
 
+  /api/openapi.yaml:
+    get:
+      tags: [meta]
+      summary: Echo the hand-maintained OpenAPI 3.1 spec for this server (#172).
+      description: |
+        Returns the same `openapi.yaml` content the dashboard's drift test
+        validates against. Lets the planned `com.crabcc.docs.api` Scalar
+        container render the spec without a separate file copy — fetch
+        from `crabcc serve`, render, done.
+      operationId: getOpenapiYaml
+      responses:
+        "200":
+          description: OpenAPI spec, raw YAML.
+          content:
+            application/yaml:
+              schema:
+                type: string
+
   /api/bootstrap:
     get:
       tags: [meta]
