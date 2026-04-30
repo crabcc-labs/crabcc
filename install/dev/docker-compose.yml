@@ -31,6 +31,13 @@ x-logging: &logging
     max-size: "10m"
     max-file: "3"
 
+# Reusable container-label block — issue #105 / #109. Per-service
+# blocks extend via `<<: *labels` with role-specific tags.
+x-crabcc-labels: &labels
+  com.crabcc.project: "crabcc"
+  com.crabcc.stack: "dev"
+  com.crabcc.issue: "#105"
+
 services:
   crabcc:
     build:
@@ -38,8 +45,20 @@ services:
       dockerfile: install/Dockerfile.crabcc
       cache_from:
         - crabcc:local
+      args:
+        # Wired by `task images-build` so the resulting image labels
+        # carry the git revision and ISO-8601 build timestamp.
+        GIT_SHA: ${CRABCC_GIT_SHA:-unknown}
+        BUILD_DATE: ${CRABCC_BUILD_DATE:-unknown}
+        VERSION: ${CRABCC_VERSION:-dev}
+      labels:
+        <<: *labels
+        com.crabcc.role: "agent-runtime"
     image: crabcc:local
     init: true
+    labels:
+      <<: *labels
+      com.crabcc.role: "agent-runtime"
     user: "${UID:-1000}:${GID:-1000}"
     security_opt:
       - no-new-privileges:true
@@ -97,6 +116,10 @@ services:
   viz-web:
     image: oven/bun:1-alpine
     init: true
+    labels:
+      <<: *labels
+      com.crabcc.role: "viz-web-watch"
+      com.crabcc.issue: "#101"
     user: "${UID:-1000}:${GID:-1000}"
     security_opt:
       - no-new-privileges:true
@@ -140,6 +163,10 @@ services:
       - jobs
     restart: unless-stopped
     init: true
+    labels:
+      <<: *labels
+      com.crabcc.role: "jobs-queue"
+      com.crabcc.issue: "#109"
     security_opt:
       - no-new-privileges:true
     cap_drop:

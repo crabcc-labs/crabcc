@@ -92,6 +92,64 @@ tasks:
     cmds:
       - 'RUSTFLAGS="-C target-cpu=native" {{.CARGO}} build --release'
 
+  images-build:
+    desc: Build local Docker images (crabcc binary + dev compose), with cache (issue #105)
+    summary: |
+      Builds:
+        - crabcc:local from install/Dockerfile.crabcc (multi-stage)
+        - All `build:` services from install/dev/docker-compose.yml
+          (today: just `crabcc`)
+
+      Image labels: OCI Image-Spec annotations (revision, created,
+      version, source, licenses) + crabcc-specific (com.crabcc.role,
+      com.crabcc.issue, com.crabcc.build.local). Source for these
+      values: workspace Cargo.toml + git rev-parse + ISO-8601 now.
+
+      Set NO_CACHE=1 (or call `task images-build-nocache`) to skip
+      BuildKit cache mounts AND --no-cache for the Compose builds.
+
+      BuildKit cache mounts on the Rust builder stage make iterative
+      `cargo build` rebuilds ~10–20 s instead of ~2 min cold.
+    vars:
+      NOCACHE: '{{.NO_CACHE | default ""}}'
+      GIT_SHA:
+        sh: git rev-parse --short HEAD 2>/dev/null || echo unknown
+      BUILD_DATE:
+        sh: date -u +%Y-%m-%dT%H:%M:%SZ
+      VERSION:
+        sh: bash scripts/version.sh 2>/dev/null || echo dev
+    env:
+      CRABCC_GIT_SHA: '{{.GIT_SHA}}'
+      CRABCC_BUILD_DATE: '{{.BUILD_DATE}}'
+      CRABCC_VERSION: '{{.VERSION}}'
+    cmds:
+      - >-
+        DOCKER_BUILDKIT=1 docker build
+        {{if eq .NOCACHE "1"}}--no-cache --pull{{end}}
+        --build-arg "RUST_VERSION=${RUST_VERSION:-1.83}"
+        --build-arg "GIT_SHA={{.GIT_SHA}}"
+        --build-arg "BUILD_DATE={{.BUILD_DATE}}"
+        --build-arg "VERSION={{.VERSION}}"
+        -t crabcc:local
+        -t crabcc:{{.VERSION}}
+        -t crabcc:{{.GIT_SHA}}
+        -f install/Dockerfile.crabcc .
+      - >-
+        docker compose -f install/dev/docker-compose.yml build
+        {{if eq .NOCACHE "1"}}--no-cache --pull{{end}}
+
+  images-build-nocache:
+    desc: Same as images-build but forces --no-cache + --pull on every layer (slow but reproducible)
+    cmds:
+      - task: images-build
+        vars:
+          NO_CACHE: '1'
+
+  images-inspect:
+    desc: Show image labels + size for crabcc:local (issue #105 verification)
+    cmds:
+      - 'docker image inspect crabcc:local | jq ".[0] | {labels: .Config.Labels, size_mb: (.Size / 1024 / 1024 | floor)}"'
+
   pgo-release:
     desc: Profile-guided optimization release build (issue #112) — typical 10–20% gain on hot paths
     summary: |

@@ -29,11 +29,21 @@ x-logging: &logging
     max-size: "10m"
     max-file: "3"
 
+# Reusable container-label block — issue #105. Per-service blocks
+# extend with role-specific tags via `<<: *labels`.
+x-crabcc-labels: &labels
+  com.crabcc.project: "crabcc"
+  com.crabcc.stack: "ollama-auth"
+  com.crabcc.issue: "#105"
+
 services:
   ollama:
     image: ollama/ollama:latest
     restart: unless-stopped
     init: true
+    labels:
+      <<: *labels
+      com.crabcc.role: "model-server"
     expose:
       - "11434"
     # Default Docker shm is 64 MiB; Ollama mmaps model weights and benefits
@@ -66,6 +76,9 @@ services:
     image: caddy:2-alpine
     restart: unless-stopped
     init: true
+    labels:
+      <<: *labels
+      com.crabcc.role: "auth-proxy"
     read_only: true
     security_opt:
       - no-new-privileges:true
@@ -104,6 +117,9 @@ services:
     image: ghcr.io/berriai/litellm:main-stable
     restart: unless-stopped
     init: true
+    labels:
+      <<: *labels
+      com.crabcc.role: "openai-front"
     security_opt:
       - no-new-privileges:true
     cap_drop:

@@ -113,20 +113,20 @@ pub struct ProbeResult {
 // ---------------------------------------------------------------------
 
 /// Verify `docker --version` and `docker compose version` both exit 0.
-/// Returns a one-line install hint on failure.
+/// Returns an OS-aware install hint on failure — macOS preferentially
+/// recommends OrbStack (faster than Docker Desktop, no licensing seat);
+/// Linux points at the canonical Docker install page.
 pub fn check_docker() -> Result<()> {
     let v = Command::new("docker")
         .arg("--version")
         .output()
-        .with_context(|| {
-            "Docker CLI not found in PATH — install Docker 24+ from \
-         https://docs.docker.com/get-docker/"
-        })?;
+        .with_context(install_hint)?;
     if !v.status.success() {
         return Err(anyhow!(
-            "`docker --version` exited {}: {}",
+            "`docker --version` exited {}: {}\n{}",
             v.status.code().unwrap_or(-1),
-            String::from_utf8_lossy(&v.stderr).trim()
+            String::from_utf8_lossy(&v.stderr).trim(),
+            install_hint()
         ));
     }
     let c = Command::new("docker")
@@ -141,6 +141,46 @@ pub fn check_docker() -> Result<()> {
         ));
     }
     Ok(())
+}
+
+/// Detect whether OrbStack (https://orbstack.dev) appears installed on
+/// the host. macOS-only signal — checks `~/.orbstack/run/docker.sock`
+/// presence. Always returns false on other OSes.
+pub fn orbstack_available() -> bool {
+    if !cfg!(target_os = "macos") {
+        return false;
+    }
+    let Some(home) = home_dir() else {
+        return false;
+    };
+    home.join(".orbstack/run/docker.sock").exists()
+}
+
+/// One-line install hint, OS-aware. macOS recommends OrbStack first
+/// (lighter, faster, no licensing seat); falls back to Docker Desktop.
+/// Linux points at the canonical Docker get-docker.sh path.
+pub fn install_hint() -> String {
+    if cfg!(target_os = "macos") {
+        if orbstack_available() {
+            "Docker daemon not reachable. OrbStack appears installed — \
+             start it: `open -a OrbStack` or `orb start`."
+                .into()
+        } else {
+            "Docker not found. Recommended on macOS: OrbStack \
+             (https://orbstack.dev) — faster than Docker Desktop, no \
+             licensing seat. Install: `brew install orbstack`. \
+             Alternative: Docker Desktop \
+             (https://docs.docker.com/desktop/install/mac-install/)."
+                .into()
+        }
+    } else if cfg!(target_os = "linux") {
+        "Docker not found. Install: https://docs.docker.com/engine/install/ — \
+         add your user to the `docker` group: \
+         `sudo usermod -aG docker $USER && newgrp docker`."
+            .into()
+    } else {
+        "Docker not found. Install Docker Desktop: https://docs.docker.com/get-docker/".into()
+    }
 }
 
 // ---------------------------------------------------------------------
