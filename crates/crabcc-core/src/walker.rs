@@ -10,6 +10,20 @@ pub fn walk_repo(root: &Path) -> impl Iterator<Item = PathBuf> {
         .filter_map(|r| r.ok())
         .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
         .map(|e| e.into_path())
+        .filter(|p| !is_python_bytecode(p))
+}
+
+/// Skip Python bytecode (`*.pyc`, `*.pyo`) and anything inside a
+/// `__pycache__/` directory, regardless of the target repo's gitignore.
+/// These are generated artifacts; no symbol extractor should see them.
+fn is_python_bytecode(path: &Path) -> bool {
+    if matches!(
+        path.extension().and_then(|s| s.to_str()),
+        Some("pyc") | Some("pyo")
+    ) {
+        return true;
+    }
+    path.components().any(|c| c.as_os_str() == "__pycache__")
 }
 
 #[cfg(test)]
@@ -87,5 +101,33 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = rel_paths(dir.path());
         assert_eq!(paths.len(), 0);
+    }
+
+    #[test]
+    fn skips_python_bytecode_artifacts() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join("a.py"), "x = 1").unwrap();
+        fs::create_dir(root.join("__pycache__")).unwrap();
+        fs::write(root.join("__pycache__/a.cpython-314.pyc"), b"\x00\x00").unwrap();
+        fs::create_dir(root.join("sub")).unwrap();
+        fs::write(root.join("sub/b.py"), "y = 2").unwrap();
+        fs::create_dir(root.join("sub/__pycache__")).unwrap();
+        fs::write(root.join("sub/__pycache__/b.pyo"), b"\x00\x00").unwrap();
+        fs::write(root.join("loose.pyc"), b"\x00").unwrap();
+
+        let paths = rel_paths(root);
+        assert!(paths.contains("a.py"));
+        assert!(paths.contains("sub/b.py"));
+        for p in &paths {
+            assert!(
+                !p.contains("__pycache__"),
+                "__pycache__ leaked into walker: {p:?}"
+            );
+            assert!(
+                !p.ends_with(".pyc") && !p.ends_with(".pyo"),
+                "bytecode leaked: {p:?}"
+            );
+        }
     }
 }

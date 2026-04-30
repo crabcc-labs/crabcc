@@ -23,6 +23,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use reqwest::Url;
 use teloxide::{
     prelude::*,
     types::{InlineKeyboardButton, InlineKeyboardMarkup, ParseMode, WebAppInfo},
@@ -34,17 +35,70 @@ use tokio::process::Command as TokioCommand;
 // ── env config ────────────────────────────────────────────────────────────────
 
 struct Config {
-    serve_url: String,
-    public_url: Option<String>,
+    serve_url: Url,
+    public_url: Option<Url>,
+    /// Pre-built `{serve_url}/live`. Avoids runtime parse panics in handlers.
+    serve_live_url: Url,
+    /// Pre-built `{public_url}/live` if `public_url` is set.
+    public_live_url: Option<Url>,
+    /// Pre-built `{serve_url}/api/agents`.
+    agents_api_url: Url,
     allowed_ids: Vec<i64>,
 }
 
 impl Config {
     fn from_env() -> Self {
+        let default_serve =
+            Url::parse("http://localhost:8090/").expect("default serve URL is valid");
+
+        let serve_url = match std::env::var("CRABCC_SERVE_URL") {
+            Ok(raw) => Url::parse(&raw).unwrap_or_else(|e| {
+                tracing::warn!(
+                    env = "CRABCC_SERVE_URL",
+                    value = %raw,
+                    error = %e,
+                    "invalid serve URL, falling back to http://localhost:8090/"
+                );
+                default_serve.clone()
+            }),
+            Err(_) => default_serve.clone(),
+        };
+
+        let public_url = std::env::var("CRABCC_PUBLIC_URL")
+            .ok()
+            .and_then(|raw| match Url::parse(&raw) {
+                Ok(u) => Some(u),
+                Err(e) => {
+                    tracing::warn!(
+                        env = "CRABCC_PUBLIC_URL",
+                        value = %raw,
+                        error = %e,
+                        "invalid public URL, ignoring"
+                    );
+                    None
+                }
+            });
+
+        // join() resolves "live" / "api/agents" against the base URL using
+        // proper URL semantics (handles trailing slash). Cannot fail for an
+        // already-valid http(s) base.
+        let serve_live_url = serve_url
+            .join("live")
+            .expect("joining 'live' to a valid http(s) base URL is infallible");
+        let public_live_url = public_url.as_ref().map(|u| {
+            u.join("live")
+                .expect("joining 'live' to a valid http(s) base URL is infallible")
+        });
+        let agents_api_url = serve_url
+            .join("api/agents")
+            .expect("joining 'api/agents' to a valid http(s) base URL is infallible");
+
         Self {
-            serve_url: std::env::var("CRABCC_SERVE_URL")
-                .unwrap_or_else(|_| "http://localhost:8090".into()),
-            public_url: std::env::var("CRABCC_PUBLIC_URL").ok(),
+            serve_url,
+            public_url,
+            serve_live_url,
+            public_live_url,
+            agents_api_url,
             allowed_ids: std::env::var("ALLOWED_TELEGRAM_IDS")
                 .unwrap_or_default()
                 .split(',')
@@ -194,30 +248,27 @@ async fn handle(
             //   ngrok:        ngrok http 8090
             //   cloudflared:  cloudflared tunnel --url http://localhost:8090
             // Docs: https://core.telegram.org/bots/webapps
-            let keyboard = if let Some(ref public_url) = cfg.public_url {
-                let live_url = format!("{}/live", public_url);
+            let keyboard = if let Some(public_live) = cfg.public_live_url.clone() {
                 InlineKeyboardMarkup::new([
                     [InlineKeyboardButton::web_app(
                         "📊 Open live dashboard",
-                        WebAppInfo { url: live_url.parse().unwrap() },
+                        WebAppInfo { url: public_live },
                     )],
                     [InlineKeyboardButton::url(
                         "🔗 Direct link",
-                        format!("{}/live", cfg.serve_url).parse().unwrap(),
+                        cfg.serve_live_url.clone(),
                     )],
                 ])
             } else {
                 // No HTTPS — plain URL button + hint to set CRABCC_PUBLIC_URL
-                let live_url = format!("{}/live", cfg.serve_url);
                 InlineKeyboardMarkup::new([[InlineKeyboardButton::url(
                     "📊 Open live dashboard (local only)",
-                    live_url.parse().unwrap(),
+                    cfg.serve_live_url.clone(),
                 )]])
             };
 
             // Also send a text snapshot of current agent state
-            let agents_url = format!("{}/api/agents", cfg.serve_url);
-            let snapshot = match fetch_json(&agents_url).await {
+            let snapshot = match fetch_json(cfg.agents_api_url.as_str()).await {
                 Ok(v) => {
                     let active: Vec<_> = v["agents"]
                         .as_array()

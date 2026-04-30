@@ -7,6 +7,10 @@ description = "CrabCC_bot — Telegram interface for crabcc agents (issue #134)"
 # Standalone crate — not in workspace (nightly libc ICE workaround).
 # Build: cd apps/crabcc-telegram && cargo build --release
 
+# Mark this manifest as its own workspace root so cargo doesn't try to attach
+# it to the parent crabcc workspace at /Cargo.toml.
+[workspace]
+
 [[bin]]
 name = "crabcc-telegram"
 path = "src/main.rs"
