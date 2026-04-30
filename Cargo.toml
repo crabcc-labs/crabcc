@@ -71,7 +71,7 @@ tempfile = "3"
 # TOML-free.
 toml = "0.8"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 # Issue #90 — non-blocking writer keeps the hot path in O(ns); the
 # WorkerGuard returned by `non_blocking()` is dropped on shutdown to
 # flush pending events.

@@ -39,11 +39,20 @@
 //! release filter unless the user opts in.
 
 use std::io::{self, IsTerminal};
+use std::path::PathBuf;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 /// Holds the non-blocking writer's worker. Drop = flush.
+///
+/// Two writers are kept alive for the duration of the program: the
+/// stderr pretty-printer (always-on) and the per-repo JSON file
+/// appender (`<cwd>/.crabcc/telemetry.jsonl`, when the cwd is a
+/// crabcc-indexed repo). The dashboard at `/live` tails the file via
+/// `/api/telemetry`, so cross-process events from `crabcc graph
+/// cycles`, `crabcc agent --run`, etc. all show up in one place.
 pub struct TelemetryGuard {
     _writer: tracing_appender::non_blocking::WorkerGuard,
+    _file_writer: Option<tracing_appender::non_blocking::WorkerGuard>,
 }
 
 /// Initialize the workspace tracing pipeline. Idempotent in the sense
@@ -68,17 +77,84 @@ pub fn init() -> TelemetryGuard {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("crabcc_mcp=info,crabcc_core::graph=info,warn"));
 
+    // Stderr layer (with the user-driven RUST_LOG filter). The
+    // per-layer filter form lets the file layer (below) keep KPI
+    // events even when stderr is narrowed via RUST_LOG=warn.
     let fmt_layer = fmt::layer()
         .with_writer(writer)
         .with_target(true)
-        .with_ansi(io::stderr().is_terminal());
+        .with_ansi(io::stderr().is_terminal())
+        .with_filter(filter);
+
+    // Per-repo JSON file appender so the dashboard `/api/telemetry`
+    // route + cross-process invocations share one stream of events.
+    // Only set up when the cwd looks like a crabcc-indexed repo
+    // (i.e. `.crabcc/` exists or can be created); otherwise skipped
+    // so one-shot invocations from a non-repo dir don't pollute disk.
+    let (file_layer, file_guard) = match telemetry_file_writer() {
+        Some((_path, w, g)) => {
+            // The file layer needs its OWN filter so it captures KPI
+            // events even when the user has narrowed RUST_LOG for the
+            // terminal. Without this, `RUST_LOG=warn` would silence
+            // both stderr AND the file — defeating the dashboard's
+            // reason to exist.
+            let file_filter = EnvFilter::try_from_env("CRABCC_TELEMETRY_LOG")
+                .unwrap_or_else(|_| {
+                    EnvFilter::new(
+                        "crabcc_mcp=info,crabcc_core::graph=info,crabcc_cli::agent=info",
+                    )
+                });
+            let layer = fmt::layer()
+                .json()
+                .with_writer(w)
+                .with_target(true)
+                .with_current_span(false)
+                .with_span_list(false)
+                .with_filter(file_filter);
+            (Some(layer), Some(g))
+        }
+        None => (None, None),
+    };
 
     // `try_init` so a second call (e.g. from a test harness that
     // already wired tracing) doesn't panic.
     let _ = tracing_subscriber::registry()
-        .with(filter)
         .with(fmt_layer)
+        .with(file_layer)
         .try_init();
 
-    TelemetryGuard { _writer: guard }
+    TelemetryGuard {
+        _writer: guard,
+        _file_writer: file_guard,
+    }
+}
+
+/// Resolve `<cwd>/.crabcc/telemetry.jsonl`, create its parent if
+/// missing, and return (path, non-blocking writer, guard). Skipped
+/// when the cwd isn't writable (e.g. /tmp tests with a read-only
+/// fixture).
+fn telemetry_file_writer() -> Option<(
+    PathBuf,
+    tracing_appender::non_blocking::NonBlocking,
+    tracing_appender::non_blocking::WorkerGuard,
+)> {
+    // Honor an explicit override (useful for the dashboard runs in a
+    // different cwd than the repo it's serving).
+    let path = std::env::var_os("CRABCC_TELEMETRY_FILE")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|d| d.join(".crabcc").join("telemetry.jsonl"))
+        })?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok()?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .ok()?;
+    let (w, g) = tracing_appender::non_blocking(file);
+    Some((path, w, g))
 }
