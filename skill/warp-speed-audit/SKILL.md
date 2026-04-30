@@ -97,14 +97,91 @@ fan-out agents will not re-check these.
 
 ---
 
-## Phase 2 — Parallel fan-out (4 sub-agents in ONE message)
+## Phase 2 — Parallel fan-out (4 sub-agents via local Ollama)
 
-Send a single message containing **four `Agent` tool calls**
-(`subagent_type: "general-purpose"`). Each agent's prompt MUST be
-self-contained: gist URL, owned tip ids, exact commands with `$CRABCC_BIN` /
-`$REPOMIX_BIN`, the **False-positive policy** below, and the **JSON output
-contract** below. Cap each report to ≤ 300 words; cap each crabcc call's
-output with `--count` / `--files-only` / `--limit 30`.
+The orchestrator (this skill) runs all `crabcc` probes itself, then fans
+out the **analysis** of those probe outputs to four parallel local
+Ollama calls via `scripts/ollama-fanout.sh`. This replaces Claude
+Code's `Agent` tool fan-out — free, local, Metal-accelerated on Apple
+Silicon, no per-call token cost.
+
+### Backend setup (once per host)
+
+```bash
+task system-check          # verify RAM / disk / arch / daemon
+task ollama-bootstrap      # install Ollama + pull the OpenClaw model
+task ollama-smoke          # confirm fan-out script returns merged JSON
+```
+
+Default model: **`voytas26/openclaw-oss-20b-deterministic`** — gpt-oss
+20B fine-tune for OpenClaw autonomous agents ("strict tool schema
+adherence, concise outputs, stable behavior in automation workflows").
+Needs ~13 GB disk + ~16 GB RAM. Override via
+`CRABCC_OLLAMA_MODEL=…` (see `task ollama-bootstrap` for alternatives).
+
+### Step 1 — orchestrator runs probes
+
+For each cluster, the orchestrator runs the `crabcc` commands listed in
+the per-agent sections below and captures the JSON output. Each cluster
+gets its own `/tmp/warp-probe-<cluster>.json` artifact.
+
+### Step 2 — build prompts + fan out
+
+Build `/tmp/warp-prompts.json` as a JSON array of four
+`{name, prompt}` objects (one per cluster A/B/C/D). Each prompt
+contains:
+
+- The gist URL and the tip ids the cluster owns.
+- The cluster's probe JSON (paste raw — model parses it).
+- The **JSON output contract** below (verbatim).
+- The **False-positive policy** below (verbatim).
+- Hard rule: "respond with valid JSON only, no commentary".
+
+Then:
+
+```bash
+bash scripts/ollama-fanout.sh \
+  --prompts /tmp/warp-prompts.json \
+  --output  /tmp/warp-replies.json \
+  --json-mode \
+  --parallel 4
+```
+
+`--json-mode` sets Ollama's `format: "json"` so the response field is
+strict JSON. The script's `--parallel 4` matches the cluster count.
+Per-cluster timeout is 600 s (10 min); the 20B model usually returns
+in < 60 s on M-series.
+
+### Step 3 — parse + aggregate
+
+Read `/tmp/warp-replies.json`. Each entry has `{name, ok, response,
+…}`. The `response` field is the model's JSON string — `jq -r
+'.[] | .response | fromjson'` extracts findings. Aggregate per the JSON
+output contract.
+
+If any cluster has `ok: false`, surface the error in the report's
+"Skipped tips" section but continue with the other three.
+
+### Token discipline (still required)
+
+The Ollama backend is free, but model context windows aren't. Keep
+prompts lean:
+
+- Always run `--count` first; skip the cluster if zero hits.
+- Cap `crabcc` output with `--files-only` / `--limit 30`.
+- Don't paste whole files into the prompt; use `crabcc outline <file>`
+  line ranges and let the model decide if it wants more (it can't ask,
+  so be conservative).
+
+### Optional fallback — Claude Code Agent tool
+
+If `task system-check` returns FAIL or Ollama is unreachable, the skill
+MAY fall back to Claude Code's `Agent` tool with the same per-cluster
+prompts. Default to Ollama; only fall back when the user explicitly
+asks.
+
+Cap each report to ≤ 300 words; cap each crabcc call's output with
+`--count` / `--files-only` / `--limit 30`.
 
 #### JSON output contract (every sub-agent returns exactly this shape)
 
