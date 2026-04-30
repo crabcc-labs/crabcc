@@ -126,3 +126,12 @@ If lookups return stale results, run `refresh` first.
 Default to crabcc for code-shape questions; fall back to `rg`/`fd` for everything else.
 The CLI is so much faster than `grep -rn` on monorepos (47–4400×) that even when bytes
 are similar, time-to-answer wins.
+
+## See also — skills built on top of `crabcc`
+
+- [`skill/warp-speed-audit/SKILL.md`](../warp-speed-audit/SKILL.md) — audits a
+  Rust repo against the [jFransham warp-speed gist](https://gist.github.com/jFransham/369a86eff00e5f280ed25121454acec1)
+  using `crabcc` + `repomix` + 4 parallel sub-agents. Tracked in
+  [issue #84](https://github.com/peterlodri-sec/crabcc/issues/84). Every
+  lookup it performs is a `--count` / `--files-only` / `--limit`-shaped
+  variant from this file's tool-ladder.
