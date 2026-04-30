@@ -23,7 +23,25 @@ pub mod memory;
 /// Surfaced via `crabcc openapi` (CLI) and the `_openapi` MCP tool.
 pub const OPENAPI_YAML: &str = include_str!("../openapi.yaml");
 
+/// Env var that flips the dev surface on at runtime — useful when the
+/// caller can't pass `--dev` (e.g., when the MCP client is launched by
+/// a wrapper that doesn't forward CLI flags). Mirrors `--dev`.
+pub const DEV_ENV: &str = "CRABCC_MCP_DEV";
+
+/// True when the dev surface should be exposed — checked once per
+/// `serve_stdio` start so flipping the env mid-session has no effect.
+pub fn dev_mode_from_env() -> bool {
+    std::env::var(DEV_ENV).ok().as_deref() == Some("1")
+}
+
 pub fn serve_stdio(root: &Path) -> Result<()> {
+    serve_stdio_with(root, dev_mode_from_env())
+}
+
+/// Same as [`serve_stdio`] but takes the dev flag explicitly. Used by
+/// the CLI's `--dev` plumbing and by tests that want to exercise both
+/// surfaces independently of process env.
+pub fn serve_stdio_with(root: &Path, dev: bool) -> Result<()> {
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
     let mut reader = BufReader::new(stdin.lock());
@@ -50,7 +68,7 @@ pub fn serve_stdio(root: &Path) -> Result<()> {
                 continue;
             }
         };
-        let resp = handle(&req, root);
+        let resp = handle_with(&req, root, dev);
         writeln!(writer, "{resp}")?;
         writer.flush()?;
     }
@@ -58,6 +76,13 @@ pub fn serve_stdio(root: &Path) -> Result<()> {
 }
 
 pub fn handle(req: &Value, root: &Path) -> Value {
+    handle_with(req, root, dev_mode_from_env())
+}
+
+/// Same as [`handle`] but takes the dev flag explicitly. Existing
+/// integration tests stay on `handle()` (which reads the env var); new
+/// tests exercising the default vs. dev surfaces use this.
+pub fn handle_with(req: &Value, root: &Path, dev: bool) -> Value {
     let id = req.get("id").cloned();
     let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
 
@@ -78,9 +103,9 @@ pub fn handle(req: &Value, root: &Path) -> Value {
         "tools/list" => json!({
             "jsonrpc": "2.0",
             "id": id,
-            "result": { "tools": tools_def() }
+            "result": { "tools": tools_def_for(dev) }
         }),
-        "tools/call" => match dispatch_tool(req.get("params"), root) {
+        "tools/call" => match dispatch_tool_with(req.get("params"), root, dev) {
             Ok(content) => json!({
                 "jsonrpc": "2.0",
                 "id": id,
@@ -94,10 +119,27 @@ pub fn handle(req: &Value, root: &Path) -> Value {
     }
 }
 
+/// Default tool surface — equivalent to `tools_def_for(dev_mode_from_env())`.
+/// Existing callers (notably the OpenAPI drift test) keep working unchanged.
 pub fn tools_def() -> Vec<Value> {
+    tools_def_for(dev_mode_from_env())
+}
+
+/// Tool surface gated on the dev flag.
+///
+/// **Default (dev=false)** — agent-facing surface. Drops the meta
+/// tools (`_openapi`, `_health`) which are diagnostic-only and
+/// unhelpful for normal queries. Closes #59 for the meta surface.
+///
+/// **Dev (dev=true)** — full surface, identical to pre-#59 behaviour.
+/// Use when generating SDK bindings, when tooling needs the OpenAPI
+/// dump, or when a CI matrix wants to drift-check the full schema.
+pub fn tools_def_for(dev: bool) -> Vec<Value> {
     let mut all = tools_def_symbol();
     all.extend(memory::tools_def());
-    all.extend(tools_def_meta());
+    if dev {
+        all.extend(tools_def_meta());
+    }
     all
 }
 
@@ -345,7 +387,7 @@ fn dispatch_meta(tool: &str, _args: &Value) -> Result<Option<String>> {
     }
 }
 
-fn dispatch_tool(params: Option<&Value>, root: &Path) -> Result<String> {
+fn dispatch_tool_with(params: Option<&Value>, root: &Path, dev: bool) -> Result<String> {
     let p = params.ok_or_else(|| anyhow::anyhow!("missing params"))?;
     let tool = p
         .get("name")
@@ -355,9 +397,17 @@ fn dispatch_tool(params: Option<&Value>, root: &Path) -> Result<String> {
 
     // Meta tools are dispatched before any filesystem work: they describe
     // the server itself (OpenAPI surface, version, tool count) and must
-    // succeed even on a non-repo cwd.
-    if let Some(meta) = dispatch_meta(tool, &args)? {
-        return Ok(meta);
+    // succeed even on a non-repo cwd. Gated behind the dev surface — a
+    // default (non-dev) call that names a meta tool returns a normal
+    // "unknown tool" error, matching what `tools/list` advertised.
+    if dev {
+        if let Some(meta) = dispatch_meta(tool, &args)? {
+            return Ok(meta);
+        }
+    } else if matches!(tool, "_openapi" | "_health") {
+        return Err(anyhow::anyhow!(
+            "tool {tool:?} is dev-only; restart the MCP server with --dev or CRABCC_MCP_DEV=1"
+        ));
     }
 
     // Memory tools open .crabcc/memory.db directly via Palace; no symbol
@@ -1427,7 +1477,13 @@ mod tests {
         // OpenAPI 3.1 spec disallows `.` in operationId values, so
         // dotted MCP names get renamed; the spec's path retains the
         // dotted form.
-        tools_def()
+        //
+        // Use the dev surface (`tools_def_for(true)`) since the OpenAPI
+        // spec is the canonical *full* tool surface — dev-only tools
+        // (`_openapi`, `_health`) appear in the spec, and the drift
+        // test asserts both lists agree. Issue #59 hides those from
+        // the *default* surface but doesn't drop them from the spec.
+        tools_def_for(true)
             .iter()
             .filter_map(|t| t.get("name").and_then(|v| v.as_str()).map(String::from))
             .map(|n| n.replace('.', "_"))
@@ -1471,7 +1527,8 @@ mod tests {
             "method": "tools/call",
             "params": { "name": "_openapi", "arguments": {} }
         });
-        let resp = handle(&req, dir.path());
+        // Issue #59 — meta tools are dev-only. Use `handle_with(dev=true)`.
+        let resp = handle_with(&req, dir.path(), true);
         let content = resp["result"]["content"][0]["text"].as_str().unwrap();
         // Sanity — the embedded spec starts with `openapi: 3.1.0`.
         assert!(
@@ -1490,12 +1547,94 @@ mod tests {
             "method": "tools/call",
             "params": { "name": "_health", "arguments": {} }
         });
-        let resp = handle(&req, dir.path());
+        let resp = handle_with(&req, dir.path(), true);
         let content = resp["result"]["content"][0]["text"].as_str().unwrap();
         let parsed: Value = serde_json::from_str(content).unwrap();
         assert_eq!(parsed["status"], "ok");
         assert_eq!(parsed["server"], "crabcc-mcp");
         assert_eq!(parsed["protocol_version"], "2024-11-05");
         assert!(parsed["tool_count"].as_u64().unwrap() > 0);
+    }
+
+    // ---- issue #59 — dev gate -----------------------------------------------
+
+    #[test]
+    fn dev_gate_default_surface_hides_meta_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let req = json!({"jsonrpc": "2.0", "id": 50, "method": "tools/list"});
+        let resp = handle_with(&req, dir.path(), false);
+        let names: Vec<&str> = resp["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        assert!(
+            !names.contains(&"_openapi"),
+            "default surface must hide _openapi"
+        );
+        assert!(
+            !names.contains(&"_health"),
+            "default surface must hide _health"
+        );
+        // Sanity — the agent-facing tools must still be there.
+        for must_have in ["sym", "refs", "callers", "outline", "memory.search"] {
+            assert!(names.contains(&must_have), "missing: {must_have}");
+        }
+    }
+
+    #[test]
+    fn dev_gate_dev_surface_exposes_meta_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let req = json!({"jsonrpc": "2.0", "id": 51, "method": "tools/list"});
+        let resp = handle_with(&req, dir.path(), true);
+        let names: Vec<&str> = resp["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .collect();
+        assert!(
+            names.contains(&"_openapi"),
+            "dev surface must list _openapi"
+        );
+        assert!(names.contains(&"_health"), "dev surface must list _health");
+    }
+
+    #[test]
+    fn dev_gate_default_dispatch_rejects_meta_call() {
+        // tools/list hides _openapi, but a misbehaving caller might
+        // still invoke it. The dispatch path must refuse with a clear
+        // error pointing at `--dev` / `CRABCC_MCP_DEV`.
+        let dir = tempfile::tempdir().unwrap();
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 52,
+            "method": "tools/call",
+            "params": { "name": "_openapi", "arguments": {} }
+        });
+        let resp = handle_with(&req, dir.path(), false);
+        assert!(
+            resp.get("error").is_some(),
+            "expected JSON-RPC error, got: {resp}"
+        );
+        let msg = resp["error"]["message"].as_str().unwrap_or("");
+        assert!(
+            msg.contains("dev-only") || msg.contains("--dev"),
+            "error must hint at the dev flag: {msg}"
+        );
+    }
+
+    #[test]
+    fn dev_gate_default_surface_is_smaller() {
+        // Concrete count assertion — locks in the issue #59 win so a
+        // future PR can't accidentally reintroduce a meta tool to the
+        // default surface and shrink the savings.
+        let default_count = tools_def_for(false).len();
+        let dev_count = tools_def_for(true).len();
+        assert!(
+            default_count + 2 == dev_count,
+            "expected default = dev - 2 (drop _openapi + _health), got default={default_count}, dev={dev_count}"
+        );
     }
 }

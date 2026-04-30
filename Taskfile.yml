@@ -265,6 +265,42 @@ tasks:
       - task: smoke
       - task: memory-smoke
 
+  local-ci:
+    desc: Full local CI — mirrors GH workflow + prep-pr; pass/fail summary table
+    summary: |
+      Canonical "skip GitHub CI" runner. Runs fmt-check, clippy
+      (workspace + all-targets + all-features), tests (single-threaded
+      for tantivy determinism), doc-build with -D warnings, smoke E2E,
+      and memory-smoke. Per-step logs land under .summary/local-ci/.
+      Exit non-zero if any step failed.
+
+      Flags forwarded to scripts/local-ci.sh:
+        --release       also run `cargo build --release --workspace`
+        --quick         skip doc-build + smoke (fastest viable)
+        --strict        run tests in parallel (re-enables tantivy flake)
+        --no-clippy     skip clippy (debugging only)
+    cmds:
+      - 'scripts/local-ci.sh {{.CLI_ARGS}}'
+
+  local-ci-quick:
+    desc: Quick local CI — fmt + clippy + tests only, ~30s
+    summary: |
+      Faster local-ci variant for iterating. Drops doc-build, smoke,
+      and the release-build step. Use this between code changes;
+      use `task local-ci` before pushing.
+    cmds:
+      - 'scripts/local-ci.sh --quick'
+
+  local-ci-release:
+    desc: Local CI + release-build — mirrors what release.yml would do, locally
+    summary: |
+      Full local-ci PLUS `cargo build --release --workspace`. Use
+      this before cutting a tag when GitHub Actions is unavailable
+      (billing block, network-isolated env, etc.). Verifies the
+      release binary builds AND every gate passes.
+    cmds:
+      - 'scripts/local-ci.sh --release'
+
   release:
     desc: Cut a release tag (CI builds + UPX-compresses + uploads on push)
     summary: |
