@@ -182,6 +182,14 @@ pub fn probe_service(svc: &Service) -> ServiceStatus {
         .map(|d| d.as_secs())
         .unwrap_or(0);
 
+    tracing::debug!(
+        target: "crabcc_core::service_discovery",
+        service = %svc.name,
+        host = %svc.host,
+        port = svc.port,
+        "probe: start"
+    );
+
     let addr_str = format!("{}:{}", svc.host, svc.port);
     let result = addr_str
         .to_socket_addrs()
@@ -193,20 +201,42 @@ pub fn probe_service(svc: &Service) -> ServiceStatus {
 
     let latency_ms = start.elapsed().as_millis().min(u64::MAX as u128) as u64;
     match result {
-        Ok(_) => ServiceStatus {
-            service: svc.clone(),
-            reachable: true,
-            latency_ms,
-            error: None,
-            probed_at,
-        },
-        Err(e) => ServiceStatus {
-            service: svc.clone(),
-            reachable: false,
-            latency_ms,
-            error: Some(e),
-            probed_at,
-        },
+        Ok(_) => {
+            tracing::info!(
+                target: "crabcc_core::service_discovery",
+                service = %svc.name,
+                reachable = true,
+                latency_ms,
+                "probe: ok"
+            );
+            ServiceStatus {
+                service: svc.clone(),
+                reachable: true,
+                latency_ms,
+                error: None,
+                probed_at,
+            }
+        }
+        Err(e) => {
+            // Down state is normal during dev (the stack may not be up yet),
+            // so we log at `info` level instead of `warn`. Operators can lift
+            // this to `warn` via RUST_LOG=crabcc_core::service_discovery=warn.
+            tracing::info!(
+                target: "crabcc_core::service_discovery",
+                service = %svc.name,
+                reachable = false,
+                latency_ms,
+                error = %e,
+                "probe: down"
+            );
+            ServiceStatus {
+                service: svc.clone(),
+                reachable: false,
+                latency_ms,
+                error: Some(e),
+                probed_at,
+            }
+        }
     }
 }
 
@@ -214,12 +244,33 @@ pub fn probe_service(svc: &Service) -> ServiceStatus {
 /// service (currently sequential — fine for ~7 services).
 pub fn discover_all() -> DiscoveryReport {
     let start = Instant::now();
+    let compose_mode = is_compose_mode();
+
+    tracing::info!(
+        target: "crabcc_core::service_discovery",
+        compose_mode,
+        "discover_all: start"
+    );
+
     let services = known_services();
     let statuses: Vec<ServiceStatus> = services.iter().map(probe_service).collect();
+    let elapsed_ms = start.elapsed().as_millis().min(u64::MAX as u128) as u64;
+    let up = statuses.iter().filter(|s| s.reachable).count();
+
+    tracing::info!(
+        target: "crabcc_core::service_discovery",
+        services = statuses.len(),
+        up,
+        down = statuses.len() - up,
+        elapsed_ms,
+        compose_mode,
+        "discover_all: complete"
+    );
+
     DiscoveryReport {
         services: statuses,
-        compose_mode: is_compose_mode(),
-        elapsed_ms: start.elapsed().as_millis().min(u64::MAX as u128) as u64,
+        compose_mode,
+        elapsed_ms,
     }
 }
 
