@@ -877,6 +877,26 @@ tasks:
     cmds:
       - 'bash scripts/install-aliases.sh{{if eq .MODE "remove"}} --remove{{end}}{{if eq .MODE "print"}} --print{{end}}'
 
+  gpg-signing:
+    desc: Set up GPG-signed commits + tags for THIS repo (ed25519 key, repo-local git config)
+    summary: |
+      Generates a fresh ed25519 signing-only key (or reuses one matching
+      this repo's user.email), points repo-local user.signingkey at it,
+      enables commit.gpgsign + tag.gpgsign for THIS repo only (no global
+      pollution), and copies the armored public key to your clipboard so
+      you can paste it into https://github.com/settings/gpg/new.
+
+      Idempotent: re-running reuses an existing usable key; pass
+      MODE=rotate to force a new key (old key is left in your keyring).
+      MODE=print dry-runs. MODE=uninstall removes the repo-local config.
+
+      Identity defaults to repo's `git config user.{name,email}`; override
+      with GIT_USER_NAME and GIT_USER_EMAIL env vars.
+    vars:
+      MODE: '{{.MODE | default "install"}}'
+    cmds:
+      - 'bash scripts/setup-gpg-signing.sh{{if eq .MODE "rotate"}} --rotate{{end}}{{if eq .MODE "print"}} --print{{end}}{{if eq .MODE "uninstall"}} --uninstall{{end}}'
+
   local-ci:
     desc: Local CI snapshot — fmt-check + lint + test, output to .summary/local-ci.txt
     summary: |
