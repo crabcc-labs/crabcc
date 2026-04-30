@@ -11,6 +11,7 @@
 #   task version            # print the workspace version (Cargo.toml truth)
 #
 # Workflow extras (one-off / situational):
+#   task viz                # localhost call-graph viewer (issue #64)
 #   task bench              # raw-CLI A/B benchmark + visualization
 #   task bench-compress     # FSST off-vs-on gate bench
 #   task release            # cut a tag; CI workflow handles the rest
@@ -164,6 +165,36 @@ tasks:
     cmds:
       - sudo install -m 0644 man/crabcc.1 /usr/local/share/man/man1/crabcc.1
       - 'echo "test with: man crabcc"'
+
+  viz:
+    desc: |
+      Start the localhost call-graph viewer (issue #64). Builds release,
+      makes sure the index + graph sidecar exist, then opens the browser.
+      Pass PORT=NNNN to override the default 7878. Pass NO_OPEN=1 to skip
+      the auto-browser-open (useful over SSH or in test loops).
+    deps: [build]
+    vars:
+      PORT: '{{.PORT | default "7878"}}'
+      NO_OPEN: '{{.NO_OPEN | default ""}}'
+    cmds:
+      - |
+        set -e
+        if [ ! -f .crabcc/index.db ]; then
+          echo "no .crabcc/index.db — building one now…" >&2
+          ./target/release/crabcc index >/dev/null
+        fi
+        if [ ! -f .crabcc/graph.json ]; then
+          echo "no .crabcc/graph.json — building call-graph sidecar…" >&2
+          ./target/release/crabcc graph build >/dev/null
+        fi
+        ARGS="--port {{.PORT}}"
+        if [ -n "{{.NO_OPEN}}" ]; then ARGS="$ARGS --no-open"; fi
+        exec ./target/release/crabcc serve $ARGS
+
+  viz-test:
+    desc: Run the crabcc-viz smoke + unit tests (no browser, no port collision)
+    cmds:
+      - "{{.CARGO}} test -p crabcc-viz"
 
   smoke:
     desc: Index a tiny fixture + assert sym/callers/refs return data
