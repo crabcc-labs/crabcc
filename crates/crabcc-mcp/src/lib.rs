@@ -56,28 +56,54 @@ pub fn serve_stdio_with(root: &Path, dev: bool) -> Result<()> {
 /// `Cursor<Vec<u8>>` of newline-delimited JSON in and capture the
 /// response stream on a `Vec<u8>` writer — no `tempfile`, no pipe,
 /// no subprocess.
+///
+/// # Hot-path discipline
+///
+/// Three changes vs the obvious `read_line` / `writeln!("{}")` form:
+///
+/// 1. **`read_until(b'\n')` + `from_slice`** — skips the UTF-8
+///    validation pass `read_line` does on every byte. serde_json's
+///    parser does its own UTF-8 check on the strings it cares about,
+///    so the upfront pass is duplicate work.
+/// 2. **`to_writer` + `write_all(b"\n")`** — replaces
+///    `writeln!(writer, "{value}")`, which goes through `Display` →
+///    `Value::to_string()` and allocates an intermediate `String`
+///    per response. The new form serialises directly into the
+///    writer's buffer.
+/// 3. **One reusable `Vec<u8>`** — `clear()` keeps the capacity, so
+///    subsequent requests don't re-allocate after the first big-ish
+///    one. Pre-sized 4 KiB to cover the common case (most MCP
+///    requests fit in one TCP segment).
+///
+/// Net effect: zero `String` allocations on the steady-state path
+/// (notifications + responses both); one `Vec<u8>` grow at most.
 pub fn serve_io<R, W>(mut reader: R, mut writer: W, root: &Path, dev: bool) -> Result<()>
 where
     R: BufRead,
     W: Write,
 {
-    let mut line = String::new();
+    let mut buf: Vec<u8> = Vec::with_capacity(4096);
     loop {
-        line.clear();
-        match reader.read_line(&mut line) {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf) {
             Ok(0) => break, // EOF
             Ok(_) => {}
             Err(e) => return Err(e.into()),
         }
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
+        // Skip empty / whitespace-only frames without going through
+        // String::trim — bytes-only check, no UTF-8 validation.
+        if buf.iter().all(|b| b.is_ascii_whitespace()) {
             continue;
         }
-        let req: Value = match serde_json::from_str(trimmed) {
+        // serde_json::from_slice tolerates leading whitespace per RFC
+        // 7159, so the bytes-only frame check above is the only
+        // pre-parse work needed.
+        let req: Value = match serde_json::from_slice(&buf) {
             Ok(v) => v,
             Err(e) => {
                 let resp = error_response(None, -32700, &format!("parse error: {e}"));
-                writeln!(writer, "{resp}")?;
+                serde_json::to_writer(&mut writer, &resp)?;
+                writer.write_all(b"\n")?;
                 writer.flush()?;
                 continue;
             }
@@ -88,7 +114,8 @@ where
         if resp.is_null() {
             continue;
         }
-        writeln!(writer, "{resp}")?;
+        serde_json::to_writer(&mut writer, &resp)?;
+        writer.write_all(b"\n")?;
         writer.flush()?;
     }
     Ok(())
@@ -2036,6 +2063,32 @@ mod tests {
         assert_eq!(resps.len(), 2, "notification must not produce a frame");
         assert_eq!(resps[0]["id"], 1);
         assert_eq!(resps[1]["id"], 2);
+    }
+
+    #[test]
+    fn serve_io_handles_non_utf8_bytes_gracefully() {
+        // The optimization that swapped read_line→read_until means we no
+        // longer validate UTF-8 upfront — invalid bytes reach serde_json
+        // and surface as a parse error, not a panic / silent drop.
+        // Spec-correct: don't crash on malformed input.
+        let mut input = Vec::new();
+        input.extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"id\":1,");
+        input.push(0xFF); // lone continuation byte → invalid UTF-8
+        input.extend_from_slice(b"\"method\":\"initialize\"}\n");
+        input.extend_from_slice(
+            br#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
+        );
+        input.push(b'\n');
+        let mut writer: Vec<u8> = Vec::new();
+        super::serve_io(Cursor::new(input), &mut writer, &std::env::temp_dir(), false).unwrap();
+        let frames: Vec<Value> = writer
+            .split(|b| *b == b'\n')
+            .filter(|s| !s.is_empty())
+            .filter_map(|s| serde_json::from_slice(s).ok())
+            .collect();
+        assert_eq!(frames.len(), 2, "loop must keep going past invalid UTF-8");
+        assert_eq!(frames[0]["error"]["code"], -32700);
+        assert_eq!(frames[1]["id"], 2);
     }
 
     #[test]
