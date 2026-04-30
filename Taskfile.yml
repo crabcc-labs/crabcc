@@ -158,7 +158,9 @@ tasks:
       - mkdir -p ~/.claude/skills/crabcc ~/.claude/commands
       - ln -sf "$(pwd)/skill/crabcc/SKILL.md" ~/.claude/skills/crabcc/SKILL.md
       - ln -sf "$(pwd)/commands/crabcc-init.md" ~/.claude/commands/crabcc-init.md
-      - 'echo "skill + command symlinked. Add the MCP server to ~/.claude.json manually if needed."'
+      - ln -sf "$(pwd)/commands/crabcc-upgrade.md" ~/.claude/commands/crabcc-upgrade.md
+      - ln -sf "$(pwd)/commands/crabcc-install.md" ~/.claude/commands/crabcc-install.md
+      - 'echo "skill + 3 commands symlinked. Add the MCP server to ~/.claude.json manually if needed."'
 
   bench:
     desc: Run the raw-CLI A/B benchmark against REPO_FIXTURE
