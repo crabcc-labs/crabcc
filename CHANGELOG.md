@@ -6,6 +6,26 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+### Added — `install.sh` upgrade-on-rerun (closes [#24](https://github.com/peterlodri-sec/crabcc/issues/24))
+- Re-running `install.sh` is now a fast no-op when the local install is
+  already current. The script probes for an existing `crabcc` at
+  `$INSTALL_DIR/$BIN_NAME` (or anywhere on PATH), reads the local
+  version via `crabcc --version`, then resolves the remote version
+  with three fallbacks: pinned `--version=` arg → `gh release list -L 1`
+  → `[workspace.package].version` parsed from `Cargo.toml` on the
+  default branch.
+- When `local == remote` the build step is skipped; completions and
+  Claude symlinks are still refreshed (idempotent + cheap, useful when
+  switching shells).
+- New flags: `--force` (rebuild regardless), `--check` (report delta
+  and exit; no writes).
+- New Taskfile target `task install-upgrade-smoke` — runs install.sh
+  three times (build → `--check` → no-op rerun) and asserts the no-op
+  message appears on the second run. Output captured at
+  `.summary/install-upgrade-smoke.txt`. Manual sweep target for the
+  macOS arm64 + linux x86_64 deliverable; idempotent on no-op.
+
+
 ### Added — `simd-cosine` feature gate (issue #40)
 - New `simd-cosine` cargo feature on `crabcc-memory` (default OFF;
   nightly-only). When on, the brute-force cosine helper at

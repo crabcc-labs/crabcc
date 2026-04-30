@@ -23,11 +23,25 @@
 #   6. Print a green `crabcc go` hint so the user lands on the new
 #      one-shot bootstrap immediately.
 #
+# Upgrade semantics (issue #24):
+#   - On every invocation, the script first probes for an existing
+#     `crabcc` binary (at $INSTALL_DIR/$BIN_NAME or anywhere on PATH).
+#   - If found, it compares the installed version against the latest
+#     release tag on $CRABCC_REPO (`gh release list -L 1`), falling
+#     back to `[workspace.package].version` from the default branch's
+#     Cargo.toml when no releases are published.
+#   - If both versions match → no-op build skip. Completions + Claude
+#     symlinks are still refreshed (cheap; idempotent).
+#   - If the installed version is older → cargo install --force.
+#   - Pass `--force` to skip the short-circuit and rebuild regardless.
+#
 # Flags:
-#   --no-completions     skip step 4
-#   --no-claude          skip step 5
+#   --no-completions     skip step 4 (shell completions)
+#   --no-claude          skip step 5 (~/.claude/ symlinks)
 #   --version=v2.3.0     install a specific tag (default: main HEAD)
 #   --bin-dir=/path      override $CRABCC_INSTALL_DIR
+#   --force              rebuild + reinstall even if local == latest
+#   --check              report install-vs-latest delta and exit (no writes)
 #   --help, -h           print this header
 #
 # Environment:
@@ -41,6 +55,11 @@
 #
 # ---------------------------------------------------------------------------
 # CHANGELOG
+#   v2.1.0 (2026-04-30) — upgrade-on-rerun semantics (closes #24). Detects
+#                          an existing `crabcc` install, compares versions
+#                          against the latest GitHub release tag, and
+#                          short-circuits the build when nothing changed.
+#                          Adds --force, --check.
 #   v2.0.0 (2026-04-30) — rewrite. Cargo-first install (was prebuilt-only),
 #                          auto-detect shell + claude, wire completions
 #                          and slash-command symlinks in one pass. Closes
@@ -69,14 +88,18 @@ INSTALL_COMPLETIONS=1
 INSTALL_CLAUDE=1
 VERSION_ARG=""
 BIN_DIR_OVERRIDE=""
+FORCE=0
+CHECK_ONLY=0
 for arg in "$@"; do
     case "$arg" in
         --no-completions) INSTALL_COMPLETIONS=0 ;;
         --no-claude)      INSTALL_CLAUDE=0 ;;
         --version=*)      VERSION_ARG="${arg#*=}" ;;
         --bin-dir=*)      BIN_DIR_OVERRIDE="${arg#*=}" ;;
+        --force)          FORCE=1 ;;
+        --check)          CHECK_ONLY=1 ;;
         --help|-h)
-            sed -n '2,50p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,60p' "$0" | sed 's/^# \{0,1\}//'
             exit 0
             ;;
         *) die "unknown arg: $arg (try --help)" ;;
@@ -113,26 +136,109 @@ if ! gh auth status >/dev/null 2>&1; then
     gh auth login || die "gh auth login failed"
 fi
 
+# --- upgrade detection ----------------------------------------------------
+# Probe for an existing install. If present and matching the latest
+# remote version, short-circuit the build step so re-running install.sh
+# becomes a fast no-op (issue #24). Refreshes completions + claude
+# symlinks regardless — those are idempotent and cheap.
+existing_path=""
+if [ -x "$INSTALL_DIR/$BIN_NAME" ]; then
+    existing_path="$INSTALL_DIR/$BIN_NAME"
+elif command -v "$BIN_NAME" >/dev/null 2>&1; then
+    existing_path="$(command -v "$BIN_NAME")"
+fi
+
+local_ver=""
+if [ -n "$existing_path" ]; then
+    # `crabcc --version` prints `crabcc <semver>`; isolate the semver field.
+    local_ver="$("$existing_path" --version 2>/dev/null | awk '{print $2}' | head -1)"
+    [ -n "$local_ver" ] && say "detected existing install: $existing_path (v$local_ver)"
+fi
+
+remote_ver=""
+# Strategy 1 — pinned tag: VERSION_ARG was passed (`--version=v2.3.0`),
+# treat it as the canonical target without remote lookup.
+if [ -n "$VERSION_ARG" ]; then
+    remote_ver="${VERSION_ARG#v}"
+elif [ -n "$existing_path" ] || [ "$CHECK_ONLY" = "1" ]; then
+    # Only spend the gh round-trip when we have an installed binary to
+    # compare against (or the user explicitly asked via --check). Cold
+    # installs don't need the version probe — they always build.
+    say "checking $REPO for the latest release …"
+    # Strategy 2 — latest release tag.
+    remote_ver="$(
+        gh release list --repo "$REPO" --limit 1 --json tagName --jq '.[0].tagName // ""' 2>/dev/null \
+        | sed 's/^v//'
+    )"
+    # Strategy 3 — fall back to Cargo.toml on the default branch when no
+    # releases have been cut yet. We grep the [workspace.package] block
+    # for the version line; jq isn't required.
+    if [ -z "$remote_ver" ]; then
+        remote_ver="$(
+            gh api -H "Accept: application/vnd.github.v3.raw" \
+                "/repos/$REPO/contents/Cargo.toml" 2>/dev/null \
+            | awk '
+                /^\[workspace\.package\]/ { in_section = 1; next }
+                /^\[/ { in_section = 0 }
+                in_section && /^[[:space:]]*version[[:space:]]*=/ {
+                    match($0, /"[^"]+"/)
+                    if (RLENGTH > 0) {
+                        print substr($0, RSTART + 1, RLENGTH - 2)
+                        exit
+                    }
+                }
+            '
+        )"
+    fi
+fi
+[ -n "$remote_ver" ] && say "remote version: v$remote_ver"
+
+# --check just reports the delta and exits.
+if [ "$CHECK_ONLY" = "1" ]; then
+    if [ -z "$existing_path" ]; then
+        say "no local install — would do a fresh \`cargo install\`."
+    elif [ -z "$remote_ver" ]; then
+        warn "could not resolve remote version — would attempt a rebuild."
+    elif [ "$local_ver" = "$remote_ver" ]; then
+        say "${BOLD}${GREEN}up to date${RESET}: local v$local_ver == remote v$remote_ver"
+    else
+        say "${BOLD}${YELLOW}update available${RESET}: local v$local_ver → remote v$remote_ver"
+    fi
+    exit 0
+fi
+
+# Decide whether to skip the (expensive) build step.
+SKIP_BUILD=0
+if [ "$FORCE" != "1" ] && [ -n "$local_ver" ] && [ -n "$remote_ver" ] \
+        && [ "$local_ver" = "$remote_ver" ]; then
+    say "${BOLD}${GREEN}already at v$local_ver${RESET} (no-op build skip; pass --force to rebuild)"
+    SKIP_BUILD=1
+fi
+
 # --- step 1: clone + cargo install ----------------------------------------
 TMP="$(mktemp -d -t crabcc-install.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 say "cloning $REPO …"
 gh repo clone "$REPO" "$TMP/src" -- --quiet --depth 1 ${VERSION_ARG:+--branch "$VERSION_ARG"}
 
-say "building (cargo install — this is the slow step, ~2–5 min on a cold cache)"
-mkdir -p "$INSTALL_DIR"
-(
-    cd "$TMP/src"
-    if [ "$INSTALL_DIR" = "$HOME/.cargo/bin" ]; then
-        cargo install --path crates/crabcc-cli --locked --force
-    else
-        cargo build --release -p crabcc-cli --locked
-        install -m 0755 "target/release/$BIN_NAME" "$INSTALL_DIR/$BIN_NAME"
-    fi
-)
+if [ "$SKIP_BUILD" = "1" ]; then
+    say "skipping build — local install is current."
+else
+    say "building (cargo install — this is the slow step, ~2–5 min on a cold cache)"
+    mkdir -p "$INSTALL_DIR"
+    (
+        cd "$TMP/src"
+        if [ "$INSTALL_DIR" = "$HOME/.cargo/bin" ]; then
+            cargo install --path crates/crabcc-cli --locked --force
+        else
+            cargo build --release -p crabcc-cli --locked
+            install -m 0755 "target/release/$BIN_NAME" "$INSTALL_DIR/$BIN_NAME"
+        fi
+    )
 
-if ! command -v "$BIN_NAME" >/dev/null 2>&1 && [ ! -x "$INSTALL_DIR/$BIN_NAME" ]; then
-    die "build appeared to succeed but $BIN_NAME is missing at $INSTALL_DIR/"
+    if ! command -v "$BIN_NAME" >/dev/null 2>&1 && [ ! -x "$INSTALL_DIR/$BIN_NAME" ]; then
+        die "build appeared to succeed but $BIN_NAME is missing at $INSTALL_DIR/"
+    fi
 fi
 
 # --- step 2: shell completions --------------------------------------------
