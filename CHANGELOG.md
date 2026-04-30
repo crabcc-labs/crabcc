@@ -6,6 +6,126 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+## [2.9.0] — 2026-04-30
+
+Minor bump capturing the Ollama auth-stack work (issue
+[#105](https://github.com/peterlodri-sec/crabcc/issues/105)), the
+read-only `crabcc doctor` diagnostic surface (issue
+[#107](https://github.com/peterlodri-sec/crabcc/issues/107) Phase 5a),
+and BullMQ-backed jobs scaffolding (issue
+[#109](https://github.com/peterlodri-sec/crabcc/issues/109)). The
+user-facing shape: a one-liner `crabcc install-claude
+--with-ollama-stack` takes a fresh checkout to a fully-up local
+Ollama auth stack with proper Bearer-token auth; `crabcc agent
+--backend ollama` routes through it; `crabcc doctor` audits the whole
+environment.
+
+### Added — Ollama auth Compose stack (issue #105)
+- `install/ollama-stack/` recipe — Caddy reverse proxy enforcing
+  `Authorization: Bearer ${OLLAMA_API_KEY}` on `/api` + `/v1`, LiteLLM
+  OpenAI-compatible front, Ollama internal-only. `init-keys.sh`
+  bootstrap; OCI Image-Spec annotations + `com.crabcc.role` /
+  `com.crabcc.issue` labels.
+- Docker hygiene: `shm_size: 2gb` on `ollama`, `init: true`,
+  `cap_drop: ALL`, `read_only: true` on Caddy, `tmpfs /tmp`,
+  per-service memory caps, log rotation.
+- `install/init-shared-network.sh` — idempotent bootstrap of the
+  cross-stack `crabcc-shared` external bridge network.
+- `install/Dockerfile.crabcc` — multi-stage with BuildKit cache
+  mounts.
+- `install/dev/docker-compose.yml` — local-dev convenience stack.
+- `install/ollama-stack/OLLAMA-AUTH.md` + `MANUAL_TEST_CHECKLIST.md`
+  (12-section e2e gate).
+
+### Added — `crabcc ollama-stack` operator subcommand (issue #105 Phase 3)
+- `up`/`down`/`status`/`logs`/`pull` with JSON output for
+  machine-consumer surfaces.
+- `ccc setup --ollama-{up,down,down-volumes,status,pull}` shortcuts.
+
+### Added — `crabcc agent --backend ollama` (issue #105 Phase 4)
+- `--backend <claude|ollama>` (default `claude`). Ollama path runs
+  `ensure_up()` before spawn; subprocess inherits `OLLAMA_BASE_URL` +
+  `OLLAMA_API_KEY`. Default model `ollama/qwen2.5-coder` (code-tuned
+  per `litellm.config.yaml`'s `model_list`). `meta.json` records the
+  backend.
+
+### Added — `crabcc doctor` diagnostic surface (issue #107 Phase 5a)
+- `crabcc doctor [docker|stack|keys|agent|jobs] [--text]` —
+  read-only environment audit. JSON-default for menubar/extension;
+  `--text` for humans. No subcommand = aggregated `DoctorReport`
+  with `overall: ok|warn|fail` (exits 1 on Fail).
+- 14 unit tests across the surface; OS-aware install hints
+  (OrbStack-preferred on macOS).
+
+### Added — `install-claude --with-ollama-stack` (issue #105 Phase 5b)
+- Materializes the embedded Compose recipe (7 files, ~30 KB via
+  `include_bytes!`) to `~/.crabcc/ollama-stack/`, runs
+  `docker compose up -d --wait`, reports services healthy.
+  Idempotent.
+- `--print-stack-instructions` counterpart to `--print-hooks`.
+
+### Added — `crabcc upgrade --with-stack` (issue #105 Phase 5b)
+- Refreshes the bundled stack alongside the version check.
+  `--check --with-stack` for read-only dry-run; `--apply
+  --with-stack` does `compose pull && up -d --wait`.
+
+### Added — Single-file YAML config (issue #105)
+- `~/.crabcc/._config.internal` (overridable via `$CRABCC_CONFIG`).
+  Default-on (no feature flag). `Config { agent, ollama, jobs, mcp }`
+  with sensible defaults; `deny_unknown_fields` everywhere so typos +
+  version drift surface at parse. Atomic `save()` (mode 0600 on Unix,
+  banner comment auto-prepended). 8 unit tests.
+
+### Added — BullMQ-backed jobs scaffolding (issue #109)
+- `crabcc-core::jobs` gated behind the `jobs` cargo feature. `tokio`
+  + `redis` enter the workspace through this feature only — not
+  workspace-wide (per issue #112's methodology).
+- `submit_async` encodes `JobSpec` in BullMQ's on-disk Redis layout:
+  INCR `bull:<queue>:id`, MULTI/EXEC HSET + LPUSH/ZADD onto
+  `bull:<queue>:wait` (or `:delayed`). Two-phase atomicity matches
+  BullMQ's own Lua scripts.
+- `status_async` walks `wait` / `active` / `delayed` / `completed` /
+  `failed` keys to look up a job's current state. Returns
+  `JobStatus::Unknown` when not found.
+- `apps/jobs-worker/` — Bun + TypeScript BullMQ Worker, one Worker
+  per queue (`agent:run` / `agent:flow` / `repo:index` /
+  `repo:reindex`). Today's handler is an echo passthrough; real
+  handlers in follow-up. Multi-stage Dockerfile + dev-compose
+  service under the `jobs` profile.
+
+### Added — Performance plumbing (issue #112)
+- `task pgo-release` — cargo-pgo three-pass with host-triple-detected
+  training corpus. Typical 10–20% gain on CLI hot paths.
+- `task build-native` — `RUSTFLAGS=-C target-cpu=native` opt-in
+  (personal/dev only — produces non-portable binaries).
+- `[profile.release-native]` Cargo profile.
+
+### Added — Devx
+- `scripts/setup-gpg-signing.sh` + `task gpg-signing` — repo-local
+  ed25519 commit-signing setup. Idempotent: `--rotate` / `--print` /
+  `--uninstall`. Public key auto-copied to clipboard.
+- `task images-build` / `images-build-nocache` / `images-inspect` —
+  Docker image pipeline with OCI labels (git revision + ISO-8601
+  timestamp + workspace version).
+
+### Changed — Error hints route to `crabcc doctor`
+- `agent --backend ollama` failure paths now suggest
+  `crabcc doctor docker` / `crabcc doctor stack` for diagnosis.
+- `install-claude --with-ollama-stack` and `upgrade --with-stack`
+  failures suggest `crabcc doctor` / `crabcc doctor stack`.
+
+### Out of scope (next PRs)
+- `apps/jobs-worker` real per-queue handlers (today's echo proves the
+  wire round-trip).
+- Repeatable jobs + flows in `crabcc-core::jobs`.
+- macOS menubar telemetry consumer for jobs-worker logs.
+- macOS menubar app + Chrome extension UI work (issue #107 Parts
+  A/B).
+- BullMQ wire-protocol priority-queue ZADD (today priority is
+  encoded in the hash; worker still respects it).
+- SIMD intrinsics for hot loops (gated on flamegraph evidence per
+  issue #112's methodology).
+
 ## [2.8.0] — 2026-04-30
 
 Minor bump capturing the macOS installer surface (issue [#107](https://github.com/peterlodri-sec/crabcc/issues/107))

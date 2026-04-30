@@ -203,6 +203,52 @@ services:
       - dev
       - crabcc-shared
 
+  # Issue #109 — BullMQ worker. Same `--profile jobs` gate as redis;
+  # joins the same crabcc-shared network so the Rust submitter (in the
+  # crabcc service) can drop jobs onto Redis and the worker dequeues
+  # them. Today's handler is an echo passthrough; real per-queue logic
+  # lands per issue #109's AC.
+  jobs-worker:
+    build:
+      context: ../../apps/jobs-worker
+      dockerfile: Dockerfile
+      labels:
+        <<: *labels
+        com.crabcc.role: "jobs-worker"
+        com.crabcc.issue: "#109"
+    image: crabcc-jobs-worker:local
+    profiles:
+      - jobs
+    restart: unless-stopped
+    init: true
+    labels:
+      <<: *labels
+      com.crabcc.role: "jobs-worker"
+      com.crabcc.issue: "#109"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      REDIS_URL: redis://redis:6379
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'bun.*jobs-worker' >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 512mb
+    logging: *logging
+    networks:
+      - dev
+      - crabcc-shared
+
 volumes:
   crabcc_cache:
   bun_install_cache:

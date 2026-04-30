@@ -265,6 +265,98 @@ fn build_bullmq_opts(spec: &JobSpec) -> serde_json::Value {
     serde_json::Value::Object(m)
 }
 
+/// Look up a job's current state by walking BullMQ's per-queue keys.
+/// Returns [`JobStatus::Unknown`] when the id isn't found in any
+/// known location — covers both "never existed" and "completed and
+/// pruned by BullMQ's retention policy".
+///
+/// Walk order matches BullMQ's natural lifecycle: ` wait` → ` active`
+/// → ` delayed` → ` completed` → ` failed`. Stops at the first hit.
+pub async fn status_async(opts: &Options, queue: &str, job_id: &JobId) -> Result<JobStatus> {
+    let cid = correlation(opts);
+    let client = redis::Client::open(opts.redis_url.as_str())
+        .with_context(|| format!("open redis client at {}", opts.redis_url))?;
+    let mut conn = client
+        .get_multiplexed_async_connection()
+        .await
+        .context("connect to redis")?;
+
+    // Lists — LPOS returns the index (0-based) when the element is in
+    // the list, nil otherwise. We don't care about position; presence
+    // is the signal.
+    for (suffix, mapped) in [("wait", JobStatus::Queued), ("active", JobStatus::Active)] {
+        let key = format!("bull:{queue}:{suffix}");
+        let pos: Option<i64> = redis::cmd("LPOS")
+            .arg(&key)
+            .arg(job_id)
+            .query_async(&mut conn)
+            .await
+            .ok()
+            .flatten();
+        if pos.is_some() {
+            tracing::debug!(
+                target: TRACE_TARGET,
+                event = "jobs.status",
+                request_id = %cid,
+                job_id = %job_id,
+                queue = %queue,
+                status = ?mapped,
+                "jobs status (list match)"
+            );
+            return Ok(mapped);
+        }
+    }
+
+    // Sorted sets — ZSCORE returns the score when present.
+    for (suffix, mapped) in [
+        ("delayed", JobStatus::Delayed),
+        ("completed", JobStatus::Completed),
+        ("failed", JobStatus::Failed),
+    ] {
+        let key = format!("bull:{queue}:{suffix}");
+        let score: Option<f64> = redis::cmd("ZSCORE")
+            .arg(&key)
+            .arg(job_id)
+            .query_async(&mut conn)
+            .await
+            .ok()
+            .flatten();
+        if score.is_some() {
+            tracing::debug!(
+                target: TRACE_TARGET,
+                event = "jobs.status",
+                request_id = %cid,
+                job_id = %job_id,
+                queue = %queue,
+                status = ?mapped,
+                "jobs status (zset match)"
+            );
+            return Ok(mapped);
+        }
+    }
+
+    tracing::debug!(
+        target: TRACE_TARGET,
+        event = "jobs.status",
+        request_id = %cid,
+        job_id = %job_id,
+        queue = %queue,
+        status = "unknown",
+        "jobs status (no match)"
+    );
+    Ok(JobStatus::Unknown)
+}
+
+/// Sync wrapper around [`status_async`]. Same caveats as [`submit`]:
+/// don't call from inside an existing tokio runtime.
+pub fn status(opts: &Options, queue: &str, job_id: &JobId) -> Result<JobStatus> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("build tokio runtime for jobs::status")?;
+    rt.block_on(status_async(opts, queue, job_id))
+}
+
 /// Probe Redis reachability. Useful for `crabcc doctor jobs` (issue
 /// #107 + #109). Returns `Ok(())` only when PING returns PONG.
 pub async fn ping_async(opts: &Options) -> Result<()> {
