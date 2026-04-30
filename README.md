@@ -137,9 +137,34 @@ Then in Claude Code: `/reload-plugins`.
 | Misremembered name?                  | `crabcc fuzzy Asseessment`  (Levenshtein dist 2)     |
 | Names starting with…                 | `crabcc prefix getUser`                              |
 | How many tokens have I saved?        | `crabcc track`                                       |
+| Store a free-form note for this repo | `crabcc memory remember "doc:1" "<body>"`            |
+| Search past notes                    | `crabcc memory search "<query>"`                     |
+| List drawers in this repo            | `crabcc memory list --limit 20`                      |
 
 Full examples: [`examples/CLI.md`](./examples/CLI.md). MCP wire-level walkthrough:
 [`examples/MCP.md`](./examples/MCP.md).
+
+### AI memory (`crabcc memory`, M0 + M3-light)
+
+Local-first, per-repo memory at `<repo>/.crabcc/memory.db`. M0 ships the
+`Backend` trait + a file-backed brute-force `SqliteBackend`; M3-light wires
+the CLI/MCP surface (`init`, `remember`, `search`, `get`, `list`,
+`delete`, `count`, `health`) plus 8 matching `memory.*` MCP tools. Each
+MCP tool accepts an optional `cwd` arg — the server walks up to `.git`
+and routes calls to the right per-project palace.
+
+> Note: M0 ships a deterministic hash embedder so the API works
+> end-to-end and tests are stable. **Search results are not yet
+> semantic** — `fastembed-rs` (MiniLM-L6-v2) lands in M1.
+
+**Auto-capture:** set `CRABCC_AUTO_MEMORY=1` to have `sym` / `refs` /
+`callers` / `fuzzy` / `prefix` quietly store a drawer summarising each
+query. Off by default (zero overhead).
+
+```bash
+CRABCC_AUTO_MEMORY=1 TERM_SESSION_ID="$TERM_SESSION_ID" crabcc sym MyType
+crabcc memory list --limit 5    # see what got captured
+```
 
 ---
 

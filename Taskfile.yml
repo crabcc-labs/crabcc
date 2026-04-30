@@ -137,6 +137,21 @@ tasks:
     cmds:
       - "(cd crates/crabcc-core/fuzz && {{.CARGO}} check)"
 
+  memory-smoke:
+    desc: Exercise the M3-light memory CLI surface against a tempdir
+    deps: [install]
+    cmds:
+      - mkdir -p /tmp/crabcc-mem-smoke
+      - "{{.CRABCC}} --root /tmp/crabcc-mem-smoke memory init | jq -e '.status == \"ok\"'"
+      - "{{.CRABCC}} --root /tmp/crabcc-mem-smoke memory remember 'doc:1' 'fox jumps' | jq -e '.id >= 1'"
+      - "{{.CRABCC}} --root /tmp/crabcc-mem-smoke memory remember 'doc:2' 'lazy dogs' --room animals | jq -e '.id >= 1'"
+      - "{{.CRABCC}} --root /tmp/crabcc-mem-smoke memory count | jq -e '.count == 2'"
+      - "{{.CRABCC}} --root /tmp/crabcc-mem-smoke memory list --limit 5 | jq -e 'length == 2'"
+      - "{{.CRABCC}} --root /tmp/crabcc-mem-smoke memory search 'fox' --limit 3 | jq -e '.hits | length >= 1'"
+      - "{{.CRABCC}} --root /tmp/crabcc-mem-smoke memory health | jq -e '. == \"Ok\"'"
+      - test -f /tmp/crabcc-mem-smoke/.crabcc/memory.db
+      - rm -rf /tmp/crabcc-mem-smoke
+
   ci:
     desc: Local CI dry-run — fmt + clippy + test + smoke
     cmds:
@@ -144,6 +159,7 @@ tasks:
       - task: lint
       - task: test
       - task: smoke
+      - task: memory-smoke
 
   release:
     desc: Cut a release tag (CI builds + UPX-compresses + uploads on push)
