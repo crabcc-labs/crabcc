@@ -4,8 +4,19 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = ["compress"]
+# `compress` enables FSST encoding of `drawers.body` via the Codec exposed by
+# crabcc-core. Default ON to match the policy set for symbol-store compression
+# in crabcc-core. Disable with `--no-default-features` (no fsst-rs in the dep
+# graph) or at runtime by opening the backend without a sibling fsst.symbols
+# file present.
+compress = ["crabcc-core/compress"]
+
 [dependencies]
 # Reuse: hash::sha256_hex, store pragma pattern, walker/watch/fts in later phases.
+# `compress` is forwarded so the same Codec used for symbol signatures handles
+# drawer bodies — no second symbol table to maintain.
 crabcc-core = { workspace = true }
 anyhow = { workspace = true }
 rusqlite = { workspace = true }

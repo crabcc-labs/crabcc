@@ -36,6 +36,10 @@ CREATE TABLE IF NOT EXISTS drawers (
     body        TEXT NOT NULL,
     created_at  INTEGER NOT NULL,
     sha256      TEXT NOT NULL,
+    -- 0 = plain UTF-8, 1 = FSST-encoded via crabcc_core::compress::Codec.
+    -- sha256 above is ALWAYS computed on the plaintext body — encoding does
+    -- not change the dedup identity of a drawer.
+    body_enc    INTEGER NOT NULL DEFAULT 0,
     UNIQUE(source_id, sha256)
 );
 
