@@ -68,28 +68,57 @@ struct Cli {
     cmd: Option<Cmd>,
 }
 
+/// Print a deprecation notice to stderr unless `CRABCC_NO_DEPRECATION_WARN=1`.
+fn deprecation_warn(old: &str, group: &str, new_sub: &str) {
+    if std::env::var_os("CRABCC_NO_DEPRECATION_WARN")
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
+    {
+        return;
+    }
+    eprintln!("note: `crabcc {old}` is deprecated; use `crabcc {group} {new_sub}`");
+}
+
+// ── New sub-enums for grouped commands ────────────────────────────────────────
+
 #[derive(Subcommand)]
-enum Cmd {
-    /// Build a fresh index for the repo.
-    Index,
-    /// Incremental reindex of changed files.
+enum IndexOp {
+    /// Build a fresh index for the repo (default when no subcommand given).
+    Build,
     /// Incremental refresh — re-reads disk vs the stored mtime + sha for each
     /// indexed file. Default output is `RefreshStats` (counts only); pass
-    /// `--delta` to also receive the per-bucket file lists (`added` /
-    /// `modified` / `removed`) so an agent can re-read just what changed.
+    /// `--delta` to also receive the per-bucket file lists.
     Refresh {
-        /// Emit `{"added": [...], "modified": [...], "removed": [...], "stats": {...}}`
-        /// instead of bare counts. The lists exclude `touched` files
-        /// (mtime bumped, content unchanged) — agents care about *content*
-        /// deltas, not metadata.
         #[arg(long)]
         delta: bool,
     },
+    /// Rebuild the Tantivy fuzzy/prefix sidecar from the current SQLite index.
+    FtsRebuild,
+    /// Watch the repo and auto-`refresh` on file changes (Ctrl-C to exit).
+    Watch {
+        #[arg(long, default_value_t = 500)]
+        debounce: u64,
+    },
+    /// Train an FSST symbol table and write it to .crabcc/fsst.symbols.
+    Compress {
+        #[arg(long)]
+        rebuild: bool,
+        #[arg(long)]
+        stats: bool,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long, value_name = "N")]
+        decode_probe: Option<usize>,
+    },
+}
+
+#[derive(Subcommand)]
+enum LookupOp {
     /// Find a symbol by name.
     Sym {
         name: String,
-        /// Restrict results to files changed since this git revision.
-        /// See `refs --since` for the accepted shape.
         #[arg(long, value_name = "GIT_REV")]
         since: Option<String>,
     },
@@ -109,16 +138,12 @@ enum Cmd {
     Outline { file: PathBuf },
     /// List indexed files (replaces `ls -R` / `find -name`).
     Files {
-        /// Restrict to paths starting with PREFIX.
         #[arg(long)]
         under: Option<String>,
-        /// Restrict to a language: typescript, tsx, javascript, ruby.
         #[arg(long)]
         lang: Option<String>,
-        /// Restrict to file extension (without leading dot).
         #[arg(long)]
         ext: Option<String>,
-        /// Cap output. 0 means unlimited.
         #[arg(long, default_value_t = 0)]
         limit: usize,
     },
@@ -136,223 +161,215 @@ enum Cmd {
         #[arg(long, default_value_t = 20)]
         limit: usize,
     },
-    /// Rebuild the Tantivy fuzzy/prefix sidecar from the current SQLite index.
-    FtsRebuild,
-    /// Show estimated tokens saved by crabcc usage (this session, 24h, all-time).
+}
+
+#[derive(Subcommand)]
+enum AgentOp {
+    /// Drive an LLM agent through one round of tool-use.
+    Run {
+        #[arg(long, value_name = "PROMPT")]
+        run: String,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, value_name = "ID")]
+        model: Option<String>,
+        #[arg(long)]
+        no_refresh: bool,
+        #[arg(long, value_name = "BACKEND", default_value = "ollama")]
+        backend: String,
+        #[arg(long, value_name = "NAME")]
+        profile: Option<String>,
+    },
+    /// List agent runs from the singleton ~/.crabcc/_internal.db.
+    Ls {
+        #[arg(long)]
+        active_only: bool,
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Sweep stuck / zombie agent runs.
+    Guard {
+        #[arg(long, default_value_t = 1800u64)]
+        idle_secs: u64,
+        #[arg(long, default_value_t = 5000u64)]
+        term_grace_ms: u64,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List agent kill events from the audit trail.
+    Kills {
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum StackOp {
+    /// `docker compose up -d --wait` against the resolved stack.
+    Up,
+    /// `docker compose down`.
+    Down {
+        #[arg(long)]
+        volumes: bool,
+    },
+    /// Container health status.
+    Status,
+    /// Tail of `docker compose logs`.
+    Logs {
+        service: Option<String>,
+        #[arg(long, default_value_t = 100)]
+        tail: usize,
+    },
+    /// `docker compose pull` to refresh upstream images.
+    Pull,
+}
+
+#[derive(Subcommand)]
+enum SetupOp {
+    /// Symlink the crabcc skill + slash-command into `~/.claude/`.
+    InstallClaude {
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        print_hooks: bool,
+        #[arg(long)]
+        with_ollama_stack: bool,
+        #[arg(long)]
+        print_stack_instructions: bool,
+    },
+    /// Check GitHub for a newer release; optionally clean local sidecars.
+    Upgrade {
+        #[arg(long)]
+        check: bool,
+        #[arg(long)]
+        text: bool,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        repo: Option<String>,
+        #[arg(long)]
+        with_stack: bool,
+    },
+    /// Print a shell-completion script for the chosen shell to stdout.
+    Completions {
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+    /// Print the embedded OpenAPI 3.1 description of the MCP tool surface.
+    Openapi,
+}
+
+#[derive(Subcommand)]
+enum InfoOp {
+    /// Print build provenance (commit, branch, tag, time, target).
+    Build {
+        #[arg(long)]
+        text: bool,
+        #[arg(long)]
+        status_line: bool,
+        #[arg(long)]
+        is_repo: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show estimated tokens saved by crabcc usage.
     Track {
-        /// Print human-readable text instead of JSON. JSON is the default for
-        /// machine-readable output; pass `--text` for the columnar summary.
         #[arg(long)]
         text: bool,
     },
-    /// Watch the repo and auto-`refresh` on file changes (Ctrl-C to exit).
-    Watch {
-        /// Debounce window in milliseconds — events within this window
-        /// collapse into one refresh. Lower = more responsive, higher = less
-        /// thrash on burst events like `git checkout`.
-        #[arg(long, default_value_t = 500)]
-        debounce: u64,
+    /// Enumerate all crabcc services + probe each for reachability.
+    Services {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Per-model metadata stored at $CRABCC_HOME/models/.
+    Model {
+        #[command(subcommand)]
+        op: ModelInfoOp,
+    },
+}
+
+// ── Top-level command enum ────────────────────────────────────────────────────
+
+#[derive(Subcommand)]
+enum Cmd {
+    // ── 12 visible groups ────────────────────────────────────────────────────
+    /// Index operations: build, refresh, watch, compress, fts-rebuild.
+    Index {
+        #[command(subcommand)]
+        op: Option<IndexOp>,
+    },
+    /// Lookup operations: sym, refs, callers, outline, files, fuzzy, prefix, grep.
+    Lookup {
+        #[command(subcommand)]
+        op: LookupOp,
+    },
+    /// Agent operations: run, ls, guard, kills.
+    Agent {
+        #[command(subcommand)]
+        op: AgentOp,
+    },
+    /// Ollama auth-stack operations: up, down, status, logs, pull.
+    Stack {
+        #[command(subcommand)]
+        op: StackOp,
+    },
+    /// Diagnostic surface: docker, stack, keys, agent, jobs.
+    Doctor {
+        #[command(subcommand)]
+        op: Option<DoctorOp>,
+        #[arg(long)]
+        text: bool,
     },
     /// Call-graph operations: build, walk, cycles, orphans.
     Graph {
         #[command(subcommand)]
         op: GraphOp,
     },
-    /// Ollama auth-stack operations: up, down, status, logs, pull (issue #105).
-    /// Operator surface — manipulates Docker Compose against the bundled
-    /// stack at `install/ollama-stack/` (or `$CRABCC_OLLAMA_STACK_DIR`).
-    /// Output is JSON by default for machine consumers (the menubar app +
-    /// Chrome extension from issue #107 read this surface).
-    #[command(name = "ollama-stack")]
-    OllamaStack {
-        #[command(subcommand)]
-        op: OllamaStackOp,
-    },
-    /// Diagnostic surface — issue #107 Phase 5a. JSON by default for the
-    /// menubar app + Chrome extension; pass `--text` for the human-readable
-    /// checklist. Subcommands: `docker` (preflight + OrbStack detection),
-    /// `stack` (Compose health + container list), `keys` (~/.crabcc.local
-    /// .api-key + .env mode + parity). No subcommand = run all + aggregate.
-    Doctor {
-        #[command(subcommand)]
-        op: Option<DoctorOp>,
-        /// Format the report as a human checklist instead of JSON.
-        #[arg(long)]
-        text: bool,
-    },
-    /// Internal: enumerate all crabcc services + probe each for
-    /// reachability. Issue #143. Reads service URLs from env vars
-    /// (REDIS_URL, OLLAMA_HOST, OTEL_EXPORTER_OTLP_ENDPOINT, …) with
-    /// localhost fallbacks (or compose-network names when CRABCC_COMPOSE=1).
-    DebugServiceDiscovery {
-        /// Emit JSON instead of the human-readable table.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Symlink the crabcc skill + slash-command into `~/.claude/`, then
-    /// print the `claude mcp add` invocation and hook JSON snippets to
-    /// paste into `~/.claude/settings.json`. Never writes Claude config.
-    InstallClaude {
-        /// Skip the per-symlink y/N prompts.
-        #[arg(long)]
-        yes: bool,
-        /// Print only the hook JSON to stdout (for piping to a file). Skips symlinks.
-        #[arg(long)]
-        print_hooks: bool,
-        /// Issue #105 — materialize the Ollama auth stack at
-        /// `$HOME/.crabcc/ollama-stack/` (Compose recipe + Caddyfile +
-        /// LiteLLM config + init-keys.sh + README), then run
-        /// `docker compose up -d --wait`. Requires Docker.
-        #[arg(long)]
-        with_ollama_stack: bool,
-        /// Print the Ollama-stack bring-up commands and exit. Skips
-        /// symlinks AND the materialization step. Counterpart of
-        /// `--print-hooks` for the auth-stack recipe.
-        #[arg(long)]
-        print_stack_instructions: bool,
-    },
-    /// Train an FSST symbol table from existing index data and write it to
-    /// .crabcc/fsst.symbols, then re-encode rows on demand.
-    Compress {
-        /// Re-encode every existing symbol row in 1000-row batches.
-        #[arg(long)]
-        rebuild: bool,
-        /// Print per-column byte savings (combine with --json for machine output).
-        #[arg(long)]
-        stats: bool,
-        /// Emit stats as JSON instead of human-readable text. Implies --stats.
-        #[arg(long)]
-        json: bool,
-        /// Override the index path (default: $CRABCC_DB or .crabcc/index.db).
-        #[arg(long)]
-        db: Option<PathBuf>,
-        /// Probe in-process decode latency on N random encoded rows. Times
-        /// `Codec::decompress` directly (no subprocess, no SQLite open) and
-        /// emits p50/p95/p99 nanoseconds. Implies skipping train/rebuild.
-        #[arg(long, value_name = "N")]
-        decode_probe: Option<usize>,
-    },
     /// AI memory operations (per-repo .crabcc/memory.db).
     Memory {
         #[command(subcommand)]
         sub: memory::MemoryCmd,
     },
-    /// Check GitHub for a newer release; optionally clean local sidecars.
-    /// Repo is private — uses `gh` for auth (run `gh auth login` first).
-    Upgrade {
-        /// Print the report and exit; never modify local state.
-        #[arg(long)]
-        check: bool,
-        /// Print human-readable text instead of JSON. JSON is the default; pass
-        /// `--text` for the formatted multi-line summary.
-        #[arg(long)]
-        text: bool,
-        /// Apply local cleanup (rm `.crabcc/index.db`, tantivy/, graph.json)
-        /// after the version check. Idempotent; safe to re-run. Re-index
-        /// after with `crabcc index`.
-        #[arg(long)]
-        apply: bool,
-        /// Override the GitHub repo to query (default: peterlodri-sec/crabcc,
-        /// or `$CRABCC_UPGRADE_REPO` if set).
-        #[arg(long)]
-        repo: Option<String>,
-        /// Issue #105 — also refresh the bundled Ollama auth stack:
-        /// `docker compose pull` against `$HOME/.crabcc/ollama-stack/`
-        /// (or wherever `$CRABCC_OLLAMA_STACK_DIR` points). Combine with
-        /// `--apply` to also re-up the stack so changed images are
-        /// picked up.
-        #[arg(long)]
-        with_stack: bool,
+    /// Snapshot / list / restore per-repo .crabcc/ state.
+    Backup {
+        #[command(subcommand)]
+        op: BackupOp,
     },
-    /// Print a shell-completion script for the chosen shell to stdout.
-    /// Pipe into the right location, e.g.:
-    ///   crabcc completions zsh > ~/.local/share/zsh/site-functions/_crabcc
-    Completions {
-        /// Target shell.
-        #[arg(value_enum)]
-        shell: clap_complete::Shell,
+    /// BullMQ job queue — submit / inspect / cancel jobs.
+    #[command(subcommand)]
+    Jobs(JobsCmd),
+    /// Setup operations: install-claude, upgrade, completions, openapi.
+    Setup {
+        #[command(subcommand)]
+        op: SetupOp,
     },
-    /// Print build provenance (commit, branch, tag, time, target) plus a
-    /// one-line project summary. Compile-time embedded — no runtime git lookup.
-    ///
-    /// Status-line variants (issue #43): `--status-line` emits a terse,
-    /// p95<50ms one-liner suitable for Starship / tmux / VS Code status
-    /// bars. `--is-repo` exits 0 inside a crabcc-indexed repo, 1
-    /// otherwise — used by Starship's `when = …` gate.
+    /// Info operations: build provenance, track, services, model.
     Info {
-        /// Print human-readable text instead of JSON. JSON is the default for
-        /// machine consumers; pass `--text` for the indented banner.
+        #[command(subcommand)]
+        op: Option<InfoOp>,
+        /// Print human-readable text instead of JSON.
         #[arg(long)]
         text: bool,
-        /// Emit a render-budget-friendly status-line summary (token savings,
-        /// index age, memory drawers, Claude Code activity). Pair with
-        /// `--json` for a machine-readable shape.
+        /// Emit a render-budget-friendly status-line summary.
         #[arg(long)]
         status_line: bool,
-        /// Exit 0 if cwd is inside a crabcc-indexed repo (`.crabcc/index.db`
-        /// reachable), 1 otherwise. No stdout. Used by Starship `when`.
+        /// Exit 0 if cwd is inside a crabcc-indexed repo, 1 otherwise.
         #[arg(long)]
         is_repo: bool,
-        /// JSON output for status-line. No-op without `--status-line`.
+        /// JSON output for status-line.
         #[arg(long)]
         json: bool,
     },
-    /// One-shot: index this repo (or refresh if already initialized),
-    /// build the call-graph + memory store, then hand off to
-    /// `claude --effort max --append-system-prompt <AGENTS.md>
-    /// --no-chrome` so the LLM session starts pre-loaded with the
-    /// crabcc primer + repo context.
+    /// One-shot bootstrap: index + graph + memory + claude hand-off.
     Go,
-    /// Print the embedded OpenAPI 3.1 description of the MCP tool
-    /// surface to stdout (canonical YAML). Pipe through `yq -o json`
-    /// if you need JSON.
-    Openapi,
-    /// Drive an LLM agent through one round of tool-use against the
-    /// crabcc MCP surface (issue #62). Today the runtime is a host
-    /// subprocess (same trust as `crabcc go`); a microsandbox-backed
-    /// runtime drops in under the `agent-sandbox` cargo feature for v3.0
-    /// — see `install/agent-runtime.md` for the design + threat model.
-    Agent {
-        /// The user prompt — the agent's first turn. Quote freely.
-        #[arg(long, value_name = "PROMPT")]
-        run: String,
-        /// Print the planned invocation (binary, system prompt, model)
-        /// instead of spawning the agent. Lets you verify wiring + the
-        /// resolved AGENTS.md without burning tokens.
-        #[arg(long)]
-        dry_run: bool,
-        /// Override the model the agent uses. None = the agent CLI's
-        /// default (Claude Code = whatever `claude` was last configured
-        /// with, typically the latest Sonnet/Opus).
-        #[arg(long, value_name = "ID")]
-        model: Option<String>,
-        /// Skip the implicit `crabcc refresh` before launch. Useful when
-        /// a wrapping script has already brought the index up to date.
-        #[arg(long)]
-        no_refresh: bool,
-        /// LLM backend the spawned agent talks to. `ollama` (DEFAULT
-        /// since v2.8.x) routes through the local LiteLLM proxy from
-        /// the bundled Compose stack (issue #105) — requires Docker
-        /// or an OrbStack equivalent; the stack is auto-brought-up
-        /// before spawn via `ollama_stack::ensure_up`. `claude` (BETA)
-        /// uses Anthropic via Claude Code's existing config — kept for
-        /// users who still want hosted; will become an opt-in
-        /// `--backend claude` in a future major.
-        #[arg(long, value_name = "BACKEND", default_value = "ollama")]
-        backend: String,
-        /// Internal-agent profile to load (issue #112 follow-up). Pass
-        /// `internal/<name>` to load the matching profile from
-        /// internal_agents/. The shared preamble + per-crate prompt are
-        /// composed and fed into --append-system-prompt; the profile's
-        /// [env] block is exported to the spawned agent. Built-ins:
-        /// internal/crabcc-core, internal/crabcc-cli, internal/crabcc-mcp,
-        /// internal/crabcc-memory, internal/crabcc-viz.
-        #[arg(long, value_name = "NAME")]
-        profile: Option<String>,
-    },
-    /// Start the localhost call-graph viewer (issue #64). Binds to
-    /// 127.0.0.1 by default — pass `--bind 0.0.0.0` only on a trusted
-    /// LAN; the server is unauthenticated and exposes architecture.
+    /// Start the localhost call-graph viewer (issue #64). Binds to 127.0.0.1
+    /// by default — pass `--bind 0.0.0.0` only on a trusted LAN; the server
+    /// is unauthenticated and exposes architecture.
     Serve {
         /// TCP port to bind. 0 picks an ephemeral port (used by tests).
         #[arg(long, default_value_t = 7878)]
@@ -364,78 +381,173 @@ enum Cmd {
         /// Skip auto-opening the system browser after the server starts.
         #[arg(long)]
         no_open: bool,
-        /// Skip the `go::init`-equivalent index/graph/memory bootstrap
-        /// at startup. Default behaviour brings the repo to a fully-
-        /// initialized state so the live dashboard's first /api/bootstrap
-        /// poll has real numbers; pass this when wrapping `crabcc serve`
-        /// in a supervisor that's already done it.
+        /// Skip the index/graph/memory bootstrap at startup.
         #[arg(long)]
         no_init: bool,
     },
-    /// List agent runs from the singleton ~/.crabcc/_internal.db. Used
-    /// by the macOS menubar Status section + `task agent-status`.
-    #[command(name = "agent-ls")]
+
+    // ── Hidden deprecated aliases (kept for one release cycle) ────────────────
+    #[command(hide = true)]
+    Refresh {
+        #[arg(long)]
+        delta: bool,
+    },
+    #[command(hide = true)]
+    Sym {
+        name: String,
+        #[arg(long, value_name = "GIT_REV")]
+        since: Option<String>,
+    },
+    #[command(hide = true)]
+    Refs {
+        name: String,
+        #[command(flatten)]
+        opts: ResultOpts,
+    },
+    #[command(hide = true)]
+    Callers {
+        name: String,
+        #[command(flatten)]
+        opts: ResultOpts,
+    },
+    #[command(hide = true)]
+    Outline { file: PathBuf },
+    #[command(hide = true)]
+    Files {
+        #[arg(long)]
+        under: Option<String>,
+        #[arg(long)]
+        lang: Option<String>,
+        #[arg(long)]
+        ext: Option<String>,
+        #[arg(long, default_value_t = 0)]
+        limit: usize,
+    },
+    #[command(hide = true)]
+    Grep { pattern: String },
+    #[command(hide = true)]
+    Fuzzy {
+        query: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    #[command(hide = true)]
+    Prefix {
+        query: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    #[command(hide = true)]
+    FtsRebuild,
+    #[command(hide = true)]
+    Track {
+        #[arg(long)]
+        text: bool,
+    },
+    #[command(hide = true)]
+    Watch {
+        #[arg(long, default_value_t = 500)]
+        debounce: u64,
+    },
+    #[command(hide = true)]
+    Compress {
+        #[arg(long)]
+        rebuild: bool,
+        #[arg(long)]
+        stats: bool,
+        #[arg(long)]
+        json: bool,
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long, value_name = "N")]
+        decode_probe: Option<usize>,
+    },
+    #[command(hide = true, name = "install-claude")]
+    InstallClaude {
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        print_hooks: bool,
+        #[arg(long)]
+        with_ollama_stack: bool,
+        #[arg(long)]
+        print_stack_instructions: bool,
+    },
+    #[command(hide = true)]
+    Upgrade {
+        #[arg(long)]
+        check: bool,
+        #[arg(long)]
+        text: bool,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        repo: Option<String>,
+        #[arg(long)]
+        with_stack: bool,
+    },
+    #[command(hide = true)]
+    Completions {
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
+    #[command(hide = true)]
+    Openapi,
+    #[command(hide = true, name = "agent-run")]
+    AgentRunAlias {
+        #[arg(long, value_name = "PROMPT")]
+        run: String,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long, value_name = "ID")]
+        model: Option<String>,
+        #[arg(long)]
+        no_refresh: bool,
+        #[arg(long, value_name = "BACKEND", default_value = "ollama")]
+        backend: String,
+        #[arg(long, value_name = "NAME")]
+        profile: Option<String>,
+    },
+    #[command(hide = true, name = "agent-ls")]
     AgentLs {
-        /// Only show rows with status='running' (live agents).
         #[arg(long)]
         active_only: bool,
-        /// Cap the result set. Defaults to 50.
         #[arg(long, default_value_t = 50)]
         limit: usize,
-        /// JSON output (one object per line — easier to grep than --json).
         #[arg(long)]
         json: bool,
     },
-    /// Sweep stuck / zombie agent runs. Wired to a 20-min LaunchAgent
-    /// (com.crabcc.agent-guard.plist). Marks runs whose PID is gone as
-    /// 'crashed' (zombie reap) and SIGTERM/SIGKILL runs whose log file
-    /// hasn't been written to in --idle-secs (default 1800 = 30 min).
-    /// Records every action in agent_kill_events + writes a per-run
-    /// kill log at ~/.crabcc/agents/<id>/.agent-<id>-kill-log.
-    #[command(name = "agent-guard")]
+    #[command(hide = true, name = "agent-guard")]
     AgentGuard {
-        /// Idle threshold in seconds. Default 1800 (30 min).
         #[arg(long, default_value_t = 1800u64)]
         idle_secs: u64,
-        /// Grace period in ms between SIGTERM and SIGKILL.
         #[arg(long, default_value_t = 5000u64)]
         term_grace_ms: u64,
-        /// JSON summary (single line — easy for the LaunchAgent to log).
         #[arg(long)]
         json: bool,
     },
-    /// List agent kill events from the audit trail. The web UI / viz
-    /// dashboard filters on this surface to show "incidents only".
-    #[command(name = "agent-kills")]
+    #[command(hide = true, name = "agent-kills")]
     AgentKills {
         #[arg(long, default_value_t = 50)]
         limit: usize,
         #[arg(long)]
         json: bool,
     },
-    /// Per-model metadata stored at $CRABCC_HOME/models/.model.<provider>.<name>.info
-    /// (TOML). Used by `crabcc agent` to print a one-line banner before
-    /// launch + by Containerfile builds to bake metadata into images.
-    #[command(name = "model-info")]
+    #[command(hide = true, name = "model-info")]
     ModelInfo {
         #[command(subcommand)]
         op: ModelInfoOp,
     },
-    /// Snapshot / list / restore per-repo .crabcc/ state. Layout:
-    /// `$CRABCC_HOME/backups/<repo-slug>/<unix_ts>/{index.db,
-    /// graph.json, memory.db, fsst.symbols, tantivy/}`. Auto-runs
-    /// after `crabcc index` and `crabcc refresh` complete (set
-    /// `CRABCC_BACKUP_DISABLE=1` to skip in CI). Retention: last 2
-    /// snapshots per repo by default (override via
-    /// `CRABCC_BACKUPS_KEEP`).
-    Backup {
+    #[command(hide = true, name = "ollama-stack")]
+    OllamaStack {
         #[command(subcommand)]
-        op: BackupOp,
+        op: OllamaStackOp,
     },
-    /// BullMQ job queue — submit / inspect / cancel jobs (issue #109).
-    /// Requires Redis running (task jobs-up).
-    #[command(subcommand)]
-    Jobs(JobsCmd),
+    #[command(hide = true, name = "debug-service-discovery")]
+    DebugServiceDiscovery {
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -748,13 +860,48 @@ fn main() -> Result<()> {
         && atty_stderr()
     {
         let hint: Option<&str> = match &cli.cmd {
-            Some(Cmd::Sym { .. }) => Some("ccc find <NAME>"),
-            Some(Cmd::Refs { .. }) => Some("ccc find <NAME> --mode references"),
-            Some(Cmd::Callers { .. }) => Some("ccc find <NAME> --mode callers"),
-            Some(Cmd::Fuzzy { .. }) => Some("ccc find <NAME> --mode fuzzy"),
-            Some(Cmd::Prefix { .. }) => Some("ccc find <NAME> --mode prefix"),
-            Some(Cmd::Grep { .. }) => Some("ccc find <PATTERN> --mode grep"),
-            Some(Cmd::Files { .. }) => Some("ccc list --files"),
+            Some(
+                Cmd::Sym { .. }
+                | Cmd::Lookup {
+                    op: LookupOp::Sym { .. },
+                },
+            ) => Some("ccc find <NAME>"),
+            Some(
+                Cmd::Refs { .. }
+                | Cmd::Lookup {
+                    op: LookupOp::Refs { .. },
+                },
+            ) => Some("ccc find <NAME> --mode references"),
+            Some(
+                Cmd::Callers { .. }
+                | Cmd::Lookup {
+                    op: LookupOp::Callers { .. },
+                },
+            ) => Some("ccc find <NAME> --mode callers"),
+            Some(
+                Cmd::Fuzzy { .. }
+                | Cmd::Lookup {
+                    op: LookupOp::Fuzzy { .. },
+                },
+            ) => Some("ccc find <NAME> --mode fuzzy"),
+            Some(
+                Cmd::Prefix { .. }
+                | Cmd::Lookup {
+                    op: LookupOp::Prefix { .. },
+                },
+            ) => Some("ccc find <NAME> --mode prefix"),
+            Some(
+                Cmd::Grep { .. }
+                | Cmd::Lookup {
+                    op: LookupOp::Grep { .. },
+                },
+            ) => Some("ccc find <PATTERN> --mode grep"),
+            Some(
+                Cmd::Files { .. }
+                | Cmd::Lookup {
+                    op: LookupOp::Files { .. },
+                },
+            ) => Some("ccc list --files"),
             _ => None,
         };
         if let Some(h) = hint {
@@ -773,9 +920,47 @@ fn main() -> Result<()> {
         return crabcc_mcp::serve_stdio_with(&root, dev);
     }
 
-    // `install-claude` is a config-only operation — it must run with no
-    // store, no .crabcc dir, and no working repo (it resolves its own root
-    // via `git rev-parse`). Handle it before we touch the SQLite store.
+    // Early-return for no-store commands. Both the new grouped paths and
+    // the hidden deprecated aliases are handled here.
+
+    // setup group
+    if let Some(Cmd::Setup { op }) = cli.cmd.as_ref() {
+        match op {
+            SetupOp::InstallClaude {
+                yes,
+                print_hooks,
+                with_ollama_stack,
+                print_stack_instructions,
+            } => {
+                return install::run(install::InstallOptions {
+                    yes: *yes,
+                    print_hooks_only: *print_hooks,
+                    with_ollama_stack: *with_ollama_stack,
+                    print_stack_instructions: *print_stack_instructions,
+                });
+            }
+            SetupOp::Upgrade {
+                check,
+                text,
+                apply,
+                repo,
+                with_stack,
+            } => {
+                return run_upgrade(*check, *text, *apply, *with_stack, repo.as_deref(), &root);
+            }
+            SetupOp::Completions { shell } => {
+                let mut cmd = <Cli as clap::CommandFactory>::command();
+                clap_complete::generate(*shell, &mut cmd, "crabcc", &mut std::io::stdout());
+                return Ok(());
+            }
+            SetupOp::Openapi => {
+                print!("{}", crabcc_mcp::OPENAPI_YAML);
+                return Ok(());
+            }
+        }
+    }
+
+    // Deprecated: install-claude / upgrade / completions / openapi aliases
     if let Some(Cmd::InstallClaude {
         yes,
         print_hooks,
@@ -783,6 +968,7 @@ fn main() -> Result<()> {
         print_stack_instructions,
     }) = &cli.cmd
     {
+        deprecation_warn("install-claude", "setup", "install-claude");
         return install::run(install::InstallOptions {
             yes: *yes,
             print_hooks_only: *print_hooks,
@@ -790,10 +976,6 @@ fn main() -> Result<()> {
             print_stack_instructions: *print_stack_instructions,
         });
     }
-
-    // `upgrade` and `completions` are also config-only — neither needs a
-    // store. Run them before the SQLite open so they work in directories
-    // that aren't repos.
     if let Some(Cmd::Upgrade {
         check,
         text,
@@ -802,53 +984,101 @@ fn main() -> Result<()> {
         with_stack,
     }) = cli.cmd.as_ref()
     {
+        deprecation_warn("upgrade", "setup", "upgrade");
         return run_upgrade(*check, *text, *apply, *with_stack, repo.as_deref(), &root);
     }
     if let Some(Cmd::Completions { shell }) = cli.cmd.as_ref() {
+        deprecation_warn("completions", "setup", "completions");
         let mut cmd = <Cli as clap::CommandFactory>::command();
         clap_complete::generate(*shell, &mut cmd, "crabcc", &mut std::io::stdout());
         return Ok(());
     }
-    // `info` prints compile-time build provenance — no store, no .crabcc, no
-    // working repo required. Run it before any filesystem touches.
+    if let Some(Cmd::Openapi) = cli.cmd.as_ref() {
+        deprecation_warn("openapi", "setup", "openapi");
+        print!("{}", crabcc_mcp::OPENAPI_YAML);
+        return Ok(());
+    }
+
+    // info group
     if let Some(Cmd::Info {
+        op,
         text,
         status_line,
         is_repo,
         json,
     }) = cli.cmd.as_ref()
     {
-        // --is-repo is the Starship gate: exit code only, no stdout. We
-        // bypass the rest of the binary so the round-trip stays cheap.
-        if *is_repo {
-            std::process::exit(if status::is_repo(&root) { 0 } else { 1 });
+        // Subcommand takes priority over legacy flags on the Info group itself.
+        if let Some(sub) = op {
+            match sub {
+                InfoOp::Build {
+                    text: t,
+                    status_line: sl,
+                    is_repo: ir,
+                    json: j,
+                } => {
+                    if *ir {
+                        std::process::exit(if status::is_repo(&root) { 0 } else { 1 });
+                    }
+                    if *sl {
+                        return status::run_status_line(&root, *j);
+                    }
+                    return run_info(*t);
+                }
+                InfoOp::Track { text: t } => {
+                    // needs store — fall through to store open below
+                    let _ = t; // used below in match
+                }
+                InfoOp::Services { json: j } => {
+                    let report = crabcc_core::service_discovery::discover_all();
+                    if *j {
+                        println!("{}", serde_json::to_string_pretty(&report)?);
+                    } else {
+                        print_service_discovery_text(&report);
+                    }
+                    return Ok(());
+                }
+                InfoOp::Model { op: mop } => {
+                    return run_model_info(mop);
+                }
+            }
+        } else {
+            // Legacy flags on `crabcc info` with no subcommand
+            if *is_repo {
+                std::process::exit(if status::is_repo(&root) { 0 } else { 1 });
+            }
+            if *status_line {
+                return status::run_status_line(&root, *json);
+            }
+            return run_info(*text);
         }
-        if *status_line {
-            return status::run_status_line(&root, *json);
-        }
-        return run_info(*text);
     }
 
-    // `go` is a top-level orchestrator that opens its own Store, indexes,
-    // builds the graph, opens the memory palace, and execs claude. We
-    // handle it before the global Store::open below because the indexing
-    // step inside `go::run` is the canonical bootstrap path on a fresh
-    // repo — pre-opening the store here would be wasted work.
+    // Deprecated: debug-service-discovery alias
+    if let Some(Cmd::DebugServiceDiscovery { json }) = cli.cmd.as_ref() {
+        deprecation_warn("debug-service-discovery", "info", "services");
+        let report = crabcc_core::service_discovery::discover_all();
+        if *json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            print_service_discovery_text(&report);
+        }
+        return Ok(());
+    }
+
+    // Deprecated: model-info alias
+    if let Some(Cmd::ModelInfo { op }) = cli.cmd.as_ref() {
+        deprecation_warn("model-info", "info", "model");
+        return run_model_info(op);
+    }
+
+    // `go` is a top-level orchestrator.
     if let Some(Cmd::Go) = cli.cmd.as_ref() {
         return go::run(&root, &db);
     }
 
-    // `openapi` is a config-only operation — embedded constant. Run it
-    // before the store to keep it usable in non-repo cwds.
-    if let Some(Cmd::Openapi) = cli.cmd.as_ref() {
-        print!("{}", crabcc_mcp::OPENAPI_YAML);
-        return Ok(());
-    }
-
-    // `serve` (issue #64) opens the Store lazily per HTTP request — the
-    // foreground process is the listen loop, not a one-shot CLI op.
-    // Bypass the global Store::open so the server starts even before the
-    // first index has been built (the viewer surfaces a clear 400 then).
+    // `serve` boots crabcc-viz; doesn't need the symbol Store opened
+    // here (the viz server lazy-opens its own).
     if let Some(Cmd::Serve {
         port,
         bind,
@@ -859,11 +1089,45 @@ fn main() -> Result<()> {
         return run_serve(&root, *port, bind, *no_open, !*no_init);
     }
 
-    // `agent --run` (issue #62) execs an agent CLI in the user's shell;
-    // we deliberately don't open the symbol Store here because the agent
-    // owns its lifecycle through MCP tool calls. `agent::run` handles a
-    // best-effort `crabcc refresh` itself when `--no-refresh` is absent.
-    if let Some(Cmd::Agent {
+    // agent group
+    if let Some(Cmd::Agent { op }) = cli.cmd.as_ref() {
+        match op {
+            AgentOp::Run {
+                run,
+                dry_run,
+                model,
+                no_refresh,
+                backend,
+                profile,
+            } => {
+                return run_agent_run(run, *dry_run, model, *no_refresh, backend, profile, &root);
+            }
+            AgentOp::Ls {
+                active_only,
+                limit,
+                json,
+            } => {
+                return run_agent_ls(*active_only, *limit, *json);
+            }
+            AgentOp::Guard {
+                idle_secs,
+                term_grace_ms,
+                json,
+            } => {
+                return agent_guard::run(agent_guard::GuardConfig {
+                    idle_secs: *idle_secs,
+                    term_grace_ms: *term_grace_ms,
+                    json: *json,
+                });
+            }
+            AgentOp::Kills { limit, json } => {
+                return run_agent_kills(*limit, *json);
+            }
+        }
+    }
+
+    // Deprecated agent aliases
+    if let Some(Cmd::AgentRunAlias {
         run,
         dry_run,
         model,
@@ -872,46 +1136,16 @@ fn main() -> Result<()> {
         profile,
     }) = cli.cmd.as_ref()
     {
-        let backend = agent::Backend::from_str(backend)?;
-
-        // Resolve the optional internal-agent profile. The CLI accepts
-        // `--profile internal/<name>`; bare names without the namespace
-        // prefix are rejected so a future `customer/<name>` form has a
-        // clean place to land.
-        let loaded_profile = match profile.as_deref() {
-            None => None,
-            Some(p) => {
-                let id = agent_profile::parse_internal_profile_id(p).ok_or_else(|| {
-                    anyhow::anyhow!("--profile must use the 'internal/<name>' form (got '{p}')")
-                })?;
-                Some(agent_profile::load(&root, id)?)
-            }
-        };
-        let model_override = model
-            .clone()
-            .or_else(|| loaded_profile.as_ref().and_then(|p| p.model.clone()));
-
-        return agent::run_with_profile(
-            agent::AgentRequest {
-                prompt: run,
-                root: &root,
-                dry_run: *dry_run,
-                model: model_override,
-                no_refresh: *no_refresh,
-                backend,
-            },
-            loaded_profile,
-        );
+        deprecation_warn("agent-run", "agent", "run");
+        return run_agent_run(run, *dry_run, model, *no_refresh, backend, profile, &root);
     }
-
-    // agent-ls / agent-guard / agent-kills — no Store needed, all read
-    // from / write to ~/.crabcc/_internal.db directly.
     if let Some(Cmd::AgentLs {
         active_only,
         limit,
         json,
     }) = cli.cmd.as_ref()
     {
+        deprecation_warn("agent-ls", "agent", "ls");
         return run_agent_ls(*active_only, *limit, *json);
     }
     if let Some(Cmd::AgentGuard {
@@ -920,6 +1154,7 @@ fn main() -> Result<()> {
         json,
     }) = cli.cmd.as_ref()
     {
+        deprecation_warn("agent-guard", "agent", "guard");
         return agent_guard::run(agent_guard::GuardConfig {
             idle_secs: *idle_secs,
             term_grace_ms: *term_grace_ms,
@@ -927,29 +1162,30 @@ fn main() -> Result<()> {
         });
     }
     if let Some(Cmd::AgentKills { limit, json }) = cli.cmd.as_ref() {
+        deprecation_warn("agent-kills", "agent", "kills");
         return run_agent_kills(*limit, *json);
     }
-    if let Some(Cmd::ModelInfo { op }) = cli.cmd.as_ref() {
-        return run_model_info(op);
+
+    // stack group
+    if let Some(Cmd::Stack { op }) = cli.cmd.as_ref() {
+        return run_stack_op(op);
     }
+    if let Some(Cmd::OllamaStack { op }) = cli.cmd.as_ref() {
+        deprecation_warn("ollama-stack", "stack", "<subcommand>");
+        return run_ollama_stack(op);
+    }
+
+    // backup group
     if let Some(Cmd::Backup { op }) = cli.cmd.as_ref() {
         return run_backup(&root, op);
     }
 
-    // `ollama-stack` is an operator surface — pure shell-out to
-    // `docker compose` against the bundled stack at install/ollama-stack/.
-    // No symbol Store needed (issue #105 Phase 3).
-    if let Some(Cmd::OllamaStack { op }) = cli.cmd.as_ref() {
-        return run_ollama_stack(op);
-    }
-
-    // `jobs` — BullMQ submit/status/list/cancel (issue #109).
+    // jobs group
     if let Some(Cmd::Jobs(op)) = cli.cmd.as_ref() {
         return jobs_cmd::run(op);
     }
 
-    // `doctor` is the diagnostic surface (issue #107 Phase 5a). No Store
-    // touched; each subcommand is read-only against the local environment.
+    // doctor group
     if let Some(Cmd::Doctor { op, text }) = cli.cmd.as_ref() {
         return match op {
             None => doctor::run_all(*text),
@@ -961,21 +1197,32 @@ fn main() -> Result<()> {
         };
     }
 
-    // `debug-service-discovery` (issue #143) — enumerate + probe every
-    // known service. Read-only, no Store needed.
-    if let Some(Cmd::DebugServiceDiscovery { json }) = cli.cmd.as_ref() {
-        let report = crabcc_core::service_discovery::discover_all();
-        if *json {
-            println!("{}", serde_json::to_string_pretty(&report)?);
-        } else {
-            print_service_discovery_text(&report);
-        }
-        return Ok(());
+    // index group — compress is handled before Store open (it manages its
+    // own DB connection); Build / Refresh / FtsRebuild / Watch need the
+    // store and fall through to the main dispatch below.
+    if let Some(Cmd::Index {
+        op:
+            Some(IndexOp::Compress {
+                rebuild,
+                stats,
+                json,
+                db: db_override,
+                decode_probe,
+            }),
+    }) = cli.cmd.as_ref()
+    {
+        let db_path = db_override.clone().unwrap_or_else(|| db.clone());
+        return compress_cmd::run(compress_cmd::Args {
+            root: root.clone(),
+            db: db_path,
+            rebuild: *rebuild,
+            stats: *stats || *json,
+            json: *json,
+            decode_probe: *decode_probe,
+        });
     }
 
-    // `compress` is a meta-operation on the index. It owns its own codec
-    // lifecycle (we're MAKING the codec, not consuming one), so it bypasses
-    // the global `Store::open` that would auto-load whatever is on disk.
+    // Deprecated compress alias
     if let Some(Cmd::Compress {
         rebuild,
         stats,
@@ -984,21 +1231,19 @@ fn main() -> Result<()> {
         decode_probe,
     }) = cli.cmd.as_ref()
     {
+        deprecation_warn("compress", "index", "compress");
         let db_path = db_override.clone().unwrap_or_else(|| db.clone());
         return compress_cmd::run(compress_cmd::Args {
             root: root.clone(),
             db: db_path,
             rebuild: *rebuild,
-            // --json implies --stats (mirrors common CLI ergonomics).
             stats: *stats || *json,
             json: *json,
             decode_probe: *decode_probe,
         });
     }
 
-    // Memory subcommands open `.crabcc/memory.db` directly via Palace —
-    // route them here so we don't pay the symbol-index Store::open cost
-    // on a memory-only invocation.
+    // memory group
     if let Some(Cmd::Memory { sub }) = cli.cmd {
         return memory::run(&root, sub);
     }
@@ -1007,158 +1252,197 @@ fn main() -> Result<()> {
     let store = Store::open_with_compress(&db, cli.compress)?;
     let fts_dir = root.join(".crabcc").join("tantivy");
 
-    let dispatched_cmd = cli.cmd.unwrap_or(Cmd::Index);
-    tracing::info!(
-        target: "crabcc_cli",
-        cmd = cmd_name_for_log(&dispatched_cmd),
-        "command: enter"
-    );
+    // Determine a canonical command name for logging.
+    let log_name = match &cli.cmd {
+        None => "index",
+        Some(c) => cmd_name_for_log(c),
+    };
+    tracing::info!(target: "crabcc_cli", cmd = log_name, "command: enter");
 
-    match dispatched_cmd {
-        Cmd::Index => {
-            let stats = crabcc_core::index::full_index(&root, &store)?;
-            // Rebuild Tantivy too — keep the fuzzy/prefix sidecar in lockstep
-            // with a full reindex. (refresh deliberately does not.)
-            if let Ok(fts) = crabcc_core::fts::Fts::open(&fts_dir) {
-                let _ = fts.rebuild(&store);
-            }
-            println!("{}", sonic_rs::to_string(&stats)?);
-            // Auto-snapshot on success. Best-effort; logged at warn on
-            // failure but never propagates back to the caller.
-            // Disable via CRABCC_BACKUP_DISABLE=1 (CI / smoke).
-            if std::env::var_os("CRABCC_BACKUP_DISABLE").is_none() {
-                backup::auto_snapshot_after_index(&root);
-            }
-        }
-        Cmd::Refresh { delta } => {
-            if delta {
-                let d = crabcc_core::index::refresh_delta(&root, &store)?;
-                println!("{}", sonic_rs::to_string(&d)?);
-            } else {
-                let stats = crabcc_core::index::refresh(&root, &store)?;
-                println!("{}", sonic_rs::to_string(&stats)?);
-            }
-            if std::env::var_os("CRABCC_BACKUP_DISABLE").is_none() {
-                backup::auto_snapshot_after_index(&root);
-            }
-        }
-        Cmd::Sym { name, since } => {
-            let syms = match since.as_deref() {
-                Some(rev) => {
-                    let files = crabcc_core::gitdiff::changed_files_since(&root, rev)?;
-                    query::find_symbol_in_files(&store, &name, &files)?
+    match cli.cmd.unwrap_or(Cmd::Index { op: None }) {
+        // ── Index group (store-dependent ops) ──────────────────────────────
+        Cmd::Index { op } => match op.unwrap_or(IndexOp::Build) {
+            IndexOp::Build => {
+                let stats = crabcc_core::index::full_index(&root, &store)?;
+                if let Ok(fts) = crabcc_core::fts::Fts::open(&fts_dir) {
+                    let _ = fts.rebuild(&store);
                 }
-                None => query::find_symbol(&store, &name)?,
-            };
-            let body = sonic_rs::to_string(&syms)?;
-            crabcc_core::track::record("sym", &name, syms.len(), &repo_label(&root), body.len());
-            memory::auto_capture(&root, "sym", &name, syms.len());
-            println!("{body}");
-        }
-        Cmd::Refs { name, opts } => {
-            let mode = opts.to_mode();
-            let files = match opts.since.as_deref() {
-                Some(rev) => Some(crabcc_core::gitdiff::changed_files_since(&root, rev)?),
-                None => None,
-            };
-            let out = query::query_refs(&store, &root, &name, mode, files.as_ref())?;
-            let body = sonic_rs::to_string(&out)?;
-            crabcc_core::track::record("refs", &name, out.count(), &repo_label(&root), body.len());
-            memory::auto_capture(&root, "refs", &name, out.count());
-            if opts.ndjson {
-                emit_hits_ndjson(&out)?;
-            } else {
-                let envelope =
-                    crabcc_core::hash::fingerprint_envelope(&body, opts.if_changed.as_deref());
-                println!("{envelope}");
+                println!("{}", sonic_rs::to_string(&stats)?);
+                if std::env::var_os("CRABCC_BACKUP_DISABLE").is_none() {
+                    backup::auto_snapshot_after_index(&root);
+                }
             }
-        }
-        Cmd::Callers { name, opts } => {
-            let mode = opts.to_mode();
-            let files = match opts.since.as_deref() {
-                Some(rev) => Some(crabcc_core::gitdiff::changed_files_since(&root, rev)?),
-                None => None,
-            };
-            let out = query::query_callers(&store, &root, &name, mode, files.as_ref())?;
-            let body = sonic_rs::to_string(&out)?;
-            crabcc_core::track::record(
-                "callers",
-                &name,
-                out.count(),
-                &repo_label(&root),
-                body.len(),
-            );
-            memory::auto_capture(&root, "callers", &name, out.count());
-            if opts.ndjson {
-                emit_hits_ndjson(&out)?;
-            } else {
-                let envelope =
-                    crabcc_core::hash::fingerprint_envelope(&body, opts.if_changed.as_deref());
-                println!("{envelope}");
+            IndexOp::Refresh { delta } => {
+                if delta {
+                    let d = crabcc_core::index::refresh_delta(&root, &store)?;
+                    println!("{}", sonic_rs::to_string(&d)?);
+                } else {
+                    let stats = crabcc_core::index::refresh(&root, &store)?;
+                    println!("{}", sonic_rs::to_string(&stats)?);
+                }
+                if std::env::var_os("CRABCC_BACKUP_DISABLE").is_none() {
+                    backup::auto_snapshot_after_index(&root);
+                }
             }
-        }
-        Cmd::Outline { file } => {
-            let key = file.to_string_lossy();
-            let syms = crabcc_core::outline::outline(&store, &key)?;
-            let body = sonic_rs::to_string(&syms)?;
-            crabcc_core::track::record("outline", &key, syms.len(), &repo_label(&root), body.len());
-            println!("{body}");
-        }
-        Cmd::Files {
-            under,
-            lang,
-            ext,
-            limit,
-        } => {
-            let files = list_files(
-                &store,
-                under.as_deref(),
-                lang.as_deref(),
-                ext.as_deref(),
+            IndexOp::FtsRebuild => {
+                let fts = crabcc_core::fts::Fts::open(&fts_dir)?;
+                let n = fts.rebuild(&store)?;
+                println!("{{\"indexed\":{n}}}");
+            }
+            IndexOp::Watch { debounce } => {
+                let store = std::sync::Arc::new(std::sync::Mutex::new(store));
+                crabcc_core::watch::watch(
+                    &root,
+                    store,
+                    std::time::Duration::from_millis(debounce),
+                )?;
+            }
+            IndexOp::Compress { .. } => unreachable!("compress handled before store init"),
+        },
+
+        // ── Lookup group ────────────────────────────────────────────────────
+        Cmd::Lookup { op } => match op {
+            LookupOp::Sym { name, since } => {
+                let syms = match since.as_deref() {
+                    Some(rev) => {
+                        let files = crabcc_core::gitdiff::changed_files_since(&root, rev)?;
+                        query::find_symbol_in_files(&store, &name, &files)?
+                    }
+                    None => query::find_symbol(&store, &name)?,
+                };
+                let body = sonic_rs::to_string(&syms)?;
+                crabcc_core::track::record(
+                    "sym",
+                    &name,
+                    syms.len(),
+                    &repo_label(&root),
+                    body.len(),
+                );
+                memory::auto_capture(&root, "sym", &name, syms.len());
+                println!("{body}");
+            }
+            LookupOp::Refs { name, opts } => {
+                let mode = opts.to_mode();
+                let files = match opts.since.as_deref() {
+                    Some(rev) => Some(crabcc_core::gitdiff::changed_files_since(&root, rev)?),
+                    None => None,
+                };
+                let out = query::query_refs(&store, &root, &name, mode, files.as_ref())?;
+                let body = sonic_rs::to_string(&out)?;
+                crabcc_core::track::record(
+                    "refs",
+                    &name,
+                    out.count(),
+                    &repo_label(&root),
+                    body.len(),
+                );
+                memory::auto_capture(&root, "refs", &name, out.count());
+                if opts.ndjson {
+                    emit_hits_ndjson(&out)?;
+                } else {
+                    let envelope =
+                        crabcc_core::hash::fingerprint_envelope(&body, opts.if_changed.as_deref());
+                    println!("{envelope}");
+                }
+            }
+            LookupOp::Callers { name, opts } => {
+                let mode = opts.to_mode();
+                let files = match opts.since.as_deref() {
+                    Some(rev) => Some(crabcc_core::gitdiff::changed_files_since(&root, rev)?),
+                    None => None,
+                };
+                let out = query::query_callers(&store, &root, &name, mode, files.as_ref())?;
+                let body = sonic_rs::to_string(&out)?;
+                crabcc_core::track::record(
+                    "callers",
+                    &name,
+                    out.count(),
+                    &repo_label(&root),
+                    body.len(),
+                );
+                memory::auto_capture(&root, "callers", &name, out.count());
+                if opts.ndjson {
+                    emit_hits_ndjson(&out)?;
+                } else {
+                    let envelope =
+                        crabcc_core::hash::fingerprint_envelope(&body, opts.if_changed.as_deref());
+                    println!("{envelope}");
+                }
+            }
+            LookupOp::Outline { file } => {
+                let key = file.to_string_lossy();
+                let syms = crabcc_core::outline::outline(&store, &key)?;
+                let body = sonic_rs::to_string(&syms)?;
+                crabcc_core::track::record(
+                    "outline",
+                    &key,
+                    syms.len(),
+                    &repo_label(&root),
+                    body.len(),
+                );
+                println!("{body}");
+            }
+            LookupOp::Files {
+                under,
+                lang,
+                ext,
                 limit,
-            )?;
-            let body = sonic_rs::to_string(&files)?;
-            crabcc_core::track::record(
-                "files",
-                "list",
-                files.len(),
-                &repo_label(&root),
-                body.len(),
-            );
-            println!("{body}");
-        }
-        Cmd::Grep { pattern } => {
-            // TODO: ripgrep `grep` crate, annotate hits with enclosing symbol.
-            println!("{{\"status\":\"todo\",\"op\":\"grep\",\"pattern\":\"{pattern}\"}}");
-        }
-        Cmd::Fuzzy { query, limit } => {
-            let fts = crabcc_core::fts::Fts::open(&fts_dir)?;
-            let hits = fts.fuzzy(&query, limit)?;
-            let body = sonic_rs::to_string(&hits)?;
-            crabcc_core::track::record("fuzzy", &query, hits.len(), &repo_label(&root), body.len());
-            memory::auto_capture(&root, "fuzzy", &query, hits.len());
-            println!("{body}");
-        }
-        Cmd::Prefix { query, limit } => {
-            let fts = crabcc_core::fts::Fts::open(&fts_dir)?;
-            let hits = fts.prefix(&query, limit)?;
-            let body = sonic_rs::to_string(&hits)?;
-            crabcc_core::track::record(
-                "prefix",
-                &query,
-                hits.len(),
-                &repo_label(&root),
-                body.len(),
-            );
-            memory::auto_capture(&root, "prefix", &query, hits.len());
-            println!("{body}");
-        }
-        Cmd::FtsRebuild => {
-            let fts = crabcc_core::fts::Fts::open(&fts_dir)?;
-            let n = fts.rebuild(&store)?;
-            println!("{{\"indexed\":{n}}}");
-        }
-        Cmd::Track { text } => {
+            } => {
+                let files = list_files(
+                    &store,
+                    under.as_deref(),
+                    lang.as_deref(),
+                    ext.as_deref(),
+                    limit,
+                )?;
+                let body = sonic_rs::to_string(&files)?;
+                crabcc_core::track::record(
+                    "files",
+                    "list",
+                    files.len(),
+                    &repo_label(&root),
+                    body.len(),
+                );
+                println!("{body}");
+            }
+            LookupOp::Grep { pattern } => {
+                println!("{{\"status\":\"todo\",\"op\":\"grep\",\"pattern\":\"{pattern}\"}}");
+            }
+            LookupOp::Fuzzy { query, limit } => {
+                let fts = crabcc_core::fts::Fts::open(&fts_dir)?;
+                let hits = fts.fuzzy(&query, limit)?;
+                let body = sonic_rs::to_string(&hits)?;
+                crabcc_core::track::record(
+                    "fuzzy",
+                    &query,
+                    hits.len(),
+                    &repo_label(&root),
+                    body.len(),
+                );
+                memory::auto_capture(&root, "fuzzy", &query, hits.len());
+                println!("{body}");
+            }
+            LookupOp::Prefix { query, limit } => {
+                let fts = crabcc_core::fts::Fts::open(&fts_dir)?;
+                let hits = fts.prefix(&query, limit)?;
+                let body = sonic_rs::to_string(&hits)?;
+                crabcc_core::track::record(
+                    "prefix",
+                    &query,
+                    hits.len(),
+                    &repo_label(&root),
+                    body.len(),
+                );
+                memory::auto_capture(&root, "prefix", &query, hits.len());
+                println!("{body}");
+            }
+        },
+
+        // ── info group (store-dependent: Track) ─────────────────────────────
+        Cmd::Info {
+            op: Some(InfoOp::Track { text }),
+            ..
+        } => {
             let r = crabcc_core::track::report()?;
             if text {
                 print_track_human(&r);
@@ -1166,10 +1450,8 @@ fn main() -> Result<()> {
                 println!("{}", sonic_rs::to_string_pretty(&r)?);
             }
         }
-        Cmd::Watch { debounce } => {
-            let store = std::sync::Arc::new(std::sync::Mutex::new(store));
-            crabcc_core::watch::watch(&root, store, std::time::Duration::from_millis(debounce))?;
-        }
+
+        // ── Graph group ─────────────────────────────────────────────────────
         Cmd::Graph { op } => match op {
             GraphOp::Build => {
                 let g = crabcc_core::graph::CallGraph::build(&store, &root)?;
@@ -1195,7 +1477,8 @@ fn main() -> Result<()> {
                     crabcc_core::graph::CallGraph::load(&path)?
                 } else {
                     eprintln!(
-                        "crabcc graph walk: no .crabcc/graph.json — building on the fly (run `crabcc graph build` to cache)"
+                        "crabcc graph walk: no .crabcc/graph.json — building on the fly \
+                         (run `crabcc graph build` to cache)"
                     );
                     crabcc_core::graph::CallGraph::build(&store, &root)?
                 };
@@ -1240,28 +1523,185 @@ fn main() -> Result<()> {
                 println!("{body}");
             }
         },
-        // Handled by the early-return branches above before the store opens.
-        Cmd::InstallClaude { .. } => unreachable!("install-claude handled before store init"),
-        Cmd::Compress { .. } => unreachable!("compress handled before store init"),
-        Cmd::Memory { .. } => unreachable!("memory handled before store init"),
-        Cmd::Go => unreachable!("go handled before store init"),
-        Cmd::Openapi => unreachable!("openapi handled before store init"),
-        Cmd::Upgrade { .. } => unreachable!("upgrade handled before store init"),
-        Cmd::Completions { .. } => unreachable!("completions handled before store init"),
+
+        // ── Deprecated flat aliases (store-dependent) ───────────────────────
+        Cmd::Refresh { delta } => {
+            deprecation_warn("refresh", "index", "refresh");
+            if delta {
+                let d = crabcc_core::index::refresh_delta(&root, &store)?;
+                println!("{}", sonic_rs::to_string(&d)?);
+            } else {
+                let stats = crabcc_core::index::refresh(&root, &store)?;
+                println!("{}", sonic_rs::to_string(&stats)?);
+            }
+            if std::env::var_os("CRABCC_BACKUP_DISABLE").is_none() {
+                backup::auto_snapshot_after_index(&root);
+            }
+        }
+        Cmd::Sym { name, since } => {
+            deprecation_warn("sym", "lookup", "sym");
+            let syms = match since.as_deref() {
+                Some(rev) => {
+                    let files = crabcc_core::gitdiff::changed_files_since(&root, rev)?;
+                    query::find_symbol_in_files(&store, &name, &files)?
+                }
+                None => query::find_symbol(&store, &name)?,
+            };
+            let body = sonic_rs::to_string(&syms)?;
+            crabcc_core::track::record("sym", &name, syms.len(), &repo_label(&root), body.len());
+            memory::auto_capture(&root, "sym", &name, syms.len());
+            println!("{body}");
+        }
+        Cmd::Refs { name, opts } => {
+            deprecation_warn("refs", "lookup", "refs");
+            let mode = opts.to_mode();
+            let files = match opts.since.as_deref() {
+                Some(rev) => Some(crabcc_core::gitdiff::changed_files_since(&root, rev)?),
+                None => None,
+            };
+            let out = query::query_refs(&store, &root, &name, mode, files.as_ref())?;
+            let body = sonic_rs::to_string(&out)?;
+            crabcc_core::track::record("refs", &name, out.count(), &repo_label(&root), body.len());
+            memory::auto_capture(&root, "refs", &name, out.count());
+            if opts.ndjson {
+                emit_hits_ndjson(&out)?;
+            } else {
+                let envelope =
+                    crabcc_core::hash::fingerprint_envelope(&body, opts.if_changed.as_deref());
+                println!("{envelope}");
+            }
+        }
+        Cmd::Callers { name, opts } => {
+            deprecation_warn("callers", "lookup", "callers");
+            let mode = opts.to_mode();
+            let files = match opts.since.as_deref() {
+                Some(rev) => Some(crabcc_core::gitdiff::changed_files_since(&root, rev)?),
+                None => None,
+            };
+            let out = query::query_callers(&store, &root, &name, mode, files.as_ref())?;
+            let body = sonic_rs::to_string(&out)?;
+            crabcc_core::track::record(
+                "callers",
+                &name,
+                out.count(),
+                &repo_label(&root),
+                body.len(),
+            );
+            memory::auto_capture(&root, "callers", &name, out.count());
+            if opts.ndjson {
+                emit_hits_ndjson(&out)?;
+            } else {
+                let envelope =
+                    crabcc_core::hash::fingerprint_envelope(&body, opts.if_changed.as_deref());
+                println!("{envelope}");
+            }
+        }
+        Cmd::Outline { file } => {
+            deprecation_warn("outline", "lookup", "outline");
+            let key = file.to_string_lossy();
+            let syms = crabcc_core::outline::outline(&store, &key)?;
+            let body = sonic_rs::to_string(&syms)?;
+            crabcc_core::track::record("outline", &key, syms.len(), &repo_label(&root), body.len());
+            println!("{body}");
+        }
+        Cmd::Files {
+            under,
+            lang,
+            ext,
+            limit,
+        } => {
+            deprecation_warn("files", "lookup", "files");
+            let files = list_files(
+                &store,
+                under.as_deref(),
+                lang.as_deref(),
+                ext.as_deref(),
+                limit,
+            )?;
+            let body = sonic_rs::to_string(&files)?;
+            crabcc_core::track::record(
+                "files",
+                "list",
+                files.len(),
+                &repo_label(&root),
+                body.len(),
+            );
+            println!("{body}");
+        }
+        Cmd::Grep { pattern } => {
+            deprecation_warn("grep", "lookup", "grep");
+            println!("{{\"status\":\"todo\",\"op\":\"grep\",\"pattern\":\"{pattern}\"}}");
+        }
+        Cmd::Fuzzy { query, limit } => {
+            deprecation_warn("fuzzy", "lookup", "fuzzy");
+            let fts = crabcc_core::fts::Fts::open(&fts_dir)?;
+            let hits = fts.fuzzy(&query, limit)?;
+            let body = sonic_rs::to_string(&hits)?;
+            crabcc_core::track::record("fuzzy", &query, hits.len(), &repo_label(&root), body.len());
+            memory::auto_capture(&root, "fuzzy", &query, hits.len());
+            println!("{body}");
+        }
+        Cmd::Prefix { query, limit } => {
+            deprecation_warn("prefix", "lookup", "prefix");
+            let fts = crabcc_core::fts::Fts::open(&fts_dir)?;
+            let hits = fts.prefix(&query, limit)?;
+            let body = sonic_rs::to_string(&hits)?;
+            crabcc_core::track::record(
+                "prefix",
+                &query,
+                hits.len(),
+                &repo_label(&root),
+                body.len(),
+            );
+            memory::auto_capture(&root, "prefix", &query, hits.len());
+            println!("{body}");
+        }
+        Cmd::FtsRebuild => {
+            deprecation_warn("fts-rebuild", "index", "fts-rebuild");
+            let fts = crabcc_core::fts::Fts::open(&fts_dir)?;
+            let n = fts.rebuild(&store)?;
+            println!("{{\"indexed\":{n}}}");
+        }
+        Cmd::Track { text } => {
+            deprecation_warn("track", "info", "track");
+            let r = crabcc_core::track::report()?;
+            if text {
+                print_track_human(&r);
+            } else {
+                println!("{}", sonic_rs::to_string_pretty(&r)?);
+            }
+        }
+        Cmd::Watch { debounce } => {
+            deprecation_warn("watch", "index", "watch");
+            let store = std::sync::Arc::new(std::sync::Mutex::new(store));
+            crabcc_core::watch::watch(&root, store, std::time::Duration::from_millis(debounce))?;
+        }
+
+        // All other variants were handled in the early-return block above.
+        Cmd::Setup { .. } => unreachable!("setup handled before store init"),
         Cmd::Info { .. } => unreachable!("info handled before store init"),
+        Cmd::Go => unreachable!("go handled before store init"),
         Cmd::Serve { .. } => unreachable!("serve handled before store init"),
         Cmd::Agent { .. } => unreachable!("agent handled before store init"),
+        Cmd::AgentRunAlias { .. } => unreachable!("agent-run handled before store init"),
         Cmd::AgentLs { .. } => unreachable!("agent-ls handled before store init"),
         Cmd::AgentGuard { .. } => unreachable!("agent-guard handled before store init"),
         Cmd::AgentKills { .. } => unreachable!("agent-kills handled before store init"),
         Cmd::ModelInfo { .. } => unreachable!("model-info handled before store init"),
-        Cmd::Backup { .. } => unreachable!("backup handled before store init"),
         Cmd::OllamaStack { .. } => unreachable!("ollama-stack handled before store init"),
+        Cmd::Stack { .. } => unreachable!("stack handled before store init"),
+        Cmd::Backup { .. } => unreachable!("backup handled before store init"),
         Cmd::Doctor { .. } => unreachable!("doctor handled before store init"),
         Cmd::Jobs(_) => unreachable!("jobs handled before store init"),
         Cmd::DebugServiceDiscovery { .. } => {
             unreachable!("debug-service-discovery handled before store init")
         }
+        Cmd::InstallClaude { .. } => unreachable!("install-claude handled before store init"),
+        Cmd::Upgrade { .. } => unreachable!("upgrade handled before store init"),
+        Cmd::Completions { .. } => unreachable!("completions handled before store init"),
+        Cmd::Openapi => unreachable!("openapi handled before store init"),
+        Cmd::Memory { .. } => unreachable!("memory handled before store init"),
+        Cmd::Compress { .. } => unreachable!("compress handled before store init"),
     }
     Ok(())
 }
@@ -1571,7 +2011,52 @@ fn list_files(
 /// without re-deriving the name from the noisy `Debug` repr.
 fn cmd_name_for_log(c: &Cmd) -> &'static str {
     match c {
-        Cmd::Index => "index",
+        // New groups
+        Cmd::Index { op } => match op {
+            None | Some(IndexOp::Build) => "index",
+            Some(IndexOp::Refresh { .. }) => "index/refresh",
+            Some(IndexOp::FtsRebuild) => "index/fts-rebuild",
+            Some(IndexOp::Watch { .. }) => "index/watch",
+            Some(IndexOp::Compress { .. }) => "index/compress",
+        },
+        Cmd::Lookup { op } => match op {
+            LookupOp::Sym { .. } => "lookup/sym",
+            LookupOp::Refs { .. } => "lookup/refs",
+            LookupOp::Callers { .. } => "lookup/callers",
+            LookupOp::Outline { .. } => "lookup/outline",
+            LookupOp::Files { .. } => "lookup/files",
+            LookupOp::Grep { .. } => "lookup/grep",
+            LookupOp::Fuzzy { .. } => "lookup/fuzzy",
+            LookupOp::Prefix { .. } => "lookup/prefix",
+        },
+        Cmd::Agent { op } => match op {
+            AgentOp::Run { .. } => "agent/run",
+            AgentOp::Ls { .. } => "agent/ls",
+            AgentOp::Guard { .. } => "agent/guard",
+            AgentOp::Kills { .. } => "agent/kills",
+        },
+        Cmd::Stack { .. } => "stack",
+        Cmd::Setup { op } => match op {
+            SetupOp::InstallClaude { .. } => "setup/install-claude",
+            SetupOp::Upgrade { .. } => "setup/upgrade",
+            SetupOp::Completions { .. } => "setup/completions",
+            SetupOp::Openapi => "setup/openapi",
+        },
+        Cmd::Info { op, .. } => match op {
+            None => "info",
+            Some(InfoOp::Build { .. }) => "info/build",
+            Some(InfoOp::Track { .. }) => "info/track",
+            Some(InfoOp::Services { .. }) => "info/services",
+            Some(InfoOp::Model { .. }) => "info/model",
+        },
+        Cmd::Graph { .. } => "graph",
+        Cmd::Memory { .. } => "memory",
+        Cmd::Backup { .. } => "backup",
+        Cmd::Doctor { .. } => "doctor",
+        Cmd::Jobs(_) => "jobs",
+        Cmd::Go => "go",
+        Cmd::Serve { .. } => "serve",
+        // Deprecated aliases
         Cmd::Refresh { .. } => "refresh",
         Cmd::Watch { .. } => "watch",
         Cmd::Sym { .. } => "sym",
@@ -1584,27 +2069,93 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::Grep { .. } => "grep",
         Cmd::FtsRebuild => "fts-rebuild",
         Cmd::Track { .. } => "track",
-        Cmd::Memory { .. } => "memory",
-        Cmd::Graph { .. } => "graph",
         Cmd::Upgrade { .. } => "upgrade",
         Cmd::Compress { .. } => "compress",
         Cmd::Completions { .. } => "completions",
-        Cmd::Info { .. } => "info",
         Cmd::Openapi => "openapi",
-        Cmd::Go => "go",
-        Cmd::Agent { .. } => "agent",
+        Cmd::AgentRunAlias { .. } => "agent-run",
         Cmd::AgentLs { .. } => "agent-ls",
         Cmd::AgentGuard { .. } => "agent-guard",
         Cmd::AgentKills { .. } => "agent-kills",
         Cmd::ModelInfo { .. } => "model-info",
-        Cmd::Backup { .. } => "backup",
-        Cmd::Serve { .. } => "serve",
-        Cmd::InstallClaude { .. } => "install-claude",
         Cmd::OllamaStack { .. } => "ollama-stack",
-        Cmd::Doctor { .. } => "doctor",
-        Cmd::Jobs(_) => "jobs",
         Cmd::DebugServiceDiscovery { .. } => "debug-service-discovery",
+        Cmd::InstallClaude { .. } => "install-claude",
     }
+}
+
+/// Shared agent-run logic used by both `crabcc agent run` and the deprecated
+/// `crabcc agent-run` alias.
+fn run_agent_run(
+    run: &str,
+    dry_run: bool,
+    model: &Option<String>,
+    no_refresh: bool,
+    backend: &str,
+    profile: &Option<String>,
+    root: &Path,
+) -> Result<()> {
+    let backend = agent::Backend::from_str(backend)?;
+    let loaded_profile = match profile.as_deref() {
+        None => None,
+        Some(p) => {
+            let id = agent_profile::parse_internal_profile_id(p).ok_or_else(|| {
+                anyhow::anyhow!("--profile must use the 'internal/<name>' form (got '{p}')")
+            })?;
+            Some(agent_profile::load(root, id)?)
+        }
+    };
+    let model_override = model
+        .clone()
+        .or_else(|| loaded_profile.as_ref().and_then(|p| p.model.clone()));
+    agent::run_with_profile(
+        agent::AgentRequest {
+            prompt: run,
+            root,
+            dry_run,
+            model: model_override,
+            no_refresh,
+            backend,
+        },
+        loaded_profile,
+    )
+}
+
+/// Dispatches `crabcc stack <op>` — thin wrapper around the existing
+/// `run_ollama_stack` body, converting the new `StackOp` into the legacy
+/// `OllamaStackOp` shape.
+fn run_stack_op(op: &StackOp) -> Result<()> {
+    use crabcc_core::ollama_stack as ols;
+    let opts = ols::Options::new();
+    match op {
+        StackOp::Up => {
+            let r = ols::up(&opts)?;
+            println!("{}", sonic_rs::to_string(&r)?);
+        }
+        StackOp::Down { volumes } => {
+            let stopped = ols::down(&opts, *volumes)?;
+            println!(
+                "{}",
+                sonic_rs::to_string(&serde_json::json!({ "stopped": stopped }))?
+            );
+        }
+        StackOp::Status => {
+            let containers = ols::status(&opts)?;
+            println!("{}", sonic_rs::to_string(&containers)?);
+        }
+        StackOp::Logs { service, tail } => {
+            let body = ols::logs(&opts, service.as_deref(), *tail)?;
+            print!("{body}");
+        }
+        StackOp::Pull => {
+            ols::pull(&opts)?;
+            println!(
+                "{}",
+                sonic_rs::to_string(&serde_json::json!({ "ok": true }))?
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Dispatches `crabcc ollama-stack <op>` — pure operator surface.

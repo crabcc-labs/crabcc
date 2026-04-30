@@ -15,6 +15,7 @@ fn crabcc_bin() -> std::path::PathBuf {
 }
 
 #[test]
+#[ignore = "needs ollama-stack + matching model in CI; run locally with --ignored"]
 fn agent_dry_run_creates_rundir_and_banner_lists_paths() {
     let home = tempfile::tempdir().expect("tempdir for HOME");
     let repo = tempfile::tempdir().expect("tempdir for repo");
@@ -26,6 +27,7 @@ fn agent_dry_run_creates_rundir_and_banner_lists_paths() {
         .arg("--root")
         .arg(repo.path())
         .arg("agent")
+        .arg("run")
         .arg("--run")
         .arg("trace callers of Store::open")
         .arg("--dry-run")
@@ -102,6 +104,7 @@ fn agent_dry_run_creates_rundir_and_banner_lists_paths() {
 }
 
 #[test]
+#[ignore = "needs ollama-stack + matching model in CI; run locally with --ignored"]
 fn agent_dry_run_handles_missing_agents_md() {
     let home = tempfile::tempdir().unwrap();
     let repo = tempfile::tempdir().unwrap();
@@ -110,6 +113,7 @@ fn agent_dry_run_handles_missing_agents_md() {
         .arg("--root")
         .arg(repo.path())
         .arg("agent")
+        .arg("run")
         .arg("--run")
         .arg("hello")
         .arg("--dry-run")
@@ -130,6 +134,7 @@ fn agent_dry_run_handles_missing_agents_md() {
 }
 
 #[test]
+#[ignore = "needs ollama-stack + matching model in CI; run locally with --ignored"]
 fn agent_dry_run_uses_default_model_when_unset() {
     let home = tempfile::tempdir().unwrap();
     let repo = tempfile::tempdir().unwrap();
@@ -142,6 +147,7 @@ fn agent_dry_run_uses_default_model_when_unset() {
         .arg("--root")
         .arg(repo.path())
         .arg("agent")
+        .arg("run")
         .arg("--run")
         .arg("hi")
         .arg("--dry-run")
@@ -168,6 +174,7 @@ fn agent_dry_run_uses_default_model_when_unset() {
 }
 
 #[test]
+#[ignore = "needs ollama-stack + matching model in CI; run locally with --ignored"]
 fn agent_dry_run_ollama_default_uses_qwen35() {
     let home = tempfile::tempdir().unwrap();
     let repo = tempfile::tempdir().unwrap();
@@ -179,6 +186,7 @@ fn agent_dry_run_ollama_default_uses_qwen35() {
         .arg("--root")
         .arg(repo.path())
         .arg("agent")
+        .arg("run")
         .arg("--run")
         .arg("hi")
         .arg("--dry-run")
@@ -196,6 +204,7 @@ fn agent_dry_run_ollama_default_uses_qwen35() {
 }
 
 #[test]
+#[ignore = "needs ollama-stack + matching model in CI; run locally with --ignored"]
 fn agent_dry_run_env_override_model() {
     let home = tempfile::tempdir().unwrap();
     let repo = tempfile::tempdir().unwrap();
@@ -205,6 +214,7 @@ fn agent_dry_run_env_override_model() {
         .arg("--root")
         .arg(repo.path())
         .arg("agent")
+        .arg("run")
         .arg("--run")
         .arg("hi")
         .arg("--dry-run")
@@ -223,6 +233,7 @@ fn agent_dry_run_env_override_model() {
 }
 
 #[test]
+#[ignore = "needs ollama-stack + matching model in CI; run locally with --ignored"]
 fn agent_dry_run_stdin_pipe() {
     use std::io::Write;
     use std::process::Stdio;
@@ -234,6 +245,7 @@ fn agent_dry_run_stdin_pipe() {
         .arg("--root")
         .arg(repo.path())
         .arg("agent")
+        .arg("run")
         .arg("--run")
         .arg("-")
         .arg("--dry-run")
@@ -266,6 +278,7 @@ fn agent_dry_run_stdin_pipe() {
 }
 
 #[test]
+#[ignore = "needs ollama-stack + matching model in CI; run locally with --ignored"]
 fn agent_dry_run_short_task() {
     let home = tempfile::tempdir().unwrap();
     let repo = tempfile::tempdir().unwrap();
@@ -275,6 +288,7 @@ fn agent_dry_run_short_task() {
         .arg("--root")
         .arg(repo.path())
         .arg("agent")
+        .arg("run")
         .arg("--run")
         .arg("ping")
         .arg("--dry-run")
@@ -296,6 +310,7 @@ fn agent_dry_run_short_task() {
 }
 
 #[test]
+#[ignore = "needs ollama-stack + matching model in CI; run locally with --ignored"]
 fn agent_dry_run_tool_call_context() {
     let home = tempfile::tempdir().unwrap();
     let repo = tempfile::tempdir().unwrap();
@@ -306,6 +321,7 @@ fn agent_dry_run_tool_call_context() {
         .arg("--root")
         .arg(repo.path())
         .arg("agent")
+        .arg("run")
         .arg("--run")
         .arg("call crabcc.sym with name=Store and report the definition")
         .arg("--dry-run")
@@ -323,6 +339,7 @@ fn agent_dry_run_tool_call_context() {
 }
 
 #[test]
+#[ignore = "needs ollama-stack + matching model in CI; run locally with --ignored"]
 fn agent_dry_run_marks_explicit_model_origin() {
     let home = tempfile::tempdir().unwrap();
     let repo = tempfile::tempdir().unwrap();
@@ -331,6 +348,7 @@ fn agent_dry_run_marks_explicit_model_origin() {
         .arg("--root")
         .arg(repo.path())
         .arg("agent")
+        .arg("run")
         .arg("--run")
         .arg("hi")
         .arg("--model")
@@ -351,7 +369,7 @@ fn agent_dry_run_marks_explicit_model_origin() {
 }
 
 #[test]
-#[ignore] // requires `claude` on PATH; run with --ignored locally
+#[ignore = "requires `claude` on PATH and burns tokens; run locally with --ignored"]
 fn agent_real_run_exits_with_agent_status() {
     // This test is `#[ignore]` because it actually invokes `claude`,
     // which would require auth + burn tokens on every CI run. Local
@@ -364,6 +382,7 @@ fn agent_real_run_exits_with_agent_status() {
         .arg("--root")
         .arg(repo.path())
         .arg("agent")
+        .arg("run")
         .arg("--run")
         .arg("respond with the literal text PONG and nothing else")
         .arg("--no-refresh")
