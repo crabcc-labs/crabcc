@@ -1,20 +1,13 @@
-// TelemetryPanel — issue #90 dashboard surface.
+// TelemetryPanel — issues #90 + #86 dashboard surface.
 //
-// Renders the tracing events produced by every crabcc invocation that
-// shares the repo. Each line in `<root>/.crabcc/telemetry.jsonl` is
-// one tracing event; the Rust handler parses it into a typed event
-// shape and the panel groups them by KPI tag for at-a-glance throughput.
+// Two sections:
+//   1. OTLP health pill (issue #86) — shows green/red rotel status.
+//      Set OTEL_EXPORTER_OTLP_ENDPOINT on the server to enable.
+//   2. KPI event stream (issue #90) — events from .crabcc/telemetry.jsonl.
 //
-// What the user sees:
-//   - top: a tiny meta bar (file path, lines read, bytes, exists?)
-//   - main list: most recent events, newest first, with level + target
-//     + the structured fields rendered as a compact key=value strip.
-//   - colour-coded level dots (INFO=cyan, WARN=amber, ERROR=red).
-//
-// Polling lives in App.tsx via usePolling; this component is purely
-// presentational.
+// Polling lives in App.tsx; this component is purely presentational.
 
-import type { TelemetryEvent, TelemetrySource } from "../api";
+import type { OtlpHealth, TelemetryEvent, TelemetrySource } from "../api";
 
 const LEVEL_DOT: Record<string, string> = {
   TRACE: "#8aa",
@@ -40,20 +33,103 @@ function fmtAge(ts: number, now: number): string {
   return `${Math.floor(dt / 86400)}d`;
 }
 
+// ── OTLP health pill ──────────────────────────────────────────────────────────
+
+function OtlpPill({ health }: { health: OtlpHealth | null }) {
+  if (!health) {
+    return (
+      <span className="otlp-pill otlp-unknown" title="Checking OTLP…">
+        ● OTLP …
+      </span>
+    );
+  }
+  if (!health.endpoint) {
+    return (
+      <span
+        className="otlp-pill otlp-disabled"
+        title="Set OTEL_EXPORTER_OTLP_ENDPOINT on the server to enable"
+      >
+        ○ OTLP disabled
+      </span>
+    );
+  }
+  return health.reachable ? (
+    <span
+      className="otlp-pill otlp-ok"
+      title={`rotel reachable at ${health.endpoint}`}
+    >
+      ● OTLP {shortHost(health.endpoint)}
+    </span>
+  ) : (
+    <span
+      className="otlp-pill otlp-err"
+      title={`${health.error ?? "unreachable"} — ${health.endpoint}\nRun: task telemetry-rotel`}
+    >
+      ● OTLP unreachable
+    </span>
+  );
+}
+
+function shortHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
+// ── main panel ────────────────────────────────────────────────────────────────
+
+function fmtInterval(ms: number): string {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s / 60)}m`;
+}
+
 export function TelemetryPanel({
   events,
   source,
+  otlpHealth,
+  otlpPollMs,
   now,
 }: {
   events: TelemetryEvent[];
   source: TelemetrySource | null;
+  otlpHealth: OtlpHealth | null;
+  otlpPollMs?: number;
   now: number;
 }) {
-  // Newest first.
   const ordered = [...events].sort((a, b) => b.ts - a.ts);
 
   return (
     <div className="telemetry-panel">
+      {/* ── OTLP health row ── */}
+      <div className="telemetry-otlp-row">
+        <OtlpPill health={otlpHealth} />
+        {otlpHealth?.reachable && (
+          <span className="otlp-hint dim">
+            {" "}
+            · spans → rotel · not stored in any DB
+            {otlpPollMs !== undefined && (
+              <> · probes every {fmtInterval(otlpPollMs)}</>
+            )}
+          </span>
+        )}
+        {otlpHealth && !otlpHealth.reachable && !otlpHealth.endpoint && (
+          <span className="otlp-hint dim">
+            {" "}
+            ·{" "}
+            <code>
+              export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+            </code>
+          </span>
+        )}
+        {otlpHealth && !otlpHealth.reachable && otlpHealth.endpoint && (
+          <span className="otlp-hint dim"> · run: task telemetry-rotel</span>
+        )}
+      </div>
+
+      {/* ── jsonl event stream ── */}
       <div className="telemetry-meta">
         {source ? (
           source.exists ? (
@@ -72,6 +148,7 @@ export function TelemetryPanel({
           <span className="dim">loading…</span>
         )}
       </div>
+
       {ordered.length === 0 ? (
         <div className="telemetry-empty">
           run any <code>crabcc graph …</code> or use the MCP server to populate
