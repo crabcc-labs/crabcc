@@ -1,0 +1,17 @@
+# Tuist 4.x outputs — generated, never checked in.
+Derived/
+*.xcodeproj
+*.xcworkspace
+
+# Tuist's resolved SPM cache.
+Tuist/.swiftpm/
+Tuist/Dependencies/
+
+# Xcode build outputs.
+build/
+DerivedData/
+
+# macOS / Xcode noise.
+.DS_Store
+xcuserdata/
+*.xcuserstate

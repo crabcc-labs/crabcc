@@ -261,6 +261,67 @@ tasks:
     cmds:
       - bash scripts/build-dmg.sh {{if .SKIP_BUILD}}--skip-build{{end}}
 
+  # SwiftUI / Tuist build pipeline (issue #192). Parallel to `dmg` through
+  # Phase 0; Phase 1+ migrates `dmg` to consume `task macos-app-build`'s
+  # output. Requires `tuist` on PATH — `mise install tuist` or `brew install tuist`.
+
+  macos-app-install:
+    desc: Resolve SPM dependencies for apps/macos via Tuist (#192)
+    summary: |
+      Pulls TCA, Lottie, AsyncQueue (declared in apps/macos/Tuist/Package.swift)
+      and resolves them into apps/macos/Tuist/.swiftpm/. Idempotent —
+      safe to re-run after dependency bumps. First step before generate.
+    dir: apps/macos
+    cmds:
+      - tuist install
+
+  macos-app-generate:
+    desc: Generate apps/macos/Crabcc.xcodeproj from Project.swift (#192)
+    summary: |
+      Materializes the Xcode project from apps/macos/Project.swift. The
+      .xcodeproj is gitignored — regenerate any time. Run macos-app-install
+      first the very first time, after a dep bump, or after pulling a
+      branch that changed Tuist/Package.swift.
+    dir: apps/macos
+    deps: [macos-app-install]
+    cmds:
+      - tuist generate --no-open
+
+  macos-app-build:
+    desc: Build apps/macos/ via xcodebuild (#192) — Release configuration
+    summary: |
+      Produces apps/macos/Derived/Build/Products/Release/Crabcc.app.
+      Phase 0 of #192 — the produced .app is a sibling artifact of the
+      legacy installer/Crabcc.app/. Phase 1+ wires `task dmg` to consume
+      this output.
+    dir: apps/macos
+    deps: [macos-app-generate]
+    cmds:
+      - xcodebuild -project Crabcc.xcodeproj -scheme Crabcc -configuration Release build
+
+  macos-app-test:
+    desc: Run TCA TestStore tests for apps/macos (#192)
+    summary: |
+      Runs the CrabccTests target via `tuist test`. TestStore exhaustively
+      asserts every state transition for each Reducer; missing tests are
+      a review-blocker per skill/crabcc-app-stack/SKILL.md.
+    dir: apps/macos
+    deps: [macos-app-generate]
+    cmds:
+      - tuist test
+
+  macos-app:
+    desc: One-shot — install deps, generate, build, test (#192)
+    summary: |
+      Full SwiftUI / Tuist pipeline in one command. Mirrors the legacy
+      `task dmg` for ergonomics. Runs install → generate → build → test
+      sequentially. Skip `test` with NO_TEST=1.
+    cmds:
+      - task: macos-app-install
+      - task: macos-app-generate
+      - task: macos-app-build
+      - task: macos-app-test
+
   install:
     desc: Cargo install crabcc to ~/.cargo/bin/crabcc; auto-bootstraps shell aliases (idempotent)
     summary: |

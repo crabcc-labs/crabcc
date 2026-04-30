@@ -11,6 +11,12 @@ This repo is the source of `crabcc` itself. **Eat your own dogfood.** Never
 reach for `grep -rn`, `find . -name`, or `rg "ClassName"` when a `crabcc`
 subcommand answers the question in fewer tokens.
 
+For everything else (file viewing, diffing, JSON munging, HTTP, benchmarks,
+worktrees…) the broader fast-CLI roster lives in [`.tools`](./.tools) — a
+JSON manifest of preferred tools with `replaces` mappings to their legacy
+equivalents. AGENTS.md → "Where things live" cross-references it. Reach
+for those before reaching for the classic Unix tool.
+
 ## Line-by-line: navigating this repo with crabcc
 
 ```bash

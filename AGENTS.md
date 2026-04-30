@@ -224,6 +224,11 @@ fixture) ✅. Future M3-full (KG ops) tracked separately. See
   `REPO_FIXTURE` env var.
 - **Skill + slash command:** `skill/crabcc/SKILL.md` and `commands/crabcc-init.md`.
   Symlink with `crabcc install-claude`.
+- **Preferred CLI tools:** `.tools` (JSON) at the repo root — curated list of
+  blazing-fast CLI replacements (`rg`, `fd`, `bat`, `eza`, `delta`, `jq`,
+  `wtp`, etc.). Reach for these before their classic Unix equivalents.
+  CLAUDE.md's "Use crabcc, not grep" section is the canonical example of
+  this principle in action.
 
 ## When unsure
 
