@@ -1,4 +1,4 @@
-use crate::types::{Symbol, SymbolKind};
+use crate::types::{Edge, Symbol, SymbolKind};
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
@@ -82,6 +82,9 @@ impl Store {
             )
             .context("migrate: add symbols.signature_enc")?;
         }
+        // v2.0 edges migration: pre-v2 DBs have INTEGER `src_symbol`; recreate
+        // the empty table with TEXT (and the dst_kind composite index).
+        migrate_edges_text(&conn).context("migrate edges schema")?;
         // PRAGMA optimize is a no-op until the query planner has stats; it
         // becomes useful after ANALYZE. Run it whenever we open — sqlite
         // makes the call cheap when nothing's changed.
@@ -202,6 +205,65 @@ impl Store {
         Ok(())
     }
 
+    /// Replace all edges originating from `file_id` with the supplied set.
+    /// Mirror of `replace_symbols` — same all-or-nothing per-file shape so
+    /// reindexing a file leaves the edges table consistent.
+    pub fn replace_edges(&self, file_id: i64, edges: &[Edge]) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM edges WHERE src_file_id = ?1", params![file_id])?;
+        let mut stmt = self.conn.prepare(
+            "INSERT INTO edges(src_file_id, src_symbol, dst_name, kind, line)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+        for e in edges {
+            stmt.execute(params![file_id, e.src_symbol, e.dst_name, e.kind, e.line])?;
+        }
+        Ok(())
+    }
+
+    /// Count populated edges. Used to decide whether to take the SQL caller
+    /// path or fall back to ast-grep on a stale (v1.0.0) index.
+    pub fn edge_count(&self) -> Result<i64> {
+        let n: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM edges", [], |row| row.get(0))?;
+        Ok(n)
+    }
+
+    /// Pure-SQL caller lookup: find every edge whose `dst_name` is `name` and
+    /// `kind = 'call'`, returning {file, line, src_symbol} per hit. Cost is
+    /// dominated by the index seek on `idx_edges_dst_kind`.
+    pub fn callers_of(&self, name: &str) -> Result<Vec<EdgeHit>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT f.path, e.line, e.src_symbol
+             FROM edges e JOIN files f ON e.src_file_id = f.id
+             WHERE e.dst_name = ?1 AND e.kind = 'call'
+             ORDER BY f.path, e.line",
+        )?;
+        let rows = stmt.query_map(params![name], |row| {
+            Ok(EdgeHit {
+                file: row.get(0)?,
+                line: row.get::<_, i64>(1)? as u32,
+                src_symbol: row.get(2)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Stream every (src_symbol, dst_name) pair where both ends are populated.
+    /// Used by `CallGraph::build` to fold the edges table into adjacency in
+    /// a single scan instead of N * find_callers.
+    pub fn iter_call_edges(&self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT src_symbol, dst_name FROM edges
+             WHERE kind = 'call' AND src_symbol IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     pub fn list_files(&self) -> Result<Vec<(String, String)>> {
         let mut stmt = self.conn.prepare("SELECT path, lang FROM files")?;
         let rows = stmt.query_map([], |row| {
@@ -243,6 +305,29 @@ impl Store {
 
     pub fn clear_all(&self) -> Result<()> {
         self.conn.execute("DELETE FROM files", [])?;
+        Ok(())
+    }
+
+    /// Read a value from the `meta` table, or `None` if the key isn't set.
+    /// Used for boolean flags like `edges_populated` that gate query paths.
+    pub fn meta_get(&self, key: &str) -> Result<Option<String>> {
+        let v = self
+            .conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = ?1",
+                params![key],
+                |row| row.get::<_, String>(0),
+            )
+            .ok();
+        Ok(v)
+    }
+
+    pub fn meta_set(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO meta(key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
         Ok(())
     }
 
@@ -354,6 +439,62 @@ impl Store {
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
+}
+
+/// One row of `Store::callers_of` — caller-side hit shape, file-and-line plus
+/// the enclosing function name when known. Kept narrow so the SQL layer can
+/// stream rows without paying for snippet rendering (the query layer adds
+/// snippets on demand from disk).
+#[derive(Debug, Clone)]
+pub struct EdgeHit {
+    pub file: String,
+    pub line: u32,
+    pub src_symbol: Option<String>,
+}
+
+/// In v1.0.0 the `edges.src_symbol` column was INTEGER (FK to symbols.id) but
+/// was never populated. v2.0 uses TEXT (the enclosing symbol name) to mirror
+/// `dst_name` and avoid a join on every caller query. The table is always
+/// empty for v1.0.0 users, so dropping and recreating is loss-free.
+fn migrate_edges_text(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare("PRAGMA table_info(edges)")?;
+    let mut rows = stmt.query([])?;
+    let mut needs_migrate = false;
+    while let Some(row) = rows.next()? {
+        let name: String = row.get(1)?;
+        let coltype: String = row.get(2)?;
+        if name == "src_symbol" && coltype.eq_ignore_ascii_case("INTEGER") {
+            needs_migrate = true;
+            break;
+        }
+    }
+    drop(rows);
+    drop(stmt);
+    if needs_migrate {
+        conn.execute_batch(
+            "DROP TABLE IF EXISTS edges;
+             CREATE TABLE edges (
+                id          INTEGER PRIMARY KEY,
+                src_file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
+                src_symbol  TEXT,
+                dst_name    TEXT    NOT NULL,
+                kind        TEXT    NOT NULL,
+                line        INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_edges_dst      ON edges(dst_name);
+             CREATE INDEX IF NOT EXISTS idx_edges_src      ON edges(src_file_id);
+             CREATE INDEX IF NOT EXISTS idx_edges_dst_kind ON edges(dst_name, kind);
+             INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '2');",
+        )?;
+    } else {
+        // Fresh DB or already migrated — make sure the kind-composite index
+        // exists for older v2 builds that predate it.
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_edges_dst_kind ON edges(dst_name, kind);
+             INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '2');",
+        )?;
+    }
+    Ok(())
 }
 
 fn kind_str(k: SymbolKind) -> &'static str {

@@ -254,8 +254,14 @@ bench/                ← raw-CLI A/B benchmark harness + visualize
 - **`track`**: appends a JSONL log to `~/.crabcc/usage.log`, summarized by `crabcc track`.
 - **`watch`**: notify-debouncer-mini-based FS watcher running on its own thread.
   Auto-runs `refresh` on file changes. Feedback-loop guard skips events under `.crabcc/`.
-- **`graph`**: call-graph BFS sidecar persisted at `.crabcc/graph.json`. Build once with
-  `crabcc graph-build`, query with `crabcc graph NAME [--dir callers|callees] [--depth N]`.
+- **`graph`**: call-graph sidecar persisted at `.crabcc/graph.json`. The graph is
+  built directly from the `edges` table populated at extract time (one SQL scan,
+  O(files); v1.0.0's symbols × files walker is the fallback for un-reindexed DBs).
+  Subcommands:
+  - `crabcc graph build` — write/refresh the sidecar.
+  - `crabcc graph walk NAME [--dir callers|callees] [--depth N]` — BFS expansion.
+  - `crabcc graph cycles` — strongly-connected components of size ≥2.
+  - `crabcc graph orphans` — defined functions with no incoming callers (dead-code triage).
 
 For deeper architectural detail, mermaid diagrams of the data flow and threading model,
 and runbooks for adding features, see [`ARCHITECTURE.md`](./ARCHITECTURE.md).
@@ -278,9 +284,9 @@ and runbooks for adding features, see [`ARCHITECTURE.md`](./ARCHITECTURE.md).
 
 ## Status
 
-v1.0.0 shipped (2026-04-30); v2.0 in flight. Languages: TS/TSX/JS/Ruby
-(Go/Python/Rust queued for v2.0).
-**103 tests** (86 core + 17 MCP, 1 ignored FS-event-racy). License: MIT.
+v2.0.0 shipped (2026-04-30): edges-at-extract makes `graph build` O(files) and
+caller queries pure SQL. Languages: TS/TSX/JS/Ruby (Go/Python/Rust queued).
+**124 tests** (104 core + 20 MCP, 2 ignored: FS-event race + perf microbench). License: MIT.
 CI matrix: Linux x86_64 + Linux aarch64 + macOS x86_64 + macOS aarch64.
 
 ### Roadmap
@@ -293,7 +299,7 @@ CI matrix: Linux x86_64 + Linux aarch64 + macOS x86_64 + macOS aarch64.
 | CI: nextest + JUnit XML artifact | ✅ shipped | — |
 | ARCHITECTURE.md + install.sh + brew formula | ✅ shipped | — |
 | **`crabcc memory` MVP** (MemPalace port) | 📋 v2.0 | [#2](https://github.com/peterlodri-sec/crabcc/issues/2) |
-| **Edges-at-extract** (graph build O(n²)→O(n)) | 📋 v2.0 | [#3](https://github.com/peterlodri-sec/crabcc/issues/3) |
+| **Edges-at-extract** (graph build O(n²)→O(n)) | ✅ shipped (v2.0.0) | [#3](https://github.com/peterlodri-sec/crabcc/issues/3) |
 | **Languages: Go, Python, Rust** | 📋 v2.0 | [#4](https://github.com/peterlodri-sec/crabcc/issues/4) |
 | **Distribution: brew tap, mdBook, demos** | 📋 v2.0 | [#5](https://github.com/peterlodri-sec/crabcc/issues/5) |
 | **CI optimizations** (sccache, smarter cache) | 📋 v2.0 | [#6](https://github.com/peterlodri-sec/crabcc/issues/6) |
