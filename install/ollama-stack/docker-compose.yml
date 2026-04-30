@@ -21,26 +21,58 @@
 
 name: crabcc-ollama-stack
 
+# Reusable logging block — JSON-file driver with size cap so a chatty service
+# can't fill the disk on a long-running dev box.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   ollama:
     image: ollama/ollama:latest
     restart: unless-stopped
+    init: true
     expose:
       - "11434"
+    # Default Docker shm is 64 MiB; Ollama mmaps model weights and benefits
+    # from a larger shared-memory segment, especially for multi-GB models.
+    shm_size: "2gb"
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
     volumes:
       - ollama_models:/root/.ollama
+    # /tmp in tmpfs avoids touching the overlayfs for transient model writes.
+    tmpfs:
+      - /tmp:size=512m,mode=1777
     healthcheck:
       test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 16gb
+    logging: *logging
     networks:
       - stack
 
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
+    init: true
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
     depends_on:
       ollama:
         condition: service_healthy
@@ -52,18 +84,34 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+    tmpfs:
+      - /tmp:size=64m,mode=1777
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:11434/healthz >/dev/null 2>&1 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 256mb
+    logging: *logging
     networks:
       - stack
 
   litellm:
     image: ghcr.io/berriai/litellm:main-stable
     restart: unless-stopped
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
     depends_on:
       caddy:
         condition: service_healthy
@@ -75,6 +123,8 @@ services:
       - "${LITELLM_PORT:-4000}:4000"
     volumes:
       - ./litellm.config.yaml:/app/config.yaml:ro
+    tmpfs:
+      - /tmp:size=128m,mode=1777
     command: ["--config", "/app/config.yaml", "--port", "4000", "--num_workers", "1"]
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:4000/health/liveliness >/dev/null || exit 1"]
@@ -82,6 +132,11 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 1gb
+    logging: *logging
     networks:
       - stack
 

@@ -1,0 +1,124 @@
+# crabcc dev Compose stack — issues #105 / #107.
+#
+# Two services for local-dev convenience:
+#   crabcc    — built from the multi-stage install/Dockerfile.crabcc, runs
+#               `crabcc serve` against a bind-mounted repo at /workspace
+#   viz-web   — bun-based fast-reload container running esbuild --watch on
+#               crates/crabcc-viz/web/, dist/ written back to host so
+#               `crabcc serve` picks it up via include_str!-rebuild
+#
+# Run from repo root:
+#   docker compose -f install/dev/docker-compose.yml up --build
+#
+# Hot iteration:
+#   - Edit crates/crabcc-viz/web/src/* on host → esbuild --watch rebuilds
+#     dist/live.html in the bind volume → trigger a `crabcc` rebuild via
+#     `task build-fast` on host (until issue #107 lands a dev mode that
+#     reads dist/ from disk instead of include_str!).
+#
+# This stack is independent of install/ollama-stack/. Compose them together
+# with two -f flags if you want the auth stack alongside:
+#   docker compose \
+#     -f install/ollama-stack/docker-compose.yml \
+#     -f install/dev/docker-compose.yml \
+#     up --build
+
+name: crabcc-dev
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  crabcc:
+    build:
+      context: ../..
+      dockerfile: install/Dockerfile.crabcc
+      cache_from:
+        - crabcc:local
+    image: crabcc:local
+    init: true
+    user: "${UID:-1000}:${GID:-1000}"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # Bind the repo root in read-write so `crabcc index` writes .crabcc/
+    # back to the host. Adjust the source path if running from elsewhere.
+    volumes:
+      - ../..:/workspace:rw
+      - crabcc_cache:/home/crabcc/.cache/crabcc-memory
+    working_dir: /workspace
+    environment:
+      RUST_LOG: ${RUST_LOG:-crabcc=info}
+      CRABCC_AUTO_MEMORY: ${CRABCC_AUTO_MEMORY:-0}
+    command:
+      - serve
+      - --bind
+      - 0.0.0.0
+      - --port
+      - "8090"
+      - --root
+      - /workspace
+      - --no-open
+    ports:
+      - "${CRABCC_SERVE_PORT:-8090}:8090"
+    healthcheck:
+      # crabcc serve has no /healthz; root path returns 200 once /api/bootstrap completes.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8090/ >/dev/null 2>&1 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 2gb
+    logging: *logging
+    networks:
+      - dev
+
+  viz-web:
+    image: oven/bun:1-alpine
+    init: true
+    user: "${UID:-1000}:${GID:-1000}"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    working_dir: /web
+    # Bind only the viz-web subtree to keep the watch surface tight.
+    volumes:
+      - ../../crates/crabcc-viz/web:/web:rw
+      - bun_install_cache:/home/bun/.bun/install/cache
+    environment:
+      # esbuild's chokidar fallback can be flaky on bind volumes — force polling.
+      CHOKIDAR_USEPOLLING: "true"
+      WATCHPACK_POLLING: "true"
+    command: ["sh", "-c", "bun install --frozen-lockfile && bun run dev"]
+    # No port exposed — viz-web writes to /web/dist/ on the bind volume; the
+    # crabcc service / host re-includes it. A future Phase serves dist/ over
+    # HTTP for browser-side livereload.
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /web/dist/live.html || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 1gb
+    logging: *logging
+    networks:
+      - dev
+
+volumes:
+  crabcc_cache:
+  bun_install_cache:
+
+networks:
+  dev:
+    driver: bridge
