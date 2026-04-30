@@ -333,8 +333,7 @@ mod fastembed_impl {
         /// inferred from the model.
         pub fn with_model(model: EmbeddingModel) -> Result<Self> {
             let opts = InitOptions::new(model.clone());
-            let inner = TextEmbedding::try_new(opts)
-                .context("fastembed: load model")?;
+            let inner = TextEmbedding::try_new(opts).context("fastembed: load model")?;
             // MiniLM-L6-v2 is 384; bge-small/e5-small also 384. Hardcode
             // until we add a `model_dim()` helper or a runtime probe.
             let dim = match model {
