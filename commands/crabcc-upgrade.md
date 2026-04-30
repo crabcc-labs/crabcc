@@ -19,6 +19,12 @@ credentials) to query the private repo.
    ```
    crabcc upgrade --check --json
    ```
+   If the user has the Ollama auth stack from issue #105 installed, also
+   pass `--with-stack` to surface upstream image diffs without mutating
+   anything:
+   ```
+   crabcc upgrade --check --with-stack --json
+   ```
    The JSON shape is:
    ```json
    {
@@ -49,6 +55,14 @@ credentials) to query the private repo.
      crabcc upgrade --apply --json
      ```
      This runs the same check as `--check`, then `rm`s `.crabcc/{index.db,tantivy/,graph.json}`.
+   - **If the user has the Ollama auth stack installed** (issue #105):
+     ```
+     crabcc upgrade --apply --with-stack --json
+     ```
+     This adds `docker compose pull && up -d --wait` against
+     `~/.crabcc/ollama-stack/` so any updated upstream images
+     (Caddy, LiteLLM, Ollama itself) are picked up. Read-only
+     variants: `--check --with-stack` shows what *would* change.
    - Reindex:
      ```
      crabcc index
