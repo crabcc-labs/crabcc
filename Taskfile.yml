@@ -284,6 +284,47 @@ tasks:
       - test -f /tmp/crabcc-mem-smoke/.crabcc/memory.db
       - rm -rf /tmp/crabcc-mem-smoke
 
+  aliases-smoke:
+    desc: Smoke — install-aliases.sh emits expected --aggressive verbs + idempotent
+    cmds:
+      - bash scripts/aliases-smoke.sh
+
+  install-hooks:
+    desc: Install the local pre-commit hook (symlink — auto-updates with the repo)
+    cmds:
+      - bash scripts/install-hooks.sh
+
+  install-aliases:
+    desc: Install minimal shell aliases (rg/fd/bat/eza + cc/ccs/ccr verbs)
+    cmds:
+      - bash scripts/install-aliases.sh
+
+  install-aliases-aggressive:
+    desc: Install aggressive aliases (sym/refs/callers/gr) into both zsh + bash
+    cmds:
+      - bash scripts/install-aliases.sh --aggressive --all-shells
+
+  pre-commit-fast:
+    desc: Fast pre-commit gate — fmt-check + clippy + aliases-smoke (~10s, no tests)
+    summary: |
+      Sub-15s gate intended for pre-commit hooks and CI fast-check.
+      Runs fmt-check, clippy (no --all-features to stay on stable), and
+      aliases-smoke. Skips the test suite — that's `task ci` / `task local-ci`.
+    cmds:
+      - task: fmt-check
+      - task: lint
+      - task: aliases-smoke
+
+  pre-commit-fix:
+    desc: Pre-PR autofix — cargo fmt + clippy --fix + aliases-smoke
+    summary: |
+      Run before opening a PR. Applies cargo fmt and clippy auto-fixes
+      to the working tree, then re-runs the fast gate to verify clean.
+    cmds:
+      - "{{.CARGO}} fmt --all"
+      - "{{.CARGO}} clippy --workspace --all-targets --fix --allow-dirty --allow-staged -- -D warnings"
+      - task: aliases-smoke
+
   ci:
     desc: Local CI dry-run — fmt + clippy + test + smoke
     cmds:
@@ -292,6 +333,7 @@ tasks:
       - task: test
       - task: smoke
       - task: memory-smoke
+      - task: aliases-smoke
 
   local-ci:
     desc: Full local CI — mirrors GH workflow + prep-pr; pass/fail summary table
