@@ -73,6 +73,9 @@ impl Fts {
             ))?;
         }
         writer.commit()?;
+        // Wait for any background merge threads to finish before returning so
+        // that sequential rebuild() calls don't race on the index lock.
+        writer.wait_merging_threads()?;
         Ok(n)
     }
 

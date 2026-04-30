@@ -435,4 +435,80 @@ mod tests {
             "user file must survive"
         );
     }
+
+    #[test]
+    fn recommend_up_to_date_says_already_latest() {
+        let recs = recommend(&VersionDelta::UpToDate, None);
+        assert_eq!(recs.len(), 1);
+        assert!(recs[0].contains("latest"), "got: {:?}", recs[0]);
+    }
+
+    #[test]
+    fn recommend_ahead_mentions_dev_build() {
+        let recs = recommend(
+            &VersionDelta::Ahead {
+                current: "2.0.0".into(),
+                latest: "1.9.0".into(),
+            },
+            None,
+        );
+        assert_eq!(recs.len(), 1);
+        assert!(
+            recs[0].contains("dev build") || recs[0].contains("ahead"),
+            "got: {:?}",
+            recs[0]
+        );
+    }
+
+    #[test]
+    fn recommend_major_without_root_has_no_cleanup_step() {
+        let recs = recommend(
+            &VersionDelta::Newer {
+                current: "1.0.0".into(),
+                latest: "2.0.0".into(),
+                kind: BumpKind::Major,
+            },
+            None,
+        );
+        // Must contain the major upgrade warning but no cleanup path (no root).
+        assert!(recs.iter().any(|r| r.contains("MAJOR")));
+        assert!(!recs.iter().any(|r| r.contains("crabcc index")));
+    }
+
+    #[test]
+    fn recommend_major_with_existing_index_includes_cleanup() {
+        let dir = tempfile::tempdir().unwrap();
+        let crabcc = dir.path().join(".crabcc");
+        std::fs::create_dir_all(&crabcc).unwrap();
+        std::fs::write(crabcc.join("index.db"), b"fake").unwrap();
+
+        let recs = recommend(
+            &VersionDelta::Newer {
+                current: "1.0.0".into(),
+                latest: "2.0.0".into(),
+                kind: BumpKind::Major,
+            },
+            Some(dir.path()),
+        );
+        assert!(
+            recs.iter().any(|r| r.contains("crabcc index")),
+            "major bump with existing index.db must suggest re-index: {recs:?}"
+        );
+    }
+
+    #[test]
+    fn compare_strips_build_metadata() {
+        // `v1.2.0+build.42` should still be treated as 1.2.0.
+        let d = compare_versions("1.0.0", "v1.2.0+build.42");
+        match d {
+            VersionDelta::Newer { kind, .. } => assert_eq!(kind, BumpKind::Minor),
+            other => panic!("expected minor, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn recommend_unknown_returns_no_recommendations() {
+        let recs = recommend(&VersionDelta::Unknown { reason: "test".into() }, None);
+        assert!(recs.is_empty(), "unknown delta should produce no recs");
+    }
 }

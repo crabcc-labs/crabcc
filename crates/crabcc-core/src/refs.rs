@@ -109,4 +109,55 @@ const again = greet("again");
         let hits = find_refs("function foo() {}", "typescript", "bar").unwrap();
         assert_eq!(hits.len(), 0);
     }
+
+    #[test]
+    fn tsx_refs_are_found() {
+        // TSX uses a separate tree-sitter language; verify it's wired up.
+        let src = "const x = greet('hi');\nfunction greet(s: string) { return s; }\n";
+        let hits = find_refs(src, "tsx", "greet").unwrap();
+        assert!(hits.len() >= 2, "got: {hits:?}");
+    }
+
+    #[test]
+    fn javascript_refs_are_found() {
+        let src = "function hello() { return world(); }\nfunction world() {}\n";
+        let hits = find_refs(src, "javascript", "world").unwrap();
+        assert!(hits.len() >= 2, "got: {hits:?}");
+    }
+
+    #[test]
+    fn ruby_instance_variable_refs() {
+        let src = "class Foo\n  def init\n    @bar = 1\n  end\n  def show\n    @bar\n  end\nend\n";
+        let hits = find_refs(src, "ruby", "@bar").unwrap();
+        assert!(hits.len() >= 2, "got: {hits:?}");
+    }
+
+    #[test]
+    fn hit_carries_correct_line_number() {
+        // `greet` on line 2 (1-based) of the source.
+        let src = "const x = 1;\nconst y = greet();\nfunction greet() {}\n";
+        let hits = find_refs(src, "typescript", "greet").unwrap();
+        // At least one hit should have line >= 2.
+        assert!(
+            hits.iter().any(|h| h.line >= 2),
+            "expected a hit at line >=2, got: {hits:?}"
+        );
+    }
+
+    #[test]
+    fn long_line_snippet_is_truncated() {
+        // Build a source line that exceeds 80 characters.
+        let padding = "x".repeat(100);
+        let src = format!("const {} = target();\n", padding);
+        let hits = find_refs(&src, "typescript", "target").unwrap();
+        assert!(!hits.is_empty(), "no hits: {hits:?}");
+        // All snippets must be at most 81 chars (80 + the ellipsis character).
+        for h in &hits {
+            assert!(
+                h.snippet.chars().count() <= 81,
+                "snippet too long: {:?}",
+                h.snippet
+            );
+        }
+    }
 }

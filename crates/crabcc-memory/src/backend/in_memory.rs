@@ -509,4 +509,108 @@ mod tests {
         assert_eq!(r.hits.len(), 1);
         assert_eq!(r.hits[0].wing, "wb");
     }
+
+    #[test]
+    fn delete_before_in_wing_removes_old_entries() {
+        let e = HashEmbedder::new();
+        let b = InMemoryBackend::new();
+        // Add two drawers to the same wing.
+        b.add(&[
+            ins(&e, "old", "old content", "proj"),
+            ins(&e, "new", "new content", "proj"),
+        ])
+        .unwrap();
+        // Get the created_at timestamps for the drawers.
+        let drawers = b.list_drawers(Some("proj"), 10).unwrap();
+        assert_eq!(drawers.len(), 2);
+        // Use a "before" timestamp that is far in the future, so both entries
+        // qualify as old.
+        let far_future = drawers.iter().map(|d| d.created_at).max().unwrap() + 9999;
+        let removed = b
+            .delete(&DeleteSel::BeforeInWing {
+                wing: "proj".into(),
+                before: far_future,
+            })
+            .unwrap();
+        assert_eq!(removed, 2);
+        assert_eq!(b.count().unwrap(), 0);
+    }
+
+    #[test]
+    fn delete_before_in_wing_respects_wing_filter() {
+        let e = HashEmbedder::new();
+        let b = InMemoryBackend::new();
+        b.add(&[
+            ins(&e, "a", "content a", "wing-a"),
+            ins(&e, "b", "content b", "wing-b"),
+        ])
+        .unwrap();
+        let far_future = 9_999_999_999_i64;
+        // Delete before far_future in wing-a only.
+        let removed = b
+            .delete(&DeleteSel::BeforeInWing {
+                wing: "wing-a".into(),
+                before: far_future,
+            })
+            .unwrap();
+        assert_eq!(removed, 1);
+        // wing-b is untouched.
+        let remaining = b.list_drawers(Some("wing-b"), 10).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].source_id, "b");
+    }
+
+    #[test]
+    fn get_returns_empty_for_nonexistent_ids() {
+        let b = InMemoryBackend::new();
+        let result = b.get(&[999, 1000]).unwrap();
+        assert!(result.drawers.is_empty());
+    }
+
+    #[test]
+    fn get_multiple_ids() {
+        let e = HashEmbedder::new();
+        let b = InMemoryBackend::new();
+        let ids = b
+            .add(&[
+                ins(&e, "1", "alpha", "d"),
+                ins(&e, "2", "beta", "d"),
+                ins(&e, "3", "gamma", "d"),
+            ])
+            .unwrap();
+        assert_eq!(ids.len(), 3);
+        let result = b.get(&ids).unwrap();
+        assert_eq!(result.drawers.len(), 3);
+        let bodies: std::collections::HashSet<&str> =
+            result.drawers.iter().map(|d| d.body.as_str()).collect();
+        assert!(bodies.contains("alpha"));
+        assert!(bodies.contains("beta"));
+        assert!(bodies.contains("gamma"));
+    }
+
+    #[test]
+    fn list_drawers_limit_zero_returns_all() {
+        let e = HashEmbedder::new();
+        let b = InMemoryBackend::new();
+        for i in 0..5 {
+            b.add(&[ins(&e, &i.to_string(), &format!("body {i}"), "d")])
+                .unwrap();
+        }
+        // limit == 0 means unlimited.
+        let all = b.list_drawers(None, 0).unwrap();
+        assert_eq!(all.len(), 5);
+    }
+
+    #[test]
+    fn vacuum_is_noop_for_in_memory() {
+        let b = InMemoryBackend::new();
+        // vacuum must not error on the in-memory backend.
+        b.vacuum().unwrap();
+    }
+
+    #[test]
+    fn health_is_ok_for_in_memory() {
+        let b = InMemoryBackend::new();
+        assert_eq!(b.health(), crate::types::HealthStatus::Ok);
+    }
 }
