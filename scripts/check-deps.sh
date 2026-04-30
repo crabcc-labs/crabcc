@@ -181,6 +181,28 @@ install_hint() {
         *::repomix)         echo "npm install -g repomix" ;;
         *::csvlens)         echo "cargo install csvlens" ;;
 
+        # ----- media compression (lazy pipeline tools) -----
+        macos::ffmpeg)      echo "brew install ffmpeg" ;;
+        debian::ffmpeg)     echo "sudo apt-get install -y ffmpeg" ;;
+        fedora::ffmpeg)     echo "sudo dnf install -y ffmpeg" ;;
+        arch::ffmpeg)       echo "sudo pacman -S --needed ffmpeg" ;;
+        alpine::ffmpeg)     echo "apk add --no-cache ffmpeg" ;;
+
+        macos::pngquant)    echo "brew install pngquant" ;;
+        debian::pngquant)   echo "sudo apt-get install -y pngquant" ;;
+        fedora::pngquant)   echo "sudo dnf install -y pngquant" ;;
+        arch::pngquant)     echo "sudo pacman -S --needed pngquant" ;;
+        alpine::pngquant)   echo "apk add --no-cache pngquant" ;;
+
+        macos::jpegoptim)   echo "brew install jpegoptim" ;;
+        debian::jpegoptim)  echo "sudo apt-get install -y jpegoptim" ;;
+        fedora::jpegoptim)  echo "sudo dnf install -y jpegoptim" ;;
+        arch::jpegoptim)    echo "sudo pacman -S --needed jpegoptim" ;;
+        alpine::jpegoptim)  echo "apk add --no-cache jpegoptim" ;;
+
+        macos::gifski)      echo "brew install gifski" ;;
+        *::gifski)          echo "cargo install gifski" ;;
+
         # ----- fallback -----
         *)                  echo "" ;;
     esac
@@ -204,6 +226,10 @@ yq|optional|YAML processor (Taskfile linting)|yq --version
 claude|optional|Claude Code CLI — needed for `task docs-refresh`|claude --version
 repomix|optional|Codebase packer — needed for `task repomix`|repomix --version
 csvlens|optional|CSV/SQLite viewer — needed for `task db-inspect` (telemetry/index/internal DBs)|csvlens --version
+ffmpeg|optional|Video/audio transcoder — used by lazy media-compression pipelines (post-fetch, agent outputs)|ffmpeg -version | head -1
+pngquant|optional|Lossy PNG compressor — used by lazy media-compression pipelines|pngquant --version
+jpegoptim|optional|JPEG optimizer — used by lazy media-compression pipelines|jpegoptim --version | head -1
+gifski|optional|High-quality GIF encoder — used by lazy media-compression pipelines|gifski --version
 EOF
 }
 

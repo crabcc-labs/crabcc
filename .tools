@@ -1,0 +1,53 @@
+{
+  "_about": "Blazing-fast CLI tools preferred or used in this repo. Skills, agents, and humans should reach for these before their classic Unix equivalents. 3-5 word summaries; `replaces` shows the legacy tool when applicable. Cross-references: see AGENTS.md (workspace conventions) and CLAUDE.md (Claude-Code-specific notes — its `Use crabcc, not grep` section is the canonical example of the principle this file generalizes).",
+  "tools": [
+    {"name": "crabcc",       "summary": "Symbol-aware code index",      "replaces": "grep, find, ctags"},
+    {"name": "rg",           "summary": "Recursive content search",     "replaces": "grep -r"},
+    {"name": "fd",           "summary": "Fast file finder",             "replaces": "find"},
+    {"name": "bat",          "summary": "Cat with syntax highlight",    "replaces": "cat, less"},
+    {"name": "eza",          "summary": "Modern ls replacement",        "replaces": "ls"},
+    {"name": "delta",        "summary": "Pretty git diff viewer",       "replaces": "git diff"},
+    {"name": "sd",           "summary": "Fast sed replacement",         "replaces": "sed"},
+    {"name": "choose",       "summary": "Fast field selector",          "replaces": "cut, awk"},
+    {"name": "dust",         "summary": "Fast du replacement",          "replaces": "du"},
+    {"name": "procs",        "summary": "Modern ps replacement",        "replaces": "ps"},
+    {"name": "bottom",       "summary": "Fast top replacement",         "replaces": "top, htop"},
+    {"name": "zoxide",       "summary": "Frecency-based smart cd",      "replaces": "cd"},
+    {"name": "fzf",          "summary": "Fuzzy finder, anywhere",       "replaces": null},
+    {"name": "jq",           "summary": "JSON query and transform",     "replaces": null},
+    {"name": "yq",           "summary": "YAML query and transform",     "replaces": null},
+    {"name": "xh",           "summary": "Fast HTTP client",             "replaces": "curl, httpie"},
+    {"name": "hyperfine",    "summary": "Command-line benchmarking",    "replaces": "time"},
+    {"name": "tokei",        "summary": "Fast lines-of-code counter",   "replaces": "wc -l, cloc"},
+    {"name": "tldr",         "summary": "Crowd-sourced man pages",      "replaces": "man"},
+    {"name": "hexyl",        "summary": "Colorful hex viewer",          "replaces": "xxd, hexdump"},
+    {"name": "watchexec",    "summary": "File-change command runner",   "replaces": null},
+    {"name": "ast-grep",     "summary": "Tree-sitter structural search", "replaces": null},
+    {"name": "tree-sitter",  "summary": "Incremental parser CLI",       "replaces": null},
+
+    {"name": "gh",           "summary": "GitHub from the terminal",     "replaces": null},
+    {"name": "wtp",          "summary": "Git worktree workflow helper", "replaces": "git worktree"},
+    {"name": "lazygit",      "summary": "Fast git TUI",                 "replaces": null},
+
+    {"name": "task",         "summary": "Taskfile.yml runner",          "replaces": "make"},
+    {"name": "cargo",        "summary": "Rust build and test",          "replaces": null},
+    {"name": "nextest",      "summary": "Fast cargo test runner",       "replaces": "cargo test"},
+    {"name": "sccache",      "summary": "Shared compile cache",         "replaces": null},
+    {"name": "rtk",          "summary": "Rust token killer proxy",      "replaces": null},
+    {"name": "bun",          "summary": "Fast JS runtime, packager",    "replaces": "node, npm, pnpm"},
+    {"name": "swiftc",       "summary": "Swift compiler",               "replaces": null},
+    {"name": "uv",           "summary": "Fast Python packager",         "replaces": "pip, virtualenv"},
+
+    {"name": "mise",         "summary": "Polyglot version manager",     "replaces": "asdf, nvm"},
+    {"name": "direnv",       "summary": "Per-directory env loader",     "replaces": null},
+    {"name": "repomix",      "summary": "Pack repo for LLMs",           "replaces": null},
+    {"name": "ollama",       "summary": "Local LLM server",             "replaces": null},
+    {"name": "sqlite3",      "summary": "Embedded SQL database",        "replaces": null},
+
+    {"_section": "media compression — used lazily when fetch / agent pipelines hand back media. compressO (https://github.com/codeforreal1/compressO) is a GUI wrapper around these CLIs; we register the underlying tools so anything in the pipeline can shell out directly."},
+    {"name": "ffmpeg",       "summary": "Video/audio transcoder + compressor",  "replaces": null},
+    {"name": "pngquant",     "summary": "Lossy PNG compressor",                 "replaces": null},
+    {"name": "jpegoptim",    "summary": "Lossless/lossy JPEG optimizer",        "replaces": null},
+    {"name": "gifski",       "summary": "High-quality GIF encoder",             "replaces": null}
+  ]
+}
