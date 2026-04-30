@@ -6,6 +6,21 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+### Added — `crabcc go` one-shot init + Claude launch
+- New zero-arg subcommand: `crabcc go`. In one breath it (a) detects whether
+  the repo is initialized, (b) runs `full_index` (fresh) or `refresh`
+  (warm), (c) rebuilds the Tantivy fuzzy/prefix sidecar, (d) rebuilds the
+  call-graph sidecar, (e) opens or creates the per-repo memory palace at
+  `.crabcc/memory.db`, (f) prints a stable status block (`✓ files / ✓
+  symbols / ✓ edges / ✓ graph / ✓ drawers`), and (g) execs
+  `claude --effort max --append-system-prompt <AGENTS.md> --no-chrome`
+  so the LLM session starts pre-loaded with the crabcc primer.
+- Falls back to a minimal hardcoded primer if `AGENTS.md` is absent.
+- Friendly error path when `claude` is not on PATH — points at
+  https://claude.ai/code and re-suggests `crabcc go`.
+- 8 new unit tests covering init / idempotency / TS indexing / fallback
+  prompt / `claude` discovery on empty PATH / report formatting.
+
 ## [2.2.1] — 2026-04-30
 
 ### Added — drawer_embeddings schema prep for M0.5 / M1 ([#19](https://github.com/peterlodri-sec/crabcc/issues/19))

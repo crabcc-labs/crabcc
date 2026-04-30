@@ -23,6 +23,7 @@ trait, `Palace` facade, and `crabcc memory` CLI / `memory.*` MCP tools.
 
 | You want to… | Do this |
 |---|---|
+| Bootstrap a session in one command | `crabcc go` (index + graph + memory + Claude with `--effort max`) |
 | Find a definition | `crabcc sym <Name>` |
 | Find references / call sites | `crabcc refs <Name>` / `crabcc callers <Name>` |
 | Outline a file | `crabcc outline path/to/file.rb` |
