@@ -73,9 +73,21 @@ Pattern: `ghcr.io/peterlodri-sec/<image>:<tag>`
 | Tag | Movable | Use |
 |---|---|---|
 | `<semver>` (e.g. `0.1.0`) | No | Production deploys MUST pin to a semver tag. |
-| `latest` | Yes | Dev convenience. Never in production. |
+| `latest` | Yes | Dev convenience. **Never in production** — see warning below. |
 | `sha-<7-char>` (e.g. `sha-65963b3`) | No | Per-commit, gc-able. CI debugging only. |
 | `@sha256:<digest>` | No | Content-addressable. Recommended for the strictest deploys. |
+
+> **`latest` does not mean "newest".** It's the same as any other tag — whatever
+> was last pushed (or pulled) **without explicitly specifying a tag**. Docker
+> does not auto-resolve `latest` to the most recent build of the image; it
+> simply happens to be the default name when none is given. A developer who
+> builds locally without `-t` overwrites their local `:latest`; a deploy
+> consumer who pulls `:latest` gets whatever the registry happens to have
+> labeled `:latest` right now — which can be older than the latest semver
+> tag if a release was tagged but `:latest` was never re-pushed. **Always
+> deploy semver or `@sha256:` digest pins.** This guidance follows the
+> consensus in [Kalafatis, "Docker Image Naming and Tagging" (dev.to,
+> 2024)](https://dev.to/kalkwst/docker-image-naming-and-tagging-1pg9).
 
 ### Image inventory (current state)
 
@@ -161,3 +173,14 @@ docker-push-crabcc:
 - [#195](https://github.com/peterlodri-sec/crabcc/issues/195) — issue this policy implements
 - [#185](https://github.com/peterlodri-sec/crabcc/issues/185) — CI refactor (phase 4 hosts the actual `release.yml` push step)
 - `.tools` — `slim` (docker-slim CLI) and the broader fast-CLI roster
+
+## Further reading
+
+- [Kalafatis, "Docker Image Naming and Tagging"](https://dev.to/kalkwst/docker-image-naming-and-tagging-1pg9)
+  — primer on the tagging fundamentals (semver vs git-sha vs `latest`,
+  why `latest` is a footgun in team environments). Our policy goes
+  further on supply-chain (cosign, SBOM, multi-arch, distroless) but
+  the tagging-policy section above is direct lineage.
+- [Google distroless image catalog](https://github.com/GoogleContainerTools/distroless#what-is-distroless) — base-image options + when to pick which.
+- [Sigstore cosign reference](https://docs.sigstore.dev/cosign/overview) — keyless signing flow used in CI.
+- [Anchore SBOM action](https://github.com/anchore/sbom-action) — the SPDX SBOM generator we attach to every published image.
