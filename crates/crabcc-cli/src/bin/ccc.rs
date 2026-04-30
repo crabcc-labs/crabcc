@@ -163,7 +163,10 @@ fn locate_crabcc() -> PathBuf {
 
 fn run(args: &[&str]) -> ! {
     let crabcc = locate_crabcc();
-    let status = Command::new(&crabcc).args(args).env("CCC_NO_WARN", "1").status();
+    let status = Command::new(&crabcc)
+        .args(args)
+        .env("CCC_NO_WARN", "1")
+        .status();
     match status {
         Ok(s) => exit(s.code().unwrap_or(1)),
         Err(e) => {
@@ -179,7 +182,14 @@ fn run(args: &[&str]) -> ! {
 fn main() {
     let cli = Cli::parse();
     match cli.cmd {
-        Cmd::Find { name, mode, limit, out, files_only, count_only } => {
+        Cmd::Find {
+            name,
+            mode,
+            limit,
+            out,
+            files_only,
+            count_only,
+        } => {
             let mut args: Vec<String> = vec![mode.subcmd().to_string(), name];
             if let Some(l) = limit {
                 args.push("--limit".into());
@@ -203,7 +213,14 @@ fn main() {
             let r: Vec<&str> = args.iter().map(String::as_str).collect();
             run(&r);
         }
-        Cmd::List { files, cycles, orphans, under, ext, limit } => {
+        Cmd::List {
+            files,
+            cycles,
+            orphans,
+            under,
+            ext,
+            limit,
+        } => {
             if cycles {
                 run(&["graph", "cycles"]);
             }
@@ -227,7 +244,12 @@ fn main() {
             let r: Vec<&str> = args.iter().map(String::as_str).collect();
             run(&r);
         }
-        Cmd::Index { delta, watch, compress, rebuild_fts } => {
+        Cmd::Index {
+            delta,
+            watch,
+            compress,
+            rebuild_fts,
+        } => {
             if watch {
                 run(&["watch"]);
             }
@@ -247,7 +269,11 @@ fn main() {
             full.extend(args.iter().map(String::as_str));
             run(&full);
         }
-        Cmd::Info { tokens, upgrade_check, status_line } => {
+        Cmd::Info {
+            tokens,
+            upgrade_check,
+            status_line,
+        } => {
             if tokens {
                 run(&["track"]);
             }
@@ -259,7 +285,11 @@ fn main() {
             }
             run(&["info"]);
         }
-        Cmd::Setup { claude, completions, upgrade } => {
+        Cmd::Setup {
+            claude,
+            completions,
+            upgrade,
+        } => {
             if claude {
                 run(&["install-claude"]);
             }

@@ -39,6 +39,7 @@ impl Store {
     /// stay correct, but reads of `signature_enc=1` rows return `None` until
     /// the codec is re-enabled. New writes go down the plain path.
     pub fn open_with_compress(path: &Path, compress: bool) -> Result<Self> {
+        tracing::debug!(target: "crabcc_core::store", path = %path.display(), compress, "Store::open");
         let conn = Connection::open(path).context("open sqlite")?;
         // WAL = concurrent readers + faster writes. NORMAL sync = "fast but
         // still durable on power loss". foreign_keys ON makes our ON DELETE

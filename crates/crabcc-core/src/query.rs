@@ -14,7 +14,9 @@ use std::path::Path;
 const DEFAULT_TOP_N: usize = 5;
 
 pub fn find_symbol(store: &Store, name: &str) -> Result<Vec<Symbol>> {
-    store.find_by_name(name)
+    let r = store.find_by_name(name)?;
+    tracing::debug!(target: "crabcc_core::query", name, hits = r.len(), "find_symbol");
+    Ok(r)
 }
 
 /// Same as [`find_symbol`] but restricted to a set of repo-relative
@@ -218,11 +220,21 @@ pub fn query_callers(
     mode: Mode,
     file_filter: Option<&HashSet<String>>,
 ) -> Result<Output> {
+    let started = std::time::Instant::now();
     // Fast path: edges populated by `crabcc index` v2.0+. One SQL query
     // replaces N tree-sitter walks. Falls back to the ast-grep walker for
     // partially-populated indexes (v1.0.0 upgrade where edges_populated='0').
     if edges_ready(store)? {
-        return callers_via_edges(store, root, name, mode, file_filter);
+        let r = callers_via_edges(store, root, name, mode, file_filter)?;
+        tracing::debug!(
+            target: "crabcc_core::query",
+            name,
+            count = r.count(),
+            path = "edges-fast",
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "query_callers"
+        );
+        return Ok(r);
     }
     run(
         store,
@@ -370,7 +382,8 @@ pub fn query_refs(
     mode: Mode,
     file_filter: Option<&HashSet<String>>,
 ) -> Result<Output> {
-    run(
+    let started = std::time::Instant::now();
+    let r = run(
         store,
         root,
         name,
@@ -385,7 +398,15 @@ pub fn query_refs(
             }
             Err(_) => Vec::new(),
         },
-    )
+    )?;
+    tracing::debug!(
+        target: "crabcc_core::query",
+        name,
+        count = r.count(),
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "query_refs"
+    );
+    Ok(r)
 }
 
 fn run<F>(

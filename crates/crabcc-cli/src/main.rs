@@ -570,7 +570,14 @@ fn main() -> Result<()> {
     let store = Store::open_with_compress(&db, cli.compress)?;
     let fts_dir = root.join(".crabcc").join("tantivy");
 
-    match cli.cmd.unwrap_or(Cmd::Index) {
+    let dispatched_cmd = cli.cmd.unwrap_or(Cmd::Index);
+    tracing::info!(
+        target: "crabcc_cli",
+        cmd = cmd_name_for_log(&dispatched_cmd),
+        "command: enter"
+    );
+
+    match dispatched_cmd {
         Cmd::Index => {
             let stats = crabcc_core::index::full_index(&root, &store)?;
             // Rebuild Tantivy too — keep the fuzzy/prefix sidecar in lockstep
@@ -853,6 +860,38 @@ fn list_files(
         out.truncate(limit);
     }
     Ok(out)
+}
+
+/// Human-friendly name for a `Cmd` variant — used by the structured
+/// `command: enter` log line so per-command timing can be aggregated
+/// without re-deriving the name from the noisy `Debug` repr.
+fn cmd_name_for_log(c: &Cmd) -> &'static str {
+    match c {
+        Cmd::Index => "index",
+        Cmd::Refresh { .. } => "refresh",
+        Cmd::Watch { .. } => "watch",
+        Cmd::Sym { .. } => "sym",
+        Cmd::Refs { .. } => "refs",
+        Cmd::Callers { .. } => "callers",
+        Cmd::Outline { .. } => "outline",
+        Cmd::Files { .. } => "files",
+        Cmd::Fuzzy { .. } => "fuzzy",
+        Cmd::Prefix { .. } => "prefix",
+        Cmd::Grep { .. } => "grep",
+        Cmd::FtsRebuild => "fts-rebuild",
+        Cmd::Track { .. } => "track",
+        Cmd::Memory { .. } => "memory",
+        Cmd::Graph { .. } => "graph",
+        Cmd::Upgrade { .. } => "upgrade",
+        Cmd::Compress { .. } => "compress",
+        Cmd::Completions { .. } => "completions",
+        Cmd::Info { .. } => "info",
+        Cmd::Openapi => "openapi",
+        Cmd::Go => "go",
+        Cmd::Agent { .. } => "agent",
+        Cmd::Serve { .. } => "serve",
+        Cmd::InstallClaude { .. } => "install-claude",
+    }
 }
 
 #[cfg(unix)]
