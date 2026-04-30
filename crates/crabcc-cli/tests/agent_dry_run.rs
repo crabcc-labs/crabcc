@@ -165,12 +165,13 @@ fn agent_dry_run_uses_default_model_when_unset() {
 }
 
 #[test]
-fn agent_dry_run_ollama_default_uses_qwen_coder() {
+fn agent_dry_run_ollama_default_uses_qwen35() {
     let home = tempfile::tempdir().unwrap();
     let repo = tempfile::tempdir().unwrap();
 
-    // Default backend is now ollama; this test pins the default model
-    // for the ollama path so a stale constant doesn't silently regress.
+    // Default backend is ollama; this test pins the Apple-optimized
+    // qwen3.5 model so a stale constant doesn't silently regress.
+    // Updated from qwen2.5-coder → qwen3.5:35b-a3b-coding-nvfp4 in v2.9+.
     let out = Command::new(crabcc_bin())
         .arg("--root")
         .arg(repo.path())
@@ -186,8 +187,135 @@ fn agent_dry_run_ollama_default_uses_qwen_coder() {
     assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("ollama/qwen2.5-coder"),
-        "default ollama model should be qwen2.5-coder: {stdout}"
+        stdout.contains("qwen3.5"),
+        "default ollama model should be qwen3.5 variant: {stdout}"
+    );
+}
+
+#[test]
+fn agent_dry_run_env_override_model() {
+    let home = tempfile::tempdir().unwrap();
+    let repo = tempfile::tempdir().unwrap();
+
+    // CRABCC_OLLAMA_MODEL env var overrides the compiled-in default.
+    let out = Command::new(crabcc_bin())
+        .arg("--root")
+        .arg(repo.path())
+        .arg("agent")
+        .arg("--run")
+        .arg("hi")
+        .arg("--dry-run")
+        .arg("--no-refresh")
+        .env("HOME", home.path())
+        .env("CRABCC_OLLAMA_MODEL", "ollama/qwen2.5-coder")
+        .output()
+        .expect("spawn crabcc");
+
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("qwen2.5-coder"),
+        "CRABCC_OLLAMA_MODEL env should override default: {stdout}"
+    );
+}
+
+#[test]
+fn agent_dry_run_stdin_pipe() {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let home = tempfile::tempdir().unwrap();
+    let repo = tempfile::tempdir().unwrap();
+
+    let mut child = Command::new(crabcc_bin())
+        .arg("--root")
+        .arg(repo.path())
+        .arg("agent")
+        .arg("--run")
+        .arg("-")
+        .arg("--dry-run")
+        .arg("--no-refresh")
+        .env("HOME", home.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn crabcc");
+
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"find the Store symbol\n")
+        .unwrap();
+
+    let out = child.wait_with_output().expect("wait");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "stdin pipe dry-run should exit 0\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("find the Store symbol"),
+        "prompt from stdin should appear in dry-run banner: {stdout}"
+    );
+}
+
+#[test]
+fn agent_dry_run_short_task() {
+    let home = tempfile::tempdir().unwrap();
+    let repo = tempfile::tempdir().unwrap();
+
+    // Minimal one-word prompt — guard against length validation bugs.
+    let out = Command::new(crabcc_bin())
+        .arg("--root")
+        .arg(repo.path())
+        .arg("agent")
+        .arg("--run")
+        .arg("ping")
+        .arg("--dry-run")
+        .arg("--no-refresh")
+        .env("HOME", home.path())
+        .output()
+        .expect("spawn crabcc");
+
+    assert!(
+        out.status.success(),
+        "one-word prompt should be accepted: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("ping"),
+        "prompt preview must include the task: {stdout}"
+    );
+}
+
+#[test]
+fn agent_dry_run_tool_call_context() {
+    let home = tempfile::tempdir().unwrap();
+    let repo = tempfile::tempdir().unwrap();
+
+    // Prompt phrased as a tool-call instruction — validates that the
+    // agent runtime doesn't pre-filter on prompt content.
+    let out = Command::new(crabcc_bin())
+        .arg("--root")
+        .arg(repo.path())
+        .arg("agent")
+        .arg("--run")
+        .arg("call crabcc.sym with name=Store and report the definition")
+        .arg("--dry-run")
+        .arg("--no-refresh")
+        .env("HOME", home.path())
+        .output()
+        .expect("spawn crabcc");
+
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("crabcc.sym"),
+        "tool-call prompt should round-trip in banner: {stdout}"
     );
 }
 

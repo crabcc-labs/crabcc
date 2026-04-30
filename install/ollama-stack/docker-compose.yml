@@ -55,6 +55,10 @@ services:
         hard: 65535
     volumes:
       - ollama_models:/root/.ollama
+      # Shared crabcc workspace: graph, memory, tantivy index, repomix output.
+      # Mounted read-only so container agents can read context without risk of
+      # corrupting the host index. Write access lives on the host side only.
+      - "${HOME}/.crabcc:/home/crabcc/.crabcc:ro"
     # /tmp in tmpfs avoids touching the overlayfs for transient model writes.
     tmpfs:
       - /tmp:size=512m,mode=1777
@@ -91,6 +95,12 @@ services:
       OLLAMA_KEEP_ALIVE: "30m"
       OLLAMA_MAX_LOADED_MODELS: "2"
       OLLAMA_FLASH_ATTENTION: "1"
+      # 64k default context window — crabcc agents need at least this.
+      OLLAMA_NUM_CTX: "65536"
+      # Host timezone + locale so model timestamps and sorting are correct.
+      TZ: "Europe/Budapest"
+      LANG: "en_US.UTF-8"
+      LC_ALL: "en_US.UTF-8"
     logging: *logging
     networks:
       - stack

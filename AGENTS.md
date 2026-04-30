@@ -36,6 +36,61 @@ trait, `Palace` facade, and `crabcc memory` CLI / `memory.*` MCP tools.
 | Run the FSST bench | `task bench-compress REPO_FIXTURE=/path/to/big-repo` |
 | Memory smoke (CLI surface) | `task memory-smoke` |
 | Cut a release | `task release VERSION=x.y.z` |
+| Bootstrap full dev env | `task setup` (uv + Ollama + model pull + stack up) |
+| Run a crabcc agent | `crabcc agent --run "<task>" --backend ollama` |
+| Launch Ollama stack | `task ollama-stack-up` (LiteLLM :4000 → Ollama) |
+
+## Ollama agent backend
+
+Default backend is `ollama` (since v2.8). Model: **qwen3.5:35b-a3b-coding-nvfp4**
+(Apple Silicon MoE, 3B active/token, 256k context window).
+
+```bash
+# One-shot bootstrap (installs uv, Ollama, pulls model, starts stack)
+task setup
+
+# Run an agent
+crabcc agent --run "trace callers of Store::open" --backend ollama
+
+# Via Claude Code slash command
+/crabcc-agent trace callers of Store::open
+
+# Status
+crabcc agent-ls --limit 5
+task agent-runtime-smoke       # end-to-end smoke test
+```
+
+Stack topology (issue #105):
+```
+Claude Code / crabcc CLI
+        ↓
+free-claude-code (Anthropic-compat proxy)
+        ↓
+LiteLLM :4000  (prompt cache, SSE streaming)
+        ↓
+Caddy :11435   (Bearer-auth gate)
+        ↓
+Ollama         (qwen3.5:35b-a3b-coding-nvfp4)
+```
+
+ENV overrides (all optional):
+- `OLLAMA_BASE_URL` — override backend URL (default `http://localhost:4000`)
+- `OLLAMA_API_KEY` — LiteLLM master key (read from `~/.crabcc.local.api-key`)
+- `CRABCC_OLLAMA_MODEL` — model override
+- `OLLAMA_NUM_CTX` — context window (default 262144)
+
+## iTerm2 HUD (issue #132)
+
+Live status-bar showing active agent, token savings, and doctor health.
+
+```bash
+task install-iterm2     # copies daemon to AutoLaunch, prints activation steps
+task iterm2-test        # run HUD unit tests (no live iTerm2 needed)
+crabcc doctor iterm2    # verify daemon is running
+```
+
+See `apps/crabcc-iterm2/README.md` for the full guide (RPCs, control sequences,
+key bindings, example use-cases).
 
 ## Code style
 

@@ -83,7 +83,8 @@ impl Default for AgentDefaultModel {
     fn default() -> Self {
         Self {
             claude: "claude-opus-4-7".into(),
-            ollama: "ollama/qwen2.5-coder".into(),
+            // Apple Silicon optimized — Qwen3.5-35B-A3B MoE, 3B active/token.
+            ollama: "ollama/qwen3.5:35b-a3b-coding-nvfp4".into(),
         }
     }
 }
@@ -93,6 +94,9 @@ impl Default for AgentDefaultModel {
 pub struct OllamaConfig {
     pub base_url: String,
     pub api_key_path: String,
+    /// Context window tokens. Qwen3.5-35B-A3B supports 262144 natively.
+    /// ENV override: OLLAMA_NUM_CTX
+    pub num_ctx: u32,
 }
 
 impl Default for OllamaConfig {
@@ -100,6 +104,7 @@ impl Default for OllamaConfig {
         Self {
             base_url: "http://localhost:4000".into(),
             api_key_path: "~/.crabcc.local.api-key".into(),
+            num_ctx: 262144,
         }
     }
 }
@@ -127,6 +132,44 @@ pub struct McpConfig {
 // ---------------------------------------------------------------------
 // public surface
 // ---------------------------------------------------------------------
+
+/// Apply ENV var overrides on top of a loaded (or default) config.
+///
+/// Priority: ENV var > YAML config value > compiled default.
+/// Recognised vars (all optional):
+///   OLLAMA_BASE_URL   — overrides `ollama.base_url`
+///   OLLAMA_NUM_CTX    — overrides `ollama.num_ctx` (parse as u32)
+///   CRABCC_OLLAMA_MODEL — overrides `agent.default_model.ollama`
+///   CRABCC_AGENT_BACKEND — overrides `agent.backend`
+pub fn apply_env_overrides(cfg: &mut Config) {
+    if let Ok(v) = std::env::var("OLLAMA_BASE_URL") {
+        if !v.is_empty() {
+            cfg.ollama.base_url = v;
+        }
+    }
+    if let Ok(v) = std::env::var("OLLAMA_NUM_CTX") {
+        if let Ok(n) = v.parse::<u32>() {
+            cfg.ollama.num_ctx = n;
+        }
+    }
+    if let Ok(v) = std::env::var("CRABCC_OLLAMA_MODEL") {
+        if !v.is_empty() {
+            cfg.agent.default_model.ollama = v;
+        }
+    }
+    if let Ok(v) = std::env::var("CRABCC_AGENT_BACKEND") {
+        if !v.is_empty() {
+            cfg.agent.backend = v;
+        }
+    }
+}
+
+/// Load with ENV overrides applied — the typical call site.
+pub fn load_with_env(explicit: Option<&Path>) -> Config {
+    let mut cfg = load_or_default(explicit);
+    apply_env_overrides(&mut cfg);
+    cfg
+}
 
 /// Resolve the config path in priority order. Pure — no I/O.
 pub fn resolve_path(explicit: Option<&Path>) -> Result<PathBuf> {
