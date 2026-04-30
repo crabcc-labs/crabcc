@@ -5,10 +5,11 @@
   "description": "React + TypeScript frontend for crabcc-viz /live dashboard. Bundled via esbuild into a single self-contained HTML file the Rust crate include_str!'s at compile time.",
   "type": "module",
   "scripts": {
-    "build": "node esbuild.config.mjs",
-    "dev": "node esbuild.config.mjs --watch",
+    "build": "bun run codegen && node esbuild.config.mjs",
+    "dev": "bun run codegen && node esbuild.config.mjs --watch",
     "typecheck": "tsgo --noEmit",
     "test": "bun test src",
+    "codegen": "openapi-typescript ../openapi.yaml -o src/api.gen.ts",
     "clean": "rm -rf dist"
   },
   "dependencies": {
@@ -19,6 +20,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@typescript/native-preview": "^7.0.0-dev",
-    "esbuild": "^0.24.0"
+    "esbuild": "^0.24.0",
+    "openapi-typescript": "^7.0.0"
   }
 }

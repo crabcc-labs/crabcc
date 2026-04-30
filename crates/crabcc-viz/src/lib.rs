@@ -41,6 +41,16 @@ const BUNDLED_INDEX: &str = include_str!("../assets/index.html");
 // Regenerate after editing `web/src/`: `cd crates/crabcc-viz/web && bun run build`.
 const BUNDLED_LIVE: &str = include_str!("../web/dist/live.html");
 
+/// OpenAPI 3.1 source-of-truth for the `/live` HTTP API (issue #170 phase 0).
+///
+/// Hand-maintained at `crates/crabcc-viz/openapi.yaml` and consumed by
+/// `crates/crabcc-viz/web` via `openapi-typescript` codegen at build
+/// time. The drift test `openapi_yaml_lists_every_route` (in the
+/// `tests` module of this file) asserts every route this crate
+/// matches in `serve` shows up in the YAML as an `operationId`, so a
+/// new endpoint without a schema entry fails CI.
+pub const OPENAPI_YAML: &str = include_str!("../openapi.yaml");
+
 /// Caps that defend a single-user localhost server from accidental fork-bombs
 /// (`?depth=200` returning a 50k-node graph that locks up the page). Exposed
 /// as constants so they show up in `crabcc serve --help` output once we wire
@@ -2421,6 +2431,96 @@ fn open_browser(_url: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Routes the `serve` HTTP handler matches today. Hand-maintained
+    /// alongside the match arms — adding a new `/api/...` endpoint
+    /// requires adding it here AND in `crates/crabcc-viz/openapi.yaml`.
+    /// The drift test below ties the two together so CI catches a
+    /// missing schema update.
+    ///
+    /// Path-parameter routes appear with their OpenAPI `{id}` form,
+    /// not the runtime `strip_suffix("/log")` form, so this list
+    /// matches the YAML's `paths:` keys verbatim.
+    const KNOWN_API_PATHS: &[&str] = &[
+        "/api/health",
+        "/api/bootstrap",
+        "/api/activity",
+        "/api/agents",
+        "/api/agents/{id}/log",
+        "/api/agents/{id}/tail",
+        "/api/agents/{id}/info",
+        "/api/agents/{id}/kill",
+        "/api/agents/launch",
+        "/api/agent-profiles",
+        "/api/agent-kills",
+        "/api/agent-models",
+        "/api/ollama-key",
+        "/api/services",
+        "/api/telemetry",
+        "/api/telemetry/otlp-health",
+        "/api/reindex",
+        "/api/random-query",
+        "/api/graph",
+        "/api/seed-graph",
+        "/api/debug/dump",
+        "/api/memory/recent",
+        "/api/events",
+    ];
+
+    /// Extract every YAML key under `paths:` whose value starts with
+    /// `/api/`. Cheap regex-free parser — assumes the canonical
+    /// 2-space indent the file is written in.
+    fn paths_from_openapi_yaml() -> std::collections::BTreeSet<String> {
+        let mut in_paths = false;
+        let mut out = std::collections::BTreeSet::new();
+        for raw in OPENAPI_YAML.lines() {
+            if !in_paths {
+                if raw.trim_start() == "paths:" {
+                    in_paths = true;
+                }
+                continue;
+            }
+            // A sibling top-level key (e.g. `components:`) ends the
+            // section. Top-level keys have zero leading whitespace.
+            if !raw.starts_with(' ') && !raw.starts_with('#') && !raw.trim().is_empty() {
+                break;
+            }
+            // Path keys live at the 2-space indent: `  /api/foo:`.
+            if let Some(rest) = raw.strip_prefix("  ") {
+                if rest.starts_with('/') {
+                    if let Some(p) = rest.split(':').next() {
+                        out.insert(p.to_string());
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn openapi_yaml_lists_every_route() {
+        let in_yaml = paths_from_openapi_yaml();
+        let in_def: std::collections::BTreeSet<String> =
+            KNOWN_API_PATHS.iter().map(|s| s.to_string()).collect();
+        let missing_in_yaml: Vec<&String> = in_def.difference(&in_yaml).collect();
+        let missing_in_def: Vec<&String> = in_yaml.difference(&in_def).collect();
+        assert!(
+            missing_in_yaml.is_empty() && missing_in_def.is_empty(),
+            "OpenAPI spec drift detected.\n  \
+             Routes missing from openapi.yaml: {missing_in_yaml:?}\n  \
+             Paths in YAML but not in KNOWN_API_PATHS: {missing_in_def:?}\n  \
+             Update both `crates/crabcc-viz/openapi.yaml` and \
+             `KNOWN_API_PATHS` in `crates/crabcc-viz/src/lib.rs` so they \
+             agree, then re-run `bun run codegen` from the web/ dir."
+        );
+    }
+
+    #[test]
+    fn openapi_yaml_is_non_empty() {
+        // Smoke — guards against a file with the wrong path resolution.
+        assert!(OPENAPI_YAML.contains("openapi: 3.1.0"));
+        assert!(OPENAPI_YAML.contains("/api/bootstrap"));
+    }
 
     #[test]
     fn parse_query_defaults() {
