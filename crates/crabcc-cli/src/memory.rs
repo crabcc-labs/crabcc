@@ -59,10 +59,78 @@ pub enum MemoryCmd {
         #[arg(long)]
         all: bool,
     },
+    /// `forget` is `delete` + `VACUUM` — rows disappear AND the on-disk
+    /// `.crabcc/memory.db` shrinks. Use it to reclaim space; reach for
+    /// `delete` for transient delete-then-reinsert flows.
+    ///
+    /// Specify exactly one of:
+    ///   - `--drawer ID` — drop a single drawer by id
+    ///   - `--wing W --before DATE` — drop everything in wing W with
+    ///     `created_at < DATE` (DATE = RFC3339 or epoch seconds)
+    ///
+    /// Idempotent: missing IDs / empty wings / no-rows-in-window all
+    /// return `{"forgotten": 0}` and still run VACUUM.
+    Forget {
+        /// Drawer id to forget (may be passed alone).
+        #[arg(long)]
+        drawer: Option<i64>,
+        /// Wing name. Required when `--before` is set.
+        #[arg(long)]
+        wing: Option<String>,
+        /// Cutoff timestamp — drawers with `created_at < before` are
+        /// removed. Accepts RFC3339 (e.g. `2026-01-15T00:00:00Z`) or a
+        /// bare epoch-seconds integer.
+        #[arg(long)]
+        before: Option<String>,
+    },
     /// Drawer count.
     Count,
     /// Health snapshot.
     Health,
+}
+
+fn parse_before_timestamp(raw: &str) -> Result<i64> {
+    // Try epoch seconds first; fall back to RFC3339. We intentionally
+    // accept both because `crabcc memory forget --before 1735689600` is
+    // a natural shape for scripts and `--before 2025-01-01T00:00:00Z`
+    // is more readable for humans.
+    if let Ok(secs) = raw.parse::<i64>() {
+        return Ok(secs);
+    }
+    // Minimal RFC3339 parse without bringing in chrono — the schema
+    // stores `created_at` as INTEGER seconds, so we only need to map a
+    // user-typed timestamp into that integer space.
+    let parsed = time_parse_rfc3339(raw)
+        .ok_or_else(|| anyhow!("--before must be epoch seconds or RFC3339, got {raw:?}"))?;
+    Ok(parsed)
+}
+
+/// Tiny RFC3339 parser (no chrono dep). Handles `YYYY-MM-DDTHH:MM:SSZ`
+/// and `YYYY-MM-DDTHH:MM:SS+00:00` shapes — enough for `--before`.
+/// Returns None on anything weirder; the caller turns that into a clap
+/// error message.
+fn time_parse_rfc3339(s: &str) -> Option<i64> {
+    let bytes = s.as_bytes();
+    if bytes.len() < 20 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' {
+        return None;
+    }
+    let year: i64 = s.get(0..4)?.parse().ok()?;
+    let month: i64 = s.get(5..7)?.parse().ok()?;
+    let day: i64 = s.get(8..10)?.parse().ok()?;
+    let hour: i64 = s.get(11..13)?.parse().ok()?;
+    let minute: i64 = s.get(14..16)?.parse().ok()?;
+    let second: i64 = s.get(17..19)?.parse().ok()?;
+    // Days-from-epoch via the proleptic Gregorian "Howard Hinnant"
+    // algorithm — works for any year, no leap-year bookkeeping in the
+    // call site.
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let m = if month > 2 { month - 3 } else { month + 9 };
+    let doy = (153 * m + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
 }
 
 pub fn run(root: &Path, cmd: MemoryCmd) -> Result<()> {
@@ -128,6 +196,27 @@ pub fn run(root: &Path, cmd: MemoryCmd) -> Result<()> {
             };
             let n = palace.delete(&sel)?;
             println!("{}", serde_json::json!({"deleted": n}));
+        }
+        MemoryCmd::Forget {
+            drawer,
+            wing,
+            before,
+        } => {
+            // Two valid shapes:
+            //   --drawer ID                       (drawer + no other flags)
+            //   --wing W --before DATE            (both required; drawer absent)
+            let sel = match (drawer, wing.as_deref(), before.as_deref()) {
+                (Some(id), None, None) => DeleteSel::ById(vec![id]),
+                (None, Some(w), Some(b)) => DeleteSel::BeforeInWing {
+                    wing: w.to_string(),
+                    before: parse_before_timestamp(b)?,
+                },
+                _ => anyhow::bail!(
+                    "specify either `--drawer ID` or `--wing W --before DATE` (mutually exclusive)"
+                ),
+            };
+            let n = palace.forget(&sel)?;
+            println!("{}", serde_json::json!({"forgotten": n}));
         }
         MemoryCmd::Count => {
             let n = palace.count()?;

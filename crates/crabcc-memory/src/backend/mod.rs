@@ -25,6 +25,14 @@ pub trait Backend: Send + Sync {
     fn query_lexical(&self, q: &LexicalQuery) -> Result<QueryResult>;
     fn get(&self, ids: &[DrawerId]) -> Result<GetResult>;
     fn delete(&self, sel: &DeleteSel) -> Result<usize>;
+    /// Reclaim on-disk space after a delete. Backends that don't compact
+    /// (the in-memory one) should return Ok(()) — the trait method is
+    /// the contract, not the implementation. SQLite's VACUUM rewrites
+    /// the entire DB file, so callers should batch deletes between
+    /// `vacuum` calls rather than vacuum-per-row.
+    fn vacuum(&self) -> Result<()> {
+        Ok(())
+    }
     fn count(&self) -> Result<usize>;
     fn health(&self) -> HealthStatus;
     /// Enumerate drawers without a similarity query. Optional wing filter.

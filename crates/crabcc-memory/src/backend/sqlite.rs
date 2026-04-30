@@ -611,6 +611,16 @@ impl Backend for SqliteBackend {
                 let rows = stmt.query_map(params![src], |r| r.get::<_, DrawerId>(0))?;
                 rows.collect::<rusqlite::Result<Vec<_>>>()?
             }
+            DeleteSel::BeforeInWing { wing, before } => {
+                let mut stmt = tx.prepare(
+                    "SELECT d.id FROM drawers d
+                     JOIN wings w ON w.id = d.wing_id
+                     WHERE w.name = ?1 AND d.created_at < ?2",
+                )?;
+                let rows = stmt
+                    .query_map(params![wing, before], |r| r.get::<_, DrawerId>(0))?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()?
+            }
         };
         let n = match sel {
             DeleteSel::All => tx.execute("DELETE FROM drawers", [])?,
@@ -630,6 +640,12 @@ impl Backend for SqliteBackend {
             DeleteSel::BySource(src) => {
                 tx.execute("DELETE FROM drawers WHERE source_id = ?1", params![src])?
             }
+            DeleteSel::BeforeInWing { wing, before } => tx.execute(
+                "DELETE FROM drawers
+                 WHERE wing_id = (SELECT id FROM wings WHERE name = ?1)
+                   AND created_at < ?2",
+                params![wing, before],
+            )?,
         };
         // FTS5 contentless delete idiom: INSERT a 'delete' command row.
         for id in &ids {
@@ -697,6 +713,15 @@ impl Backend for SqliteBackend {
         let conn = self.conn.lock().map_err(|_| anyhow!("poisoned mutex"))?;
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM drawers", [], |r| r.get(0))?;
         Ok(n as usize)
+    }
+
+    fn vacuum(&self) -> Result<()> {
+        // VACUUM cannot run inside a transaction and rewrites the whole
+        // DB file, so it's a single-statement, separate call. WAL mode
+        // is preserved (sqlite restores pragmas across the rewrite).
+        let conn = self.conn.lock().map_err(|_| anyhow!("poisoned mutex"))?;
+        conn.execute("VACUUM", [])?;
+        Ok(())
     }
 
     fn health(&self) -> HealthStatus {
