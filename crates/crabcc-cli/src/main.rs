@@ -139,6 +139,33 @@ enum Cmd {
         #[command(subcommand)]
         sub: memory::MemoryCmd,
     },
+    /// Check GitHub for a newer release; optionally clean local sidecars.
+    /// Repo is private — uses `gh` for auth (run `gh auth login` first).
+    Upgrade {
+        /// Print the report and exit; never modify local state.
+        #[arg(long)]
+        check: bool,
+        /// JSON output (default is human-readable).
+        #[arg(long)]
+        json: bool,
+        /// Apply local cleanup (rm `.crabcc/index.db`, tantivy/, graph.json)
+        /// after the version check. Idempotent; safe to re-run. Re-index
+        /// after with `crabcc index`.
+        #[arg(long)]
+        apply: bool,
+        /// Override the GitHub repo to query (default: peterlodri-sec/crabcc,
+        /// or `$CRABCC_UPGRADE_REPO` if set).
+        #[arg(long)]
+        repo: Option<String>,
+    },
+    /// Print a shell-completion script for the chosen shell to stdout.
+    /// Pipe into the right location, e.g.:
+    ///   crabcc completions zsh > ~/.local/share/zsh/site-functions/_crabcc
+    Completions {
+        /// Target shell.
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+    },
 }
 
 #[derive(Subcommand)]
@@ -224,6 +251,24 @@ fn main() -> Result<()> {
     // via `git rev-parse`). Handle it before we touch the SQLite store.
     if let Some(Cmd::InstallClaude { yes, print_hooks }) = &cli.cmd {
         return install::run(*yes, *print_hooks);
+    }
+
+    // `upgrade` and `completions` are also config-only — neither needs a
+    // store. Run them before the SQLite open so they work in directories
+    // that aren't repos.
+    if let Some(Cmd::Upgrade {
+        check,
+        json,
+        apply,
+        repo,
+    }) = cli.cmd.as_ref()
+    {
+        return run_upgrade(*check, *json, *apply, repo.as_deref(), &root);
+    }
+    if let Some(Cmd::Completions { shell }) = cli.cmd.as_ref() {
+        let mut cmd = <Cli as clap::CommandFactory>::command();
+        clap_complete::generate(*shell, &mut cmd, "crabcc", &mut std::io::stdout());
+        return Ok(());
     }
 
     // `compress` is a meta-operation on the index. It owns its own codec
@@ -450,6 +495,8 @@ fn main() -> Result<()> {
         Cmd::InstallClaude { .. } => unreachable!("install-claude handled before store init"),
         Cmd::Compress { .. } => unreachable!("compress handled before store init"),
         Cmd::Memory { .. } => unreachable!("memory handled before store init"),
+        Cmd::Upgrade { .. } => unreachable!("upgrade handled before store init"),
+        Cmd::Completions { .. } => unreachable!("completions handled before store init"),
     }
     Ok(())
 }
@@ -522,6 +569,81 @@ fn print_track_human(r: &crabcc_core::track::Report) {
         println!("\nby operation:");
         for (op, b) in &r.by_op {
             line(op, b);
+        }
+    }
+}
+
+fn run_upgrade(
+    check: bool,
+    json: bool,
+    apply: bool,
+    repo_override: Option<&str>,
+    root: &Path,
+) -> Result<()> {
+    use crabcc_core::upgrade;
+    let repo = repo_override
+        .map(String::from)
+        .unwrap_or_else(upgrade::target_repo);
+    let report = upgrade::build_report(&repo, Some(root));
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        print_upgrade_human(&report, &repo);
+    }
+
+    if check {
+        return Ok(());
+    }
+
+    // Only the `--apply` path mutates anything. Without `--apply` the command
+    // is read-only — we print the recommendations and exit.
+    if apply {
+        match upgrade::cleanup_index(root) {
+            Ok(_) => {
+                if !json {
+                    eprintln!(
+                        "\n  cleaned `.crabcc/{{index.db,tantivy,graph.json}}` — run \
+                         `crabcc index` to rebuild."
+                    );
+                }
+            }
+            Err(e) => {
+                eprintln!("warning: cleanup failed: {e}");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn print_upgrade_human(r: &crabcc_core::upgrade::UpgradeReport, repo: &str) {
+    use crabcc_core::upgrade::{BumpKind, VersionDelta};
+    println!("crabcc upgrade — {repo}");
+    println!("  installed: {}", r.installed);
+    if let Some(rel) = &r.latest {
+        let when = rel.published_at.as_deref().unwrap_or("");
+        println!("  latest:    {} ({})", rel.tag, when.trim());
+    } else {
+        println!("  latest:    <unknown>");
+    }
+    let status = match &r.delta {
+        VersionDelta::UpToDate => "up to date".to_string(),
+        VersionDelta::Newer { kind, .. } => format!(
+            "{} bump available",
+            match kind {
+                BumpKind::Patch => "patch",
+                BumpKind::Minor => "minor",
+                BumpKind::Major => "MAJOR",
+            }
+        ),
+        VersionDelta::Ahead { .. } => "ahead of latest release (dev build)".into(),
+        VersionDelta::Unknown { reason } => format!("unknown ({reason})"),
+    };
+    println!("  status:    {status}");
+    if !r.recommendations.is_empty() {
+        println!("\nrecommendations:");
+        for rec in &r.recommendations {
+            println!("  • {rec}");
         }
     }
 }

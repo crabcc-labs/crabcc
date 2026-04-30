@@ -6,7 +6,27 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
-(empty — see v2.0.0 below)
+### Added — `crabcc upgrade` + shell completions
+- **`crabcc upgrade`** (CLI + MCP tool + `/crabcc-upgrade` slash command) —
+  checks GitHub for a newer release. Repo is private, so the implementation
+  shells out to `gh` (which inherits the user's `gh auth login` credentials)
+  rather than calling the public REST API. Three modes:
+  - `--check` (read-only): print version delta + recommendations, exit.
+  - default: same as `--check` but human-readable.
+  - `--apply`: runs the check, then `rm`s `.crabcc/{index.db,tantivy/,graph.json}`
+    so the next `crabcc index` rebuilds against the new binary's schema.
+    The binary itself is the user's responsibility to update.
+- Honors `$CRABCC_UPGRADE_REPO` for forks / mirrors.
+- New module `crabcc_core::upgrade` with **12 unit tests** (semver compare,
+  serde round-trip, cleanup_index idempotency).
+- **`crabcc completions <shell>`** — emits a clap-generated completion script
+  for zsh / bash / fish / elvish / powershell. Standard pattern:
+  `crabcc completions zsh > "${fpath[1]}/_crabcc"`.
+- New MCP `upgrade` tool with the same `{apply, repo}` surface.
+
+### Docs
+- README: install one-liner moved to the very top with a `gh auth login`
+  prerequisite (private repo) + the zsh-completion install hint.
 
 ## [2.0.0] — 2026-04-30
 

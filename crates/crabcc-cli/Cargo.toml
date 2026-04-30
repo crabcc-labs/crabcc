@@ -14,6 +14,7 @@ crabcc-mcp    = { workspace = true }
 crabcc-memory = { workspace = true }
 anyhow        = { workspace = true }
 clap          = { workspace = true }
+clap_complete = "4"
 rusqlite      = { workspace = true }
 serde_json    = { workspace = true }
 tracing       = { workspace = true }
