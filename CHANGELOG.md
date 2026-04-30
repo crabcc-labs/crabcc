@@ -6,6 +6,16 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+### Added — MCP `memory.search` ranked-output assertions (closes [#21](https://github.com/peterlodri-sec/crabcc/issues/21))
+- The MCP `memory.search` tool already mirrors the CLI's hybrid /
+  lexical / vector dispatch via `palace.search_with_mode` (#48).
+  This change adds the missing test contract: every hit carries the
+  full `DrawerHit` shape (`id`, `score`, `source_id`, `body`, `wing`),
+  scores are monotonically non-increasing across all three modes, and
+  unknown `mode` values surface as JSON-RPC errors instead of silently
+  falling back to the default. Two new tests in
+  `crates/crabcc-mcp/src/lib.rs`; existing memory smoke tests stay green.
+
 ### Added — Starship status-line surface (closes [#43](https://github.com/peterlodri-sec/crabcc/issues/43))
 - `crabcc info --status-line` — terse one-liner suitable for
   Starship / tmux / VS Code status bars: `crabcc 87.2k · idx 12s ·
