@@ -294,10 +294,17 @@ tasks:
       Phase 0 of #192 — the produced .app is a sibling artifact of the
       legacy installer/Crabcc.app/. Phase 1+ wires `task dmg` to consume
       this output.
+
+      `-skipMacroValidation` is required because TCA (and its transitive
+      deps swift-case-paths, swift-dependencies, swift-perception) use
+      Swift macros, which Xcode 15+ gates behind a manual "Trust &
+      Enable" prompt. Headless / scripted builds can't surface that
+      prompt — the flag pre-approves the four macros declared by our
+      dependency graph.
     dir: apps/macos
     deps: [macos-app-generate]
     cmds:
-      - xcodebuild -project Crabcc.xcodeproj -scheme Crabcc -configuration Release build
+      - xcodebuild -project Crabcc.xcodeproj -scheme Crabcc -configuration Release -skipMacroValidation build
 
   macos-app-test:
     desc: Run TCA TestStore tests for apps/macos (#192)
@@ -305,10 +312,14 @@ tasks:
       Runs the CrabccTests target via `tuist test`. TestStore exhaustively
       asserts every state transition for each Reducer; missing tests are
       a review-blocker per skill/crabcc-app-stack/SKILL.md.
+
+      Tests link the same TCA / Dependencies / Perception macros as the
+      main target, so the same `-skipMacroValidation` is forwarded via
+      `--`-style xcodebuild pass-through.
     dir: apps/macos
     deps: [macos-app-generate]
     cmds:
-      - tuist test
+      - tuist test -- -skipMacroValidation
 
   macos-app:
     desc: One-shot — install deps, generate, build, test (#192)

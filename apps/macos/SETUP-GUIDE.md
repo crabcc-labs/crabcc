@@ -148,6 +148,11 @@ ls apps/macos/Derived/Build/Products/Release/Crabcc.app
 ```
 
 **If it fails:**
+- `error: Macro "X" must be enabled before it can be used` → Xcode 15+
+  gates SPM macros behind a manual "Trust & Enable" prompt that
+  headless builds can't surface. The `task macos-app-build` invocation
+  passes `-skipMacroValidation` to handle this; if you still see this
+  error, your Xcode is older than 15.4 — upgrade.
 - `error: 'main' attribute cannot be used in a module that contains
   top-level code` → SourceKit was right and I was wrong; tell me, I
   fix.
