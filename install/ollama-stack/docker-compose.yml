@@ -137,8 +137,13 @@ services:
         limits:
           memory: 1gb
     logging: *logging
+    # litellm sits on BOTH networks: `stack` for intra-stack ollama+caddy
+    # comms, `crabcc-shared` so cross-stack consumers (the dev compose,
+    # the future BullMQ worker from issue #109) can reach :4000 without
+    # going through the host port.
     networks:
       - stack
+      - crabcc-shared
 
 volumes:
   ollama_models:
@@ -146,5 +151,12 @@ volumes:
   caddy_config:
 
 networks:
+  # Internal stack — ollama + caddy + litellm only. Not joinable from
+  # outside.
   stack:
     driver: bridge
+  # Shared bridge for cross-stack DNS — must exist before `compose up`.
+  # Bootstrap once with: install/init-shared-network.sh
+  crabcc-shared:
+    name: crabcc-shared
+    external: true

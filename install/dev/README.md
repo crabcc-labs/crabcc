@@ -19,10 +19,46 @@ bind-mounted standalone so the watch surface stays tight.
 
 ```bash
 # from repo root
+
+# 0. Create the shared bridge network once (idempotent — same network
+#    the auth stack joins, so cross-stack DNS to `litellm:4000` works).
+install/init-shared-network.sh
+
+# 1. Bring it up
 docker compose -f install/dev/docker-compose.yml up --build
 
 # in a second terminal — verify
-curl -s http://localhost:8090/healthz
+curl -s http://localhost:8090/
+```
+
+## Networks
+
+Two networks per service:
+
+- `dev` — internal to this stack, isolates `crabcc`↔`viz-web` chatter.
+- `crabcc-shared` (external) — bridge to the auth stack so the `crabcc`
+  service can talk to `litellm:4000` without hopping through the host
+  port. The network is created **once** by
+  `install/init-shared-network.sh`; both compose files declare it as
+  `external: true`.
+
+## Env sharing
+
+The `crabcc` service auto-inherits secrets from the auth stack's
+`.env` via:
+
+```yaml
+env_file:
+  - path: ../ollama-stack/.env
+    required: false
+```
+
+`required: false` means this stack still boots when the auth stack hasn't
+been initialized yet (the `crabcc serve` path doesn't need keys; only
+`crabcc agent --backend ollama` does). Override per-shell:
+
+```bash
+OLLAMA_API_KEY=… LITELLM_MASTER_KEY=… docker compose -f install/dev/docker-compose.yml up
 ```
 
 Edit `crates/crabcc-viz/web/src/*.tsx` on the host. esbuild --watch rebuilds

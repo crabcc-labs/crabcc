@@ -51,9 +51,19 @@ services:
       - ../..:/workspace:rw
       - crabcc_cache:/home/crabcc/.cache/crabcc-memory
     working_dir: /workspace
+    # Pull OLLAMA_API_KEY + LITELLM_MASTER_KEY from the auth-stack's .env
+    # when present (gated by `required: false` so this compose still boots
+    # standalone). Override with explicit values via the host shell.
+    env_file:
+      - path: ../ollama-stack/.env
+        required: false
     environment:
       RUST_LOG: ${RUST_LOG:-crabcc=info}
       CRABCC_AUTO_MEMORY: ${CRABCC_AUTO_MEMORY:-0}
+      # Talk to LiteLLM over the shared network (DNS name == service name).
+      # Falls back to host gateway when the auth stack isn't running, so
+      # `--backend claude` paths keep working.
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://litellm:4000}
     command:
       - serve
       - --bind
@@ -77,8 +87,12 @@ services:
         limits:
           memory: 2gb
     logging: *logging
+    # Two-network attachment: `dev` for crabcc↔viz-web, `crabcc-shared`
+    # for cross-stack DNS to litellm:4000 (and future BullMQ workers,
+    # issue #109).
     networks:
       - dev
+      - crabcc-shared
 
   viz-web:
     image: oven/bun:1-alpine
@@ -120,5 +134,11 @@ volumes:
   bun_install_cache:
 
 networks:
+  # Internal dev network — crabcc + viz-web only.
   dev:
     driver: bridge
+  # Cross-stack bridge — joined by services here AND in the auth stack.
+  # Created once via install/init-shared-network.sh (idempotent).
+  crabcc-shared:
+    name: crabcc-shared
+    external: true

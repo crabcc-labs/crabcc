@@ -13,6 +13,9 @@ OpenAI-compatible front bolted on.
 ## Quick start
 
 ```bash
+# 0. Create the shared network once (idempotent).
+install/init-shared-network.sh
+
 cd install/ollama-stack
 cp .env.example .env
 
