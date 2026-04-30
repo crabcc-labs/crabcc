@@ -6,32 +6,38 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
-### Added — OpenAPI 3.1 spec for the MCP server (`v2.4.0`)
-- **`crates/crabcc-mcp/openapi.yaml`** — canonical, hand-maintained
-  OpenAPI 3.1 description of the MCP tool surface. 23 operations across
-  six tags: `symbol-index`, `graph`, `indexer`, `meta`, `memory`,
-  `server`. Components include `Symbol`, `Edge`, `GraphHit`,
-  `IndexStats`, `RefreshStats`, `UpgradeReport`, `Drawer`, `DrawerHit`,
-  `QueryResult`, `HealthReport`.
-- **`crabcc openapi`** CLI subcommand — prints the spec verbatim to
-  stdout. `crabcc openapi > spec.yaml` is the easy dump path; pipe
-  through `yq -o json` for JSON.
-- **`task openapi`** — Taskfile target that routes through `crabcc
-  openapi` for parity with the rest of the dev surface.
-- **`_openapi` MCP tool** — returns the spec as a YAML text blob over
-  the JSON-RPC `tools/call` channel. Useful for SDK generators and for
-  agents that want to introspect their own toolbox at runtime.
-- **`_health` MCP tool** — liveness + capability probe. Returns
-  `{status, server, version, protocol_version, tool_count}`. No
-  filesystem touches; safe to poll cheaply.
-- **Drift gate** — new unit test
-  `openapi_spec_lists_every_tool` cross-checks that every tool in
-  `tools_def()` has a matching `operationId:` in the embedded spec
-  (and vice versa). Adding/removing a tool without updating the spec
-  fails the test, which fails `task prep-pr`.
-- `scripts/prep-pr.sh` prints a heads-up note when `crabcc-mcp/src/lib.rs`
-  is staged but `openapi.yaml` is not.
-- Workspace bumped 2.3.0 → 2.4.0.
+### Added — `simd-cosine` feature gate (issue #40)
+- New `simd-cosine` cargo feature on `crabcc-memory` (default OFF;
+  nightly-only). When on, the brute-force cosine helper at
+  `backend/mod.rs` dispatches to a `Simd<f32, 8>`-chunked
+  implementation; production 384-d MiniLM-L6-v2 embeddings hit the
+  SIMD body 48 times with no tail.
+- Two impls always present in the source tree: `cosine_scalar`
+  (canonical, stable) and `cosine_simd` (gated). `cosine()` picks via
+  `#[cfg(feature = "simd-cosine")]`.
+- 4 new tests: `cosine_simd_matches_scalar_at_dim_384`,
+  `cosine_simd_matches_scalar_with_tail` (covers `n ∈ {1, 7, 8, 9, 17,
+  31, 33, 64, 65, 100, 384, 385}`), `cosine_simd_self_is_one`, and an
+  always-on stable-side `cosine_falls_back_to_scalar_on_stable` that
+  documents the default path.
+- `#[ignore]`d perf smoke `cosine_perf_smoke` — runs scalar vs SIMD on
+  a 384-d × 1000-row workload and prints the speedup. Invoke with:
+  `cargo +nightly test --features simd-cosine -p crabcc-memory backend::tests::cosine_perf_smoke -- --ignored --nocapture`.
+- Workspace `Cargo.toml` gains an explicit `rust-version = "1.86"` pin
+  so toolchain drift gets caught by CI's MSRV row instead of a laptop.
+
+### Added — `docs/RESEARCH-nightly-features.md`
+- Triage of which nightly Rust features are worth adopting in crabcc
+  and how to sandbox the toolchain risk. Covers `portable_simd` (verdict:
+  adopt, behind `simd-cosine`), `iter_array_chunks` (skip — `chunks_exact`
+  is stable and equivalent), `allocator_api` (defer until bumpalo proves
+  insufficient), `try_blocks`, `gen` blocks, `box_into_inner`,
+  `iter_intersperse`, `iter_collect_into`, `generic_const_exprs`.
+- Crate-boundary stability stance: `crabcc-core`, `crabcc-mcp`,
+  `crabcc-cli` strictly stable; `crabcc-memory` is the sandbox crate
+  for nightly trials.
+- Proposed CI matrix: stable (required) / nightly+simd
+  (allowed-failure → required) / msrv 1.86 (required).
 
 ### Added — `docs/GRAPH.md` + `docs/RESEARCH-graph-prompt.md`
 - New per-feature doc explaining the call-graph sidecar

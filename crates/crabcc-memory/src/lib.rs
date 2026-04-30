@@ -1,3 +1,7 @@
+// `simd-cosine` opts into nightly's `portable_simd` (rust-lang/rust#86656)
+// for the brute-force cosine helper at backend/mod.rs. Default OFF — stable
+// users keep working unchanged; nightly users get the speed-up.
+#![cfg_attr(feature = "simd-cosine", feature(portable_simd))]
 //! `crabcc-memory` — local-first AI memory layer.
 //!
 //! Drawers are SHA-content-addressed snippets stored at

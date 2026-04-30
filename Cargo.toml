@@ -10,6 +10,14 @@ members = [
 [workspace.package]
 version = "2.4.0"
 edition = "2021"
+# Minimum supported Rust version. Pinned explicitly so toolchain drift
+# gets caught by the CI matrix's `msrv` row instead of a developer's
+# laptop running rust-stable two months ahead.
+#
+# Bumping rules: only when a public dep forces it (rusqlite 0.31 +
+# fsst-rs 0.5 currently pin 1.86). Don't bump as a "what does the latest
+# edition support?" exercise.
+rust-version = "1.86"
 license = "MIT"
 repository = "https://github.com/peterlodri-sec/crabcc"
 
