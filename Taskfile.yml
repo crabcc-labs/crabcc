@@ -299,6 +299,63 @@ tasks:
       - 'mkdir -p .summary/coverage'
       - 'bash scripts/coverage.sh {{.FORMAT}}'
 
+  profile-build:
+    desc: Build crabcc with the `profiling` cargo profile (release codegen + debug info)
+    summary: |
+      The profiling profile inherits `release` (LTO=fat, opt=3, codegen-units=1)
+      but adds line-table debug info and disables stripping so samply /
+      flamegraph / Instruments can resolve symbols. Output binary lands at
+      `target/profiling/crabcc`. See install/profiling.md for the full recipe.
+    cmds:
+      - '{{.CARGO}} build --profile profiling -p crabcc-cli'
+
+  profile-index:
+    desc: |
+      Profile `crabcc index --root REPO_FIXTURE` with samply. REPO_FIXTURE
+      defaults to mc-mothership; override via env. Auto-installs samply.
+    deps: [profile-build]
+    summary: |
+      samply is a sampling profiler that works on macOS without sudo (uses
+      mach task ports under the hood) and on Linux with perf_event_paranoid.
+      Opens the result in a browser-based flamegraph viewer; pass `--save
+      OUT.json` to keep the raw .json profile for later diffing.
+    cmds:
+      - 'command -v samply >/dev/null 2>&1 || {{.CARGO}} install samply --locked'
+      - '( cd {{.REPO_FIXTURE}} && rm -rf .crabcc )'
+      - 'samply record -o .summary/profile-index.json -- target/profiling/crabcc index --root {{.REPO_FIXTURE}}'
+      - 'echo "" && echo "samply profile written to .summary/profile-index.json"'
+      - 'echo "view interactively with:  samply load .summary/profile-index.json"'
+
+  profile-memory-search:
+    desc: |
+      Profile `crabcc memory search` over a primed palace. Loads 1k canned
+      drawers via memory.remember, then runs N=200 search calls hot.
+    deps: [profile-build]
+    vars:
+      N: '{{.N | default "200"}}'
+      Q: '{{.Q | default "fox jumps over"}}'
+    cmds:
+      - 'command -v samply >/dev/null 2>&1 || {{.CARGO}} install samply --locked'
+      - 'rm -rf /tmp/crabcc-profile-mem && mkdir -p /tmp/crabcc-profile-mem'
+      - 'target/profiling/crabcc --root /tmp/crabcc-profile-mem memory init >/dev/null'
+      - "for i in $(seq 1 1000); do target/profiling/crabcc --root /tmp/crabcc-profile-mem memory remember \"doc:$i\" \"sample drawer body number $i with the fox jumping over a lazy dog\" >/dev/null; done"
+      - "samply record -o .summary/profile-memory-search.json -- bash -c 'for i in $(seq 1 {{.N}}); do target/profiling/crabcc --root /tmp/crabcc-profile-mem memory search \"{{.Q}}\" --limit 5 >/dev/null; done'"
+      - 'echo "" && echo "samply profile written to .summary/profile-memory-search.json"'
+      - 'echo "view interactively with:  samply load .summary/profile-memory-search.json"'
+
+  flamegraph-index:
+    desc: |
+      Alternative profile via cargo-flamegraph (SVG output). Requires DTrace
+      on macOS (sudo) or perf on Linux. Use `task profile-index` instead if
+      you don't want to run sudo.
+    deps: [profile-build]
+    cmds:
+      - 'command -v flamegraph >/dev/null 2>&1 || {{.CARGO}} install flamegraph --locked'
+      - '( cd {{.REPO_FIXTURE}} && rm -rf .crabcc )'
+      - 'mkdir -p .summary'
+      - 'flamegraph --profile profiling -p crabcc-cli -o .summary/flamegraph-index.svg -- index --root {{.REPO_FIXTURE}}'
+      - 'echo "" && echo "flamegraph SVG written to .summary/flamegraph-index.svg"'
+
   prep-pr:
     desc: One-shot pre-PR check — fmt, clippy, test, smoke, doc-build, log to .summary/prep-pr.txt
     summary: |
