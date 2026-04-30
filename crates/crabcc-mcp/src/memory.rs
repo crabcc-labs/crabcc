@@ -47,14 +47,16 @@ pub fn tools_def() -> Vec<Value> {
         ),
         tool(
             "memory.search",
-            "Vector search top-K drawers. Note: M0 ships HashEmbedder (random vectors); \
-             semantically meaningful results land in M1 with fastembed-rs.",
+            "Search top-K drawers. Default mode is hybrid (BM25 + vector via \
+             Reciprocal Rank Fusion). Pass `mode: \"lexical\"` for BM25-only \
+             or `mode: \"vector\"` for KNN-only ablations.",
             json!({
                 "cwd":   cwd_field,
                 "query": str_field("query text"),
                 "limit": {"type": "integer", "description": "max hits (default 10)"},
                 "wing":  str_field("optional wing filter"),
                 "room":  str_field("optional room filter"),
+                "mode":  str_field("hybrid (default) | lexical | vector"),
             }),
             &["query"],
         ),
@@ -125,7 +127,17 @@ pub fn dispatch(tool: &str, args: &Value, server_root: &Path) -> Result<String> 
             let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize;
             let wing = args.get("wing").and_then(|v| v.as_str());
             let room = args.get("room").and_then(|v| v.as_str());
-            let r = palace.search_filtered(q, limit, wing, room)?;
+            let mode = args
+                .get("mode")
+                .and_then(|v| v.as_str())
+                .map(|s| {
+                    crabcc_memory::SearchMode::parse(s).ok_or_else(|| {
+                        anyhow!("invalid mode {s:?}; expected hybrid|lexical|vector")
+                    })
+                })
+                .transpose()?
+                .unwrap_or_default();
+            let r = palace.search_with_mode(mode, q, limit, wing, room)?;
             Ok(serde_json::to_string(&r)?)
         }
         "memory.get" => {

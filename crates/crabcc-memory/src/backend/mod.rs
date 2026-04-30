@@ -18,6 +18,11 @@ pub mod sqlite;
 pub trait Backend: Send + Sync {
     fn add(&self, drawers: &[DrawerInsert]) -> Result<Vec<DrawerId>>;
     fn query(&self, q: &Query) -> Result<QueryResult>;
+    /// Lexical (BM25 / token-overlap) search over drawer bodies. Used by
+    /// `Palace::search_hybrid` alongside `query` to drive RRF fusion.
+    /// Hits are returned in descending score order; identical row shape
+    /// to `query` so callers can blend the two result sets uniformly.
+    fn query_lexical(&self, q: &LexicalQuery) -> Result<QueryResult>;
     fn get(&self, ids: &[DrawerId]) -> Result<GetResult>;
     fn delete(&self, sel: &DeleteSel) -> Result<usize>;
     fn count(&self) -> Result<usize>;
@@ -26,6 +31,18 @@ pub trait Backend: Send + Sync {
     /// Order is implementation-defined but stable per call (id ASC for SQLite).
     /// `limit == 0` means unlimited.
     fn list_drawers(&self, wing: Option<&str>, limit: usize) -> Result<Vec<Drawer>>;
+}
+
+/// Lexical-search input — text query plus the same wing/room/limit knobs as
+/// vector `Query`, minus the embedding. Distinct type rather than reusing
+/// `Query` so the trait surface makes the two paths obvious to callers
+/// and tooling (MCP, future REST).
+#[derive(Debug, Clone)]
+pub struct LexicalQuery {
+    pub text: String,
+    pub limit: usize,
+    pub wing: Option<String>,
+    pub room: Option<String>,
 }
 
 /// L2-cosine similarity. Returns 0.0 for length-mismatched or zero vectors.

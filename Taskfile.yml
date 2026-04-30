@@ -14,6 +14,11 @@ vars:
   REPO_FIXTURE: '{{.REPO_FIXTURE | default "/Users/peter.lodri/workspace/mc-mothership"}}'
   CARGO: cargo
   CRABCC: ~/.cargo/bin/crabcc
+  # Single source of truth for the workspace version. Other tasks read
+  # through {{.CRABCC_VERSION}} so bumping Cargo.toml flips banners,
+  # release messages, and `task version` automatically.
+  CRABCC_VERSION:
+    sh: bash scripts/version.sh
 
 tasks:
   default:
@@ -138,7 +143,7 @@ tasks:
       - "(cd crates/crabcc-core/fuzz && {{.CARGO}} check)"
 
   memory-smoke:
-    desc: Exercise the M3-light memory CLI surface against a tempdir
+    desc: Exercise the memory CLI surface (M3-light + M1 hybrid) against a tempdir
     deps: [install]
     cmds:
       - mkdir -p /tmp/crabcc-mem-smoke
@@ -148,6 +153,9 @@ tasks:
       - "{{.CRABCC}} --root /tmp/crabcc-mem-smoke memory count | jq -e '.count == 2'"
       - "{{.CRABCC}} --root /tmp/crabcc-mem-smoke memory list --limit 5 | jq -e 'length == 2'"
       - "{{.CRABCC}} --root /tmp/crabcc-mem-smoke memory search 'fox' --limit 3 | jq -e '.hits | length >= 1'"
+      - "{{.CRABCC}} --root /tmp/crabcc-mem-smoke memory search 'fox' --mode lexical --limit 3 | jq -e '.hits[0].source_id == \"doc:1\"'"
+      - "{{.CRABCC}} --root /tmp/crabcc-mem-smoke memory search 'fox' --mode vector --limit 3 | jq -e '.hits | length >= 1'"
+      - "{{.CRABCC}} --root /tmp/crabcc-mem-smoke memory search 'fox' --mode hybrid --limit 3 | jq -e '.hits | length >= 1'"
       - "{{.CRABCC}} --root /tmp/crabcc-mem-smoke memory health | jq -e '. == \"Ok\"'"
       - test -f /tmp/crabcc-mem-smoke/.crabcc/memory.db
       - rm -rf /tmp/crabcc-mem-smoke
@@ -200,3 +208,108 @@ tasks:
       - rm -f {{.CRABCC}}
       - rm -f ~/.claude/skills/crabcc/SKILL.md
       - rm -f ~/.claude/commands/crabcc-init.md
+
+  check-deps:
+    desc: Audit dev-environment external tools (jq, yq, rg, gh, claude, …); offers install
+    summary: |
+      Walks required + recommended + optional buckets and prints status per
+      tool. On a TTY it offers to install missing ones via the right package
+      manager for the host OS (brew / apt / dnf / pacman / apk / zypper).
+      Pass MODE=strict to fail-fast in CI, MODE=json for machine output.
+    vars:
+      MODE: '{{.MODE | default ""}}'
+    cmds:
+      - 'bash scripts/check-deps.sh {{if .MODE}}--{{.MODE}}{{end}}'
+
+  doctor:
+    desc: Diagnose crabcc dev install — CLI, MCP, commands, skill, hooks; writes a debug log
+    summary: |
+      Pass MODE=check (default), MODE=install (re-link commands+skill, suggest
+      MCP entry), or MODE=upgrade (run `crabcc upgrade --apply`). Writes a
+      timestamped log under .summary/doctor-*.log for paste-into-issue use.
+    vars:
+      MODE: '{{.MODE | default "check"}}'
+    cmds:
+      - 'bash scripts/doctor.sh --{{.MODE}}'
+
+  version:
+    desc: Print the workspace version (parsed from Cargo.toml). --json for machine output.
+    summary: |
+      Single source of truth for "what version are we shipping". Reads
+      [workspace.package].version from the top-level Cargo.toml. Other tasks
+      pick up the same value via {{.CRABCC_VERSION}}.
+    cmds:
+      - 'bash scripts/version.sh{{if .JSON}} --json{{end}}'
+
+  aliases:
+    desc: Install developer-friendly CLI aliases (grep→rg, find→fd, …) into the user shell rc
+    summary: |
+      Idempotent: writes a fenced `# >>> crabcc-aliases >>>` block into
+      ~/.zshrc / ~/.bashrc / ~/.config/fish/config.fish. Each alias is
+      gated on `command -v <tool>` so the rc stays clean if the modern
+      tool isn't installed yet. Pass MODE=remove to strip the block,
+      MODE=print to dry-run.
+    vars:
+      MODE: '{{.MODE | default "install"}}'
+    cmds:
+      - 'bash scripts/install-aliases.sh{{if eq .MODE "remove"}} --remove{{end}}{{if eq .MODE "print"}} --print{{end}}'
+
+  local-ci:
+    desc: Local CI snapshot — fmt-check + lint + test, output to .summary/local-ci.txt
+    summary: |
+      Use this when GitHub CI is unavailable (rate-limited / over budget).
+      The output file is what we attach to PR descriptions in lieu of a green
+      check. Re-runs are idempotent — file is overwritten.
+    cmds:
+      - mkdir -p .summary
+      - 'rm -f .summary/local-ci.txt'
+      - '{{.CARGO}} fmt --all -- --check 2>&1 | tee -a .summary/local-ci.txt'
+      - '{{.CARGO}} clippy --workspace --all-targets -- -D warnings 2>&1 | tee -a .summary/local-ci.txt'
+      - '{{.CARGO}} test --workspace --no-fail-fast 2>&1 | tee -a .summary/local-ci.txt'
+      - 'echo "" && echo "wrote: .summary/local-ci.txt ($(wc -l < .summary/local-ci.txt) lines)"'
+
+  docs-refresh:
+    desc: Refresh AGENTS / README / CHANGELOG / CLAUDE / commands docs to reflect latest version
+    summary: |
+      Spawns a background `claude -p` session that reads the current state of
+      Cargo.toml, src/, and the recent git log, then rewrites the long-form
+      docs to match. Output goes to .summary/docs-refresh.log; the agent runs
+      detached so the calling shell returns immediately.
+      Requires the `claude` CLI on PATH. Idempotent — safe to re-run.
+      Pass MODEL=sonnet|opus|haiku to override the model (default: sonnet).
+    vars:
+      MODEL: '{{.MODEL | default "sonnet"}}'
+      LOG: .summary/docs-refresh.log
+      PROMPT_FILE: .summary/docs-refresh.prompt.md
+    cmds:
+      - mkdir -p .summary
+      - 'command -v claude >/dev/null || (echo "claude CLI not on PATH; install Claude Code first" && exit 1)'
+      - |
+        cat > {{.PROMPT_FILE}} <<'EOF'
+        You are a docs janitor for the crabcc repository. Read the current state
+        of the codebase (Cargo.toml workspace version, crates/, recent git log
+        on main, CHANGELOG.md tail) and update the long-form docs so they
+        reflect what's actually in the tree:
+
+          - README.md         — usage, install, examples, current version
+          - AGENTS.md         — agent / Claude Code integration surface
+          - CHANGELOG.md      — append a new section for the unreleased work
+                                 since the last `## v...` heading; keep older
+                                 entries verbatim
+          - CLAUDE.md         — project-level instructions for Claude Code
+          - commands/*.md     — slash-command help that ships with the repo
+
+        Constraints:
+          - Be precise. Match identifiers, flags, and output shapes against
+            the source. If unsure, run `crabcc <subcommand> --help` and the
+            relevant `cargo test`s to confirm before writing.
+          - Preserve the existing tone, headings, and section ordering.
+          - Do NOT touch ARCHITECTURE.md, schema files, or anything under
+            target/, .repomix/, .crabcc/, or assets/.
+          - When done, print a summary of changed files + line counts.
+
+        Run end-to-end without further prompting.
+        EOF
+      - 'echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] starting docs refresh ({{.MODEL}})" > {{.LOG}}'
+      - 'nohup claude -p "$(cat {{.PROMPT_FILE}})" --model {{.MODEL}} >> {{.LOG}} 2>&1 &'
+      - 'echo "spawned (pid=$!); follow with: tail -f {{.LOG}}"'

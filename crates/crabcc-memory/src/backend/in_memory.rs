@@ -5,7 +5,7 @@
 //! an inner `Mutex`. Dedup keyed on `(source_id, sha256(body))` — re-adding
 //! the same drawer returns its existing id rather than creating a duplicate.
 
-use crate::backend::{cosine, Backend};
+use crate::backend::{cosine, Backend, LexicalQuery};
 use crate::types::*;
 use anyhow::{anyhow, Result};
 use crabcc_core::hash::sha256_hex;
@@ -49,6 +49,14 @@ fn now_secs() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+fn tokenize(s: &str) -> Vec<String> {
+    s.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 impl Backend for InMemoryBackend {
@@ -99,6 +107,55 @@ impl Backend for InMemoryBackend {
                     .is_none_or(|r| s.drawer.room.as_deref() == Some(r.as_str()))
             })
             .map(|s| (cosine(&q.embedding, &s.embedding), s))
+            .collect();
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(q.limit);
+        Ok(QueryResult {
+            hits: scored
+                .into_iter()
+                .map(|(score, s)| DrawerHit {
+                    id: s.drawer.id,
+                    score,
+                    source_id: s.drawer.source_id.clone(),
+                    body: s.drawer.body.clone(),
+                    wing: s.drawer.wing.clone(),
+                    room: s.drawer.room.clone(),
+                })
+                .collect(),
+        })
+    }
+
+    fn query_lexical(&self, q: &LexicalQuery) -> Result<QueryResult> {
+        // Token-overlap scoring — a tiny stand-in for FTS5/BM25 used only
+        // by ephemeral palaces and unit tests. Score = (#query tokens that
+        // appear at least once in body) / (#query tokens). Drawers with
+        // zero matches are dropped — RRF only sees rows that the lexical
+        // path actually retrieved, mirroring the SQL `MATCH` semantics.
+        let q_tokens = tokenize(&q.text);
+        if q_tokens.is_empty() {
+            return Ok(QueryResult::default());
+        }
+        let inner = self.inner.lock().map_err(|_| anyhow!("poisoned mutex"))?;
+        let mut scored: Vec<(f32, &Stored)> = inner
+            .rows
+            .values()
+            .filter(|s| q.wing.as_ref().is_none_or(|w| &s.drawer.wing == w))
+            .filter(|s| {
+                q.room
+                    .as_ref()
+                    .is_none_or(|r| s.drawer.room.as_deref() == Some(r.as_str()))
+            })
+            .filter_map(|s| {
+                let body_lower = s.drawer.body.to_lowercase();
+                let body_tokens: std::collections::HashSet<String> =
+                    tokenize(&body_lower).into_iter().collect();
+                let hit = q_tokens.iter().filter(|t| body_tokens.contains(*t)).count();
+                if hit == 0 {
+                    None
+                } else {
+                    Some((hit as f32 / q_tokens.len() as f32, s))
+                }
+            })
             .collect();
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(q.limit);
@@ -352,5 +409,89 @@ mod tests {
         let id2 = b.add(&[ins(&e, "x", "body", "d")]).unwrap()[0];
         assert_ne!(id1, id2);
         assert_eq!(b.count().unwrap(), 1);
+    }
+
+    // ---------- M1: lexical search ----------
+
+    #[test]
+    fn lexical_returns_only_matches() {
+        let e = HashEmbedder::new();
+        let b = InMemoryBackend::new();
+        b.add(&[
+            ins(&e, "1", "fox jumps over fence", "d"),
+            ins(&e, "2", "cat sleeps in sun", "d"),
+            ins(&e, "3", "fox in henhouse", "d"),
+        ])
+        .unwrap();
+        let r = b
+            .query_lexical(&LexicalQuery {
+                text: "fox".into(),
+                limit: 10,
+                wing: None,
+                room: None,
+            })
+            .unwrap();
+        let bodies: std::collections::HashSet<&str> =
+            r.hits.iter().map(|h| h.body.as_str()).collect();
+        assert_eq!(r.hits.len(), 2);
+        assert!(bodies.contains("fox jumps over fence"));
+        assert!(bodies.contains("fox in henhouse"));
+    }
+
+    #[test]
+    fn lexical_empty_query_returns_empty() {
+        let e = HashEmbedder::new();
+        let b = InMemoryBackend::new();
+        b.add(&[ins(&e, "1", "anything", "d")]).unwrap();
+        let r = b
+            .query_lexical(&LexicalQuery {
+                text: "   ".into(),
+                limit: 10,
+                wing: None,
+                room: None,
+            })
+            .unwrap();
+        assert!(r.hits.is_empty());
+    }
+
+    #[test]
+    fn lexical_score_proportional_to_token_overlap() {
+        let e = HashEmbedder::new();
+        let b = InMemoryBackend::new();
+        // d1 hits 2/2 tokens, d2 hits 1/2.
+        b.add(&[
+            ins(&e, "1", "needle haystack", "d"),
+            ins(&e, "2", "haystack only", "d"),
+        ])
+        .unwrap();
+        let r = b
+            .query_lexical(&LexicalQuery {
+                text: "needle haystack".into(),
+                limit: 5,
+                wing: None,
+                room: None,
+            })
+            .unwrap();
+        assert_eq!(r.hits.len(), 2);
+        assert_eq!(r.hits[0].source_id, "1");
+        assert!(r.hits[0].score > r.hits[1].score);
+    }
+
+    #[test]
+    fn lexical_wing_filter() {
+        let e = HashEmbedder::new();
+        let b = InMemoryBackend::new();
+        b.add(&[ins(&e, "1", "alpha", "wa"), ins(&e, "2", "alpha", "wb")])
+            .unwrap();
+        let r = b
+            .query_lexical(&LexicalQuery {
+                text: "alpha".into(),
+                limit: 10,
+                wing: Some("wb".into()),
+                room: None,
+            })
+            .unwrap();
+        assert_eq!(r.hits.len(), 1);
+        assert_eq!(r.hits[0].wing, "wb");
     }
 }

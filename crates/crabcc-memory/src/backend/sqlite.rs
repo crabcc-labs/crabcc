@@ -14,7 +14,7 @@
 //! constraint — re-adding an unchanged drawer returns its existing id.
 //! Wing/room rows are auto-created within the same transaction.
 
-use crate::backend::{cosine, Backend};
+use crate::backend::{cosine, Backend, LexicalQuery};
 use crate::types::*;
 use anyhow::{anyhow, Context, Result};
 use crabcc_core::hash::sha256_hex;
@@ -110,6 +110,71 @@ impl SqliteBackend {
                 "ALTER TABLE drawer_embeddings ADD COLUMN embedded_at INTEGER NOT NULL DEFAULT 0",
                 [],
             )?;
+        }
+
+        // FTS5 backfill — `drawers_fts` is a CREATE-IF-NOT-EXISTS virtual
+        // table, so v2.1 / v2.2.1 databases (no FTS at write time) will own an
+        // empty index after the first upgraded open. If drawers > 0 but FTS
+        // rows == 0 the lexical path would silently return zero hits forever;
+        // do a single pass to populate. We need plaintext bodies, so we
+        // route through `body_from_row` (same decoder query() uses).
+        let drawer_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM drawers", [], |r| r.get(0))
+            .unwrap_or(0);
+        let fts_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM drawers_fts", [], |r| r.get(0))
+            .unwrap_or(0);
+        if drawer_count > 0 && fts_count == 0 {
+            // Open codec early just for the backfill — needs the same
+            // decode path that `body_from_row` uses. We can't call
+            // `body_from_row` yet (no `Self` until after this block), so
+            // inline the equivalent decode here.
+            #[cfg(feature = "compress")]
+            let pre_codec = {
+                let symbols_path = path
+                    .parent()
+                    .map(|p| p.join("fsst.symbols"))
+                    .unwrap_or_else(|| std::path::PathBuf::from("fsst.symbols"));
+                if symbols_path.exists() {
+                    crabcc_core::compress::Codec::load(&symbols_path).ok()
+                } else {
+                    None
+                }
+            };
+            let mut select = conn.prepare("SELECT id, body, body_enc FROM drawers")?;
+            let rows = select
+                .query_map([], |r| {
+                    let id: i64 = r.get(0)?;
+                    let enc: i64 = r.get(2)?;
+                    let body: String = if enc == 1 {
+                        #[cfg(feature = "compress")]
+                        {
+                            if let Some(codec) = pre_codec.as_ref() {
+                                let blob: Vec<u8> = r.get(1)?;
+                                String::from_utf8_lossy(&codec.decompress(&blob)).into_owned()
+                            } else {
+                                String::new()
+                            }
+                        }
+                        #[cfg(not(feature = "compress"))]
+                        {
+                            String::new()
+                        }
+                    } else {
+                        r.get(1)?
+                    };
+                    Ok((id, body))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            // Drop the prepared statement before issuing inserts to release
+            // the connection's borrow.
+            drop(select);
+            for (id, body) in rows {
+                conn.execute(
+                    "INSERT INTO drawers_fts(rowid, body) VALUES (?1, ?2)",
+                    params![id, body],
+                )?;
+            }
         }
 
         let _ = conn.execute_batch("PRAGMA optimize;");
@@ -215,6 +280,40 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
+/// Build an FTS5 MATCH expression from raw user input. We tokenize on
+/// non-alphanumerics + apostrophes, drop empties, and OR the terms — that
+/// way "fox jumps" matches drawers containing either word, mirroring how
+/// most search UIs work. Bare user text would be parsed as an FTS query
+/// (and `'` / `"` could cause syntax errors), so this normalisation also
+/// hardens the path against accidental query-string injection.
+fn fts_match_string(input: &str) -> String {
+    let mut terms: Vec<String> = Vec::new();
+    for word in input
+        .split(|c: char| !(c.is_alphanumeric() || c == '\''))
+        .filter(|w| !w.is_empty())
+    {
+        // Wrap each token in double quotes so FTS5 treats it as a literal
+        // phrase rather than parsing internal apostrophes / digits.
+        let mut buf = String::with_capacity(word.len() + 2);
+        buf.push('"');
+        for ch in word.chars() {
+            if ch == '"' {
+                buf.push_str("\"\"");
+            } else {
+                buf.push(ch);
+            }
+        }
+        buf.push('"');
+        terms.push(buf);
+    }
+    if terms.is_empty() {
+        // Empty MATCH would be an FTS5 syntax error; substitute a token
+        // that cannot exist in any drawer body. Returns zero rows cleanly.
+        return "\"\u{e000}\"".into();
+    }
+    terms.join(" OR ")
+}
+
 fn vec_to_blob(v: &[f32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(v.len() * 4);
     for x in v {
@@ -318,6 +417,14 @@ impl Backend for SqliteBackend {
                 "INSERT INTO drawer_embeddings(drawer_id, dim, bytes) VALUES (?1, ?2, ?3)",
                 params![id, d.embedding.len() as i64, vec_to_blob(&d.embedding)],
             )?;
+            // FTS5 index uses the drawer's id as rowid so KNN ids and BM25
+            // ids share the same namespace — RRF fusion in Palace blends
+            // by drawer id directly. Plaintext body is indexed regardless
+            // of body_enc so BM25 sees real terms even on FSST-encoded rows.
+            tx.execute(
+                "INSERT INTO drawers_fts(rowid, body) VALUES (?1, ?2)",
+                params![id, d.body],
+            )?;
             ids.push(id);
         }
         tx.commit()?;
@@ -418,27 +525,119 @@ impl Backend for SqliteBackend {
     }
 
     fn delete(&self, sel: &DeleteSel) -> Result<usize> {
-        let conn = self.conn.lock().map_err(|_| anyhow!("poisoned mutex"))?;
-        let n = match sel {
-            DeleteSel::All => conn.execute("DELETE FROM drawers", [])?,
-            DeleteSel::ById(ids) => {
-                if ids.is_empty() {
-                    0
+        let mut conn = self.conn.lock().map_err(|_| anyhow!("poisoned mutex"))?;
+        // FTS5 isn't a regular table — FK CASCADE on drawers does NOT
+        // propagate to drawers_fts. We resolve the affected ids first,
+        // delete from drawers (which cascades drawer_embeddings), then
+        // emit one FTS delete per id under the same transaction so the
+        // pair is atomic.
+        let tx = conn.transaction()?;
+        let ids: Vec<DrawerId> = match sel {
+            DeleteSel::All => {
+                let mut stmt = tx.prepare("SELECT id FROM drawers")?;
+                let rows = stmt.query_map([], |r| r.get::<_, DrawerId>(0))?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()?
+            }
+            DeleteSel::ById(want) => {
+                if want.is_empty() {
+                    Vec::new()
                 } else {
-                    let placeholders = vec!["?"; ids.len()].join(",");
-                    let sql = format!("DELETE FROM drawers WHERE id IN ({})", placeholders);
+                    let placeholders = vec!["?"; want.len()].join(",");
+                    let sql = format!("SELECT id FROM drawers WHERE id IN ({})", placeholders);
                     let id_vals: Vec<rusqlite::types::Value> =
-                        ids.iter().map(|i| (*i).into()).collect();
+                        want.iter().map(|i| (*i).into()).collect();
                     let id_refs: Vec<&dyn rusqlite::ToSql> =
                         id_vals.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-                    conn.execute(&sql, id_refs.as_slice())?
+                    let mut stmt = tx.prepare(&sql)?;
+                    let rows = stmt.query_map(id_refs.as_slice(), |r| r.get::<_, DrawerId>(0))?;
+                    rows.collect::<rusqlite::Result<Vec<_>>>()?
                 }
             }
             DeleteSel::BySource(src) => {
-                conn.execute("DELETE FROM drawers WHERE source_id = ?1", params![src])?
+                let mut stmt = tx.prepare("SELECT id FROM drawers WHERE source_id = ?1")?;
+                let rows = stmt.query_map(params![src], |r| r.get::<_, DrawerId>(0))?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()?
             }
         };
+        let n = match sel {
+            DeleteSel::All => tx.execute("DELETE FROM drawers", [])?,
+            DeleteSel::ById(want) => {
+                if want.is_empty() {
+                    0
+                } else {
+                    let placeholders = vec!["?"; want.len()].join(",");
+                    let sql = format!("DELETE FROM drawers WHERE id IN ({})", placeholders);
+                    let id_vals: Vec<rusqlite::types::Value> =
+                        want.iter().map(|i| (*i).into()).collect();
+                    let id_refs: Vec<&dyn rusqlite::ToSql> =
+                        id_vals.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+                    tx.execute(&sql, id_refs.as_slice())?
+                }
+            }
+            DeleteSel::BySource(src) => {
+                tx.execute("DELETE FROM drawers WHERE source_id = ?1", params![src])?
+            }
+        };
+        // FTS5 contentless delete idiom: INSERT a 'delete' command row.
+        for id in &ids {
+            tx.execute(
+                "INSERT INTO drawers_fts(drawers_fts, rowid, body) VALUES('delete', ?1, '')",
+                params![id],
+            )?;
+        }
+        tx.commit()?;
         Ok(n)
+    }
+
+    fn query_lexical(&self, q: &LexicalQuery) -> Result<QueryResult> {
+        let conn = self.conn.lock().map_err(|_| anyhow!("poisoned mutex"))?;
+        let mut sql = String::from(
+            "SELECT d.id, d.body, d.body_enc, d.source_id, w.name AS wing, r.name AS room,
+                    bm25(drawers_fts) AS rank
+             FROM drawers_fts
+             JOIN drawers d ON d.id = drawers_fts.rowid
+             JOIN wings w ON w.id = d.wing_id
+             LEFT JOIN rooms r ON r.id = d.room_id
+             WHERE drawers_fts MATCH ?",
+        );
+        let mut args: Vec<rusqlite::types::Value> = vec![fts_match_string(&q.text).into()];
+        if let Some(w) = &q.wing {
+            sql.push_str(" AND w.name = ?");
+            args.push(w.clone().into());
+        }
+        if let Some(r) = &q.room {
+            sql.push_str(" AND r.name = ?");
+            args.push(r.clone().into());
+        }
+        sql.push_str(" ORDER BY rank LIMIT ?");
+        args.push((q.limit.max(0) as i64).into());
+
+        let mut stmt = conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::ToSql> =
+            args.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params_refs.as_slice(), |row| {
+            let id: i64 = row.get(0)?;
+            let body = self.body_from_row(row, 1, 2)?;
+            let source: String = row.get(3)?;
+            let wing: String = row.get(4)?;
+            let room: Option<String> = row.get(5)?;
+            // bm25() returns negative scores (lower = better). Negate so
+            // higher = better, matching cosine's convention. Hybrid fusion
+            // only uses ranks (RRF), not absolute values, so the raw scale
+            // is fine — we don't fake a [0,1] mapping.
+            let bm25: f64 = row.get(6)?;
+            let score = (-bm25) as f32;
+            Ok(DrawerHit {
+                id,
+                score,
+                source_id: source,
+                body,
+                wing,
+                room,
+            })
+        })?;
+        let hits: rusqlite::Result<Vec<DrawerHit>> = rows.collect();
+        Ok(QueryResult { hits: hits? })
     }
 
     fn count(&self) -> Result<usize> {
@@ -1151,5 +1350,162 @@ mod tests {
             .unwrap();
         assert_eq!(cwd, "/new");
         assert_eq!(branch, "main");
+    }
+
+    // ---------- M1: FTS5 lexical search + backfill ----------
+
+    #[test]
+    fn lexical_query_returns_keyword_matches() {
+        let dir = tempdir().unwrap();
+        let b = SqliteBackend::open(&dir.path().join("memory.db")).unwrap();
+        let e = HashEmbedder::new();
+        b.add(&[
+            ins(&e, "1", "the quick brown fox", "default"),
+            ins(&e, "2", "lazy cat sleeps", "default"),
+            ins(&e, "3", "fox in henhouse", "default"),
+        ])
+        .unwrap();
+        let r = b
+            .query_lexical(&LexicalQuery {
+                text: "fox".into(),
+                limit: 10,
+                wing: None,
+                room: None,
+            })
+            .unwrap();
+        let ids: std::collections::HashSet<&str> =
+            r.hits.iter().map(|h| h.source_id.as_str()).collect();
+        assert_eq!(r.hits.len(), 2);
+        assert!(ids.contains("1"));
+        assert!(ids.contains("3"));
+    }
+
+    #[test]
+    fn lexical_empty_query_is_safe() {
+        // Empty/whitespace-only queries must NOT raise an FTS5 syntax
+        // error — the helper substitutes a never-matching token.
+        let dir = tempdir().unwrap();
+        let b = SqliteBackend::open(&dir.path().join("memory.db")).unwrap();
+        let e = HashEmbedder::new();
+        b.add(&[ins(&e, "1", "anything", "default")]).unwrap();
+        let r = b
+            .query_lexical(&LexicalQuery {
+                text: "  ".into(),
+                limit: 5,
+                wing: None,
+                room: None,
+            })
+            .unwrap();
+        assert!(r.hits.is_empty());
+    }
+
+    #[test]
+    fn lexical_query_handles_apostrophes_and_quotes() {
+        // User input with quotes / apostrophes would crash naive FTS5 query
+        // building. Confirm sanitised match string survives.
+        let dir = tempdir().unwrap();
+        let b = SqliteBackend::open(&dir.path().join("memory.db")).unwrap();
+        let e = HashEmbedder::new();
+        b.add(&[ins(&e, "1", "don't worry about it", "default")])
+            .unwrap();
+        let r = b
+            .query_lexical(&LexicalQuery {
+                text: r#"don"t "worry""#.into(),
+                limit: 5,
+                wing: None,
+                room: None,
+            })
+            .unwrap();
+        assert!(!r.hits.is_empty());
+    }
+
+    #[test]
+    fn delete_drawer_drops_fts_row() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("memory.db");
+        let b = SqliteBackend::open(&path).unwrap();
+        let e = HashEmbedder::new();
+        let id = b.add(&[ins(&e, "x", "fox jumps", "d")]).unwrap()[0];
+        // FTS hit before delete.
+        let r = b
+            .query_lexical(&LexicalQuery {
+                text: "fox".into(),
+                limit: 5,
+                wing: None,
+                room: None,
+            })
+            .unwrap();
+        assert_eq!(r.hits.len(), 1);
+        b.delete(&DeleteSel::ById(vec![id])).unwrap();
+        // FTS hit must be gone.
+        let r = b
+            .query_lexical(&LexicalQuery {
+                text: "fox".into(),
+                limit: 5,
+                wing: None,
+                room: None,
+            })
+            .unwrap();
+        assert!(r.hits.is_empty());
+    }
+
+    #[test]
+    fn fts_backfills_for_pre_m1_database() {
+        // Simulate a v2.1 memory.db: drawers + drawer_embeddings populated
+        // before drawers_fts existed. Open via SqliteBackend (which adds
+        // the FTS table via CREATE-IF-NOT-EXISTS) and confirm the backfill
+        // populates the index so lexical search works.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("memory.db");
+        // Step 1 — write some drawers, then DROP the FTS table to mimic
+        // a database created before M1 added FTS5.
+        {
+            let b = SqliteBackend::open(&path).unwrap();
+            let e = HashEmbedder::new();
+            b.add(&[
+                ins(&e, "1", "alpha beta", "default"),
+                ins(&e, "2", "gamma delta", "default"),
+            ])
+            .unwrap();
+        }
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute("DROP TABLE drawers_fts", []).unwrap();
+        }
+        // Step 2 — reopen. CREATE IF NOT EXISTS recreates the table; the
+        // backfill populates rows from existing drawers.
+        let b = SqliteBackend::open(&path).unwrap();
+        let r = b
+            .query_lexical(&LexicalQuery {
+                text: "gamma".into(),
+                limit: 5,
+                wing: None,
+                room: None,
+            })
+            .unwrap();
+        assert_eq!(r.hits.len(), 1);
+        assert_eq!(r.hits[0].source_id, "2");
+    }
+
+    #[test]
+    fn fts_backfill_is_idempotent_on_reopen() {
+        // Reopening an already-populated DB must NOT double-insert into FTS
+        // (the backfill check is "drawer_count > 0 && fts_count == 0").
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("memory.db");
+        let e = HashEmbedder::new();
+        {
+            let b = SqliteBackend::open(&path).unwrap();
+            b.add(&[ins(&e, "1", "alpha beta", "default")]).unwrap();
+        }
+        // Reopen 5×; FTS rowcount must stay at 1.
+        for _ in 0..5 {
+            let _ = SqliteBackend::open(&path).unwrap();
+        }
+        let conn = Connection::open(&path).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM drawers_fts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
     }
 }

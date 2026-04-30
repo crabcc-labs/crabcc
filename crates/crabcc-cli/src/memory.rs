@@ -7,9 +7,9 @@
 //! (sym/refs/callers/fuzzy/prefix). Gated by `CRABCC_AUTO_MEMORY=1` — zero
 //! overhead when unset. Never fails the user-facing command on memory errors.
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use clap::Subcommand;
-use crabcc_memory::{DeleteSel, Palace};
+use crabcc_memory::{DeleteSel, Palace, SearchMode};
 use std::path::Path;
 
 #[derive(Subcommand, Debug)]
@@ -27,7 +27,9 @@ pub enum MemoryCmd {
         #[arg(long)]
         room: Option<String>,
     },
-    /// Vector search top-K drawers (random ordering at M0 — semantic embeddings land in M1).
+    /// Search top-K drawers. Default mode is `hybrid` (BM25 + vector,
+    /// fused via Reciprocal Rank Fusion). `--mode` selects an ablation:
+    /// `hybrid` (default), `lexical` (BM25 only), or `vector` (KNN only).
     Search {
         query: String,
         #[arg(long, default_value_t = 10)]
@@ -36,6 +38,8 @@ pub enum MemoryCmd {
         wing: Option<String>,
         #[arg(long)]
         room: Option<String>,
+        #[arg(long, default_value = "hybrid")]
+        mode: String,
     },
     /// Fetch one drawer verbatim by id.
     Get { id: i64 },
@@ -90,8 +94,13 @@ pub fn run(root: &Path, cmd: MemoryCmd) -> Result<()> {
             limit,
             wing,
             room,
+            mode,
         } => {
-            let r = palace.search_filtered(&query, limit, wing.as_deref(), room.as_deref())?;
+            let parsed = SearchMode::parse(&mode).ok_or_else(|| {
+                anyhow!("invalid --mode {mode:?}; expected hybrid|lexical|vector")
+            })?;
+            let r =
+                palace.search_with_mode(parsed, &query, limit, wing.as_deref(), room.as_deref())?;
             println!("{}", serde_json::to_string(&r)?);
         }
         MemoryCmd::Get { id } => match palace.get(id)? {
