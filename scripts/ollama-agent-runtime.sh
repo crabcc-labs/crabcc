@@ -120,8 +120,13 @@ FULL_PROMPT=$(jq -n \
    "\n\n# User\n" + $user')
 
 # ── call /api/generate ───────────────────────────────────────────────
+# NOTE: do NOT set format:"json". Thinking + tool-calling models
+# (gpt-oss, OpenClaw, Qwen3-Thinking) emit structured output via the
+# native .tool_calls + .thinking fields; format:"json" actively clips
+# them to empty strings. Verified empirically against
+# voytas26/openclaw-oss-20b-deterministic on 2026-04-30.
 body=$(jq -nc --arg m "$MODEL" --argjson p "$FULL_PROMPT" \
-  '{model:$m, prompt:$p, stream:false, format:"json",
+  '{model:$m, prompt:$p, stream:false,
     options:{num_predict:2048, temperature:0.2}}')
 
 reply=$(curl -fsS --max-time "$TIMEOUT" \
@@ -132,30 +137,59 @@ reply=$(curl -fsS --max-time "$TIMEOUT" \
   exit 2
 }
 
-raw_response=$(echo "$reply" | jq -r '.response // ""')
-if [ -z "$raw_response" ]; then
-  echo "agent-runtime: empty .response from Ollama" >&2
-  exit 3
+# Drop the giant .context array before any further processing so jq
+# stays cheap on big replies.
+reply_trim=$(echo "$reply" | jq -c 'del(.context)')
+
+# Three places the model can put its output:
+#   .response   — free-form text (final answer; "" when tool-calling)
+#   .thinking   — reasoning trace (gpt-oss / OpenClaw native field)
+#   .tool_calls — structured tool calls Ollama auto-extracts; shape:
+#                 [ {function: {name, arguments, index?}} ]
+response=$( echo "$reply_trim" | jq -r '.response // ""')
+thinking=$( echo "$reply_trim" | jq -r '.thinking // ""')
+tool_calls_raw=$(echo "$reply_trim" | jq -c '.tool_calls // []')
+first_call=$(echo "$tool_calls_raw" | jq -c '.[0] // null')
+
+# Normalize the first tool call into our contract shape: {name, args}.
+# Ollama's native shape nests under .function; the contract flattens it
+# so downstream parsers don't need to care about provider quirks.
+if [ "$first_call" != "null" ]; then
+  tool_call=$(echo "$first_call" | jq -c '
+    if   .function then {name: .function.name, args: (.function.arguments // {})}
+    elif .name     then {name: .name,          args: (.arguments // .args // {})}
+    else null end')
+else
+  tool_call="null"
 fi
 
-# Try to parse the model's response as JSON; if it fails, surface the
-# raw text so the caller can decide whether to retry with stronger
-# prompting.
-if parsed=$(echo "$raw_response" | jq -e . 2>/dev/null); then
+# Decide ok/error. The model satisfied the contract iff it produced
+# either a tool_call OR non-empty final text.
+if [ "$tool_call" != "null" ] || [ -n "$response" ]; then
   jq -n \
-    --arg model "$MODEL" \
-    --argjson parsed "$parsed" \
-    --arg raw       "$raw_response" \
+    --arg model       "$MODEL" \
+    --argjson tc      "$tool_call" \
+    --arg final       "$response" \
+    --arg thinking    "$thinking" \
+    --argjson raw     "$reply_trim" \
     '{ok:true, model:$model,
-      tool_call: ($parsed.tool_call // null),
-      final:     ($parsed.final     // null),
-      thinking:  ($parsed.thinking  // null),
+      tool_call: $tc,
+      final:     (if $final == "" then null else $final end),
+      thinking:  (if $thinking == "" then null else $thinking end),
       raw: $raw}' > "$OUTPUT"
   echo "agent-runtime: ok · model=$MODEL · output=$OUTPUT" >&2
+  echo "agent-runtime: $(if [ "$tool_call" != "null" ]; then echo "tool_call=$(echo "$tool_call" | jq -r .name)"; else echo "final=$(echo "$response" | head -c 60)…"; fi)" >&2
   exit 0
 else
-  jq -n --arg model "$MODEL" --arg raw "$raw_response" \
-    '{ok:false, model:$model, error:"non-json reply", raw:$raw}' > "$OUTPUT"
-  echo "agent-runtime: model returned non-JSON; raw written to $OUTPUT" >&2
+  # Neither tool_call nor final — surface every field for diagnosis.
+  jq -n \
+    --arg model      "$MODEL" \
+    --argjson raw    "$reply_trim" \
+    --arg thinking   "$thinking" \
+    '{ok:false, model:$model,
+      error:"empty response and no tool_calls (model only thought)",
+      thinking: (if $thinking == "" then null else $thinking end),
+      raw: $raw}' > "$OUTPUT"
+  echo "agent-runtime: model produced no actionable output (thinking only); raw written to $OUTPUT" >&2
   exit 3
 fi
