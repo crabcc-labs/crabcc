@@ -170,22 +170,41 @@ Then in Claude Code: `/reload-plugins`.
 | Store a free-form note for this repo | `crabcc memory remember "doc:1" "<body>"`            |
 | Search past notes                    | `crabcc memory search "<query>"`                     |
 | List drawers in this repo            | `crabcc memory list --limit 20`                      |
+| **Bulk-ingest** the repo as drawers  | `crabcc memory mine project`                         |
+| **Bulk-ingest** Claude Code sessions | `crabcc memory mine sessions`                        |
 
 Full examples: [`examples/CLI.md`](./examples/CLI.md). MCP wire-level walkthrough:
 [`examples/MCP.md`](./examples/MCP.md).
 
-### AI memory (`crabcc memory`, M0 + M3-light)
+### AI memory (`crabcc memory`, M0–M2 + bench gate)
 
-Local-first, per-repo memory at `<repo>/.crabcc/memory.db`. M0 ships the
-`Backend` trait + a file-backed brute-force `SqliteBackend`; M3-light wires
-the CLI/MCP surface (`init`, `remember`, `search`, `get`, `list`,
-`delete`, `count`, `health`) plus 8 matching `memory.*` MCP tools. Each
-MCP tool accepts an optional `cwd` arg — the server walks up to `.git`
-and routes calls to the right per-project palace.
+Local-first, per-repo memory at `<repo>/.crabcc/memory.db`. Ships the
+full pipeline tracked by [issue #2](../../issues/2):
 
-> Note: M0 ships a deterministic hash embedder so the API works
-> end-to-end and tests are stable. **Search results are not yet
-> semantic** — `fastembed-rs` (MiniLM-L6-v2) lands in M1.
+- **Storage** — `SqliteBackend` with WAL + FSST drawer-body compression
+  (issue #14), plus `sqlite-vec` ANN scaffold behind `--features
+  memory-vec` (issue #17).
+- **Hybrid search** — FTS5 BM25 + cosine KNN fused via Reciprocal Rank
+  Fusion (k = 60). `crabcc memory search QUERY [--mode lexical|vector|hybrid]`.
+- **Real embeddings** — `FastEmbedder` (MiniLM-L6-v2, 384-dim) behind
+  `--features memory-embed` (issue #18). With it on, `Palace::search`
+  defaults to `Hybrid`; with it off, `Lexical`.
+- **Miners (M2)** — `crabcc memory mine project [PATH]` walks a repo
+  and stores one drawer per text file; `crabcc memory mine sessions [DIR]`
+  parses Claude Code JSONL transcripts and stores one drawer per
+  `(user, assistant)` turn pair. Both idempotent on re-run via the
+  existing `(source_id, sha256)` UNIQUE constraint.
+- **CLI/MCP surface** — 10 CLI subcommands and 10 matching `memory.*`
+  MCP tools. Each MCP tool accepts an optional `cwd` arg — the server
+  walks up to `.git` and routes calls to the right per-project palace.
+- **Bench gate** — [`bench/memory`](./bench/memory) ships a
+  LongMemEval R@k harness; the bundled synthetic fixture clears
+  R@5 ≥ 96.6% under both `lexical` and `hybrid` modes. Run it via
+  `task memory-bench` (or point at the real LongMemEval JSON via
+  `task memory-bench DATASET=path/to/longmemeval_oracle.json`).
+
+End-to-end walkthrough: [`examples/memory.md`](./examples/memory.md).
+Demo GIF: [`assets/demo-memory.gif`](./assets/demo-memory.gif).
 
 **Auto-capture:** set `CRABCC_AUTO_MEMORY=1` to have `sym` / `refs` /
 `callers` / `fuzzy` / `prefix` quietly store a drawer summarising each

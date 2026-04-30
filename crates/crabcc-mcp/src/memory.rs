@@ -10,7 +10,11 @@
 //! per-call grouping (terminal id from CLI, conversation id from MCP).
 
 use anyhow::{anyhow, Result};
-use crabcc_memory::{find_git_root, DeleteSel, Palace};
+use crabcc_memory::{
+    find_git_root,
+    mine::{project::MineProjectOpts, sessions::MineSessionsOpts},
+    DeleteSel, Palace, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_PAIR_BYTES,
+};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
@@ -110,6 +114,34 @@ pub fn tools_def() -> Vec<Value> {
             "memory.health",
             "Health snapshot: Ok / Degraded / Down.",
             json!({"cwd": cwd_field}),
+            &[],
+        ),
+        tool(
+            "memory.mine_project",
+            "Walk a repository and store one drawer per text file under \
+             wing=\"proj\". Idempotent on re-run via (source_id, sha256). \
+             Returns a MineReport: {scanned, considered, inserted, deduped, skipped}.",
+            json!({
+                "cwd":        cwd_field,
+                "path":       str_field("dir to walk; defaults to memory-store root"),
+                "max_bytes":  {"type": "integer", "description":
+                    "per-file body cap (default 1_000_000)"},
+                "session_id": session_field,
+            }),
+            &[],
+        ),
+        tool(
+            "memory.mine_sessions",
+            "Walk a JSONL directory of Claude Code transcripts and store \
+             one drawer per (user, assistant) turn pair under wing=\"session\". \
+             Idempotent. `dir` defaults to $HOME/.claude/projects/.",
+            json!({
+                "cwd":             cwd_field,
+                "dir":             str_field("dir or single .jsonl file"),
+                "max_pair_bytes":  {"type": "integer", "description":
+                    "per-pair body cap (default 65536)"},
+                "session_id":      session_field,
+            }),
             &[],
         ),
     ]
@@ -223,8 +255,57 @@ pub fn dispatch(tool: &str, args: &Value, server_root: &Path) -> Result<String> 
         }
         "memory.count" => Ok(json!({"count": palace.count()?}).to_string()),
         "memory.health" => Ok(serde_json::to_string(&palace.health())?),
+        "memory.mine_project" => {
+            let target: PathBuf = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(PathBuf::from)
+                .unwrap_or_else(|| palace.root.clone());
+            let max_bytes = args
+                .get("max_bytes")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(DEFAULT_MAX_FILE_BYTES);
+            let session = args
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let opts = MineProjectOpts {
+                max_bytes,
+                session_id: session,
+            };
+            let report = palace.mine_project(&target, &opts)?;
+            Ok(serde_json::to_string(&report)?)
+        }
+        "memory.mine_sessions" => {
+            let target = args
+                .get("dir")
+                .and_then(|v| v.as_str())
+                .map(PathBuf::from)
+                .unwrap_or_else(default_sessions_dir);
+            let max_pair_bytes = args
+                .get("max_pair_bytes")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(DEFAULT_MAX_PAIR_BYTES as u64) as usize;
+            let session = args
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            let opts = MineSessionsOpts {
+                max_pair_bytes,
+                session_id: session,
+            };
+            let report = palace.mine_sessions(&target, &opts)?;
+            Ok(serde_json::to_string(&report)?)
+        }
         other => Err(anyhow!("unknown memory tool: {other}")),
     }
+}
+
+fn default_sessions_dir() -> PathBuf {
+    if let Some(home) = std::env::var_os("HOME") {
+        return PathBuf::from(home).join(".claude").join("projects");
+    }
+    PathBuf::from(".")
 }
 
 /// Best-effort capture for symbol-side tool calls. Off unless

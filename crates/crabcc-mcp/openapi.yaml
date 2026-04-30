@@ -607,6 +607,64 @@ paths:
                 type: string
                 enum: [Ok, Degraded, Down]
 
+  /tools/memory.mine_project:
+    post:
+      tags: [memory]
+      operationId: memory_mine_project
+      summary: |
+        Walk a repository and store one drawer per text file under
+        wing="proj". Idempotent on re-run via (source_id, sha256).
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                cwd: {type: string}
+                path:
+                  type: string
+                  description: Directory to walk (defaults to memory-store root).
+                max_bytes:
+                  type: integer
+                  description: Per-file body cap (default 1_000_000).
+                session_id: {type: string}
+      responses:
+        "200":
+          description: MineReport — counts of scanned/inserted/deduped/skipped.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/MineReport"}
+
+  /tools/memory.mine_sessions:
+    post:
+      tags: [memory]
+      operationId: memory_mine_sessions
+      summary: |
+        Walk a JSONL directory of Claude Code transcripts and store
+        one drawer per (user, assistant) turn pair under wing="session".
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                cwd: {type: string}
+                dir:
+                  type: string
+                  description: |
+                    Directory or single .jsonl file. Defaults to
+                    $HOME/.claude/projects/.
+                max_pair_bytes:
+                  type: integer
+                  description: Per-pair body cap (default 65536).
+                session_id: {type: string}
+      responses:
+        "200":
+          description: MineReport.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/MineReport"}
+
 components:
   schemas:
     CwdRequest:
@@ -784,3 +842,13 @@ components:
         version:          {type: string, description: Server semver from Cargo.toml.}
         protocol_version: {type: string, description: MCP protocol version (e.g. 2024-11-05).}
         tool_count:       {type: integer, description: Total tools exposed by `tools/list`.}
+
+    MineReport:
+      type: object
+      required: [scanned, considered, inserted, deduped, skipped]
+      properties:
+        scanned:    {type: integer, description: Input units examined.}
+        considered: {type: integer, description: Drawers handed to the backend (post-skip).}
+        inserted:   {type: integer, description: Fresh rows written.}
+        deduped:    {type: integer, description: Idempotent (source_id, sha256) hits.}
+        skipped:    {type: integer, description: Binary / oversize / unparseable inputs.}

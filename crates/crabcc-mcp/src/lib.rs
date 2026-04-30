@@ -790,6 +790,8 @@ mod tests {
             "memory.delete",
             "memory.count",
             "memory.health",
+            "memory.mine_project",
+            "memory.mine_sessions",
         ] {
             assert!(names.contains(&expected), "missing memory tool: {expected}");
         }
@@ -1057,6 +1059,56 @@ mod tests {
         let r = call_tool(dir.path(), "memory.health", json!({}));
         let parsed = parse_text_content(&r);
         assert_eq!(parsed.as_str().unwrap(), "Ok");
+    }
+
+    #[test]
+    fn memory_mine_project_via_handle() {
+        // Build a tiny synthetic repo, point the tool at it, and confirm
+        // the report says two drawers landed under wing="proj".
+        let server_root = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        std::fs::write(target.path().join("notes.md"), "alpha beta gamma").unwrap();
+        std::fs::write(target.path().join("readme.txt"), "the quick brown fox").unwrap();
+
+        let r = call_tool(
+            server_root.path(),
+            "memory.mine_project",
+            json!({"path": target.path().display().to_string()}),
+        );
+        let report = parse_text_content(&r);
+        assert_eq!(report["inserted"], 2, "report shape: {report}");
+
+        // Second call → all dedup hits, no new rows.
+        let r2 = call_tool(
+            server_root.path(),
+            "memory.mine_project",
+            json!({"path": target.path().display().to_string()}),
+        );
+        let report2 = parse_text_content(&r2);
+        assert_eq!(report2["inserted"], 0);
+        assert_eq!(report2["deduped"], 2);
+    }
+
+    #[test]
+    fn memory_mine_sessions_via_handle() {
+        let server_root = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        let f = target.path().join("conv.jsonl");
+        let body = concat!(
+            r#"{"message":{"role":"user","content":"what about plums?"}}"#,
+            "\n",
+            r#"{"message":{"role":"assistant","content":"plums need cool nights"}}"#,
+            "\n",
+        );
+        std::fs::write(&f, body).unwrap();
+
+        let r = call_tool(
+            server_root.path(),
+            "memory.mine_sessions",
+            json!({"dir": target.path().display().to_string()}),
+        );
+        let report = parse_text_content(&r);
+        assert_eq!(report["inserted"], 1);
     }
 
     #[test]
