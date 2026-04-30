@@ -4,14 +4,12 @@ Cargo.lock
 .crabcc/
 .DS_Store
 
-# Bench raw transcripts are noisy + reproducible; keep only the rendered report.
-# Pattern is `*` not `/` so `!` re-includes work — git refuses to re-include a
-# file whose parent directory is excluded with the trailing-slash form.
-bench/results/*
-!bench/results/REPORT.md
-!bench/results/*.png
-!bench/results/fsst-gate.md
-!bench/results/cache-bench-REPORT.md
+# Local-only — no longer published to the remote. Kept on disk for the
+# author's reference; ship-relevant content lives in README.md, CLAUDE.md,
+# AGENTS.md, CHANGELOG.md, and the in-source rustdoc.
+/bench/
+/docs/
+/ARCHITECTURE.md
 
 # Research artifacts produced by sub-agents — not source.
 STORAGE_RESEARCH.md
