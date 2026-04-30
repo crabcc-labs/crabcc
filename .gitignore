@@ -1,6 +1,5 @@
 /target
 **/*.rs.bk
-Cargo.lock
 .crabcc/
 # DMG installer build outputs (scripts/build-dmg.sh)
 /dist/
