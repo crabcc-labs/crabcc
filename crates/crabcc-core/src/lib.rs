@@ -12,6 +12,7 @@ pub mod refs;
 pub mod store;
 pub mod track;
 pub mod types;
+pub mod upgrade;
 pub mod walker;
 pub mod watch;
 

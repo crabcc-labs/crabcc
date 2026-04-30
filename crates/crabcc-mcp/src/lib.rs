@@ -215,6 +215,21 @@ fn tools_def_symbol() -> Vec<Value> {
             json!({}),
             &[],
         ),
+        tool_schema(
+            "upgrade",
+            "Check GitHub for a newer crabcc release (private-repo aware via \
+             local `gh` auth). Returns `{installed, latest, delta:{status,kind?}, \
+             recommendations}`. Pass apply=true to also clean local sidecars \
+             after the check (idempotent; user must re-index).",
+            json!({
+                "apply": {
+                    "type": "boolean",
+                    "description": "If true, rm .crabcc/{index.db,tantivy/,graph.json} after the version check. Default false.",
+                },
+                "repo": str_field("optional repo override (default: peterlodri-sec/crabcc)"),
+            }),
+            &[],
+        ),
     ]
 }
 
@@ -336,6 +351,21 @@ fn dispatch_tool(params: Option<&Value>, root: &Path) -> Result<String> {
         "graph_orphans" => {
             let g = load_or_build_graph(&store, root)?;
             Ok(serde_json::to_string(&g.orphans())?)
+        }
+        "upgrade" => {
+            let repo = args
+                .get("repo")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+                .unwrap_or_else(crabcc_core::upgrade::target_repo);
+            let report = crabcc_core::upgrade::build_report(&repo, Some(root));
+            // The MCP path treats `apply` as opt-in just like the CLI. The
+            // index store is re-opened by callers on the next tool invocation
+            // — we don't try to invalidate it from here.
+            if args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false) {
+                let _ = crabcc_core::upgrade::cleanup_index(root);
+            }
+            Ok(serde_json::to_string(&report)?)
         }
         other => Err(anyhow::anyhow!("unknown tool: {other}")),
     }

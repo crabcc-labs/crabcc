@@ -26,6 +26,23 @@
 
 ---
 
+## Install (private repo — needs `gh auth login` first)
+
+```bash
+# 1. one-time auth (private repo, so the install path needs your token)
+gh auth login
+
+# 2. one-line install — pulls source via gh, builds with cargo, installs to ~/.cargo/bin/crabcc
+gh repo clone peterlodri-sec/crabcc /tmp/crabcc-install \
+  && (cd /tmp/crabcc-install && cargo install --path crates/crabcc-cli --locked) \
+  && rm -rf /tmp/crabcc-install
+
+# 3. zsh shell completion (one-time — tab-complete crabcc <subcmd>, --flag, etc.)
+crabcc completions zsh > "${fpath[1]}/_crabcc" && exec zsh
+```
+
+For bash/fish/elvish, swap the last command's `zsh` for the target shell.
+
 A small Rust CLI + MCP server that indexes your repo's symbols (functions, classes,
 methods, etc.) into a SQLite store and exposes them via four primitives an agent
 actually wants: `sym`, `refs`, `callers`, `outline`. Plus token-shaping flags
