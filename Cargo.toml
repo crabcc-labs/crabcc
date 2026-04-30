@@ -47,6 +47,10 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 libc = "0.2"
 notify-debouncer-mini = "0.4"
+# SIMD-accelerated JSON. Drop-in API for `serde_json::{to_string, to_writer,
+# from_str, from_slice}` on x86_64+aarch64; ~2-4x faster on encode and ~5-10x
+# on decode. Used on the CLI output hot path + MCP request parsing.
+sonic-rs = "0.3"
 moka = { version = "0.12", features = ["sync"] }
 
 [profile.release]

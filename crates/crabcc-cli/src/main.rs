@@ -87,8 +87,10 @@ enum Cmd {
     FtsRebuild,
     /// Show estimated tokens saved by crabcc usage (this session, 24h, all-time).
     Track {
+        /// Print human-readable text instead of JSON. JSON is the default for
+        /// machine-readable output; pass `--text` for the columnar summary.
         #[arg(long)]
-        json: bool,
+        text: bool,
     },
     /// Watch the repo and auto-`refresh` on file changes (Ctrl-C to exit).
     Watch {
@@ -146,9 +148,10 @@ enum Cmd {
         /// Print the report and exit; never modify local state.
         #[arg(long)]
         check: bool,
-        /// JSON output (default is human-readable).
+        /// Print human-readable text instead of JSON. JSON is the default; pass
+        /// `--text` for the formatted multi-line summary.
         #[arg(long)]
-        json: bool,
+        text: bool,
         /// Apply local cleanup (rm `.crabcc/index.db`, tantivy/, graph.json)
         /// after the version check. Idempotent; safe to re-run. Re-index
         /// after with `crabcc index`.
@@ -170,9 +173,10 @@ enum Cmd {
     /// Print build provenance (commit, branch, tag, time, target) plus a
     /// one-line project summary. Compile-time embedded — no runtime git lookup.
     Info {
-        /// Emit JSON instead of human-readable text.
+        /// Print human-readable text instead of JSON. JSON is the default for
+        /// machine consumers; pass `--text` for the indented banner.
         #[arg(long)]
-        json: bool,
+        text: bool,
     },
     /// One-shot: index this repo (or refresh if already initialized),
     /// build the call-graph + memory store, then hand off to
@@ -272,12 +276,12 @@ fn main() -> Result<()> {
     // that aren't repos.
     if let Some(Cmd::Upgrade {
         check,
-        json,
+        text,
         apply,
         repo,
     }) = cli.cmd.as_ref()
     {
-        return run_upgrade(*check, *json, *apply, repo.as_deref(), &root);
+        return run_upgrade(*check, *text, *apply, repo.as_deref(), &root);
     }
     if let Some(Cmd::Completions { shell }) = cli.cmd.as_ref() {
         let mut cmd = <Cli as clap::CommandFactory>::command();
@@ -286,8 +290,8 @@ fn main() -> Result<()> {
     }
     // `info` prints compile-time build provenance — no store, no .crabcc, no
     // working repo required. Run it before any filesystem touches.
-    if let Some(Cmd::Info { json }) = cli.cmd.as_ref() {
-        return run_info(*json);
+    if let Some(Cmd::Info { text }) = cli.cmd.as_ref() {
+        return run_info(*text);
     }
 
     // `go` is a top-level orchestrator that opens its own Store, indexes,
@@ -341,15 +345,15 @@ fn main() -> Result<()> {
             if let Ok(fts) = crabcc_core::fts::Fts::open(&fts_dir) {
                 let _ = fts.rebuild(&store);
             }
-            println!("{}", serde_json::to_string(&stats)?);
+            println!("{}", sonic_rs::to_string(&stats)?);
         }
         Cmd::Refresh => {
             let stats = crabcc_core::index::refresh(&root, &store)?;
-            println!("{}", serde_json::to_string(&stats)?);
+            println!("{}", sonic_rs::to_string(&stats)?);
         }
         Cmd::Sym { name } => {
             let syms = query::find_symbol(&store, &name)?;
-            let body = serde_json::to_string(&syms)?;
+            let body = sonic_rs::to_string(&syms)?;
             crabcc_core::track::record("sym", &name, syms.len(), &repo_label(&root), body.len());
             memory::auto_capture(&root, "sym", &name, syms.len());
             println!("{body}");
@@ -357,7 +361,7 @@ fn main() -> Result<()> {
         Cmd::Refs { name, opts } => {
             let mode = opts.to_mode();
             let out = query::query_refs(&store, &root, &name, mode)?;
-            let body = serde_json::to_string(&out)?;
+            let body = sonic_rs::to_string(&out)?;
             crabcc_core::track::record("refs", &name, out.count(), &repo_label(&root), body.len());
             memory::auto_capture(&root, "refs", &name, out.count());
             println!("{body}");
@@ -365,7 +369,7 @@ fn main() -> Result<()> {
         Cmd::Callers { name, opts } => {
             let mode = opts.to_mode();
             let out = query::query_callers(&store, &root, &name, mode)?;
-            let body = serde_json::to_string(&out)?;
+            let body = sonic_rs::to_string(&out)?;
             crabcc_core::track::record(
                 "callers",
                 &name,
@@ -379,7 +383,7 @@ fn main() -> Result<()> {
         Cmd::Outline { file } => {
             let key = file.to_string_lossy();
             let syms = crabcc_core::outline::outline(&store, &key)?;
-            let body = serde_json::to_string(&syms)?;
+            let body = sonic_rs::to_string(&syms)?;
             crabcc_core::track::record("outline", &key, syms.len(), &repo_label(&root), body.len());
             println!("{body}");
         }
@@ -396,7 +400,7 @@ fn main() -> Result<()> {
                 ext.as_deref(),
                 limit,
             )?;
-            let body = serde_json::to_string(&files)?;
+            let body = sonic_rs::to_string(&files)?;
             crabcc_core::track::record(
                 "files",
                 "list",
@@ -413,7 +417,7 @@ fn main() -> Result<()> {
         Cmd::Fuzzy { query, limit } => {
             let fts = crabcc_core::fts::Fts::open(&fts_dir)?;
             let hits = fts.fuzzy(&query, limit)?;
-            let body = serde_json::to_string(&hits)?;
+            let body = sonic_rs::to_string(&hits)?;
             crabcc_core::track::record("fuzzy", &query, hits.len(), &repo_label(&root), body.len());
             memory::auto_capture(&root, "fuzzy", &query, hits.len());
             println!("{body}");
@@ -421,7 +425,7 @@ fn main() -> Result<()> {
         Cmd::Prefix { query, limit } => {
             let fts = crabcc_core::fts::Fts::open(&fts_dir)?;
             let hits = fts.prefix(&query, limit)?;
-            let body = serde_json::to_string(&hits)?;
+            let body = sonic_rs::to_string(&hits)?;
             crabcc_core::track::record(
                 "prefix",
                 &query,
@@ -437,12 +441,12 @@ fn main() -> Result<()> {
             let n = fts.rebuild(&store)?;
             println!("{{\"indexed\":{n}}}");
         }
-        Cmd::Track { json } => {
+        Cmd::Track { text } => {
             let r = crabcc_core::track::report()?;
-            if json {
-                println!("{}", serde_json::to_string_pretty(&r)?);
-            } else {
+            if text {
                 print_track_human(&r);
+            } else {
+                println!("{}", sonic_rs::to_string_pretty(&r)?);
             }
         }
         Cmd::Watch { debounce } => {
@@ -456,7 +460,7 @@ fn main() -> Result<()> {
                 g.save(&path)?;
                 println!(
                     "{}",
-                    serde_json::to_string(&serde_json::json!({
+                    sonic_rs::to_string(&serde_json::json!({
                         "edges":   g.edge_count,
                         "callers": g.callers.len(),
                         "callees": g.callees.len(),
@@ -482,7 +486,7 @@ fn main() -> Result<()> {
                     "callees" => g.outgoing(&name, depth),
                     _ => g.incoming(&name, depth),
                 };
-                let body = serde_json::to_string(&hits)?;
+                let body = sonic_rs::to_string(&hits)?;
                 crabcc_core::track::record(
                     "graph",
                     &name,
@@ -495,7 +499,7 @@ fn main() -> Result<()> {
             GraphOp::Cycles => {
                 let g = load_or_build_graph(&store, &root)?;
                 let cycles = g.cycles();
-                let body = serde_json::to_string(&cycles)?;
+                let body = sonic_rs::to_string(&cycles)?;
                 crabcc_core::track::record(
                     "graph-cycles",
                     "cycles",
@@ -508,7 +512,7 @@ fn main() -> Result<()> {
             GraphOp::Orphans => {
                 let g = load_or_build_graph(&store, &root)?;
                 let orphans = g.orphans();
-                let body = serde_json::to_string(&orphans)?;
+                let body = sonic_rs::to_string(&orphans)?;
                 crabcc_core::track::record(
                     "graph-orphans",
                     "orphans",
@@ -605,7 +609,7 @@ fn print_track_human(r: &crabcc_core::track::Report) {
 
 fn run_upgrade(
     check: bool,
-    json: bool,
+    text: bool,
     apply: bool,
     repo_override: Option<&str>,
     root: &Path,
@@ -616,10 +620,10 @@ fn run_upgrade(
         .unwrap_or_else(upgrade::target_repo);
     let report = upgrade::build_report(&repo, Some(root));
 
-    if json {
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
+    if text {
         print_upgrade_human(&report, &repo);
+    } else {
+        println!("{}", sonic_rs::to_string_pretty(&report)?);
     }
 
     if check {
@@ -631,7 +635,7 @@ fn run_upgrade(
     if apply {
         match upgrade::cleanup_index(root) {
             Ok(_) => {
-                if !json {
+                if text {
                     eprintln!(
                         "\n  cleaned `.crabcc/{{index.db,tantivy,graph.json}}` — run \
                          `crabcc index` to rebuild."
@@ -706,8 +710,12 @@ const PROJECT_SUMMARY: &str =
      11 MCP tools. SQLite + Tantivy + ast-grep. Token-shaping flags collapse \
      16k-token results to ~3 tokens. 47–5500x faster than grep -rn on monorepos.";
 
-fn run_info(json: bool) -> Result<()> {
-    if json {
+fn run_info(text: bool) -> Result<()> {
+    if !text {
+        // JSON is the default — `serde_json::json!` builds the value via
+        // serde, then sonic-rs serializes it. We keep `serde_json::json!`
+        // because sonic-rs doesn't ship its own json! macro in 0.3, and
+        // the encode side is what matters for performance anyway.
         let v = serde_json::json!({
             "version":  BUILD.version,
             "commit":   BUILD.commit,
@@ -718,7 +726,7 @@ fn run_info(json: bool) -> Result<()> {
             "target":   BUILD.target,
             "summary":  PROJECT_SUMMARY,
         });
-        println!("{}", serde_json::to_string_pretty(&v)?);
+        println!("{}", sonic_rs::to_string_pretty(&v)?);
         return Ok(());
     }
 
