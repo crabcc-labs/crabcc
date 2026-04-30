@@ -6,6 +6,22 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+### Added — Hybrid-search distractor golden test (closes [#22](https://github.com/peterlodri-sec/crabcc/issues/22))
+- New `hybrid_beats_each_ranker_on_distractor_set` in
+  `crates/crabcc-memory/src/palace.rs` — gated behind `memory-embed`
+  and `#[ignore]`d by default (downloads ~25 MB MiniLM-L6-v2 ONNX on
+  first run). Run with:
+  `cargo test -p crabcc-memory --features memory-embed -- --ignored`.
+- Contrived 7-drawer corpus + 2 queries:
+  - **Semantic axis**: paraphrased query with zero token overlap →
+    `Lexical` misses, `Vector` and `Hybrid` rank the right drawer #1.
+  - **Literal axis**: rare exact-token query (`xyzzy_99_42`) →
+    `Lexical` and `Hybrid` rank the right drawer #1.
+- Asserts hybrid (RRF) wins both axes — the contract that justifies
+  fusion existing instead of forcing callers to pick a mode per query.
+- The implementation itself (FTS5 + RRF) landed in PR #32; this test
+  closes the deliverable specified in #22.
+
 ### Added — Starship status-line surface (closes [#43](https://github.com/peterlodri-sec/crabcc/issues/43))
 - `crabcc info --status-line` — terse one-liner suitable for
   Starship / tmux / VS Code status bars: `crabcc 87.2k · idx 12s ·

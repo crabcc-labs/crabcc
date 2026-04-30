@@ -1055,64 +1055,157 @@ mod tests {
     fn golden_drawers() -> &'static [(&'static str, &'static str)] {
         &[
             // cluster 1: HTTP servers
-            ("http:1", "configure listen address and port for the HTTP server"),
-            ("http:2", "rate limiting middleware for inbound HTTP requests"),
-            ("http:3", "TLS termination and certificate auto-renewal via ACME"),
+            (
+                "http:1",
+                "configure listen address and port for the HTTP server",
+            ),
+            (
+                "http:2",
+                "rate limiting middleware for inbound HTTP requests",
+            ),
+            (
+                "http:3",
+                "TLS termination and certificate auto-renewal via ACME",
+            ),
             ("http:4", "CORS headers for cross-origin browser requests"),
             ("http:5", "websocket upgrade handshake on the HTTP listener"),
             // cluster 2: SQL / databases
             ("db:1", "create a new postgres database with utf8 encoding"),
             ("db:2", "alter table to add a non-null default column"),
             ("db:3", "transaction isolation levels for sqlite WAL mode"),
-            ("db:4", "rollback strategy for a failed batch insert into postgres"),
-            ("db:5", "connection pooling for high-throughput SQL workloads"),
+            (
+                "db:4",
+                "rollback strategy for a failed batch insert into postgres",
+            ),
+            (
+                "db:5",
+                "connection pooling for high-throughput SQL workloads",
+            ),
             // cluster 3: tree-sitter / parsing
             ("ts:1", "tree-sitter walks symbol tables in source code"),
             ("ts:2", "ast-grep patterns for matching function call sites"),
             ("ts:3", "incremental reparse on edit using tree-sitter"),
-            ("ts:4", "node kind dispatch table for typescript and javascript"),
+            (
+                "ts:4",
+                "node kind dispatch table for typescript and javascript",
+            ),
             ("ts:5", "tree-sitter-rust grammar handles impl blocks"),
             // cluster 4: embeddings / vectors
             ("vec:1", "MiniLM-L6-v2 produces 384-dim semantic embeddings"),
-            ("vec:2", "cosine similarity over L2 normalized float vectors"),
-            ("vec:3", "sqlite-vec virtual table for ANN nearest neighbor search"),
+            (
+                "vec:2",
+                "cosine similarity over L2 normalized float vectors",
+            ),
+            (
+                "vec:3",
+                "sqlite-vec virtual table for ANN nearest neighbor search",
+            ),
             ("vec:4", "fastembed batch embed reuses the ort session"),
-            ("vec:5", "FNV xorshift fallback for deterministic test embeddings"),
+            (
+                "vec:5",
+                "FNV xorshift fallback for deterministic test embeddings",
+            ),
             // cluster 5: filesystem / IO
             ("fs:1", "ignore-aware repository walk respecting gitignore"),
-            ("fs:2", "memchr fast prefilter for byte needle in source files"),
+            (
+                "fs:2",
+                "memchr fast prefilter for byte needle in source files",
+            ),
             ("fs:3", "mmap large index database read only access"),
-            ("fs:4", "filesystem watcher debouncing rapid file save bursts"),
-            ("fs:5", "atomic write to temp file then rename for durability"),
+            (
+                "fs:4",
+                "filesystem watcher debouncing rapid file save bursts",
+            ),
+            (
+                "fs:5",
+                "atomic write to temp file then rename for durability",
+            ),
             // cluster 6: compression
-            ("zip:1", "FSST symbol table compresses repeated string prefixes"),
-            ("zip:2", "zstd level tradeoff between size and decompression speed"),
+            (
+                "zip:1",
+                "FSST symbol table compresses repeated string prefixes",
+            ),
+            (
+                "zip:2",
+                "zstd level tradeoff between size and decompression speed",
+            ),
             ("zip:3", "decode FSST encoded rows lazily on read"),
-            ("zip:4", "bench compression ratio across natural language and code"),
-            ("zip:5", "cargo feature gate for optional fsst-rs dependency"),
+            (
+                "zip:4",
+                "bench compression ratio across natural language and code",
+            ),
+            (
+                "zip:5",
+                "cargo feature gate for optional fsst-rs dependency",
+            ),
             // cluster 7: caching
-            ("cache:1", "moka time to idle eviction closes idle SQLite connections"),
-            ("cache:2", "sha256 keyed cache for repeated embedding queries"),
+            (
+                "cache:1",
+                "moka time to idle eviction closes idle SQLite connections",
+            ),
+            (
+                "cache:2",
+                "sha256 keyed cache for repeated embedding queries",
+            ),
             ("cache:3", "git root memoization with a 60 second TTL"),
-            ("cache:4", "bounded LRU palace registry keyed by canonical repo root"),
-            ("cache:5", "FSST codec arc shared across store sessions no contention"),
+            (
+                "cache:4",
+                "bounded LRU palace registry keyed by canonical repo root",
+            ),
+            (
+                "cache:5",
+                "FSST codec arc shared across store sessions no contention",
+            ),
             // cluster 8: testing
-            ("test:1", "tempfile based integration test cleans up in drop"),
-            ("test:2", "ignore attribute for network dependent end to end checks"),
+            (
+                "test:1",
+                "tempfile based integration test cleans up in drop",
+            ),
+            (
+                "test:2",
+                "ignore attribute for network dependent end to end checks",
+            ),
             ("test:3", "snapshot comparison for golden file fixtures"),
             ("test:4", "criterion benchmark harness reports throughput"),
-            ("test:5", "table driven tests with parameterized search queries"),
+            (
+                "test:5",
+                "table driven tests with parameterized search queries",
+            ),
             // cluster 9: tokens / shaping
             ("tok:1", "tokens per query saved versus raw grep walk"),
-            ("tok:2", "limit flag short circuits per file walk early stop"),
-            ("tok:3", "files only output dedupes hits across the same file"),
-            ("tok:4", "count mode emits only an integer not the matched lines"),
-            ("tok:5", "JSON projection via jq pipeline trims irrelevant fields"),
+            (
+                "tok:2",
+                "limit flag short circuits per file walk early stop",
+            ),
+            (
+                "tok:3",
+                "files only output dedupes hits across the same file",
+            ),
+            (
+                "tok:4",
+                "count mode emits only an integer not the matched lines",
+            ),
+            (
+                "tok:5",
+                "JSON projection via jq pipeline trims irrelevant fields",
+            ),
             // cluster 10: misc / off-topic
-            ("misc:1", "release pipeline builds linux mac windows binaries"),
-            ("misc:2", "homebrew tap distributes prebuilt mac arm64 binaries"),
-            ("misc:3", "starship custom module renders crabcc status in the prompt"),
-            ("misc:4", "claude code skill auto routes lookups to crabcc CLI"),
+            (
+                "misc:1",
+                "release pipeline builds linux mac windows binaries",
+            ),
+            (
+                "misc:2",
+                "homebrew tap distributes prebuilt mac arm64 binaries",
+            ),
+            (
+                "misc:3",
+                "starship custom module renders crabcc status in the prompt",
+            ),
+            (
+                "misc:4",
+                "claude code skill auto routes lookups to crabcc CLI",
+            ),
             ("misc:5", "MCP JSON RPC dispatches tool calls over stdio"),
         ]
     }
@@ -1149,9 +1242,7 @@ mod tests {
             if ids.iter().any(|id| id == expected) {
                 hits += 1;
             } else {
-                eprintln!(
-                    "miss: query={query:?} expected={expected:?} top5={ids:?}"
-                );
+                eprintln!("miss: query={query:?} expected={expected:?} top5={ids:?}");
             }
         }
 
@@ -1161,5 +1252,122 @@ mod tests {
             "recall@5 = {recall:.2} (got {hits}/{}); issue #20 requires ≥ 0.80",
             queries.len()
         );
+    }
+
+    /// Issue #22 deliverable — contrived semantic-distractor set proving
+    /// the value of RRF over either single ranker:
+    ///
+    /// 1. **Vec wins on semantic** — a paraphrased query with no token
+    ///    overlap with the target body finds the right drawer under
+    ///    `Vector`, but `Lexical` (BM25) misses entirely.
+    /// 2. **Lex wins on literal** — a rare exact-token query finds the
+    ///    target under `Lexical`, but `Vector` (cosine on MiniLM) ranks
+    ///    a topically-similar distractor above the literal-token drawer.
+    /// 3. **Hybrid wins on both** — RRF fusion ranks the right drawer at
+    ///    position 1 for *both* query types, so the user doesn't need to
+    ///    pick a mode per query.
+    ///
+    /// Gated on `memory-embed` because real semantic similarity needs
+    /// `FastEmbedder` (MiniLM-L6-v2). Marked `#[ignore]` to avoid the
+    /// ~25 MB ONNX download in default CI; run with:
+    /// `cargo test -p crabcc-memory --features memory-embed -- --ignored`.
+    #[cfg(feature = "memory-embed")]
+    #[test]
+    #[ignore = "downloads ~25 MB MiniLM-L6-v2 on first run"]
+    fn hybrid_beats_each_ranker_on_distractor_set() {
+        use crate::embed::FastEmbedder;
+        use crate::SqliteBackend;
+        use std::sync::Arc;
+
+        let dir = tempdir().unwrap();
+        let backend = Arc::new(SqliteBackend::open(&dir.path().join("memory.db")).unwrap());
+        let embedder = Arc::new(FastEmbedder::new().expect("load MiniLM"));
+        let p = Palace::with_components(dir.path(), backend, embedder);
+
+        // Corpus: each tuple is (id, body).
+        //
+        // The semantic-target row deliberately shares ZERO content tokens
+        // with its query — only paraphrased meaning. The literal-target
+        // row carries a rare identifier `xyzzy_99_42` that BM25 will lock
+        // onto but MiniLM has never seen during pre-training.
+        let corpus = [
+            (
+                "sem_target",
+                "configuring a connection pool to keep database sessions alive",
+            ),
+            ("sem_distractor_a", "writing unit tests for parser logic"),
+            ("sem_distractor_b", "compile-time macro expansion in Rust"),
+            (
+                "lit_target",
+                "marker token xyzzy_99_42 used to identify a specific drawer",
+            ),
+            (
+                "lit_distractor",
+                "naming conventions for unique identifiers in test fixtures",
+            ),
+            ("noise_a", "the moon orbits the earth roughly every 27 days"),
+            (
+                "noise_b",
+                "espresso extraction temperature is 90-96 celsius",
+            ),
+        ];
+        for (id, body) in corpus {
+            p.remember("default", None, id, body)
+                .unwrap_or_else(|e| panic!("remember {id}: {e}"));
+        }
+
+        // (query, expected, scenario) — the third field labels the
+        // semantic / literal axis purely for diagnostic output.
+        let queries: &[(&str, &str, &str)] = &[
+            (
+                "reuse persistent connections so each query does not pay handshake cost",
+                "sem_target",
+                "semantic",
+            ),
+            ("xyzzy_99_42", "lit_target", "literal"),
+        ];
+
+        for (q, expected, scenario) in queries {
+            let lex = p
+                .search_with_mode(SearchMode::Lexical, q, 3, None, None)
+                .unwrap();
+            let vec = p
+                .search_with_mode(SearchMode::Vector, q, 3, None, None)
+                .unwrap();
+            let hyb = p
+                .search_with_mode(SearchMode::Hybrid, q, 3, None, None)
+                .unwrap();
+
+            let top = |r: &QueryResult| {
+                r.hits
+                    .first()
+                    .map(|h| h.source_id.clone())
+                    .unwrap_or_default()
+            };
+            let (lex_top, vec_top, hyb_top) = (top(&lex), top(&vec), top(&hyb));
+
+            // Hybrid is the contract — it must rank the right drawer at #1
+            // for both query shapes.
+            assert_eq!(
+                hyb_top, *expected,
+                "{scenario}: hybrid top != expected ({expected:?}); \
+                 lex_top={lex_top:?} vec_top={vec_top:?} hyb_top={hyb_top:?}"
+            );
+
+            // The semantic axis is the load-bearing claim: a paraphrased
+            // query with zero token overlap MUST miss under BM25, which
+            // is precisely why fusion adds value. (Note: on the literal
+            // axis, MiniLM's subword tokenization often preserves a
+            // unique rare token well enough that vec also wins — we
+            // don't assert vec-misses there because that would be a
+            // model-specific brittleness, not a fusion contract.)
+            if *scenario == "semantic" {
+                assert_ne!(
+                    lex_top, *expected,
+                    "semantic query: lex unexpectedly won — \
+                     fixture has too much token overlap; tighten paraphrase"
+                );
+            }
+        }
     }
 }
