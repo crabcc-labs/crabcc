@@ -16,8 +16,8 @@
 
 use std::io::{BufRead, Cursor, Write};
 
-use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion, Throughput};
 use crabcc_mcp::{handle_with, serve_io};
+use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion, Throughput};
 use serde_json::{json, Value};
 
 /// 100 newline-delimited JSON-RPC requests — the workload both
@@ -80,7 +80,12 @@ fn bench_serve_io(c: &mut Criterion) {
 
     group.bench_function("optimized", |b| {
         b.iter_batched(
-            || (Cursor::new(traffic.clone()), Vec::<u8>::with_capacity(64 * 1024)),
+            || {
+                (
+                    Cursor::new(traffic.clone()),
+                    Vec::<u8>::with_capacity(64 * 1024),
+                )
+            },
             |(reader, mut writer)| {
                 serve_io(reader, &mut writer, black_box(&root), false).unwrap();
                 black_box(writer);
@@ -91,7 +96,12 @@ fn bench_serve_io(c: &mut Criterion) {
 
     group.bench_function("baseline_read_line_writeln", |b| {
         b.iter_batched(
-            || (Cursor::new(traffic.clone()), Vec::<u8>::with_capacity(64 * 1024)),
+            || {
+                (
+                    Cursor::new(traffic.clone()),
+                    Vec::<u8>::with_capacity(64 * 1024),
+                )
+            },
             |(reader, mut writer)| {
                 serve_io_baseline(reader, &mut writer, black_box(&root), false).unwrap();
                 black_box(writer);

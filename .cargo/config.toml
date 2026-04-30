@@ -1,0 +1,17 @@
+# crabcc :: cargo config
+#
+# Build customizations that don't belong in Cargo.toml. Profiles are
+# defined there; this file is for invocation-time RUSTFLAGS plumbing.
+
+# Issue #112 — `cargo build --profile release-native` enables CPU-specific
+# codegen for personal/dev builds. NEVER ship the resulting binary to
+# other machines: any specialised AVX2/AVX-512/NEON instruction will
+# SIGILL on a CPU that lacks the feature set this build was tuned for.
+#
+# Wired via `task build-native` (see taskfiles/build.yml). Wrapping it
+# in a Taskfile target keeps the env-var plumbing out of muscle memory.
+[target.'cfg(all())']
+# (no global rustflags — keeps the default release portable)
+
+# rustdoc-on-docs.rs gets the same workspace-wide opt as cargo doc here.
+[doc]
