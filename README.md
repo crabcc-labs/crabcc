@@ -5,8 +5,8 @@
 
 <p align="center">
   <em>Symbol index for AI coding agents.</em><br/>
-  <strong>47–5500× faster than <code>grep -rn</code></strong> on monorepos &nbsp;·&nbsp;
-  <strong>5–68× faster than ripgrep</strong> on whole-repo lookups &nbsp;·&nbsp;
+  <strong>up to 4412× faster than <code>grep -rn</code></strong> on monorepos &nbsp;·&nbsp;
+  <strong>up to 55× faster than ripgrep</strong> on whole-repo lookups &nbsp;·&nbsp;
   <strong>85% fewer bytes</strong> sent to the LLM
 </p>
 
@@ -233,17 +233,17 @@ buffer would receive and wall-time.
   <img src="./bench/results/speedup.png" alt="Wall-time speedup — crabcc vs ripgrep vs grep (log scale)" width="100%"/>
 </p>
 
-| Task                              | crabcc B | grep B  | crabcc  | grep   | speedup    |
-|-----------------------------------|---------:|--------:|--------:|-------:|-----------:|
-| `sym User`                        | 1.2k     | 14.1k   | 10.8ms  | 59.3s ⚠| **5493×**  |
-| `sym Assessment`                  | 584      | 569     | 11.3ms  | 58.7s ⚠| **5198×**  |
-| `callers --count find_by`         | 14       | 9       | 964ms   | 45.0s  | 47×        |
-| `refs --files-only Assessment`    | 513      | 460     | 38.1ms  | 13.2s  | 348×       |
-| `files --ext rb` (whole repo)     | 244k     | 1.9M    | 13.6ms  | 9.7s   | 713×       |
-| `callers --files-only find_by`    | 821      | 831     | 54.3ms  | 45.9s  | **845×**   |
+| Task                              | crabcc B | grep B  | crabcc  | grep    | speedup    |
+|-----------------------------------|---------:|--------:|--------:|--------:|-----------:|
+| `sym User`                        | 1.2k     | TIMEOUT | 13.8ms  | 60.0s ⚠ | **4348×**  |
+| `sym Assessment`                  | 584      | TIMEOUT | 13.6ms  | 60.0s ⚠ | **4412×**  |
+| `callers --count find_by`         | 14       | 9       | 13.8ms  | 52.7s   | 3820×      |
+| `refs --files-only Assessment`    | 513      | 460     | 31.5ms  | 13.4s   | 424×       |
+| `files --ext rb` (whole repo)     | 244k     | 1.9M    | 15.7ms  | 9.6s    | 614×       |
+| `callers --files-only find_by`    | 1.0k     | 831     | 13.9ms  | 48.0s   | **3451×**  |
 
-Aggregate: **85% fewer bytes** (≈ 414k input tokens saved per batch, ≈ \$1.24),
-**206× faster aggregate wall-time**.
+Aggregate: **85% fewer bytes** (≈ 411k input tokens saved per batch, ≈ \$1.23),
+**1736× faster aggregate wall-time**.
 
 Honest losses: single-file outline of a small file (where `grep -nE` is already
 trivial) and small directory listings. crabcc returns rich JSON, raw `grep` returns
