@@ -2,9 +2,10 @@ use crate::pattern;
 use crate::refs;
 use crate::store::Store;
 use crate::types::{Hit, Symbol, SymbolKind};
+use ahash::AHashMap;
 use anyhow::Result;
 use serde::Serialize;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 /// How many entries each top-N list in `Output::Summary` returns.
@@ -132,8 +133,11 @@ fn build_summary(store: &Store, hits: &[(String, u32)], limit: Option<usize>) ->
     // top_symbols: for each hit, find the smallest enclosing symbol via
     // `Store::symbols_in_file`. Cache the per-file symbol vec so a hits-
     // heavy file pays the SQL once.
-    let mut symbol_cache: HashMap<String, Vec<Symbol>> = HashMap::new();
-    let mut tally: HashMap<(String, String), (SymbolKind, usize)> = HashMap::new();
+    // ahash is faster than std HashMap on small-key maps (hot inner
+    // loop here — one entry per hit). DoS resistance unnecessary;
+    // inputs are our own indexed data.
+    let mut symbol_cache: AHashMap<String, Vec<Symbol>> = AHashMap::new();
+    let mut tally: AHashMap<(String, String), (SymbolKind, usize)> = AHashMap::new();
     for (file, line) in hits {
         let symbols = match symbol_cache.get(file) {
             Some(v) => v,

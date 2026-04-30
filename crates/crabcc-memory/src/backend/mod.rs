@@ -66,6 +66,7 @@ pub struct LexicalQuery {
 /// arithmetic itself fully vectorises. The `simd-cosine` cargo feature
 /// lights this path on a nightly toolchain while keeping stable users
 /// on the scalar fallback — see `docs/RESEARCH-nightly-features.md`.
+#[inline]
 pub(crate) fn cosine(a: &[f32], b: &[f32]) -> f32 {
     if a.len() != b.len() || a.is_empty() {
         return 0.0;
