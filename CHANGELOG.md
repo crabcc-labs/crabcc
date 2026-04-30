@@ -6,6 +6,79 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+## [2.6.0] — 2026-04-30
+
+Minor bump capturing post-v2.5.0 work that stacked on `main` while the
+v2.5.0 GitHub release artifacts were blocked by an upstream billing
+issue. Treated as a coherent feature drop rather than a v2.5.x patch
+because of the volume of net-new surface (live viewer, agent runtime,
+MCP dev gate, query envelope features, perf pass).
+
+### Added — agent runtime ([#62](https://github.com/peterlodri-sec/crabcc/issues/62), PR [#69](https://github.com/peterlodri-sec/crabcc/pull/69))
+- `crabcc agent --run "<prompt>"` host-subprocess runtime. Default
+  model `claude-opus-4-7`; per-run state at `~/.crabcc/agents/<id>/`
+  (lock, pid, log, meta.json); `--dry-run` for wiring checks;
+  auth pass-through to existing `~/.claude/` config.
+- `[features] agent-sandbox` cargo feature on `crabcc-cli` exposes
+  a `SandboxRuntime` stub returning `not yet implemented (#62)` —
+  microsandbox-backed runtime drops in as a single feature flip
+  for v3.0.
+- `install/agent-runtime.md` documents today vs. v3.0 trust
+  boundary + cross-platform story.
+
+### Added — localhost call-graph viewer ([#64](https://github.com/peterlodri-sec/crabcc/issues/64), PRs [#66](https://github.com/peterlodri-sec/crabcc/pull/66) / [#68](https://github.com/peterlodri-sec/crabcc/pull/68) / [#72](https://github.com/peterlodri-sec/crabcc/pull/72))
+- `crabcc serve [--port 7878] [--no-open]` — single self-contained
+  HTML page with a force-directed graph rendered on Canvas/WebGL.
+  Bound to `127.0.0.1` only by default; zero external network
+  calls; assets bundled.
+- WebSocket push on `crabcc refresh` so the open page re-renders
+  without a manual reload.
+- `/live` agent-activity overlay (PR #72) — live monitoring
+  dashboard with auto-init + agent-bin/PATH plumbing.
+
+### Added — MCP dev gate ([#59](https://github.com/peterlodri-sec/crabcc/issues/59) slice, PR [#70](https://github.com/peterlodri-sec/crabcc/pull/70))
+- `tools/list` no longer ships `_openapi` or `_health` to the
+  default agent-facing surface — restore the full diagnostic
+  surface with `crabcc --mcp --dev` or `CRABCC_MCP_DEV=1`.
+- New `pub fn handle_with(req, root, dev)`, `serve_stdio_with(root, dev)`,
+  `tools_def_for(dev)`. Calling a meta tool on the default surface
+  returns a JSON-RPC error pointing at `--dev`.
+
+### Added — query-surface envelope features (PR [#67](https://github.com/peterlodri-sec/crabcc/pull/67))
+- `--if-changed FINGERPRINT` cache-revalidation envelope on
+  `refs` / `callers`. Match → `{unchanged, fingerprint}`; mismatch
+  → `{fingerprint, result}`. Default omitted = byte-identical to
+  existing surface.
+- `crabcc refresh --delta` returns `{added, modified, removed,
+  stats}` instead of bare counts. Lists are sorted (byte-stable
+  output). `touched` (mtime-only) intentionally excluded.
+- `--since SHA` filter on `sym` / `refs` / `callers` (CLI + MCP).
+  Resolves via `git diff --name-only --diff-filter=AMR
+  <since>...HEAD` (new `crabcc_core::gitdiff` module). Filter
+  applied before any IO.
+- `--ndjson` / `stream: true` on `refs` / `callers` — NDJSON
+  output (one hit per line) for streaming consumers. Hits-mode only.
+
+### Added — devx: local CI runner + profiling (PRs [#65](https://github.com/peterlodri-sec/crabcc/pull/65), [#70](https://github.com/peterlodri-sec/crabcc/pull/70))
+- `scripts/local-ci.sh` + `task local-ci{,-quick,-release}` —
+  canonical "skip GitHub CI" runner. Mirrors `.github/workflows/ci.yml`
+  + prep-pr extras with a single pass/fail summary table.
+- `[profile.profiling]` Cargo profile — release-like with `debug = true`
+  so profilers see symbols.
+- `task profile-samply CMD=...` and `task profile-flamegraph CMD=...`
+  install + run the profiler against the chosen subcommand.
+
+### Added — perf pass (PR [#71](https://github.com/peterlodri-sec/crabcc/pull/71))
+- `ahash::AHashMap` replaces std `HashMap` on hot paths
+  (`Store::list_files_with_meta`, `query::build_summary`).
+- `#[inline]` on `backend::cosine` (dispatcher above the SIMD/scalar
+  split) and `Codec::decompress` (per-signature decode on every
+  read). Helps LTO across crate boundaries / FFI seams.
+
+### Changed — workspace version bump
+- `Cargo.toml` `[workspace.package].version` → `2.6.0`.
+- `Cargo.lock` regenerated.
+
 ## [2.5.0] — 2026-04-30
 
 First tagged release of the 2.5 line. The version was set in
