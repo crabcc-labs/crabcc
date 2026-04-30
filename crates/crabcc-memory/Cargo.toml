@@ -23,6 +23,12 @@ memory-vec = ["dep:sqlite-vec"]
 # 384-d brute-force cosine path used by InMemoryBackend::query and
 # SqliteBackend::query.
 simd-cosine = []
+# v2.5.2 (#18) — real MiniLM-L6-v2 384-dim embeddings via fastembed-rs.
+# Default OFF — pulls in ~25 MB of ONNX model file (lazy-downloaded into
+# ~/.crabcc/models on first use) plus the ort runtime. With this feature
+# off the workspace ships zero ML deps and HashEmbedder remains the only
+# Embedder impl.
+memory-embed = ["dep:fastembed"]
 
 [dependencies]
 # Reuse: hash::sha256_hex, store pragma pattern, walker/watch/fts in later phases.
@@ -40,6 +46,10 @@ moka = { workspace = true }
 # sqlite-vec C extension; we register it via sqlite3_auto_extension so every
 # rusqlite Connection inherits it.
 sqlite-vec = { workspace = true, optional = true }
+# Optional — only built when the `memory-embed` feature is on. Wraps an ONNX
+# Runtime session over MiniLM-L6-v2; the model file (~25 MB) is downloaded
+# on first use into the platform cache dir and reused thereafter.
+fastembed = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

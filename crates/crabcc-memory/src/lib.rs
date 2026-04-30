@@ -53,7 +53,7 @@
 //!   feature ✅ (issue #17)
 //! - **M1a** — FTS5 + RRF hybrid search ✅
 //! - **M1b** — `FastEmbedder` (fastembed-rs / MiniLM-L6-v2) behind the
-//!   `embed-fastembed` feature
+//!   `memory-embed` feature ✅ (issue #18)
 //! - **M2**   — miners (`crabcc memory mine project|sessions`)
 //! - **Bench** — LongMemEval R@5 ≥ 96.6% gate (issue #2)
 //!
@@ -65,8 +65,11 @@
 //!
 //! - `compress` — forwards `crabcc-core/compress` so drawer bodies share
 //!   the same FSST codec used by the symbol-store. Default ON.
-//! - `memory-vec` (planned) — link the bundled `sqlite-vec` extension
-//!   for ANN queries. Default OFF.
+//! - `memory-vec` — link the bundled `sqlite-vec` extension for ANN
+//!   queries. Default OFF.
+//! - `memory-embed` — pull in `fastembed-rs` and expose [`FastEmbedder`]
+//!   for real semantic 384-dim MiniLM-L6-v2 vectors. Default OFF
+//!   (~25 MB ONNX model file lazy-downloaded on first use).
 
 pub mod backend;
 pub mod embed;
@@ -75,6 +78,8 @@ pub mod types;
 
 pub use backend::{in_memory::InMemoryBackend, sqlite::SqliteBackend, Backend, LexicalQuery};
 pub use embed::{CachedEmbedder, Embedder, HashEmbedder, DEFAULT_EMBED_CACHE_CAPACITY};
+#[cfg(feature = "memory-embed")]
+pub use embed::FastEmbedder;
 pub use palace::{
     find_git_root, Palace, PalaceRegistry, SearchMode, DEFAULT_PALACE_CACHE_CAPACITY,
     GIT_ROOT_CACHE_TTL, PALACE_CACHE_TTI,
