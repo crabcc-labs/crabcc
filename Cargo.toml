@@ -91,3 +91,12 @@ debug         = 1            # minimal debug info; faster linker
 # query tests don't dominate the wall-time on the larger fixtures.
 [profile.test]
 opt-level     = 1
+
+# `cargo build --profile profiling` produces a binary with the same codegen
+# as release (LTO=fat, opt=3, codegen-units=1) BUT keeps debug-info and
+# disables stripping so samply / flamegraph / Instruments resolve symbols.
+# Used by `task profile-*` — see install/profiling.md for the full recipe.
+[profile.profiling]
+inherits      = "release"
+debug         = "line-tables-only"
+strip         = false
