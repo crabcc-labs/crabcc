@@ -38,9 +38,26 @@ enum Cmd {
     /// Build a fresh index for the repo.
     Index,
     /// Incremental reindex of changed files.
-    Refresh,
+    /// Incremental refresh — re-reads disk vs the stored mtime + sha for each
+    /// indexed file. Default output is `RefreshStats` (counts only); pass
+    /// `--delta` to also receive the per-bucket file lists (`added` /
+    /// `modified` / `removed`) so an agent can re-read just what changed.
+    Refresh {
+        /// Emit `{"added": [...], "modified": [...], "removed": [...], "stats": {...}}`
+        /// instead of bare counts. The lists exclude `touched` files
+        /// (mtime bumped, content unchanged) — agents care about *content*
+        /// deltas, not metadata.
+        #[arg(long)]
+        delta: bool,
+    },
     /// Find a symbol by name.
-    Sym { name: String },
+    Sym {
+        name: String,
+        /// Restrict results to files changed since this git revision.
+        /// See `refs --since` for the accepted shape.
+        #[arg(long, value_name = "GIT_REV")]
+        since: Option<String>,
+    },
     /// Find references to a name.
     Refs {
         name: String,
@@ -264,6 +281,31 @@ struct ResultOpts {
     /// Emit `{"count": N}` only — no per-hit payload.
     #[arg(long)]
     count: bool,
+    /// Cache-revalidation hint. Pass the fingerprint from a previous
+    /// call; if the result is unchanged, the response is just
+    /// `{"unchanged":true,"fingerprint":"..."}` (zero hits payload).
+    /// Otherwise the response is wrapped as
+    /// `{"fingerprint":"<new>","result":<existing-shape>}`.
+    /// When this flag is omitted, the result body is returned verbatim
+    /// — backwards-compatible for callers that don't opt in.
+    #[arg(long, value_name = "FINGERPRINT")]
+    if_changed: Option<String>,
+    /// Restrict results to files that changed since this git revision.
+    /// Accepts anything `git diff` accepts: a SHA prefix (`abc1234`), a
+    /// ref (`origin/main`), or a relative ref (`HEAD~5`). Internally
+    /// resolves to `git diff --name-only --diff-filter=AMR <SINCE>...HEAD`
+    /// and filters every per-file lookup to that set.
+    #[arg(long, value_name = "GIT_REV")]
+    since: Option<String>,
+    /// Emit one JSON hit per line (NDJSON) instead of a single JSON
+    /// array. Lets a streaming consumer peek-and-stop without loading
+    /// the whole response into memory. Hits-mode only — combining
+    /// with `--count` / `--files-only` / `--summary` is rejected.
+    #[arg(
+        long,
+        conflicts_with_all = ["count", "files_only", "summary", "if_changed"],
+    )]
+    ndjson: bool,
 }
 
 impl ResultOpts {
@@ -292,6 +334,26 @@ fn opt(n: usize) -> Option<usize> {
     } else {
         Some(n)
     }
+}
+
+/// NDJSON emit for refs/callers Hits output. One JSON object per line on
+/// stdout — lets a streaming consumer peek-and-stop without loading the
+/// whole response into memory. Non-Hits modes go through the regular
+/// JSON path; the CLI flag rejects the combo at parse time so this
+/// helper only sees `Output::Hits`.
+fn emit_hits_ndjson(out: &query::Output) -> Result<()> {
+    let query::Output::Hits(hits) = out else {
+        // Belt-and-braces — clap conflicts already reject the mix.
+        anyhow::bail!("--ndjson requires hits-mode output");
+    };
+    let stdout = std::io::stdout();
+    let mut w = stdout.lock();
+    use std::io::Write;
+    for h in hits {
+        let line = sonic_rs::to_string(h)?;
+        writeln!(w, "{line}")?;
+    }
+    Ok(())
 }
 
 fn main() -> Result<()> {
@@ -428,12 +490,23 @@ fn main() -> Result<()> {
             }
             println!("{}", sonic_rs::to_string(&stats)?);
         }
-        Cmd::Refresh => {
-            let stats = crabcc_core::index::refresh(&root, &store)?;
-            println!("{}", sonic_rs::to_string(&stats)?);
+        Cmd::Refresh { delta } => {
+            if delta {
+                let d = crabcc_core::index::refresh_delta(&root, &store)?;
+                println!("{}", sonic_rs::to_string(&d)?);
+            } else {
+                let stats = crabcc_core::index::refresh(&root, &store)?;
+                println!("{}", sonic_rs::to_string(&stats)?);
+            }
         }
-        Cmd::Sym { name } => {
-            let syms = query::find_symbol(&store, &name)?;
+        Cmd::Sym { name, since } => {
+            let syms = match since.as_deref() {
+                Some(rev) => {
+                    let files = crabcc_core::gitdiff::changed_files_since(&root, rev)?;
+                    query::find_symbol_in_files(&store, &name, &files)?
+                }
+                None => query::find_symbol(&store, &name)?,
+            };
             let body = sonic_rs::to_string(&syms)?;
             crabcc_core::track::record("sym", &name, syms.len(), &repo_label(&root), body.len());
             memory::auto_capture(&root, "sym", &name, syms.len());
@@ -441,15 +514,29 @@ fn main() -> Result<()> {
         }
         Cmd::Refs { name, opts } => {
             let mode = opts.to_mode();
-            let out = query::query_refs(&store, &root, &name, mode)?;
+            let files = match opts.since.as_deref() {
+                Some(rev) => Some(crabcc_core::gitdiff::changed_files_since(&root, rev)?),
+                None => None,
+            };
+            let out = query::query_refs(&store, &root, &name, mode, files.as_ref())?;
             let body = sonic_rs::to_string(&out)?;
             crabcc_core::track::record("refs", &name, out.count(), &repo_label(&root), body.len());
             memory::auto_capture(&root, "refs", &name, out.count());
-            println!("{body}");
+            if opts.ndjson {
+                emit_hits_ndjson(&out)?;
+            } else {
+                let envelope =
+                    crabcc_core::hash::fingerprint_envelope(&body, opts.if_changed.as_deref());
+                println!("{envelope}");
+            }
         }
         Cmd::Callers { name, opts } => {
             let mode = opts.to_mode();
-            let out = query::query_callers(&store, &root, &name, mode)?;
+            let files = match opts.since.as_deref() {
+                Some(rev) => Some(crabcc_core::gitdiff::changed_files_since(&root, rev)?),
+                None => None,
+            };
+            let out = query::query_callers(&store, &root, &name, mode, files.as_ref())?;
             let body = sonic_rs::to_string(&out)?;
             crabcc_core::track::record(
                 "callers",
@@ -459,7 +546,13 @@ fn main() -> Result<()> {
                 body.len(),
             );
             memory::auto_capture(&root, "callers", &name, out.count());
-            println!("{body}");
+            if opts.ndjson {
+                emit_hits_ndjson(&out)?;
+            } else {
+                let envelope =
+                    crabcc_core::hash::fingerprint_envelope(&body, opts.if_changed.as_deref());
+                println!("{envelope}");
+            }
         }
         Cmd::Outline { file } => {
             let key = file.to_string_lossy();

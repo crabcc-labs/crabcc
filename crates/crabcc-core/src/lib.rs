@@ -63,6 +63,7 @@
 pub mod compress;
 pub mod extract;
 pub mod fts;
+pub mod gitdiff;
 pub mod graph;
 pub mod hash;
 pub mod index;

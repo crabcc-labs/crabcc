@@ -150,8 +150,15 @@ fn tools_def_symbol() -> Vec<Value> {
         tool_schema(
             "sym",
             "Find a symbol by exact name. Returns JSON array of \
-             {name, kind, signature, parent, file, line_start, line_end, visibility}.",
-            json!({"name": str_field("symbol name to look up")}),
+             {name, kind, signature, parent, file, line_start, line_end, visibility}. \
+             Pass `since` to restrict to files changed since a git revision.",
+            json!({
+                "name":  str_field("symbol name to look up"),
+                "since": str_field(
+                    "Optional git revision (SHA / ref / `HEAD~N`). Restricts \
+                     results to files changed in `<since>...HEAD`."
+                ),
+            }),
             &["name"],
         ),
         tool_schema(
@@ -163,6 +170,23 @@ fn tools_def_symbol() -> Vec<Value> {
                 "name":  str_field("symbol name"),
                 "mode":  mode_field.clone(),
                 "limit": limit_field.clone(),
+                "if_changed": str_field(
+                    "Cache-revalidation hint. Pass the fingerprint from a \
+                     previous call; on match the response collapses to \
+                     {unchanged: true, fingerprint: ...}. On mismatch the \
+                     full result is wrapped as {fingerprint, result}."
+                ),
+                "since": str_field(
+                    "Optional git revision. Restricts results to files \
+                     changed in `<since>...HEAD`."
+                ),
+                "stream": {
+                    "type": "boolean",
+                    "description": "When true, emit NDJSON (one hit object \
+                                    per line) instead of a single JSON \
+                                    array. Hits-mode only — combining with \
+                                    `mode=count|files|summary` errors."
+                },
             }),
             &["name"],
         ),
@@ -175,6 +199,16 @@ fn tools_def_symbol() -> Vec<Value> {
                 "name":  str_field("function or method name"),
                 "mode":  mode_field,
                 "limit": limit_field,
+                "if_changed": str_field(
+                    "Cache-revalidation hint — see `refs.if_changed`."
+                ),
+                "since": str_field(
+                    "Optional git revision — see `refs.since`."
+                ),
+                "stream": {
+                    "type": "boolean",
+                    "description": "NDJSON stream — see `refs.stream`."
+                },
             }),
             &["name"],
         ),
@@ -203,8 +237,16 @@ fn tools_def_symbol() -> Vec<Value> {
         ),
         tool_schema(
             "refresh",
-            "Incremental refresh: mtime + sha256 diff vs stored.",
-            json!({}),
+            "Incremental refresh: mtime + sha256 diff vs stored. Pass \
+             `delta: true` to receive `{added, modified, removed, stats}` \
+             instead of bare counts so the caller knows exactly which \
+             files to re-read.",
+            json!({
+                "delta": {
+                    "type": "boolean",
+                    "description": "Include per-bucket file lists in the response."
+                }
+            }),
             &[],
         ),
         tool_schema(
@@ -338,23 +380,43 @@ fn dispatch_tool(params: Option<&Value>, root: &Path) -> Result<String> {
     match tool {
         "sym" => {
             let name = arg_str(&args, "name")?;
-            let r = query::find_symbol(&store, name)?;
+            let since_files = since_filter(&args, root)?;
+            let r = match since_files.as_ref() {
+                Some(set) => query::find_symbol_in_files(&store, name, set)?,
+                None => query::find_symbol(&store, name)?,
+            };
             memory::auto_capture(root, "sym", name, r.len(), &args);
             Ok(serde_json::to_string(&r)?)
         }
         "refs" => {
             let name = arg_str(&args, "name")?;
             let mode = parse_mode(&args);
-            let r = query::query_refs(&store, root, name, mode)?;
+            let since_files = since_filter(&args, root)?;
+            let r = query::query_refs(&store, root, name, mode, since_files.as_ref())?;
             memory::auto_capture(root, "refs", name, r.count(), &args);
-            Ok(serde_json::to_string(&r)?)
+            if want_stream(&args) {
+                return hits_to_ndjson(&r);
+            }
+            let body = serde_json::to_string(&r)?;
+            Ok(crabcc_core::hash::fingerprint_envelope(
+                &body,
+                args.get("if_changed").and_then(|v| v.as_str()),
+            ))
         }
         "callers" => {
             let name = arg_str(&args, "name")?;
             let mode = parse_mode(&args);
-            let r = query::query_callers(&store, root, name, mode)?;
+            let since_files = since_filter(&args, root)?;
+            let r = query::query_callers(&store, root, name, mode, since_files.as_ref())?;
             memory::auto_capture(root, "callers", name, r.count(), &args);
-            Ok(serde_json::to_string(&r)?)
+            if want_stream(&args) {
+                return hits_to_ndjson(&r);
+            }
+            let body = serde_json::to_string(&r)?;
+            Ok(crabcc_core::hash::fingerprint_envelope(
+                &body,
+                args.get("if_changed").and_then(|v| v.as_str()),
+            ))
         }
         "outline" => {
             let r = outline::outline(&store, arg_str(&args, "file")?)?;
@@ -373,8 +435,14 @@ fn dispatch_tool(params: Option<&Value>, root: &Path) -> Result<String> {
             Ok(serde_json::to_string(&r)?)
         }
         "refresh" => {
-            let r = index::refresh(root, &store)?;
-            Ok(serde_json::to_string(&r)?)
+            let want_delta = args.get("delta").and_then(|v| v.as_bool()).unwrap_or(false);
+            if want_delta {
+                let d = index::refresh_delta(root, &store)?;
+                Ok(serde_json::to_string(&d)?)
+            } else {
+                let r = index::refresh(root, &store)?;
+                Ok(serde_json::to_string(&r)?)
+            }
         }
         "fuzzy" => {
             let q = arg_str(&args, "query")?;
@@ -439,6 +507,48 @@ fn load_or_build_graph(store: &Store, root: &Path) -> Result<crabcc_core::graph:
     } else {
         crabcc_core::graph::CallGraph::build(store, root)
     }
+}
+
+/// Resolve the optional `since` MCP arg to a changed-files set via
+/// `gitdiff::changed_files_since`. Returns `Ok(None)` when the arg is
+/// absent so callers can use `Option::as_ref()` to drive the filter
+/// path. A bad git revision surfaces as a tool error per JSON-RPC.
+fn since_filter(args: &Value, root: &Path) -> Result<Option<std::collections::HashSet<String>>> {
+    match args.get("since").and_then(|v| v.as_str()) {
+        Some(rev) => Ok(Some(crabcc_core::gitdiff::changed_files_since(root, rev)?)),
+        None => Ok(None),
+    }
+}
+
+/// True when the caller asked for NDJSON streaming (one hit per line).
+/// Distinct from `if_changed` and the existing JSON envelope — those are
+/// mutually exclusive at the call site (the CLI flag rejects the combo;
+/// the MCP path just prefers stream when both are set, since the
+/// fingerprint envelope only makes sense over a single JSON blob).
+fn want_stream(args: &Value) -> bool {
+    args.get("stream")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+/// Serialize an `Output::Hits` payload as newline-delimited JSON — one
+/// hit object per line. Other output shapes are not streamable; we
+/// surface those as a tool error so the caller can switch shapes.
+fn hits_to_ndjson(out: &query::Output) -> Result<String> {
+    let hits = match out {
+        query::Output::Hits(h) => h,
+        _ => {
+            return Err(anyhow::anyhow!(
+                "stream=true requires hits-mode output (got non-Hits shape)"
+            ));
+        }
+    };
+    let mut buf = String::new();
+    for h in hits {
+        buf.push_str(&serde_json::to_string(h)?);
+        buf.push('\n');
+    }
+    Ok(buf)
 }
 
 fn parse_mode(args: &Value) -> query::Mode {
@@ -965,6 +1075,239 @@ mod tests {
             "expected count field, got: {parsed}"
         );
         assert!(parsed["count"].as_u64().unwrap() >= 1);
+    }
+
+    #[test]
+    fn handle_tools_call_refs_stream_emits_ndjson() {
+        // `stream: true` → response body is NDJSON (one hit per line),
+        // not a JSON array. Each line must be valid JSON on its own.
+        let dir = fixture_root();
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 70,
+            "method": "tools/call",
+            "params": { "name": "refs", "arguments": { "name": "hello", "stream": true } }
+        });
+        let resp = handle(&req, dir.path());
+        let body = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let lines: Vec<&str> = body.lines().filter(|l| !l.is_empty()).collect();
+        assert!(!lines.is_empty(), "expected at least one NDJSON line");
+        for line in &lines {
+            // Each line must parse as a Hit object.
+            let v: Value = serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("invalid NDJSON line {line:?}: {e}"));
+            assert!(v["file"].is_string());
+            assert!(v["line"].is_number());
+        }
+    }
+
+    #[test]
+    fn handle_tools_call_refs_stream_with_count_mode_errors() {
+        // stream=true requires hits-mode. Other modes should return a
+        // JSON-RPC tool error rather than producing a malformed response.
+        let dir = fixture_root();
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 71,
+            "method": "tools/call",
+            "params": {
+                "name": "refs",
+                "arguments": { "name": "hello", "stream": true, "mode": "count" }
+            }
+        });
+        let resp = handle(&req, dir.path());
+        assert!(
+            resp.get("error").is_some(),
+            "expected JSON-RPC error, got: {resp}"
+        );
+    }
+
+    #[test]
+    fn handle_tools_call_sym_since_filters_to_changed_files() {
+        // sym with a `since` arg pointing at HEAD (no diff) should
+        // return zero results because no files have changed in the window.
+        // Setup: create a real git repo so `git diff` has something to
+        // resolve against.
+        let dir = tempfile::tempdir().unwrap();
+        std::process::Command::new("git")
+            .args(["-C", &dir.path().display().to_string(), "init", "-q"])
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args([
+                "-C",
+                &dir.path().display().to_string(),
+                "config",
+                "user.email",
+                "t@t",
+            ])
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args([
+                "-C",
+                &dir.path().display().to_string(),
+                "config",
+                "user.name",
+                "t",
+            ])
+            .status()
+            .unwrap();
+        std::fs::write(
+            dir.path().join("hi.ts"),
+            "export function hello(name: string){return name;}\n",
+        )
+        .unwrap();
+        std::process::Command::new("git")
+            .args(["-C", &dir.path().display().to_string(), "add", "-A"])
+            .status()
+            .unwrap();
+        std::process::Command::new("git")
+            .args([
+                "-C",
+                &dir.path().display().to_string(),
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "-m",
+                "init",
+            ])
+            .status()
+            .unwrap();
+        std::fs::create_dir_all(dir.path().join(".crabcc")).unwrap();
+        let store = Store::open(&dir.path().join(".crabcc").join("index.db")).unwrap();
+        crabcc_core::index::full_index(dir.path(), &store).unwrap();
+
+        // since=HEAD => no diff against HEAD => empty changed-files set => zero hits.
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 72,
+            "method": "tools/call",
+            "params": { "name": "sym", "arguments": { "name": "hello", "since": "HEAD" } }
+        });
+        let resp = handle(&req, dir.path());
+        let body = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(body).unwrap();
+        let arr = parsed.as_array().unwrap();
+        assert!(
+            arr.is_empty(),
+            "expected zero hits with since=HEAD, got: {arr:?}"
+        );
+    }
+
+    #[test]
+    fn handle_tools_call_refresh_delta_returns_file_lists() {
+        // First call after `full_index` should be a no-op (everything
+        // unchanged). Then add a new file and verify it shows up under
+        // `added` in the delta response.
+        let dir = fixture_root();
+        let req_noop = json!({
+            "jsonrpc": "2.0",
+            "id": 80,
+            "method": "tools/call",
+            "params": { "name": "refresh", "arguments": { "delta": true } }
+        });
+        let resp = handle(&req_noop, dir.path());
+        let body = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(body).unwrap();
+        assert!(parsed["added"].as_array().unwrap().is_empty());
+        assert!(parsed["modified"].as_array().unwrap().is_empty());
+        assert!(parsed["removed"].as_array().unwrap().is_empty());
+        assert!(parsed["stats"].is_object());
+
+        // Add a new file and re-call with delta=true.
+        std::fs::write(
+            dir.path().join("added.ts"),
+            "export function added(){return 7;}",
+        )
+        .unwrap();
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 81,
+            "method": "tools/call",
+            "params": { "name": "refresh", "arguments": { "delta": true } }
+        });
+        let resp = handle(&req, dir.path());
+        let body = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(body).unwrap();
+        let added: Vec<String> = parsed["added"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(added, vec!["added.ts".to_string()]);
+    }
+
+    #[test]
+    fn handle_tools_call_refresh_without_delta_returns_stats_only() {
+        // Default shape (no `delta` arg) must still be just RefreshStats —
+        // backwards-compat with callers built before this feature landed.
+        let dir = fixture_root();
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 82,
+            "method": "tools/call",
+            "params": { "name": "refresh", "arguments": {} }
+        });
+        let resp = handle(&req, dir.path());
+        let body = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(body).unwrap();
+        // Stats fields present, delta lists absent.
+        assert!(parsed.get("unchanged").is_some());
+        assert!(parsed.get("added").is_none());
+        assert!(parsed.get("modified").is_none());
+    }
+
+    #[test]
+    fn handle_tools_call_refs_if_changed_round_trip() {
+        // First call with no `if_changed` returns the result body verbatim.
+        // Agent computes the fingerprint and passes it back on the second
+        // call; the response collapses to the unchanged sentinel.
+        let dir = fixture_root();
+        let first = json!({
+            "jsonrpc": "2.0",
+            "id": 90,
+            "method": "tools/call",
+            "params": { "name": "refs", "arguments": { "name": "hello", "mode": "count" } }
+        });
+        let resp1 = handle(&first, dir.path());
+        let body1 = resp1["result"]["content"][0]["text"].as_str().unwrap();
+
+        let fp = crabcc_core::hash::sha256_hex(body1.as_bytes());
+        let second = json!({
+            "jsonrpc": "2.0",
+            "id": 91,
+            "method": "tools/call",
+            "params": {
+                "name": "refs",
+                "arguments": { "name": "hello", "mode": "count", "if_changed": fp }
+            }
+        });
+        let resp2 = handle(&second, dir.path());
+        let body2 = resp2["result"]["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(body2).unwrap();
+        assert_eq!(parsed["unchanged"], true);
+        assert_eq!(parsed["fingerprint"], fp);
+
+        // And a stale fingerprint produces the wrap-with-fresh-fp shape.
+        let stale = "0".repeat(64);
+        let third = json!({
+            "jsonrpc": "2.0",
+            "id": 92,
+            "method": "tools/call",
+            "params": {
+                "name": "refs",
+                "arguments": { "name": "hello", "mode": "count", "if_changed": stale }
+            }
+        });
+        let resp3 = handle(&third, dir.path());
+        let body3 = resp3["result"]["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(body3).unwrap();
+        assert!(parsed.get("fingerprint").is_some());
+        assert!(parsed.get("result").is_some());
+        assert_ne!(parsed["fingerprint"], stale);
     }
 
     #[test]
