@@ -1403,3 +1403,9 @@ tasks:
     desc: Show ollama-stack container status
     cmds:
       - 'bash install/ollama-stack/start.sh --status'
+
+  # ─── crabcc fetch ───────────────────────────────────────────────────────
+  fetch:
+    desc: 'Fetch URLs from a prompt — example: task fetch -- "see https://example.com and https://rust-lang.org"'
+    cmds:
+      - '{{.CRABCC}} fetch "{{.CLI_ARGS}}"'
