@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.crabcc.menubar</string>
+
+    <!-- Launch the .app, not the bare executable. Using `open -a` rather
+         than the raw Mach-O preserves bundle context (Info.plist,
+         LSUIElement, dock-hiding) and gives launchd a stable handle to
+         restart on crash. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/open</string>
+        <string>-a</string>
+        <string>__APP_PATH__</string>
+    </array>
+
+    <!-- Start at login, restart on crash. ProcessType=Interactive so the
+         menubar stays responsive (Background would deprioritize UI). -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+    </dict>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+
+    <!-- Don't pin a CPU on a respawn loop. -->
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/Crabcc/menubar.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/Crabcc/menubar.stderr.log</string>
+</dict>
+</plist>

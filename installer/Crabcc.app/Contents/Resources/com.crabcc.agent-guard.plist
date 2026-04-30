@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.crabcc.agent-guard</string>
+
+    <!-- One-shot guard sweep. StartInterval=1200 → fires every 20 min.
+         Each invocation is short-lived (a few hundred ms unless it's
+         actually killing something), so we run via StartInterval rather
+         than a long-lived KeepAlive loop. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>__HOME__/.cargo/bin/crabcc</string>
+        <string>agent-guard</string>
+        <string>--json</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>1200</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    <key>Nice</key>
+    <integer>10</integer>
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>PATH</key>
+        <string>__HOME__/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/Crabcc/agent-guard.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/Crabcc/agent-guard.stderr.log</string>
+</dict>
+</plist>

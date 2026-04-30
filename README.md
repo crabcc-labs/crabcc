@@ -41,6 +41,46 @@ That's it. The installer:
   the `claude` CLI is present)
 - prints a `crabcc go` hint so the next thing you do is the right thing
 
+### Bootstrap a fresh machine
+
+For a brand-new dev box, `scripts/bootstrap.sh` is a `curl | bash`-able one-shot
+that handles preflight (rustup), clones into `~/workspace/bin/crabcc`, builds,
+ad-hoc-codesigns the binaries (Sequoia provenance fix), wires aliases, and
+links skills/commands. Idempotent — same script for fresh install + upgrade.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/peterlodri-sec/crabcc/main/scripts/bootstrap.sh | bash
+
+# Optional add-ons:
+#   --with-docker     install Docker Desktop + bring up the Ollama stack
+#   --with-launchd    register the macOS LaunchAgent (background re-index)
+#   --with-macos-app  build + open the .dmg
+#   --check-only      preflight only; no writes
+```
+
+### macOS .app + DMG installer (optional)
+
+If you want a real `Crabcc.app` you can drag into `/Applications` and grant
+**App Management** privacy permission to (System Settings → Privacy &
+Security → App Management):
+
+```bash
+task dmg                       # produces dist/crabcc-<version>.dmg
+open dist/crabcc-*.dmg         # mount + drag Crabcc.app to /Applications
+```
+
+The bundle is ad-hoc codesigned (`com.crabcc.installer`), runs as a menubar
+app (`LSUIElement`), exposes Taskfile entries as a clickable **Run Task**
+submenu, and registers a `com.crabcc.agentd` LaunchAgent that survives
+sleep/wake/restart and refreshes the index every 5 minutes for any repo
+listed in `~/.crabcc/agent/repos.list`.
+
+Uninstall the LaunchAgent without removing the app:
+
+```bash
+scripts/install-macos-helpers.sh --remove
+```
+
 ```bash
 # follow up with one more line: bootstrap a repo + open a Claude session
 cd <your-repo>
