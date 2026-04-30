@@ -261,6 +261,39 @@ tasks:
     cmds:
       - bash scripts/build-dmg.sh {{if .SKIP_BUILD}}--skip-build{{end}}
 
+  # Container images (#195) — distroless-first per apps/CONTAINER-POLICY.md.
+  # Each service gets `task docker-build-<name>` and `task docker-push-<name>`.
+
+  docker-build-crabcc:
+    desc: Build ghcr.io/peterlodri-sec/crabcc:<version> locally (#195)
+    summary: |
+      Multi-stage build via crates/crabcc-cli/Dockerfile. Runtime is
+      gcr.io/distroless/cc-debian12:nonroot. Pass PLATFORMS to opt into
+      multi-arch; default builds for the host arch only and uses
+      `--load` so the image is available to the local docker daemon.
+    vars:
+      PLATFORMS: '{{.PLATFORMS | default ""}}'
+    cmds:
+      - >-
+        docker buildx build
+        -f crates/crabcc-cli/Dockerfile
+        -t ghcr.io/peterlodri-sec/crabcc:{{.CRABCC_VERSION}}
+        -t ghcr.io/peterlodri-sec/crabcc:latest
+        {{if .PLATFORMS}}--platform {{.PLATFORMS}} --push{{else}}--load{{end}}
+        .
+
+  docker-push-crabcc:
+    desc: Push ghcr.io/peterlodri-sec/crabcc:<version> to GHCR (#195)
+    summary: |
+      Single-arch push (host arch only). For multi-arch use
+      `task docker-build-crabcc PLATFORMS="linux/amd64,linux/arm64"`
+      which pushes inline. Requires `gh auth login` (or a GHCR write
+      token in DOCKER_CONFIG) for ghcr.io credentials.
+    deps: [docker-build-crabcc]
+    cmds:
+      - docker push ghcr.io/peterlodri-sec/crabcc:{{.CRABCC_VERSION}}
+      - docker push ghcr.io/peterlodri-sec/crabcc:latest
+
   install:
     desc: Cargo install crabcc to ~/.cargo/bin/crabcc; auto-bootstraps shell aliases (idempotent)
     summary: |
