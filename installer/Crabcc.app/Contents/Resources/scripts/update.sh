@@ -52,11 +52,13 @@ fi
 
 if [[ $fetched -eq 0 ]]; then
     log "fetching via curl: $RAW_URL"
-    if curl -fsSL "$RAW_URL" -o "$BOOTSTRAP" 2>>"$LOG_FILE"; then
+    # --connect-timeout 10s, --max-time 60s — without these, a flaky network
+    # leaves the menubar's Terminal window appearing to hang indefinitely.
+    if curl --connect-timeout 10 --max-time 60 -fsSL "$RAW_URL" -o "$BOOTSTRAP" 2>>"$LOG_FILE"; then
         fetched=1
         log "fetched via curl ($(wc -c < "$BOOTSTRAP") bytes)"
     else
-        die "could not download bootstrap.sh from $RAW_URL — check network + repo visibility"
+        die "could not download bootstrap.sh from $RAW_URL — check network + repo visibility (timed out after 60s)"
     fi
 fi
 

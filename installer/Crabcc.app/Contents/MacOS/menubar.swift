@@ -410,6 +410,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         menu.addItem(item("About Crabcc…",       #selector(showAbout)))
         menu.addItem(item("Quit Crabcc",         #selector(NSApplication.terminate(_:)), key: "q"))
+        // Escape hatch: NSApplication.terminate(_:) is queued behind any
+        // running modal alert and won't fire if showAbout()'s runModal()
+        // wedges (e.g. alert hidden behind a fullscreen app, focus lost).
+        // exit(0) bypasses AppKit entirely.
+        menu.addItem(item("Force Quit (skip modals)", #selector(forceQuit), key: "Q"))
     }
 
     func item(_ title: String, _ sel: Selector, key: String = "") -> NSMenuItem {
@@ -486,6 +491,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         alert.addButton(withTitle: "Open Repo Page")
         alert.addButton(withTitle: "Close")
         NSApp.activate(ignoringOtherApps: true)
+        // Floating level keeps the alert above fullscreen apps and other
+        // windows — without this it can land off-screen / behind a Space
+        // and the user sees an app that "won't respond" because runModal()
+        // is blocking the main thread on an invisible alert.
+        alert.window.level = .floating
         let resp = alert.runModal()
         if resp == .alertFirstButtonReturn,
            let url = URL(string: "https://github.com/peterlodri-sec/crabcc") {
@@ -505,6 +515,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         end tell
         """
         runDetached(["/usr/bin/osascript", "-e", script])
+    }
+
+    @objc func forceQuit() {
+        emitEvent("force_quit")
+        // exit() bypasses NSApp.terminate, applicationShouldTerminate, and
+        // any in-flight modal alert blocking the main thread. Last-resort
+        // for when the regular Quit menu item is unresponsive.
+        exit(0)
     }
 
     @objc func pickRepo(_ sender: Any?) {
