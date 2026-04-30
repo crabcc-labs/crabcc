@@ -499,6 +499,36 @@ paths:
                 properties:
                   deleted: {type: integer}
 
+  /tools/memory.forget:
+    post:
+      tags: [memory]
+      operationId: memory_forget
+      summary: |
+        Delete drawers and run VACUUM to reclaim disk. Specify either
+        {drawer} or {wing, before}. Idempotent on missing IDs / empty
+        windows. `before` accepts epoch seconds or RFC3339.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - {$ref: "#/components/schemas/CwdRequest"}
+                - type: object
+                  properties:
+                    drawer: {type: integer, format: int64, description: "Drawer id (use alone)."}
+                    wing:   {type: string, description: "Wing name (pair with `before`)."}
+                    before: {type: string, description: "Cutoff: epoch seconds or RFC3339 (e.g. 2026-01-15T00:00:00Z)."}
+      responses:
+        "200":
+          description: Number of drawers forgotten (post-VACUUM).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  forgotten: {type: integer}
+
   /tools/memory.count:
     post:
       tags: [memory]

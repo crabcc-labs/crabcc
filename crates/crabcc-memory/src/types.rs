@@ -82,6 +82,14 @@ pub struct GetResult {
 pub enum DeleteSel {
     ById(Vec<DrawerId>),
     BySource(String),
+    /// Delete all drawers in `wing` whose `created_at` is strictly less
+    /// than `before` (epoch seconds). Used by `crabcc memory forget
+    /// --wing W --before DATE` (issue #26) to reclaim space from old
+    /// drawers without touching the rest of the wing.
+    BeforeInWing {
+        wing: String,
+        before: i64,
+    },
     All,
 }
 

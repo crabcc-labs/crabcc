@@ -300,6 +300,22 @@ impl Palace {
         self.backend.delete(sel)
     }
 
+    /// `forget` is `delete` plus a SQLite `VACUUM` afterward — rows
+    /// disappear AND the on-disk file shrinks. Used by `crabcc memory
+    /// forget` (issue #26) where reclaiming space is part of the
+    /// contract; for transient delete-then-reinsert flows the plain
+    /// `delete` is cheaper because VACUUM rewrites the entire file.
+    ///
+    /// Idempotent on missing IDs: an `Empty` selector or one that
+    /// matches no rows still runs successfully (returning 0 rows
+    /// removed) and still triggers VACUUM. Backends that don't support
+    /// VACUUM (the in-memory one) treat this as a plain `delete`.
+    pub fn forget(&self, sel: &DeleteSel) -> Result<usize> {
+        let n = self.backend.delete(sel)?;
+        self.backend.vacuum()?;
+        Ok(n)
+    }
+
     /// Drawer count.
     pub fn count(&self) -> Result<usize> {
         self.backend.count()

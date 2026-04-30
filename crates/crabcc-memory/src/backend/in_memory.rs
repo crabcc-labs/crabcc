@@ -216,6 +216,21 @@ impl Backend for InMemoryBackend {
                     }
                 }
             }
+            DeleteSel::BeforeInWing { wing, before } => {
+                let to_drop: Vec<DrawerId> = inner
+                    .rows
+                    .values()
+                    .filter(|s| &s.drawer.wing == wing && s.drawer.created_at < *before)
+                    .map(|s| s.drawer.id)
+                    .collect();
+                for id in to_drop {
+                    if let Some(s) = inner.rows.remove(&id) {
+                        inner
+                            .sha_index
+                            .remove(&(s.drawer.source_id, s.drawer.sha256));
+                    }
+                }
+            }
         }
         Ok(before - inner.rows.len())
     }

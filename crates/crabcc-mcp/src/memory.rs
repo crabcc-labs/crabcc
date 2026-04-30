@@ -88,6 +88,19 @@ pub fn tools_def() -> Vec<Value> {
             &[],
         ),
         tool(
+            "memory.forget",
+            "Delete drawers and run VACUUM to reclaim disk. Specify either \
+             {drawer} or {wing, before}. Idempotent on missing IDs / empty \
+             windows. `before` accepts epoch seconds or RFC3339.",
+            json!({
+                "cwd":    cwd_field,
+                "drawer": {"type": "integer"},
+                "wing":   str_field("wing name"),
+                "before": str_field("cutoff: epoch seconds or RFC3339"),
+            }),
+            &[],
+        ),
+        tool(
             "memory.count",
             "Drawer count for the store.",
             json!({"cwd": cwd_field}),
@@ -180,6 +193,34 @@ pub fn dispatch(tool: &str, args: &Value, server_root: &Path) -> Result<String> 
             let n = palace.delete(&sel)?;
             Ok(json!({"deleted": n}).to_string())
         }
+        "memory.forget" => {
+            let drawer = args.get("drawer").and_then(|v| v.as_i64());
+            let wing = args.get("wing").and_then(|v| v.as_str());
+            let before_raw = args.get("before").and_then(|v| v.as_str());
+            let sel = match (drawer, wing, before_raw) {
+                (Some(id), None, None) => DeleteSel::ById(vec![id]),
+                (None, Some(w), Some(b)) => {
+                    let before = b
+                        .parse::<i64>()
+                        .ok()
+                        .or_else(|| parse_rfc3339_to_epoch(b))
+                        .ok_or_else(|| {
+                            anyhow!("`before` must be epoch seconds or RFC3339, got {b:?}")
+                        })?;
+                    DeleteSel::BeforeInWing {
+                        wing: w.to_string(),
+                        before,
+                    }
+                }
+                _ => {
+                    return Err(anyhow!(
+                        "specify either {{drawer}} or {{wing, before}} (mutually exclusive)"
+                    ))
+                }
+            };
+            let n = palace.forget(&sel)?;
+            Ok(json!({"forgotten": n}).to_string())
+        }
         "memory.count" => Ok(json!({"count": palace.count()?}).to_string()),
         "memory.health" => Ok(serde_json::to_string(&palace.health())?),
         other => Err(anyhow!("unknown memory tool: {other}")),
@@ -254,4 +295,29 @@ fn tool(name: &str, desc: &str, props: Value, required: &[&str]) -> Value {
             "required": required,
         }
     })
+}
+
+/// RFC3339 → epoch-seconds. Tiny parser, no chrono dep — handles
+/// `YYYY-MM-DDTHH:MM:SSZ` shape (the only one the CLI advertises).
+/// Returns None on anything weirder; callers turn that into an error.
+fn parse_rfc3339_to_epoch(s: &str) -> Option<i64> {
+    let bytes = s.as_bytes();
+    if bytes.len() < 20 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' {
+        return None;
+    }
+    let year: i64 = s.get(0..4)?.parse().ok()?;
+    let month: i64 = s.get(5..7)?.parse().ok()?;
+    let day: i64 = s.get(8..10)?.parse().ok()?;
+    let hour: i64 = s.get(11..13)?.parse().ok()?;
+    let minute: i64 = s.get(14..16)?.parse().ok()?;
+    let second: i64 = s.get(17..19)?.parse().ok()?;
+    // Howard Hinnant's days-from-epoch algorithm.
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let m = if month > 2 { month - 3 } else { month + 9 };
+    let doy = (153 * m + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
 }
