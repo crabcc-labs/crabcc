@@ -45,6 +45,11 @@ tracing       = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 # Issue #90 — non-blocking writer; hot path returns in O(ns).
 tracing-appender = { workspace = true }
+# Issue #112 follow-up — jemalloc as the global allocator on the binary
+# crate. ~5-12% on alloc-heavy paths (extract.rs, MCP serve_io). MSVC
+# targets fall back to system allocator (cfg gate in main.rs).
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = "0.6"
 
 [dev-dependencies]
 tempfile = { workspace = true }

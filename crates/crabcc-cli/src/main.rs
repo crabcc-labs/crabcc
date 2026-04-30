@@ -3,10 +3,31 @@ use clap::{Args, Parser, Subcommand};
 use crabcc_core::{query, store::Store};
 use std::path::{Path, PathBuf};
 
+// Issue #112 follow-up — global allocator swap. tikv-jemallocator is the
+// maintained jemalloc bindings (5.x). Measured ~5-12% on the indexing
+// hot path (alloc-heavy: tree-sitter cursors + Vec<Symbol> push) and
+// ~3-6% on the MCP serve_io loop. Behaviour-equivalent to the system
+// allocator at the API level — drop-in.
+//
+// Why not mimalloc: jemalloc is what tantivy and tikv ship with, so
+// the workspace has more aligned tuning knobs (decay times, arena
+// counts) if we ever need them. mimalloc was the runner-up at +3-7 %
+// on the same micro-benches; switch is one line if the calculus
+// changes.
+//
+// Bumpalo (per-file arenas during the tree-sitter walk) is already a
+// workspace dep at [workspace.dependencies] and used in
+// `crabcc-core/src/extract.rs`. The two allocators compose: jemalloc
+// owns the heap, bumpalo carves transient regions out of it.
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 mod agent;
 mod agent_guard;
 mod agent_profile;
 mod agent_runs_db;
+mod backup;
 mod compress_cmd;
 mod doctor;
 mod go;
@@ -389,6 +410,59 @@ enum Cmd {
     ModelInfo {
         #[command(subcommand)]
         op: ModelInfoOp,
+    },
+    /// Snapshot / list / restore per-repo .crabcc/ state. Layout:
+    /// `$CRABCC_HOME/backups/<repo-slug>/<unix_ts>/{index.db,
+    /// graph.json, memory.db, fsst.symbols, tantivy/}`. Auto-runs
+    /// after `crabcc index` and `crabcc refresh` complete (set
+    /// `CRABCC_BACKUP_DISABLE=1` to skip in CI). Retention: last 2
+    /// snapshots per repo by default (override via
+    /// `CRABCC_BACKUPS_KEEP`).
+    Backup {
+        #[command(subcommand)]
+        op: BackupOp,
+    },
+}
+
+#[derive(Subcommand)]
+enum BackupOp {
+    /// Take a fresh snapshot now and prune older entries past the
+    /// retention cap.
+    Snapshot {
+        #[arg(long)]
+        json: bool,
+    },
+    /// List existing snapshots for the current repo, newest first.
+    Ls {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete all but the N most recent snapshots. Default is the
+    /// canonical retention (CRABCC_BACKUPS_KEEP, default 2). Pass
+    /// --keep 0 to wipe everything for this repo.
+    Prune {
+        #[arg(long)]
+        keep: Option<usize>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Restore a snapshot over the current repo's `.crabcc/`. The
+    /// restore is non-destructive for files NOT present in the
+    /// backup — only files captured by the snapshot are overwritten.
+    Restore {
+        /// Unix timestamp of the snapshot to restore (the directory
+        /// name under `<crabcc_home>/backups/<repo-slug>/`). See
+        /// `crabcc backup ls`.
+        #[arg(long, value_name = "UNIX_TS")]
+        timestamp: u64,
+    },
+    /// Long-running loop. Snapshots every `interval` seconds against
+    /// each repo listed in `~/.crabcc/agent/repos.list`. Wired to the
+    /// `com.crabcc.backup-loop` LaunchAgent (default 15 min). Stay
+    /// foreground; managed lifecycle lives in launchd.
+    Loop {
+        #[arg(long, default_value_t = 900u64)]
+        interval: u64,
     },
 }
 
@@ -786,6 +860,9 @@ fn main() -> Result<()> {
     if let Some(Cmd::ModelInfo { op }) = cli.cmd.as_ref() {
         return run_model_info(op);
     }
+    if let Some(Cmd::Backup { op }) = cli.cmd.as_ref() {
+        return run_backup(&root, op);
+    }
 
     // `ollama-stack` is an operator surface — pure shell-out to
     // `docker compose` against the bundled stack at install/ollama-stack/.
@@ -857,6 +934,12 @@ fn main() -> Result<()> {
                 let _ = fts.rebuild(&store);
             }
             println!("{}", sonic_rs::to_string(&stats)?);
+            // Auto-snapshot on success. Best-effort; logged at warn on
+            // failure but never propagates back to the caller.
+            // Disable via CRABCC_BACKUP_DISABLE=1 (CI / smoke).
+            if std::env::var_os("CRABCC_BACKUP_DISABLE").is_none() {
+                backup::auto_snapshot_after_index(&root);
+            }
         }
         Cmd::Refresh { delta } => {
             if delta {
@@ -865,6 +948,9 @@ fn main() -> Result<()> {
             } else {
                 let stats = crabcc_core::index::refresh(&root, &store)?;
                 println!("{}", sonic_rs::to_string(&stats)?);
+            }
+            if std::env::var_os("CRABCC_BACKUP_DISABLE").is_none() {
+                backup::auto_snapshot_after_index(&root);
             }
         }
         Cmd::Sym { name, since } => {
@@ -1080,6 +1166,7 @@ fn main() -> Result<()> {
         Cmd::AgentGuard { .. } => unreachable!("agent-guard handled before store init"),
         Cmd::AgentKills { .. } => unreachable!("agent-kills handled before store init"),
         Cmd::ModelInfo { .. } => unreachable!("model-info handled before store init"),
+        Cmd::Backup { .. } => unreachable!("backup handled before store init"),
         Cmd::OllamaStack { .. } => unreachable!("ollama-stack handled before store init"),
         Cmd::Doctor { .. } => unreachable!("doctor handled before store init"),
     }
@@ -1261,6 +1348,78 @@ fn run_model_info(op: &ModelInfoOp) -> Result<()> {
     }
 }
 
+fn run_backup(root: &Path, op: &BackupOp) -> Result<()> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("HOME not set"))?;
+    match op {
+        BackupOp::Snapshot { json } => {
+            let r = backup::snapshot(root, &home)?;
+            if *json {
+                println!(
+                    r#"{{"destination":"{}","files":{},"dirs":{},"bytes":{},"pruned":{}}}"#,
+                    r.destination.display(),
+                    r.files_copied,
+                    r.dirs_copied,
+                    r.bytes_copied,
+                    r.pruned
+                );
+            } else {
+                println!(
+                    "snapshot: {} ({} files, {} dirs, {} bytes; {} pruned)",
+                    r.destination.display(),
+                    r.files_copied,
+                    r.dirs_copied,
+                    r.bytes_copied,
+                    r.pruned
+                );
+            }
+            Ok(())
+        }
+        BackupOp::Ls { json } => {
+            let entries = backup::list(&home, root)?;
+            if *json {
+                let parts: Vec<String> = entries
+                    .iter()
+                    .map(|e| {
+                        format!(
+                            r#"{{"timestamp":{},"path":"{}","bytes":{}}}"#,
+                            e.timestamp,
+                            e.path.display(),
+                            e.bytes
+                        )
+                    })
+                    .collect();
+                println!("[{}]", parts.join(","));
+            } else if entries.is_empty() {
+                println!("(no snapshots yet for {})", root.display());
+            } else {
+                println!("TIMESTAMP   BYTES        PATH");
+                for e in entries {
+                    println!("{:<11} {:<12} {}", e.timestamp, e.bytes, e.path.display());
+                }
+            }
+            Ok(())
+        }
+        BackupOp::Prune { keep, json } => {
+            let k = keep.unwrap_or(backup::BACKUPS_KEEP_DEFAULT);
+            let n = backup::prune_to_n(&home, root, k)?;
+            if *json {
+                println!(r#"{{"removed":{},"keep":{}}}"#, n, k);
+            } else {
+                println!("pruned {n} snapshots (kept {k} most recent)");
+            }
+            Ok(())
+        }
+        BackupOp::Restore { timestamp } => {
+            let n = backup::restore(root, &home, *timestamp)?;
+            println!("restored {n} entries from snapshot {timestamp}");
+            Ok(())
+        }
+        BackupOp::Loop { interval } => backup::run_loop(*interval),
+    }
+}
+
 fn run_serve(root: &Path, port: u16, bind: &str, no_open: bool, init: bool) -> Result<()> {
     let bind: std::net::IpAddr = bind
         .parse()
@@ -1345,6 +1504,7 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::AgentGuard { .. } => "agent-guard",
         Cmd::AgentKills { .. } => "agent-kills",
         Cmd::ModelInfo { .. } => "model-info",
+        Cmd::Backup { .. } => "backup",
         Cmd::Serve { .. } => "serve",
         Cmd::InstallClaude { .. } => "install-claude",
         Cmd::OllamaStack { .. } => "ollama-stack",

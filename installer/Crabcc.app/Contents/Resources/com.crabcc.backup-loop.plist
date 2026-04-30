@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.crabcc.backup-loop</string>
+
+    <!-- Long-running snapshot loop. Reads ~/.crabcc/agent/repos.list,
+         snapshots each repo's .crabcc/ state, prunes to last 2 versions,
+         logs into _internal.db's backup_runs. KeepAlive=true so a
+         crashed iteration auto-restarts; ProcessType=Background so it
+         yields to user-interactive work. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>__HOME__/.cargo/bin/crabcc</string>
+        <string>backup</string>
+        <string>loop</string>
+        <string>--interval</string>
+        <string>900</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+    <key>Nice</key>
+    <integer>10</integer>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>PATH</key>
+        <string>__HOME__/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <!-- Disable auto-snapshot during the loop's own crabcc invocations
+             (it doesn't run any, but the env keeps a hypothetical future
+             cargo install / refresh helper from double-snapshotting). -->
+        <key>CRABCC_BACKUP_DISABLE</key>
+        <string>1</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/Crabcc/backup-loop.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/Crabcc/backup-loop.stderr.log</string>
+</dict>
+</plist>

@@ -114,9 +114,10 @@ register_launch_agent() {
     fi
 }
 
-register_launch_agent "com.crabcc.agentd"     "$RESOURCES/com.crabcc.agentd.plist"
-register_launch_agent "com.crabcc.menubar"    "$RESOURCES/com.crabcc.menubar.plist"
+register_launch_agent "com.crabcc.agentd"      "$RESOURCES/com.crabcc.agentd.plist"
+register_launch_agent "com.crabcc.menubar"     "$RESOURCES/com.crabcc.menubar.plist"
 register_launch_agent "com.crabcc.agent-guard" "$RESOURCES/com.crabcc.agent-guard.plist"
+register_launch_agent "com.crabcc.backup-loop" "$RESOURCES/com.crabcc.backup-loop.plist"
 
 # --- 6. seed agent repos.list + agent _internal.db -----------------------
 

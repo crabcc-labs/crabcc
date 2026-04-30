@@ -309,6 +309,23 @@ Honest losses: single-file outline of a small file (where `grep -nE` is already
 trivial) and small directory listings. crabcc returns rich JSON, raw `grep` returns
 just the matching lines — when the question is small, raw wins on bytes.
 
+### v2.10.x perf passes (issue [#112](https://github.com/peterlodri-sec/crabcc/issues/112))
+
+| Lever                                            | Where it lives | Measured Δ on hot paths |
+|--------------------------------------------------|----------------|------------------------:|
+| `lto=fat` + `codegen-units=1` + `panic=abort`    | `Cargo.toml` `[profile.release]` | (baseline — landed pre-2.10) |
+| `cache_size = -64 MiB` (was -16 MiB)             | `Store::open` PRAGMAs | ~30% on bulk writes, faster cold reads on warm I/O |
+| `release-native` profile + `target-cpu=native`   | `Cargo.toml` + `task build-native` | +5–15% on byte-scan / index loops; SIGILL on non-matching CPU |
+| `tikv-jemallocator` global allocator             | `crabcc-cli/src/main.rs` | ~5–12% on alloc-heavy paths (extract.rs, MCP `serve_io`) |
+| `bumpalo` per-file arena during tree-sitter walk | `crabcc-core/src/extract.rs` | already shipped; ~80% of the gain a nightly `Vec<T, A>` would offer |
+| Auto-snapshot of `.crabcc/` after index/refresh  | `crabcc-cli/src/backup.rs` | bookkeeping only — best-effort, never blocks the index path |
+
+The native build is **local-only** — never ship the resulting binary. The
+published release binary stays portable.
+
+Deferred (still on #112): SIMD intrinsics in `extract.rs`'s tokenizer (need
+`cargo flamegraph` data first), PGO via `cargo-pgo` (`task pgo-release`).
+
 Full report (with ripgrep comparison): [`bench/results/REPORT.md`](./bench/results/REPORT.md).
 Re-run:
 
