@@ -272,4 +272,53 @@ mod tests {
         let b = estimate_saved("callers", 5_000, 0);
         assert_eq!(a, b, "callers should cap at 100 results, same as refs");
     }
+
+    #[test]
+    fn tokens_for_bytes_large_value() {
+        // 4 KB → 1024 tokens.
+        assert_eq!(tokens_for_bytes(4096), 1024);
+        // 1 MB → 262144 tokens (rough: 1_048_576 / 4).
+        assert_eq!(tokens_for_bytes(1_048_576), 262_144);
+    }
+
+    #[test]
+    fn query_string_is_truncated_to_200_chars() {
+        // A 300-char query must be stored as ≤200 chars.
+        with_isolated_home(|| {
+            let long_query = "q".repeat(300);
+            record("sym", &long_query, 1, "r", 100);
+            let entries = read_log().unwrap();
+            assert_eq!(entries.len(), 1);
+            assert!(
+                entries[0].query.chars().count() <= 200,
+                "query not truncated: {} chars",
+                entries[0].query.chars().count()
+            );
+        });
+    }
+
+    #[test]
+    fn report_by_op_covers_all_recorded_ops() {
+        with_isolated_home(|| {
+            record("outline", "Q", 0, "r", 500);
+            record("fuzzy", "Q", 0, "r", 200);
+            record("prefix", "Q", 0, "r", 100);
+            let r = report().unwrap();
+            assert!(r.by_op.contains_key("outline"));
+            assert!(r.by_op.contains_key("fuzzy"));
+            assert!(r.by_op.contains_key("prefix"));
+            assert_eq!(r.all_time.queries, 3);
+        });
+    }
+
+    #[test]
+    fn estimate_saved_outline_and_prefix() {
+        // outline > prefix: outline replaces a whole-file read.
+        let outline_saved = estimate_saved("outline", 0, 0);
+        let prefix_saved = estimate_saved("prefix", 0, 0);
+        assert!(
+            outline_saved > prefix_saved,
+            "outline ({outline_saved}) should save more than prefix ({prefix_saved})"
+        );
+    }
 }

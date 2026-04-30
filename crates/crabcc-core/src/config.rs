@@ -269,7 +269,10 @@ mod tests {
         let cfg = Config::default();
         assert_eq!(cfg.agent.backend, "claude");
         assert_eq!(cfg.agent.default_model.claude, "claude-opus-4-7");
-        assert_eq!(cfg.agent.default_model.ollama, "ollama/qwen2.5-coder");
+        assert_eq!(
+            cfg.agent.default_model.ollama,
+            "ollama/qwen3.5:35b-a3b-coding-nvfp4"
+        );
         assert_eq!(cfg.ollama.base_url, "http://localhost:4000");
         assert_eq!(cfg.jobs.redis_url, "redis://127.0.0.1:6379");
         assert!(!cfg.mcp.dev_surface);
@@ -333,5 +336,93 @@ mod tests {
         save(Some(&path), &Config::default()).unwrap();
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    // ---- apply_env_overrides ----
+    //
+    // These tests mutate process-wide env vars; run them under a lock to
+    // avoid races with other tests that read the same vars.
+
+    use std::sync::Mutex;
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_env<F: FnOnce()>(pairs: &[(&str, &str)], f: F) {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        // Stash originals.
+        let saved: Vec<(String, Option<String>)> = pairs
+            .iter()
+            .map(|(k, _)| (k.to_string(), std::env::var(k).ok()))
+            .collect();
+        // Apply.
+        for (k, v) in pairs {
+            std::env::set_var(k, v);
+        }
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+        // Restore.
+        for (k, maybe_v) in &saved {
+            match maybe_v {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+        if let Err(e) = r {
+            std::panic::resume_unwind(e);
+        }
+    }
+
+    #[test]
+    fn apply_env_overrides_base_url() {
+        with_env(&[("OLLAMA_BASE_URL", "http://custom:9999")], || {
+            let mut cfg = Config::default();
+            apply_env_overrides(&mut cfg);
+            assert_eq!(cfg.ollama.base_url, "http://custom:9999");
+        });
+    }
+
+    #[test]
+    fn apply_env_overrides_num_ctx() {
+        with_env(&[("OLLAMA_NUM_CTX", "4096")], || {
+            let mut cfg = Config::default();
+            apply_env_overrides(&mut cfg);
+            assert_eq!(cfg.ollama.num_ctx, 4096);
+        });
+    }
+
+    #[test]
+    fn apply_env_overrides_ollama_model() {
+        with_env(&[("CRABCC_OLLAMA_MODEL", "ollama/qwen2.5-coder")], || {
+            let mut cfg = Config::default();
+            apply_env_overrides(&mut cfg);
+            assert_eq!(cfg.agent.default_model.ollama, "ollama/qwen2.5-coder");
+        });
+    }
+
+    #[test]
+    fn apply_env_overrides_agent_backend() {
+        with_env(&[("CRABCC_AGENT_BACKEND", "ollama")], || {
+            let mut cfg = Config::default();
+            apply_env_overrides(&mut cfg);
+            assert_eq!(cfg.agent.backend, "ollama");
+        });
+    }
+
+    #[test]
+    fn apply_env_overrides_empty_string_is_ignored() {
+        // Empty values must not clobber the compiled default.
+        with_env(&[("OLLAMA_BASE_URL", "")], || {
+            let mut cfg = Config::default();
+            apply_env_overrides(&mut cfg);
+            assert_eq!(cfg.ollama.base_url, "http://localhost:4000");
+        });
+    }
+
+    #[test]
+    fn apply_env_overrides_invalid_num_ctx_is_ignored() {
+        // Non-numeric OLLAMA_NUM_CTX must be ignored and leave the default value intact.
+        with_env(&[("OLLAMA_NUM_CTX", "not-a-number")], || {
+            let mut cfg = Config::default();
+            apply_env_overrides(&mut cfg);
+            assert_eq!(cfg.ollama.num_ctx, 262144);
+        });
     }
 }
