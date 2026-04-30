@@ -221,11 +221,18 @@ async def main(connection: iterm2.Connection) -> None:
     await crabcc_remember.async_register(connection)
 
     # ── B. Custom control sequences ───────────────────────────────────────────
-
-    # crabcc:sym=<name>  — look up a symbol definition
+    #
+    # Both monitors are held open by a single async-with so neither is closed
+    # before its consumer reads from it. asyncio.gather runs the consumers
+    # concurrently and never returns (the loops are infinite), keeping the
+    # daemon alive — no separate sleep-forever needed.
     async with iterm2.CustomControlSequenceMonitor(
         connection, "crabcc", r"^sym=(?P<name>.+)$"
-    ) as sym_mon:
+    ) as sym_mon, iterm2.CustomControlSequenceMonitor(
+        connection, "crabcc", r"^reindex$"
+    ) as reindex_mon:
+
+        # crabcc:sym=<name>  — look up a symbol definition
         async def _handle_sym():
             while True:
                 match = await sym_mon.async_get()
@@ -238,12 +245,7 @@ async def main(connection: iterm2.Connection) -> None:
                         f"echo {json.dumps(result)} | jq . | less\n"
                     )
 
-        asyncio.ensure_future(_handle_sym())
-
-    # crabcc:reindex  — trigger a re-index when stale post-merge
-    async with iterm2.CustomControlSequenceMonitor(
-        connection, "crabcc", r"^reindex$"
-    ) as reindex_mon:
+        # crabcc:reindex  — trigger a re-index when stale post-merge
         async def _handle_reindex():
             while True:
                 await reindex_mon.async_get()
@@ -254,10 +256,7 @@ async def main(connection: iterm2.Connection) -> None:
                         "crabcc index && echo '✓ crabcc index complete'\n"
                     )
 
-        asyncio.ensure_future(_handle_reindex())
-
-    # Keep the daemon alive
-    await asyncio.sleep(float("inf"))
+        await asyncio.gather(_handle_sym(), _handle_reindex())
 
 
 iterm2.run_forever(main)
