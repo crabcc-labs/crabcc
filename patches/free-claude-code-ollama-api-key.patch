@@ -1,0 +1,500 @@
+From 823e74f5774fe07ba94a894449cb81b7a6ea5f56 Mon Sep 17 00:00:00 2001
+From: Peter Lodri <peter.lodri@instructure.com>
+Date: Thu, 30 Apr 2026 17:39:12 +0200
+Subject: [PATCH 1/3] feat(ollama): OLLAMA_API_KEY support + ollama-only .env
+ cleanup
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- provider_catalog: switch ollama from static_credential to
+  credential_attr="ollama_api_key" — enables LiteLLM master key
+  as Bearer auth when routing through the container stack
+- settings: add OLLAMA_API_KEY field (default "ollama" for direct
+  ollama, set to LITELLM_MASTER_KEY for stack mode)
+- .env.example: strip to ollama-only, two-mode comments
+  (Option A stack :4000 / Option B self-hosted :11434)
+---
+ .env.example               | 123 ++++++++-----------------------------
+ config/provider_catalog.py |   2 +-
+ config/settings.py         |   3 +
+ 3 files changed, 31 insertions(+), 97 deletions(-)
+
+diff --git a/.env.example b/.env.example
+index f414cea..912690b 100644
+--- a/.env.example
++++ b/.env.example
+@@ -1,111 +1,52 @@
+-# NVIDIA NIM Config
+-NVIDIA_NIM_API_KEY=""
+-
+-
+-# OpenRouter Config
+-OPENROUTER_API_KEY=""
+-
+-
+-# DeepSeek Config (uses native Anthropic Messages at api.deepseek.com/anthropic)
+-DEEPSEEK_API_KEY=""
+-
+-
+-# LM Studio Config (local provider, no API key required)
+-LM_STUDIO_BASE_URL="http://localhost:1234/v1"
+-
+-
+-# Llama.cpp Config (local provider, no API key required)
+-LLAMACPP_BASE_URL="http://localhost:8080/v1"
+-
+-
+-# Ollama Config (local provider, no API key required)
++# ── Ollama backend ────────────────────────────────────────────────────────────
++#
++# Priority: Apple Containers stack → Docker stack → self-hosted brew ollama
++#
++# Option A — container stack (LiteLLM proxy caches prompts; run start.sh first):
++#   cd <crabcc>/install/ollama-stack && ./start.sh
++#   OLLAMA_BASE_URL="http://localhost:4000"
++#   OLLAMA_API_KEY="sk-<copy LITELLM_MASTER_KEY from ollama-stack/.env>"
++#
++# Option B — self-hosted (brew install ollama && ollama serve):
+ OLLAMA_BASE_URL="http://localhost:11434"
++# OLLAMA_API_KEY is only needed when routing through LiteLLM (Option A above).
++# Defaults to "ollama" (no auth) for direct access.
++#OLLAMA_API_KEY="sk-<litellm-master-key>"
+ 
++# Apple Silicon optimized — Qwen3.5-35B-A3B MoE, 3B active/token, 4-bit quantized
++# Model docs: https://huggingface.co/Qwen/Qwen3.5-35B-A3B
++MODEL="ollama/qwen3.5:35b-a3b-coding-nvfp4"
+ 
+-# All Claude model requests are mapped to these models, plain model is fallback
+-# Format: provider_type/model/name
+-# Valid providers: "nvidia_nim" | "open_router" | "deepseek" | "lmstudio" | "llamacpp" | "ollama"
++# Per-Claude-model overrides (optional; blank = use MODEL for all tiers)
+ MODEL_OPUS=
+ MODEL_SONNET=
+ MODEL_HAIKU=
+-MODEL="nvidia_nim/z-ai/glm4.7"
+-
+-
+-# Optional live smoke model overrides. Provider smoke runs once per configured
+-# provider even when MODEL/MODEL_* route to a different provider.
+-FCC_SMOKE_MODEL_NVIDIA_NIM=
+-FCC_SMOKE_MODEL_OPEN_ROUTER=
+-FCC_SMOKE_MODEL_DEEPSEEK=
+-FCC_SMOKE_MODEL_LMSTUDIO=
+-FCC_SMOKE_MODEL_LLAMACPP=
+-FCC_SMOKE_MODEL_OLLAMA=
+ 
+ 
+-# Thinking output
+-# Per-Claude-model switches for provider reasoning requests and Claude thinking blocks.
+-# Blank per-model switches inherit ENABLE_MODEL_THINKING.
+-ENABLE_OPUS_THINKING=
+-ENABLE_SONNET_THINKING=
+-ENABLE_HAIKU_THINKING=
++# ── Thinking ──────────────────────────────────────────────────────────────────
++# Qwen3.5 defaults to thinking mode. Agents disable it via /no_think prompt prefix.
+ ENABLE_MODEL_THINKING=true
+ 
+ 
+-# Provider config
+-# Per-provider proxy support: http and socks5, example: "http://username:password@host:port"
+-NVIDIA_NIM_PROXY=""
+-OPENROUTER_PROXY=""
+-LMSTUDIO_PROXY=""
+-LLAMACPP_PROXY=""
+-
++# ── Rate limiting ─────────────────────────────────────────────────────────────
+ PROVIDER_RATE_LIMIT=1
+ PROVIDER_RATE_WINDOW=3
+ PROVIDER_MAX_CONCURRENCY=5
+ 
+ 
+-# HTTP client timeouts (seconds) for provider API requests
++# ── HTTP timeouts (seconds) ───────────────────────────────────────────────────
++# 300s read timeout — Qwen3.5 35B can be slow on long codegen prompts.
+ HTTP_READ_TIMEOUT=300
+ HTTP_WRITE_TIMEOUT=10
+ HTTP_CONNECT_TIMEOUT=10
+ 
+ 
+-# Optional server API key (Anthropic-style)
++# ── Server auth (Anthropic-style; crabcc / Claude Code sends this as Bearer) ──
+ ANTHROPIC_AUTH_TOKEN="freecc"
+ 
+ 
+-# Messaging Platform: "telegram" | "discord" | "none"
+-MESSAGING_PLATFORM="discord"
+-MESSAGING_RATE_LIMIT=1
+-MESSAGING_RATE_WINDOW=1
+-
+-
+-# Voice Note Transcription
+-VOICE_NOTE_ENABLED=false
+-# WHISPER_DEVICE: "cpu" | "cuda" | "nvidia_nim"
+-# - "cpu"/"cuda": Hugging Face transformers Whisper (offline, free; install with: uv sync --extra voice_local)
+-# - "nvidia_nim": NVIDIA NIM Whisper via Riva gRPC (requires NVIDIA_NIM_API_KEY; install with: uv sync --extra voice)
+-# (Independent of MODEL=nvidia_nim/...: that selects the *chat* provider; this selects voice STT only.)
+-WHISPER_DEVICE="nvidia_nim"
+-# WHISPER_MODEL:
+-# - For cpu/cuda: Hugging Face ID or short name (tiny, base, small, medium, large-v2, large-v3, large-v3-turbo)
+-# - For nvidia_nim: NVIDIA NIM model (e.g., "nvidia/parakeet-ctc-1.1b-asr", "openai/whisper-large-v3")
+-# - For nvidia_nim, default to "openai/whisper-large-v3" for best performance
+-WHISPER_MODEL="openai/whisper-large-v3"
+-HF_TOKEN=""
+-
+-
+-# Telegram Config
+-TELEGRAM_BOT_TOKEN=""
+-ALLOWED_TELEGRAM_USER_ID=""
+-
+-
+-# Discord Config
+-DISCORD_BOT_TOKEN=""
+-ALLOWED_DISCORD_CHANNELS=""
+-
+-
+-# Agent Config
++# ── Agent ─────────────────────────────────────────────────────────────────────
+ CLAUDE_WORKSPACE="./agent_workspace"
+-ALLOWED_DIR=""
+ CLAUDE_CLI_BIN="claude"
+ FAST_PREFIX_DETECTION=true
+ ENABLE_NETWORK_PROBE_MOCK=true
+@@ -114,23 +55,13 @@ ENABLE_SUGGESTION_MODE_SKIP=true
+ ENABLE_FILEPATH_EXTRACTION_MOCK=true
+ 
+ 
+-# Local Anthropic web_search / web_fetch handling (performs outbound HTTP; on by default)
++# ── Web tools ─────────────────────────────────────────────────────────────────
+ ENABLE_WEB_SERVER_TOOLS=true
+ WEB_FETCH_ALLOWED_SCHEMES=http,https
+ WEB_FETCH_ALLOW_PRIVATE_NETWORKS=false
+ 
+ 
+-# Verbose diagnostics (avoid logging raw prompts / SSE bodies in production)
+-DEBUG_PLATFORM_EDITS=false
+-DEBUG_SUBAGENT_STACK=false
+-# When true, also allows DEBUG-level httpx/httpcore/telegram log noise (not just payload logging).
+-LOG_RAW_API_PAYLOADS=false
+-LOG_RAW_SSE_EVENTS=false
+-# When true, log full exception text and tracebacks for unhandled errors (may leak request-derived data).
++# ── Diagnostics ───────────────────────────────────────────────────────────────
+ LOG_API_ERROR_TRACEBACKS=false
+-# When true, log message/transcription text previews in messaging adapters (may leak user content).
+-LOG_RAW_MESSAGING_CONTENT=false
+-# When true, log full Claude CLI stderr, non-JSON stdout lines, and parser error text.
++LOG_RAW_SSE_EVENTS=false
+ LOG_RAW_CLI_DIAGNOSTICS=false
+-# When true, log full exception and CLI error message strings in messaging (may leak user content).
+-LOG_MESSAGING_ERROR_DETAILS=false
+diff --git a/config/provider_catalog.py b/config/provider_catalog.py
+index b8295ae..0e84b13 100644
+--- a/config/provider_catalog.py
++++ b/config/provider_catalog.py
+@@ -90,7 +90,7 @@ PROVIDER_CATALOG: dict[str, ProviderDescriptor] = {
+     "ollama": ProviderDescriptor(
+         provider_id="ollama",
+         transport_type="anthropic_messages",
+-        static_credential="ollama",
++        credential_attr="ollama_api_key",
+         default_base_url=OLLAMA_DEFAULT_BASE,
+         base_url_attr="ollama_base_url",
+         capabilities=(
+diff --git a/config/settings.py b/config/settings.py
+index c5b905d..05ef8d6 100644
+--- a/config/settings.py
++++ b/config/settings.py
+@@ -144,6 +144,9 @@ class Settings(BaseSettings):
+         default="http://localhost:11434",
+         validation_alias="OLLAMA_BASE_URL",
+     )
++    # When routing through LiteLLM (container stack), set to LITELLM_MASTER_KEY.
++    # Default "ollama" is correct for direct ollama access (no auth required).
++    ollama_api_key: str = Field(default="ollama", validation_alias="OLLAMA_API_KEY")
+ 
+     # ==================== Model ====================
+     # All Claude model requests are mapped to this single model (fallback)
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 335e96c6c773a86c19d01a16db581ace40df83f9 Mon Sep 17 00:00:00 2001
+From: Peter Lodri <peter.lodri@instructure.com>
+Date: Thu, 30 Apr 2026 18:13:06 +0200
+Subject: [PATCH 2/3] ci: path filtering, split fast/slow jobs, dependabot
+ weekly bulk, usage check
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+tests.yml:
+- paths filter — only run on *.py / pyproject.toml / uv.lock changes
+- workflow_dispatch for manual runs
+- Split into fast (fmt+type, ~30s, runs on PRs) and test (full suite, ~2min,
+  push-to-main only) — cuts PR runner minutes ~75%
+- usage job: prints API rate limits in job summary on main push
+
+.github/dependabot.yml:
+- uv: weekly Monday, grouped (all patterns), 1 PR cap
+- github-actions: weekly Monday +30min, grouped, 1 PR cap
+- Both use Europe/Budapest timezone
+
+.github/workflows/dependabot-automerge.yml:
+- Auto-merge (squash) minor+patch dependabot PRs once CI passes
+- Labels major bumps needs-review without merging
+---
+ .github/dependabot.yml                     | 42 ++++++++++---
+ .github/workflows/dependabot-automerge.yml | 39 ++++++++++++
+ .github/workflows/tests.yml                | 73 +++++++++++++++++++---
+ 3 files changed, 138 insertions(+), 16 deletions(-)
+ create mode 100644 .github/workflows/dependabot-automerge.yml
+
+diff --git a/.github/dependabot.yml b/.github/dependabot.yml
+index 776459c..65950f5 100644
+--- a/.github/dependabot.yml
++++ b/.github/dependabot.yml
+@@ -1,13 +1,39 @@
+ version: 2
++
+ updates:
+-  - package-ecosystem: "uv"
+-    directory: "/"
++  # ── Python / uv ──────────────────────────────────────────────────────────
++  - package-ecosystem: uv
++    directory: /
+     schedule:
+-      interval: "weekly"
++      interval: weekly
++      day: monday
++      time: "06:00"
++      timezone: Europe/Budapest
++    # Single weekly PR with all Python bumps — CI runs once, not per-package.
+     groups:
+-      minor-and-patch:
+-        update-types: ["minor", "patch"]
+-  - package-ecosystem: "github-actions"
+-    directory: "/"
++      python-all:
++        patterns: ["*"]
++    open-pull-requests-limit: 1
++    labels:
++      - dependencies
++      - python
++    commit-message:
++      prefix: "chore(deps)"
++
++  # ── GitHub Actions ────────────────────────────────────────────────────────
++  - package-ecosystem: github-actions
++    directory: /
+     schedule:
+-      interval: "weekly"
++      interval: weekly
++      day: monday
++      time: "06:30"
++      timezone: Europe/Budapest
++    groups:
++      actions-all:
++        patterns: ["*"]
++    open-pull-requests-limit: 1
++    labels:
++      - dependencies
++      - github-actions
++    commit-message:
++      prefix: "chore(ci)"
+diff --git a/.github/workflows/dependabot-automerge.yml b/.github/workflows/dependabot-automerge.yml
+new file mode 100644
+index 0000000..dfa0678
+--- /dev/null
++++ b/.github/workflows/dependabot-automerge.yml
+@@ -0,0 +1,39 @@
++name: dependabot auto-merge
++
++on:
++  pull_request:
++    paths:
++      - 'uv.lock'
++      - 'pyproject.toml'
++      - '.github/workflows/**'
++
++permissions:
++  contents: write
++  pull-requests: write
++
++jobs:
++  auto-merge:
++    runs-on: ubuntu-latest
++    if: github.actor == 'dependabot[bot]'
++    steps:
++      - name: Fetch dependabot metadata
++        id: meta
++        uses: dependabot/fetch-metadata@v2
++        with:
++          github-token: ${{ secrets.GITHUB_TOKEN }}
++
++      - name: Enable auto-merge (minor + patch)
++        if: |
++          steps.meta.outputs.update-type == 'version-update:semver-minor' ||
++          steps.meta.outputs.update-type == 'version-update:semver-patch'
++        run: gh pr merge --auto --squash "$PR_URL"
++        env:
++          PR_URL: ${{ github.event.pull_request.html_url }}
++          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
++
++      - name: Label major bumps
++        if: steps.meta.outputs.update-type == 'version-update:semver-major'
++        run: gh pr edit "$PR_URL" --add-label "needs-review,major-bump"
++        env:
++          PR_URL: ${{ github.event.pull_request.html_url }}
++          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+diff --git a/.github/workflows/tests.yml b/.github/workflows/tests.yml
+index b9eccc7..8fdc42f 100644
+--- a/.github/workflows/tests.yml
++++ b/.github/workflows/tests.yml
+@@ -3,17 +3,30 @@ name: CI
+ on:
+   push:
+     branches: [main, master]
++    paths:
++      - '**/*.py'
++      - 'pyproject.toml'
++      - 'uv.lock'
++      - '.github/workflows/tests.yml'
+   pull_request:
+     branches: [main, master]
++    paths:
++      - '**/*.py'
++      - 'pyproject.toml'
++      - 'uv.lock'
++      - '.github/workflows/tests.yml'
++  workflow_dispatch:
+ 
+ concurrency:
+   group: ${{ github.workflow }}-${{ github.ref }}
+   cancel-in-progress: true
+ 
+ jobs:
+-  checks:
++  # Fast gate (~30s): format + type + suppress-check. Runs on every PR push.
++  fast:
++    name: fast (fmt + types)
+     runs-on: ubuntu-latest
+-    timeout-minutes: 15
++    timeout-minutes: 5
+     permissions:
+       contents: read
+     steps:
+@@ -23,16 +36,15 @@ jobs:
+           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+           fetch-depth: 1
+ 
+-      - name: "Fail on type: ignore (no suppressions allowed)"
++      - name: Fail on type-ignore comments
+         run: |
+-          if grep -rE '# type: ignore|# ty: ignore' --include='*.py' . --exclude-dir=.venv --exclude-dir=.git; then
+-            echo "::error::type: ignore / ty: ignore comments are not allowed. Fix the underlying type errors instead."
++          if grep -rE '# type: ignore|# ty: ignore' --include='*.py' . \
++               --exclude-dir=.venv --exclude-dir=.git; then
++            echo "::error::type: ignore / ty: ignore not allowed — fix the underlying issue."
+             exit 1
+           fi
+-          exit 0
+ 
+-      - name: Install uv
+-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
++      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
+         with:
+           version: "0.10.4"
+           enable-cache: true
+@@ -47,5 +59,50 @@ jobs:
+       - name: Type check
+         run: uv run ty check
+ 
++  # Slow gate (~2min): full test suite. Runs on push to main and manual dispatch.
++  # PR builds get fast feedback from the `fast` job; tests run post-merge to
++  # keep PR runner minutes low.
++  test:
++    name: test suite
++    runs-on: ubuntu-latest
++    timeout-minutes: 15
++    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
++    permissions:
++      contents: read
++    needs: fast
++    steps:
++      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
++        with:
++          ref: ${{ github.ref }}
++          fetch-depth: 1
++
++      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b
++        with:
++          version: "0.10.4"
++          enable-cache: true
++          cache-python: true
++
+       - name: Run tests
+         run: uv run pytest -v --tb=short
++
++  # Usage summary — only on main push to avoid cost on every PR.
++  usage:
++    name: usage summary
++    runs-on: ubuntu-latest
++    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
++    needs: [fast]
++    steps:
++      - name: rate limits
++        env:
++          GH_TOKEN: ${{ github.token }}
++        run: |
++          echo "## Rate limits" >> "$GITHUB_STEP_SUMMARY"
++          gh api /rate_limit | python3 -c "
++          import sys, json, datetime
++          d = json.load(sys.stdin)['resources']
++          print('| Resource | Used | Limit | Remaining |')
++          print('|---|---|---|---|')
++          for k in ('core', 'graphql', 'actions'):
++              v = d.get(k, {});
++              if v: print(f'| {k} | {v[\"used\"]} | {v[\"limit\"]} | {v[\"remaining\"]} |')
++          " >> "$GITHUB_STEP_SUMMARY"
+-- 
+2.50.1 (Apple Git-155)
+
+
+From 872d44f8cc5e0e2ef366b25faed1ff72f26871f6 Mon Sep 17 00:00:00 2001
+From: Peter Lodri <peter.lodri@instructure.com>
+Date: Thu, 30 Apr 2026 18:21:15 +0200
+Subject: [PATCH 3/3] ci: TelegramBridge failure notify + dependabot auto-merge
+
+---
+ .github/workflows/tests.yml | 15 +++++++++++++++
+ 1 file changed, 15 insertions(+)
+
+diff --git a/.github/workflows/tests.yml b/.github/workflows/tests.yml
+index 8fdc42f..a5a213a 100644
+--- a/.github/workflows/tests.yml
++++ b/.github/workflows/tests.yml
+@@ -85,6 +85,21 @@ jobs:
+       - name: Run tests
+         run: uv run pytest -v --tb=short
+ 
++  # Telegram notification on failure.
++  notify:
++    name: telegram notify
++    runs-on: ubuntu-latest
++    needs: [fast, test]
++    if: always() && (needs.fast.result == 'failure' || needs.test.result == 'failure')
++    steps:
++      - uses: GokulDas027/TelegramBridge@master
++        with:
++          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
++          chat: ${{ secrets.TELEGRAM_CHAT_ID }}
++          status: failure
++          event: ${{ github.event_name }}
++          actor: ${{ github.actor }}
++
+   # Usage summary — only on main push to avoid cost on every PR.
+   usage:
+     name: usage summary
+-- 
+2.50.1 (Apple Git-155)
+
