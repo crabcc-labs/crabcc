@@ -1,0 +1,30 @@
+# crabcc Ollama auth stack — Caddy reverse proxy — issue #105
+#
+# Enforces `Authorization: Bearer ${OLLAMA_API_KEY}` on /api and /v1 paths.
+# Token is injected via the OLLAMA_API_KEY env var by docker-compose.
+
+{
+	admin off
+	auto_https off
+}
+
+:11434 {
+	log {
+		output stdout
+		format json
+	}
+
+	@unauthorized {
+		path /api/* /v1/*
+		not header Authorization "Bearer {env.OLLAMA_API_KEY}"
+	}
+
+	@apipaths path /api/* /v1/*
+
+	route {
+		respond /healthz "ok" 200
+		respond @unauthorized "Unauthorized: missing or invalid Bearer token" 401
+		reverse_proxy @apipaths ollama:11434
+		respond "Not Found" 404
+	}
+}

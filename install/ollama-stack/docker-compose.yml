@@ -1,0 +1,95 @@
+# crabcc Ollama auth stack — issue #105
+#
+# Three services:
+#   ollama   — model server (internal only, never exposed to host)
+#   caddy    — reverse proxy enforcing `Authorization: Bearer ${OLLAMA_API_KEY}`
+#              on /api and /v1 paths
+#   litellm  — OpenAI-compatible front, master-key auth, talks to ollama via caddy
+#
+# Bring up:    docker compose up -d --wait
+# Tear down:   docker compose down
+# Status:      docker compose ps
+# Logs:        docker compose logs <service>
+#
+# Host endpoints (defaults):
+#   :11435  Caddy          — Bearer-auth gated Ollama (curl-able)
+#   :4000   LiteLLM proxy  — OpenAI-compatible (this is OLLAMA_BASE_URL for crabcc)
+#
+# Required env (see .env.example):
+#   OLLAMA_API_KEY        Token Caddy enforces on /api and /v1
+#   LITELLM_MASTER_KEY    Master key LiteLLM accepts on /v1/* and /key/*
+
+name: crabcc-ollama-stack
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    expose:
+      - "11434"
+    volumes:
+      - ollama_models:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - stack
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:?OLLAMA_API_KEY is required}
+    ports:
+      - "${CADDY_PORT:-11435}:11434"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:11434/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    networks:
+      - stack
+
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    restart: unless-stopped
+    depends_on:
+      caddy:
+        condition: service_healthy
+    environment:
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}
+      OLLAMA_API_BASE: http://caddy:11434
+      OLLAMA_API_KEY: ${OLLAMA_API_KEY:?OLLAMA_API_KEY is required}
+    ports:
+      - "${LITELLM_PORT:-4000}:4000"
+    volumes:
+      - ./litellm.config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--num_workers", "1"]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4000/health/liveliness >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - stack
+
+volumes:
+  ollama_models:
+  caddy_data:
+  caddy_config:
+
+networks:
+  stack:
+    driver: bridge

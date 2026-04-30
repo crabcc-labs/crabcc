@@ -1,0 +1,39 @@
+# crabcc Ollama auth stack — LiteLLM proxy config — issue #105
+#
+# Routes OpenAI-compatible requests to Ollama via the Caddy reverse proxy.
+# Bearer token to upstream Ollama is OLLAMA_API_KEY (forwarded by LiteLLM).
+#
+# Master key for LiteLLM itself is LITELLM_MASTER_KEY — clients send it as
+# `Authorization: Bearer ${LITELLM_MASTER_KEY}` on the OpenAI-compatible
+# endpoints.
+
+model_list:
+  - model_name: ollama/llama3.2
+    litellm_params:
+      model: ollama_chat/llama3.2
+      api_base: os.environ/OLLAMA_API_BASE
+      api_key: os.environ/OLLAMA_API_KEY
+
+  - model_name: ollama/qwen2.5-coder
+    litellm_params:
+      model: ollama_chat/qwen2.5-coder
+      api_base: os.environ/OLLAMA_API_BASE
+      api_key: os.environ/OLLAMA_API_KEY
+
+  - model_name: ollama/nomic-embed-text
+    litellm_params:
+      model: ollama/nomic-embed-text
+      api_base: os.environ/OLLAMA_API_BASE
+      api_key: os.environ/OLLAMA_API_KEY
+      mode: embedding
+
+litellm_settings:
+  drop_params: true
+  set_verbose: false
+  json_logs: true
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY
+  # Virtual-key persistence requires Postgres — out of scope for issue #105.
+  # Uncomment and set DATABASE_URL to enable per-team / per-agent virtual keys.
+  # database_url: os.environ/DATABASE_URL
