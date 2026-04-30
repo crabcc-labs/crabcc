@@ -133,6 +133,16 @@ enum Cmd {
         #[command(subcommand)]
         op: GraphOp,
     },
+    /// Ollama auth-stack operations: up, down, status, logs, pull (issue #105).
+    /// Operator surface — manipulates Docker Compose against the bundled
+    /// stack at `install/ollama-stack/` (or `$CRABCC_OLLAMA_STACK_DIR`).
+    /// Output is JSON by default for machine consumers (the menubar app +
+    /// Chrome extension from issue #107 read this surface).
+    #[command(name = "ollama-stack")]
+    OllamaStack {
+        #[command(subcommand)]
+        op: OllamaStackOp,
+    },
     /// Symlink the crabcc skill + slash-command into `~/.claude/`, then
     /// print the `claude mcp add` invocation and hook JSON snippets to
     /// paste into `~/.claude/settings.json`. Never writes Claude config.
@@ -341,6 +351,34 @@ enum GraphOp {
     /// List orphans: symbols that call others but have no incoming callers
     /// in the indexed graph. Useful as a dead-code triage starting point.
     Orphans,
+}
+
+#[derive(Subcommand)]
+enum OllamaStackOp {
+    /// `docker compose up -d --wait` against the resolved stack. Blocks
+    /// until every healthcheck reports green or compose times out.
+    Up,
+    /// `docker compose down`. Pass `--volumes` to wipe the named
+    /// volumes (model cache, caddy data) — default keeps them so the
+    /// next `up` is warm.
+    Down {
+        #[arg(long)]
+        volumes: bool,
+    },
+    /// `docker compose ps --format json` + per-container `docker inspect`,
+    /// returned as a JSON array of `ContainerInfo` rows.
+    Status,
+    /// Tail of `docker compose logs`. Pass a service name to scope.
+    Logs {
+        /// Service to tail. Omit for all services.
+        service: Option<String>,
+        /// Number of lines from the tail.
+        #[arg(long, default_value_t = 100)]
+        tail: usize,
+    },
+    /// `docker compose pull` to refresh upstream images. Combine with
+    /// `up` afterward to recreate services whose image digest changed.
+    Pull,
 }
 
 /// Shaping flags for refs/callers. `--files-only`, `--summary`, and
@@ -605,6 +643,13 @@ fn main() -> Result<()> {
     }
     if let Some(Cmd::AgentKills { limit, json }) = cli.cmd.as_ref() {
         return run_agent_kills(*limit, *json);
+    }
+
+    // `ollama-stack` is an operator surface — pure shell-out to
+    // `docker compose` against the bundled stack at install/ollama-stack/.
+    // No symbol Store needed (issue #105 Phase 3).
+    if let Some(Cmd::OllamaStack { op }) = cli.cmd.as_ref() {
+        return run_ollama_stack(op);
     }
 
     // `compress` is a meta-operation on the index. It owns its own codec
@@ -879,6 +924,7 @@ fn main() -> Result<()> {
         Cmd::AgentLs { .. } => unreachable!("agent-ls handled before store init"),
         Cmd::AgentGuard { .. } => unreachable!("agent-guard handled before store init"),
         Cmd::AgentKills { .. } => unreachable!("agent-kills handled before store init"),
+        Cmd::OllamaStack { .. } => unreachable!("ollama-stack handled before store init"),
     }
     Ok(())
 }
@@ -1068,7 +1114,47 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::AgentKills { .. } => "agent-kills",
         Cmd::Serve { .. } => "serve",
         Cmd::InstallClaude { .. } => "install-claude",
+        Cmd::OllamaStack { .. } => "ollama-stack",
     }
+}
+
+/// Dispatches `crabcc ollama-stack <op>` — pure operator surface.
+/// All output is JSON for machine consumers (issue #105 / #107). Errors
+/// from the driver bubble up via `?` and surface as anyhow chains.
+fn run_ollama_stack(op: &OllamaStackOp) -> Result<()> {
+    use crabcc_core::ollama_stack as ols;
+    let opts = ols::Options::new();
+    match op {
+        OllamaStackOp::Up => {
+            let r = ols::up(&opts)?;
+            println!("{}", sonic_rs::to_string(&r)?);
+        }
+        OllamaStackOp::Down { volumes } => {
+            let stopped = ols::down(&opts, *volumes)?;
+            println!(
+                "{}",
+                sonic_rs::to_string(&serde_json::json!({ "stopped": stopped }))?
+            );
+        }
+        OllamaStackOp::Status => {
+            let containers = ols::status(&opts)?;
+            println!("{}", sonic_rs::to_string(&containers)?);
+        }
+        OllamaStackOp::Logs { service, tail } => {
+            let body = ols::logs(&opts, service.as_deref(), *tail)?;
+            // logs are intentionally NOT JSON-wrapped — passthrough so
+            // tools like `less` and `grep` work as expected.
+            print!("{body}");
+        }
+        OllamaStackOp::Pull => {
+            ols::pull(&opts)?;
+            println!(
+                "{}",
+                sonic_rs::to_string(&serde_json::json!({ "ok": true }))?
+            );
+        }
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
