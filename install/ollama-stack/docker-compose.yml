@@ -67,7 +67,30 @@ services:
     deploy:
       resources:
         limits:
-          memory: 16gb
+          memory: 24gb
+    # Performance tuning. Defaults are conservative for low-RAM laptops;
+    # we explicitly bump for the 32-64 GiB Mac dev workflow.
+    #   OLLAMA_NUM_PARALLEL=4   serve up to 4 concurrent chat completions
+    #                           (per-crate agents fan out — without this,
+    #                           the second one queues until the first
+    #                           finishes a turn).
+    #   OLLAMA_NUM_THREAD=0     "0" tells ollama to auto-pick (≈ p-cores).
+    #                           Set to a fixed number if you want to
+    #                           reserve cores for other host work.
+    #   OLLAMA_KEEP_ALIVE=30m   keep the model resident for 30 min after
+    #                           last use (default 5m). Reloading qwen2.5-
+    #                           coder Q4_K_M takes ~3 s on Apple Silicon
+    #                           — annoying when you're iterating fast.
+    #   OLLAMA_MAX_LOADED_MODELS=2  allow holding two models hot at once
+    #                           (e.g. coder + embed) without evicting.
+    #   OLLAMA_FLASH_ATTENTION=1   enable Flash Attention on supported
+    #                           models — faster prefill on large prompts.
+    environment:
+      OLLAMA_NUM_PARALLEL: "4"
+      OLLAMA_NUM_THREAD: "0"
+      OLLAMA_KEEP_ALIVE: "30m"
+      OLLAMA_MAX_LOADED_MODELS: "2"
+      OLLAMA_FLASH_ATTENTION: "1"
     logging: *logging
     networks:
       - stack
@@ -141,7 +164,11 @@ services:
       - ./litellm.config.yaml:/app/config.yaml:ro
     tmpfs:
       - /tmp:size=128m,mode=1777
-    command: ["--config", "/app/config.yaml", "--port", "4000", "--num_workers", "1"]
+    # --num_workers 2 gives the proxy two uvicorn worker processes
+    # so concurrent chat completions don't queue at the gateway. Keep
+    # in sync with OLLAMA_NUM_PARALLEL upstream so the bottleneck
+    # stays at the model, not the proxy.
+    command: ["--config", "/app/config.yaml", "--port", "4000", "--num_workers", "2"]
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:4000/health/liveliness >/dev/null || exit 1"]
       interval: 10s
@@ -151,7 +178,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1gb
+          memory: 2gb
     logging: *logging
     # litellm sits on BOTH networks: `stack` for intra-stack ollama+caddy
     # comms, `crabcc-shared` so cross-stack consumers (the dev compose,
