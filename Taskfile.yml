@@ -72,11 +72,57 @@ tasks:
       - "{{.CARGO}} clippy --workspace --all-targets -- -D warnings"
 
   install:
-    desc: Cargo install crabcc to ~/.cargo/bin/crabcc
+    desc: Cargo install crabcc to ~/.cargo/bin/crabcc; auto-bootstraps shell aliases (idempotent)
+    summary: |
+      Builds release, installs the binary to ~/.cargo/bin/crabcc, then
+      runs scripts/install-aliases.sh which writes a fenced
+      `# >>> crabcc-aliases >>>` block into ~/.zshrc / ~/.bashrc /
+      fish config — only on shells that exist, only if the block isn't
+      already present (idempotent — safe to re-run).
+      Pass NO_ALIASES=1 to skip the alias step.
     deps: [build]
+    vars:
+      NO_ALIASES: '{{.NO_ALIASES | default ""}}'
     cmds:
       - "{{.CARGO}} install --path crates/crabcc-cli --force"
       - "{{.CRABCC}} --version"
+      - 'if [ -z "{{.NO_ALIASES}}" ]; then bash scripts/install-aliases.sh; else echo "NO_ALIASES=1 — skipping alias bootstrap"; fi'
+
+  aliases-check:
+    desc: Detect whether crabcc shell aliases are installed (read-only)
+    summary: |
+      Greps ~/.zshrc / ~/.bashrc / ~/.config/fish/config.fish for the
+      fenced `# >>> crabcc-aliases >>>` block written by
+      scripts/install-aliases.sh. Prints status per shell rc and exits 0
+      if at least one shell has the block, 1 if none do. Pure detection —
+      never modifies any file. Use `task aliases` to install if missing.
+    silent: true
+    cmds:
+      - |
+        installed=0
+        any_rc=0
+        for rc in "$HOME/.zshrc" "$HOME/.bashrc" "$HOME/.config/fish/config.fish"; do
+          if [ -f "$rc" ]; then
+            any_rc=1
+            if grep -q '# >>> crabcc-aliases >>>' "$rc"; then
+              echo "✓ $rc — aliases installed"
+              installed=1
+            else
+              echo "✗ $rc — aliases missing"
+            fi
+          fi
+        done
+        if [ "$any_rc" = "0" ]; then
+          echo "no shell rc files found (~/.zshrc, ~/.bashrc, ~/.config/fish/config.fish)"
+          exit 1
+        fi
+        if [ "$installed" = "1" ]; then
+          echo "" && echo "→ at least one shell has aliases. Run \`task aliases\` to (re-)install on others."
+          exit 0
+        else
+          echo "" && echo "→ aliases not installed in any shell. Run \`task aliases\` (or \`task install\`) to install."
+          exit 1
+        fi
 
   install-upgrade-smoke:
     desc: Smoke-test install.sh upgrade-on-rerun (closes #24)
