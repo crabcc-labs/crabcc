@@ -164,6 +164,70 @@ fn unknown_route_is_404() {
 }
 
 #[test]
+fn live_dashboard_serves_distinct_html() {
+    let (_dir, port) = boot_test_server();
+    let (status, body) = http_get(port, "/live");
+    assert_eq!(status, 200);
+    // The live dashboard advertises the three-column layout via a
+    // grep-able marker — keeps the test from coupling to layout
+    // accidents but catches a serve regression where /live falls back
+    // to /index.html silently.
+    assert!(
+        body.contains("crabcc · live"),
+        "live dashboard must announce itself in the title: {body:.200}"
+    );
+    assert!(
+        body.contains("/api/bootstrap"),
+        "live page must reference the bootstrap endpoint: {body:.500}"
+    );
+    // Ensure / and /live aren't accidentally serving the same payload.
+    let (_, idx_body) = http_get(port, "/");
+    assert_ne!(idx_body, body, "/ and /live must serve distinct HTML pages");
+}
+
+#[test]
+fn bootstrap_endpoint_returns_repo_summary() {
+    let (_dir, port) = boot_test_server();
+    let (status, body) = http_get(port, "/api/bootstrap");
+    assert_eq!(status, 200, "bootstrap must succeed: {body}");
+    let v: serde_json::Value =
+        serde_json::from_str(&body).expect("bootstrap must return valid JSON");
+    // Shape contract — the live frontend depends on these keys + types.
+    assert!(v.get("repo").is_some(), "missing repo: {body}");
+    assert!(v.get("root").is_some(), "missing root: {body}");
+    assert!(v.get("version").is_some(), "missing version: {body}");
+    let index = v.get("index").expect("missing index block");
+    assert!(index["present"].as_bool().expect("present must be a bool"));
+    // The fixture has 2 functions in one Rust file → at least 1 file
+    // and at least 2 symbols. Use ≥ assertions so the test stays
+    // robust against extractor evolution that might add synthetic
+    // module-level symbols.
+    assert!(index["files"].as_u64().unwrap_or(0) >= 1);
+    assert!(index["symbols"].as_u64().unwrap_or(0) >= 2);
+    let graph = v.get("graph").expect("missing graph block");
+    assert!(graph.get("present").is_some());
+    let memory = v.get("memory").expect("missing memory block");
+    assert!(memory.get("present").is_some());
+}
+
+#[test]
+fn memory_recent_endpoint_returns_empty_when_db_absent() {
+    let (_dir, port) = boot_test_server();
+    let (status, body) = http_get(port, "/api/memory/recent?since=0&limit=5");
+    assert_eq!(status, 200);
+    let v: serde_json::Value =
+        serde_json::from_str(&body).expect("memory.recent must return valid JSON");
+    assert!(v.get("present").is_some());
+    assert!(
+        v["drawers"]
+            .as_array()
+            .map(|a| a.is_empty())
+            .unwrap_or(false),
+        "drawers must be empty when no memory.db: {body}"
+    );
+}
+
+#[test]
 fn activity_endpoint_returns_snapshot_shape() {
     let (_dir, port) = boot_test_server();
     let (status, body) = http_get(port, "/api/activity?since=0&limit=10");

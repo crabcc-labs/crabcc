@@ -196,6 +196,16 @@ tasks:
     cmds:
       - "{{.CARGO}} test -p crabcc-viz"
 
+  viz-sim:
+    desc: |
+      Simulate ongoing low-effort agent activity against the viz crate
+      (#64 demo). Loops symbol lookups every ~3s so the live dashboard
+      at /live shows continuous tool calls + a slowly-growing relation
+      graph. Pair with `task viz` in another shell. Ctrl-C to stop.
+    cmds:
+      - bash scripts/viz-simulate.sh
+    interactive: true
+
   smoke:
     desc: Index a tiny fixture + assert sym/callers/refs return data
     deps: [install]
