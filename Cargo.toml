@@ -153,6 +153,15 @@ split-debuginfo = "unpacked"
 opt-level       = 1
 split-debuginfo = "unpacked"
 
+# Native-CPU release profile (issue #112). Inherits all release settings
+# (lto=fat, codegen-units=1, opt-level=3, panic=abort, strip=true) and
+# adds `target-cpu=native` via .cargo/config.toml's RUSTFLAGS for this
+# profile. NEVER ship the resulting binary to other machines — the
+# AVX2/AVX-512/etc. specialization will SIGILL on a CPU that doesn't
+# implement the same feature set. Use `task build-native` to build it.
+[profile.release-native]
+inherits = "release"
+
 # `cargo build --profile profiling` produces a binary with the same codegen
 # as release (LTO=fat, opt=3, codegen-units=1) BUT keeps debug-info and
 # disables stripping so samply / flamegraph / Instruments resolve symbols.

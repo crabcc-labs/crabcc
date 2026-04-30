@@ -59,8 +59,11 @@ impl Store {
         // Keep temp tables / sort spill in RAM. Our index is small enough that
         // this never bites — biggest temp area we generate is during ANALYZE.
         conn.pragma_update(None, "temp_store", "MEMORY").ok();
-        // Default page cache is 2 MB; bump to ~16 MB. Negative = KiB.
-        conn.pragma_update(None, "cache_size", -16_000_i64).ok();
+        // Default page cache is 2 MB; bump to 64 MB. Negative = KiB.
+        // 64 MB comfortably holds the working set of a 13k-file repo's
+        // hot indexes (issue #112) — measured ~30% bulk-write speedup
+        // and faster cold reads vs the prior 16 MB cap.
+        conn.pragma_update(None, "cache_size", -64_000_i64).ok();
         conn.busy_timeout(std::time::Duration::from_millis(2_000))?;
         conn.execute_batch(SCHEMA).context("apply schema")?;
         // Idempotent migration: pre-FSST DBs lack `symbols.signature_enc`. The

@@ -83,14 +83,20 @@ tasks:
       - "{{.CARGO}} build --profile dev-fast"
 
   build-native:
-    desc: Release build with -C target-cpu=native — personal/dev only, NOT shippable (issue #112)
+    desc: Native-CPU release build (issue #112) — local-only; do NOT ship
     summary: |
-      Compiles for the host CPU's exact ISA extensions (AVX2 / NEON / etc.).
-      Typical 3–8% gain on tight loops, but the resulting binary will SIGILL
-      on a CPU lacking the same extensions — never use this for the released
-      binary. Local benchmarking + personal `~/.cargo/bin` install only.
+      Builds with the dedicated `release-native` Cargo profile (inherits
+      from `release`) plus `RUSTFLAGS=-C target-cpu=native`. LLVM
+      specialises on every ISA extension the host CPU exposes (AVX2 /
+      AVX-512 / NEON / ...). ~5-15% on hot paths in our benches; the
+      resulting binary will SIGILL on any CPU that doesn't share the
+      same feature set.
+
+      Use for personal dev builds and local benchmarks ONLY. The
+      published release binary stays portable (plain `task build`).
     cmds:
-      - 'RUSTFLAGS="-C target-cpu=native" {{.CARGO}} build --release'
+      - 'RUSTFLAGS="-C target-cpu=native" {{.CARGO}} build --profile release-native'
+      - 'echo "Built with target-cpu=native — local use only, do not redistribute"'
 
   images-build:
     desc: Build local Docker images (crabcc binary + dev compose), with cache (issue #105)

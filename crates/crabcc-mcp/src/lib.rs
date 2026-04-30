@@ -2075,12 +2075,16 @@ mod tests {
         input.extend_from_slice(b"{\"jsonrpc\":\"2.0\",\"id\":1,");
         input.push(0xFF); // lone continuation byte → invalid UTF-8
         input.extend_from_slice(b"\"method\":\"initialize\"}\n");
-        input.extend_from_slice(
-            br#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
-        );
+        input.extend_from_slice(br#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#);
         input.push(b'\n');
         let mut writer: Vec<u8> = Vec::new();
-        super::serve_io(Cursor::new(input), &mut writer, &std::env::temp_dir(), false).unwrap();
+        super::serve_io(
+            Cursor::new(input),
+            &mut writer,
+            &std::env::temp_dir(),
+            false,
+        )
+        .unwrap();
         let frames: Vec<Value> = writer
             .split(|b| *b == b'\n')
             .filter(|s| !s.is_empty())
@@ -2102,7 +2106,13 @@ mod tests {
         input.push_str(&json!({"jsonrpc":"2.0","id":2,"method":"tools/list"}).to_string());
         input.push('\n');
         let mut writer: Vec<u8> = Vec::new();
-        super::serve_io(Cursor::new(input), &mut writer, &std::env::temp_dir(), false).unwrap();
+        super::serve_io(
+            Cursor::new(input),
+            &mut writer,
+            &std::env::temp_dir(),
+            false,
+        )
+        .unwrap();
         let lines: Vec<Value> = String::from_utf8(writer)
             .unwrap()
             .lines()
