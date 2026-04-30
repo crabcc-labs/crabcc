@@ -80,11 +80,12 @@ jobs:
 
       # Scoped clippy: PR runs only against changed crates; push-to-main
       # runs `--workspace`. Empty scope (docs-only PR) skips entirely.
-      # `--lib --bins` covers the public surface; test-only clippy lints
-      # are caught by `cargo nextest` since it type-checks the same code.
+      # `--all-targets` covers lib + bins + tests + examples + benches —
+      # binary-only crates (e.g. crabcc-cli) reject `--lib`, so we can't
+      # rely on `--lib --bins` here.
       - name: cargo clippy (scoped)
         if: steps.scope.outputs.clippy_scope != ''
-        run: cargo clippy ${{ steps.scope.outputs.clippy_scope }} --lib --bins -- -D warnings
+        run: cargo clippy ${{ steps.scope.outputs.clippy_scope }} --all-targets -- -D warnings
 
       # Issue #81: shell-only smoke for scripts/install-aliases.sh.
       # Sub-second; asserts --aggressive verbs and idempotence.

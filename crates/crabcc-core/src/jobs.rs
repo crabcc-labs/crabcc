@@ -562,6 +562,10 @@ mod tests {
             priority: None,
             delay_ms: None,
             attempts: None,
+            agent_name: None,
+            repo_path: None,
+            github_url: None,
+            agent_folder: None,
         };
         let json = serde_json::to_string(&s).unwrap();
         assert!(!json.contains("priority"));
@@ -579,6 +583,10 @@ mod tests {
             priority: Some(10),
             delay_ms: Some(500),
             attempts: Some(3),
+            agent_name: None,
+            repo_path: None,
+            github_url: None,
+            agent_folder: None,
         };
         let json = serde_json::to_string(&s).unwrap();
         assert!(json.contains("\"priority\":10"));
@@ -602,6 +610,10 @@ mod tests {
             priority: Some(10),
             delay_ms: Some(500),
             attempts: Some(3),
+            agent_name: None,
+            repo_path: None,
+            github_url: None,
+            agent_folder: None,
         };
         let opts = build_bullmq_opts(&spec);
         let m = opts.as_object().unwrap();
@@ -619,6 +631,10 @@ mod tests {
             priority: None,
             delay_ms: None,
             attempts: None,
+            agent_name: None,
+            repo_path: None,
+            github_url: None,
+            agent_folder: None,
         };
         let opts = build_bullmq_opts(&spec);
         let m = opts.as_object().unwrap();
@@ -634,6 +650,10 @@ mod tests {
             priority: Some(5),
             delay_ms: None,
             attempts: None,
+            agent_name: None,
+            repo_path: None,
+            github_url: None,
+            agent_folder: None,
         };
         let s = serde_json::to_string(&build_bullmq_opts(&spec)).unwrap();
         assert_eq!(s, r#"{"priority":5}"#);
