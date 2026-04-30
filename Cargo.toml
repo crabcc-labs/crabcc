@@ -36,7 +36,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 fsst-rs = "0.5"
 ignore = "0.4"
-grep = "0.3"
 memchr = "2"
 tantivy = "0.22"
 tree-sitter = "0.22"
@@ -79,6 +78,17 @@ debug = 1
 
 [profile.dev.package."*"]
 opt-level = 1
+
+# Build scripts and proc-macros run at compile time, then their *output*
+# is what the user code calls. Compiling them at opt-level=3 takes a
+# bit longer once but pays back many-fold across every rebuild because
+# `syn` / `serde_derive` / `clap_derive` / `tracing-attributes` execute
+# faster. Saves ~10-20s on cold builds in this workspace; sub-second
+# on warm rebuilds adds up.
+[profile.dev.build-override]
+opt-level = 3
+[profile.test.build-override]
+opt-level = 3
 
 [profile.release]
 opt-level       = 3

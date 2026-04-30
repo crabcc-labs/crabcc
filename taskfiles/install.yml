@@ -22,7 +22,7 @@ tasks:
     vars:
       NO_ALIASES: '{{.NO_ALIASES | default ""}}'
     cmds:
-      - "{{.CARGO}} install --path crates/crabcc-cli --force"
+      - "{{.CARGO}} install --path crates/crabcc-cli --features jemalloc --force"
       - "{{.CRABCC}} --version"
       - 'if [ -z "{{.NO_ALIASES}}" ]; then bash scripts/install-aliases.sh; else echo "NO_ALIASES=1 — skipping alias bootstrap"; fi'
 

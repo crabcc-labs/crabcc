@@ -10,7 +10,13 @@ vars:
 tasks:
   build:
     desc: Release build (LTO=fat — slower compile, ~5–10% faster runtime)
+    summary: |
+      Enables the `jemalloc` feature on `crabcc-cli` so the shipped
+      binary uses tikv-jemallocator (+5-12% on alloc-heavy hot paths).
+      Dev builds skip the feature to avoid the ~60s C-source build of
+      jemalloc 5.x.
     cmds:
+      - "{{.CARGO}} build --release -p crabcc-cli --features jemalloc"
       - "{{.CARGO}} build --release"
 
   build-fast:

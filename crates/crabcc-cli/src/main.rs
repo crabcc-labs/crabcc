@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 // workspace dep at [workspace.dependencies] and used in
 // `crabcc-core/src/extract.rs`. The two allocators compose: jemalloc
 // owns the heap, bumpalo carves transient regions out of it.
-#[cfg(not(target_env = "msvc"))]
+#[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 

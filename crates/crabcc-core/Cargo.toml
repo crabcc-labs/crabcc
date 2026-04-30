@@ -6,6 +6,10 @@ license.workspace = true
 
 [features]
 default = ["compress"]
+# `bench` gates the criterion bench targets so `cargo build --all-targets`
+# in CI doesn't compile them. Run benches locally with
+# `cargo bench --features bench`.
+bench = []
 # `compress` pulls in fsst-rs (Apache-2.0) and gates `pub mod compress;` plus
 # the FSST-encoded symbol-store path. Default ON as of v2.0.0-alpha — disable
 # at build time with `--no-default-features`, or at runtime with the CLI
@@ -33,7 +37,6 @@ rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 ignore = { workspace = true }
-grep = { workspace = true }
 memchr = { workspace = true }
 tantivy = { workspace = true }
 tree-sitter = { workspace = true }
@@ -63,7 +66,9 @@ tempfile = { workspace = true }
 criterion = "0.5"
 
 # Wired now so `cargo bench` finds Agent C's harness once `benches/symbols.rs`
-# lands (T71). `cargo check --benches` will fail until then — that's expected.
+# lands (T71). Gated behind the `bench` feature so `cargo check --benches`
+# doesn't fail (the file doesn't exist yet) and CI's `--all-targets` skips it.
 [[bench]]
 name = "symbols"
 harness = false
+required-features = ["bench"]

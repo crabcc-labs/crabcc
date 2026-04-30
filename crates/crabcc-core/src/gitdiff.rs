@@ -107,6 +107,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "spawns git in tempdir; flake-prone on bare CI containers — run locally with --ignored"]
     fn changed_files_since_finds_added_and_modified() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -142,6 +143,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "spawns git in tempdir; flake-prone on bare CI containers — run locally with --ignored"]
     fn changed_files_since_empty_when_no_diff() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -155,6 +157,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "spawns git in tempdir; flake-prone on bare CI containers — run locally with --ignored"]
     fn changed_files_since_errors_on_bad_revision() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();

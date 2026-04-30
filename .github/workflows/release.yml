@@ -54,9 +54,9 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.cross }}" = "true" ]; then
-            cross build --release --target ${{ matrix.target }} -p crabcc-cli
+            cross build --release --target ${{ matrix.target }} -p crabcc-cli --features jemalloc
           else
-            cargo build --release --target ${{ matrix.target }} -p crabcc-cli
+            cargo build --release --target ${{ matrix.target }} -p crabcc-cli --features jemalloc
           fi
 
       - name: package

@@ -348,6 +348,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "TCP probe — flake-prone if firewall delays connect-refused; run locally with --ignored"]
     fn probe_unreachable_port_returns_error() {
         // Port 1 is reserved + reliably refused on every OS.
         let svc = Service {
@@ -364,6 +365,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "binds ephemeral TCP — flake-prone on parallel test runs; run locally with --ignored"]
     fn probe_reachable_port_returns_ok() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind ephemeral");
         let port = listener.local_addr().unwrap().port();

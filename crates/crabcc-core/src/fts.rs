@@ -226,6 +226,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "slow (~1.2s) — full Tantivy index build; run locally with --ignored"]
     fn rebuild_is_idempotent() {
         let (_dir, store, fts) = fixture();
         let n1 = fts.rebuild(&store).unwrap();

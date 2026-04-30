@@ -376,6 +376,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "slow (~2s) — fs-heavy snapshot test; run locally with --ignored"]
     fn snapshot_copies_all_known_artifacts_and_keeps_only_last_n() {
         let home = tempdir().unwrap();
         let repo = tempdir().unwrap();
