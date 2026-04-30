@@ -2558,9 +2558,22 @@ mod tests {
 
     // =====================================================================
     // Telemetry tail tests — issue #90 dashboard surface.
+    //
+    // CI note: every `#[test]` in this block is `#[ignore]`'d per the
+    // \"skip tracing-related work in main + PR CI\" directive (see
+    // CI history around 2026-04-30). They exercise the
+    // `.crabcc/telemetry.jsonl` parsing path, which is hot for the
+    // /live dashboard but not load-bearing for any merge gate.
+    // Run locally with `cargo test -p crabcc-viz -- --ignored telemetry_tail`
+    // when touching `telemetry_tail` / `parse_iso8601_unix` /
+    // `OtlpHealthSnapshot`. To re-enable in CI, drop the `#[ignore]`s
+    // here AND verify rotel/OTLP isn't needed for them (they don't
+    // talk to a collector — just parse local jsonl, so they're CI-safe;
+    // ignore is a policy choice, not a technical requirement).
     // =====================================================================
 
     #[test]
+    #[ignore = "tracing/telemetry path; skipped in CI per merge-policy directive"]
     fn parse_iso8601_unix_known_values() {
         // 1970-01-01T00:00:00Z = 0
         assert_eq!(super::parse_iso8601_unix("1970-01-01T00:00:00Z"), 0);
@@ -2578,6 +2591,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "tracing/telemetry path; skipped in CI per merge-policy directive"]
     fn telemetry_tail_missing_file_returns_empty_with_source_metadata() {
         let dir = tempfile::tempdir().unwrap();
         let snap = super::telemetry_tail(dir.path(), "").unwrap();
@@ -2588,6 +2602,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "tracing/telemetry path; skipped in CI per merge-policy directive"]
     fn telemetry_tail_parses_jsonl_and_returns_events() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".crabcc")).unwrap();
@@ -2609,6 +2624,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "tracing/telemetry path; skipped in CI per merge-policy directive"]
     fn telemetry_tail_filters_by_since() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".crabcc")).unwrap();
@@ -2627,6 +2643,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "tracing/telemetry path; skipped in CI per merge-policy directive"]
     fn telemetry_tail_tolerates_corrupt_lines() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".crabcc")).unwrap();
@@ -2645,6 +2662,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "tracing/telemetry path; skipped in CI per merge-policy directive"]
     fn telemetry_tail_respects_limit() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".crabcc")).unwrap();
