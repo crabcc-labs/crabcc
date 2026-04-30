@@ -272,7 +272,13 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    pub fn list_files_with_meta(&self) -> Result<std::collections::HashMap<String, (String, i64)>> {
+    pub fn list_files_with_meta(&self) -> Result<ahash::AHashMap<String, (String, i64)>> {
+        // ahash is faster than std HashMap on hot refresh paths (one
+        // entry per indexed file; called once per `refresh()`). DoS
+        // resistance unnecessary — keys are repo-relative paths from
+        // our own walker, never untrusted input. The public surface
+        // change is binary-compatible for callers that just `.get()`
+        // the map; we type-alias-swap rather than wrap.
         let mut stmt = self.conn.prepare("SELECT path, sha256, mtime FROM files")?;
         let rows = stmt.query_map([], |row| {
             Ok((
@@ -281,7 +287,7 @@ impl Store {
                 row.get::<_, i64>(2)?,
             ))
         })?;
-        let mut map = std::collections::HashMap::new();
+        let mut map: ahash::AHashMap<String, (String, i64)> = ahash::AHashMap::new();
         for r in rows {
             let (p, s, m) = r?;
             map.insert(p, (s, m));

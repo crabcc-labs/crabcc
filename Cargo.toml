@@ -29,6 +29,11 @@ crabcc-memory = { path = "crates/crabcc-memory" }
 crabcc-viz = { path = "crates/crabcc-viz" }
 
 anyhow = "1"
+# Faster, non-cryptographic HashMap hasher — drop-in for std HashMap
+# in trusted-input hot paths (no DoS resistance needed for our own
+# data). Adopted in 2.5.x perf pass (issue: extract.rs / graph.rs hot
+# loops). Mirrors what tantivy / serde_json already use internally.
+ahash = "0.8"
 clap = { version = "4", features = ["derive"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
 # v2.5.1 (#17) — bundled sqlite-vec C extension (FFI). Optional in
