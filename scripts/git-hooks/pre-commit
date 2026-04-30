@@ -78,5 +78,12 @@ if [ "$run_rust" = "1" ]; then
     fi
 fi
 
+# Refresh the paste-ready PR summary so `gh pr create --body-file
+# .summary/gen-summary.md` always reflects the latest commit. Pure git
+# ops; ~200 ms; never fails the hook (`|| true`).
+if [ -x "$REPO_ROOT/scripts/gen-summary.sh" ]; then
+    bash "$REPO_ROOT/scripts/gen-summary.sh" --quiet || true
+fi
+
 echo "[crabcc-hooks] ✓ pre-commit passed"
 exit 0

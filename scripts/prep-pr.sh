@@ -96,6 +96,13 @@ if [ "$DO_DOC" = "1" ]; then
         env RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps || failed=$((failed + 1))
 fi
 
+# --- gen-summary (always last; reads prep-pr.txt for gate status) ---------
+# Refreshes .summary/gen-summary.md so `gh pr create --body-file ...` is
+# paste-ready. Pure git ops; cheap; never fails the gate.
+if [ -x "$(dirname "$0")/gen-summary.sh" ]; then
+    step "gen-summary"  bash "$(dirname "$0")/gen-summary.sh" --quiet || true
+fi
+
 # --- summary --------------------------------------------------------------
 total=3
 [ "$DO_DOC" = "1" ] && total=4
