@@ -407,6 +407,33 @@ fn main() -> Result<()> {
     let root = cli.root.unwrap_or_else(|| std::env::current_dir().unwrap());
     let db = root.join(".crabcc").join("index.db");
 
+    // Issue #74 — `crabcc` is the low-level surface; `ccc` is the
+    // user-friendly combo CLI. Emit a one-line stderr hint when the
+    // user invokes a granular query verb directly. Suppressed when
+    // called from `ccc` (CCC_NO_WARN=1), in scripts/pipelines (stderr
+    // not a tty), or by user opt-out (CRABCC_NO_HINT=1).
+    if std::env::var_os("CCC_NO_WARN").is_none()
+        && std::env::var_os("CRABCC_NO_HINT").is_none()
+        && atty_stderr()
+    {
+        let hint: Option<&str> = match &cli.cmd {
+            Some(Cmd::Sym { .. }) => Some("ccc find <NAME>"),
+            Some(Cmd::Refs { .. }) => Some("ccc find <NAME> --mode references"),
+            Some(Cmd::Callers { .. }) => Some("ccc find <NAME> --mode callers"),
+            Some(Cmd::Fuzzy { .. }) => Some("ccc find <NAME> --mode fuzzy"),
+            Some(Cmd::Prefix { .. }) => Some("ccc find <NAME> --mode prefix"),
+            Some(Cmd::Grep { .. }) => Some("ccc find <PATTERN> --mode grep"),
+            Some(Cmd::Files { .. }) => Some("ccc list --files"),
+            _ => None,
+        };
+        if let Some(h) = hint {
+            eprintln!(
+                "note: `crabcc` is the low-level surface; equivalent: `{h}` \
+                 (suppress with CRABCC_NO_HINT=1)"
+            );
+        }
+    }
+
     if cli.mcp {
         // `--dev` flag OR `CRABCC_MCP_DEV=1` env both flip the dev surface
         // on. The CLI flag wins because it's more explicit; if neither is
@@ -840,6 +867,19 @@ fn reset_sigpipe() {
 
 #[cfg(not(unix))]
 fn reset_sigpipe() {}
+
+/// Issue #74 — true if stderr is attached to a terminal. Skip the
+/// "low-level surface" hint in pipelines / CI / mcp.
+#[cfg(unix)]
+fn atty_stderr() -> bool {
+    // SAFETY: `isatty` only reads the fd's metadata; no aliasing.
+    unsafe { libc::isatty(libc::STDERR_FILENO) == 1 }
+}
+
+#[cfg(not(unix))]
+fn atty_stderr() -> bool {
+    true
+}
 
 fn repo_label(root: &Path) -> String {
     root.file_name()

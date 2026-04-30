@@ -8,6 +8,13 @@ license.workspace = true
 name = "crabcc"
 path = "src/main.rs"
 
+# Issue #74 — high-level combo CLI. Subprocess wrapper around `crabcc`;
+# same release profile (LTO=fat, strip=true). Co-installed by `cargo
+# install --path crates/crabcc-cli` / `task install`.
+[[bin]]
+name = "ccc"
+path = "src/bin/ccc.rs"
+
 [features]
 default = []
 # v3.0 (#62) — surfaces the SandboxRuntime stub. The actual microsandbox
