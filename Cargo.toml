@@ -51,6 +51,11 @@ notify-debouncer-mini = "0.4"
 # from_str, from_slice}` on x86_64+aarch64; ~2-4x faster on encode and ~5-10x
 # on decode. Used on the CLI output hot path + MCP request parsing.
 sonic-rs = "0.3"
+# Bump-allocator arena for transient allocations during the per-file
+# tree-sitter walk. Stable replacement for the nightly `allocator_api` +
+# `Vec<T, A>` route — `bumpalo::collections` gets ~80% of the win without
+# pinning a toolchain. See issue #38 for the full nightly comparison.
+bumpalo = { version = "3", features = ["collections"] }
 moka = { version = "0.12", features = ["sync"] }
 
 [profile.release]
