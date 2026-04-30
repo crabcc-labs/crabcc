@@ -17,6 +17,12 @@ compress = ["crabcc-core/compress"]
 # pulls in the sqlite-vec FFI dep + ~few hundred KB of compiled extension.
 # #20 wires the actual search path; until then the table stays empty.
 memory-vec = ["dep:sqlite-vec"]
+# v2.5.x (#40) — std::simd-backed cosine helper. Default OFF because
+# `portable_simd` (rust-lang/rust#86656) is still nightly-only. Enable
+# when building with a nightly toolchain to get ~5–8x speed-up on the
+# 384-d brute-force cosine path used by InMemoryBackend::query and
+# SqliteBackend::query.
+simd-cosine = []
 
 [dependencies]
 # Reuse: hash::sha256_hex, store pragma pattern, walker/watch/fts in later phases.
