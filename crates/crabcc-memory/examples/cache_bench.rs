@@ -15,9 +15,7 @@
 //! `bench/results/REPORT.md`.
 
 use anyhow::Result;
-use crabcc_memory::{
-    find_git_root, CachedEmbedder, Embedder, HashEmbedder, PalaceRegistry,
-};
+use crabcc_memory::{find_git_root, CachedEmbedder, Embedder, HashEmbedder, PalaceRegistry};
 use serde_json::json;
 use std::path::Path;
 use std::sync::Arc;
