@@ -27,7 +27,9 @@ anyhow = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 tracing = { workspace = true }
+moka = { workspace = true }
 # Optional — only built when the `memory-vec` feature is on. Bundles the
 # sqlite-vec C extension; we register it via sqlite3_auto_extension so every
 # rusqlite Connection inherits it.
@@ -35,3 +37,10 @@ sqlite-vec = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+# `cache_bench` example uses tempfile + serde_json at the binary level
+# (not just inside #[cfg(test)]). dev-dependencies cover both, and
+# examples build under the dev profile, so no extra wiring needed.
+[[example]]
+name = "cache_bench"
+required-features = []

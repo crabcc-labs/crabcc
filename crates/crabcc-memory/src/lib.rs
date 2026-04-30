@@ -13,8 +13,11 @@ pub mod palace;
 pub mod types;
 
 pub use backend::{in_memory::InMemoryBackend, sqlite::SqliteBackend, Backend, LexicalQuery};
-pub use embed::{Embedder, HashEmbedder};
-pub use palace::{find_git_root, Palace, PalaceRegistry, SearchMode};
+pub use embed::{CachedEmbedder, Embedder, HashEmbedder, DEFAULT_EMBED_CACHE_CAPACITY};
+pub use palace::{
+    find_git_root, Palace, PalaceRegistry, SearchMode, DEFAULT_PALACE_CACHE_CAPACITY,
+    GIT_ROOT_CACHE_TTL, PALACE_CACHE_TTI,
+};
 pub use types::{
     DeleteSel, Drawer, DrawerHit, DrawerId, DrawerInsert, GetResult, HealthStatus, Query,
     QueryResult, Session, Wing,

@@ -11,6 +11,7 @@ bench/results/*
 !bench/results/REPORT.md
 !bench/results/*.png
 !bench/results/fsst-gate.md
+!bench/results/cache-bench-REPORT.md
 
 # Research artifacts produced by sub-agents — not source.
 STORAGE_RESEARCH.md
