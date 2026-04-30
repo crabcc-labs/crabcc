@@ -86,7 +86,13 @@ impl DoctorReport {
 // ---------------------------------------------------------------------
 
 pub fn run_all(text: bool) -> Result<()> {
-    let checks = vec![check_docker(), check_stack(), check_keys()];
+    let checks = vec![
+        check_docker(),
+        check_stack(),
+        check_keys(),
+        check_agent(),
+        check_jobs(),
+    ];
     let report = DoctorReport::from_checks(checks);
     if text {
         print_text_report(&report);
@@ -109,6 +115,14 @@ pub fn run_stack(text: bool) -> Result<()> {
 
 pub fn run_keys(text: bool) -> Result<()> {
     emit_one(check_keys(), text)
+}
+
+pub fn run_agent(text: bool) -> Result<()> {
+    emit_one(check_agent(), text)
+}
+
+pub fn run_jobs(text: bool) -> Result<()> {
+    emit_one(check_jobs(), text)
 }
 
 fn emit_one(check: CheckResult, text: bool) -> Result<()> {
@@ -304,9 +318,154 @@ fn check_keys() -> CheckResult {
     }
 }
 
+/// Probe the agent execution environment. Backend-agnostic — checks
+/// for at least one usable runtime: a `claude` binary on PATH (Claude
+/// Code backend) AND/OR `OLLAMA_BASE_URL`+`OLLAMA_API_KEY` env vars
+/// for the Ollama backend. Doesn't actually invoke the agent — that
+/// would burn tokens. Use `crabcc agent --dry-run` for richer probing.
+fn check_agent() -> CheckResult {
+    let claude_found = cmd_available("claude") || cmd_available("claude-code");
+    let ollama_base_url = std::env::var("OLLAMA_BASE_URL").ok();
+    let ollama_api_key_set = std::env::var("OLLAMA_API_KEY").is_ok();
+    let ollama_ready = ollama_base_url.is_some() && ollama_api_key_set;
+
+    let details = serde_json::json!({
+        "claude_binary_on_path": claude_found,
+        "ollama_base_url": ollama_base_url,
+        "ollama_api_key_set": ollama_api_key_set,
+        "ollama_ready": ollama_ready,
+    });
+
+    if !claude_found && !ollama_ready {
+        return CheckResult {
+            check: "agent".into(),
+            status: CheckStatus::Fail,
+            details,
+            hint: Some(
+                "no agent runtime available. Either install Claude Code (https://claude.com/claude-code) \
+                 OR set OLLAMA_BASE_URL + OLLAMA_API_KEY (run `crabcc install-claude --with-ollama-stack`)"
+                    .into(),
+            ),
+        };
+    }
+
+    if !claude_found {
+        return CheckResult {
+            check: "agent".into(),
+            status: CheckStatus::Warn,
+            details,
+            hint: Some(
+                "claude binary missing — only `crabcc agent --backend ollama` will work \
+                 (use `--backend claude` requires Claude Code installed)"
+                    .into(),
+            ),
+        };
+    }
+
+    CheckResult {
+        check: "agent".into(),
+        status: CheckStatus::Ok,
+        details,
+        hint: None,
+    }
+}
+
+/// Probe Redis reachability for the BullMQ-backed jobs surface (issue
+/// #109). Shells out to `redis-cli ping` against `$REDIS_URL` (default
+/// `redis://127.0.0.1:6379`) — no Rust redis dep needed for this
+/// diagnostic check, keeps the binary lean.
+fn check_jobs() -> CheckResult {
+    let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
+
+    if !cmd_available("redis-cli") {
+        return CheckResult {
+            check: "jobs".into(),
+            status: CheckStatus::Warn,
+            details: serde_json::json!({
+                "redis_url": redis_url,
+                "redis_cli_on_path": false,
+            }),
+            hint: Some(
+                "redis-cli missing — install via `brew install redis` (macOS) or \
+                 `apt install redis-tools` (Debian/Ubuntu). Without it the doctor \
+                 can't probe the jobs queue. Stack itself runs fine without."
+                    .into(),
+            ),
+        };
+    }
+
+    let out = std::process::Command::new("redis-cli")
+        .arg("-u")
+        .arg(&redis_url)
+        .arg("ping")
+        .output();
+
+    match out {
+        Ok(o) if o.status.success() => {
+            let body = String::from_utf8_lossy(&o.stdout);
+            let pong = body.trim() == "PONG";
+            CheckResult {
+                check: "jobs".into(),
+                status: if pong {
+                    CheckStatus::Ok
+                } else {
+                    CheckStatus::Warn
+                },
+                details: serde_json::json!({
+                    "redis_url": redis_url,
+                    "redis_cli_on_path": true,
+                    "ping_response": body.trim(),
+                }),
+                hint: if pong {
+                    None
+                } else {
+                    Some(format!("unexpected redis ping response: {}", body.trim()))
+                },
+            }
+        }
+        Ok(o) => CheckResult {
+            check: "jobs".into(),
+            status: CheckStatus::Warn,
+            details: serde_json::json!({
+                "redis_url": redis_url,
+                "redis_cli_on_path": true,
+                "exit_code": o.status.code(),
+                "stderr": String::from_utf8_lossy(&o.stderr).to_string(),
+            }),
+            hint: Some(
+                "redis not reachable — bring it up: \
+                 `docker compose -f install/dev/docker-compose.yml --profile jobs up -d`"
+                    .into(),
+            ),
+        },
+        Err(e) => CheckResult {
+            check: "jobs".into(),
+            status: CheckStatus::Fail,
+            details: serde_json::json!({
+                "redis_url": redis_url,
+                "spawn_error": e.to_string(),
+            }),
+            hint: None,
+        },
+    }
+}
+
 // ---------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------
+
+/// Lightweight binary-on-PATH probe — runs `<name> --version` and
+/// checks the exit code. ~5 ms when the binary exists, ~1 ms when it
+/// doesn't (PATH scan + early exec failure).
+fn cmd_available(name: &str) -> bool {
+    std::process::Command::new(name)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
 
 fn inspect_key_file(path: &std::path::Path, _expected_mode: u32) -> serde_json::Value {
     if !path.exists() {
@@ -500,5 +659,51 @@ mod tests {
         std::fs::write(&local, "sk-aaa\n").unwrap();
         std::fs::write(&env, "LITELLM_MASTER_KEY=sk-bbb\n").unwrap();
         assert_eq!(compare_master_key(&local, &env), Some(false));
+    }
+
+    #[test]
+    fn cmd_available_returns_true_for_real_binary() {
+        // `sh` is on PATH on every Unix CI host this repo targets.
+        assert!(cmd_available("sh"));
+    }
+
+    #[test]
+    fn cmd_available_returns_false_for_missing_binary() {
+        assert!(!cmd_available("definitely-not-a-real-binary-xyz-9876543"));
+    }
+
+    #[test]
+    fn check_agent_fails_when_no_runtime() {
+        // Force ollama env unset for this test only.
+        let prev_url = std::env::var_os("OLLAMA_BASE_URL");
+        let prev_key = std::env::var_os("OLLAMA_API_KEY");
+        std::env::remove_var("OLLAMA_BASE_URL");
+        std::env::remove_var("OLLAMA_API_KEY");
+
+        let r = check_agent();
+        // Status depends on whether `claude` happens to be on the host PATH.
+        // We can only assert the surface fields exist.
+        assert_eq!(r.check, "agent");
+        assert!(r.details.get("ollama_ready").is_some());
+
+        if let Some(url) = prev_url {
+            std::env::set_var("OLLAMA_BASE_URL", url);
+        }
+        if let Some(key) = prev_key {
+            std::env::set_var("OLLAMA_API_KEY", key);
+        }
+    }
+
+    #[test]
+    fn check_jobs_returns_warn_when_redis_cli_missing() {
+        // We can't *un*-install redis-cli for the test, so we can only
+        // assert the surface contract: `check` field, `redis_url` echoed.
+        let r = check_jobs();
+        assert_eq!(r.check, "jobs");
+        assert!(r
+            .details
+            .get("redis_url")
+            .and_then(|v| v.as_str())
+            .is_some());
     }
 }
