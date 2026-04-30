@@ -60,6 +60,12 @@ const TRACE_TARGET: &str = "crabcc_core::jobs";
 /// One job's worth of input. Mirrors BullMQ's `Queue.add(name, data, opts)`
 /// surface — `priority`, `delay`, and `attempts` map to BullMQ's
 /// JobOptions on the worker side.
+///
+/// The optional metadata fields (`agent_name`, `repo_path`, `github_url`)
+/// are echoed back in status responses and surfaced in Bull Board / the
+/// /live dashboard. They don't affect job execution — they exist so
+/// operators can trace a job back to its source without reading the full
+/// `data` payload.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobSpec {
     pub queue: String,
@@ -71,9 +77,40 @@ pub struct JobSpec {
     pub delay_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attempts: Option<u32>,
+    /// Human-readable agent identifier (e.g. `"warp-speed-audit"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    /// Absolute path to the repo this job operates on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_path: Option<String>,
+    /// GitHub remote URL of the repo (for dashboard links).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub github_url: Option<String>,
+    /// Path to the agent run-dir (`~/.crabcc/agents/<id>/`) so the worker
+    /// can tail the log, check the lock file, or write results back.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_folder: Option<String>,
 }
 
 pub type JobId = String;
+
+/// Receipt returned from [`submit_async`] / [`submit`].
+/// Thread-safe to clone and send across async tasks.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobReceipt {
+    pub id: JobId,
+    pub queue: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub github_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_folder: Option<String>,
+    pub delayed: bool,
+}
 
 /// Status mirrors BullMQ's job lifecycle. `Unknown` is the catch-all
 /// for protocol-version mismatches between the Rust submitter and
@@ -128,8 +165,9 @@ impl Options {
 
 /// Submit a job. Sync wrapper that spawns a current-thread tokio
 /// runtime per call — fine for the CLI submission path; not
-/// appropriate for use inside an existing tokio runtime.
-pub fn submit(opts: &Options, spec: JobSpec) -> Result<JobId> {
+/// appropriate for use inside an existing tokio runtime (use
+/// [`submit_async`] directly from async callers).
+pub fn submit(opts: &Options, spec: JobSpec) -> Result<JobReceipt> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -166,7 +204,9 @@ pub fn submit(opts: &Options, spec: JobSpec) -> Result<JobId> {
 /// On crash between phases, an id is "leaked" (gap in the sequence)
 /// — not a correctness issue, just a non-contiguous id. BullMQ's
 /// Lua scripts have this same property.
-pub async fn submit_async(opts: &Options, spec: JobSpec) -> Result<JobId> {
+/// Async-safe submission. Safe to call from any tokio runtime or
+/// `tokio::spawn` task — does not create its own runtime.
+pub async fn submit_async(opts: &Options, spec: JobSpec) -> Result<JobReceipt> {
     let cid = correlation(opts);
     let client = redis::Client::open(opts.redis_url.as_str())
         .with_context(|| format!("open redis client at {}", opts.redis_url))?;
@@ -201,6 +241,12 @@ pub async fn submit_async(opts: &Options, spec: JobSpec) -> Result<JobId> {
     let timestamp_s = now_ms.to_string();
     let delay_s = spec.delay_ms.map(|d| d.to_string()).unwrap_or_default();
 
+    // Build metadata fields — stored in the hash so Bull Board and the
+    // /live dashboard can display them without parsing job.data.
+    let agent_name_s = spec.agent_name.clone().unwrap_or_default();
+    let repo_path_s = spec.repo_path.clone().unwrap_or_default();
+    let github_url_s = spec.github_url.clone().unwrap_or_default();
+
     let mut pipe = redis::pipe();
     pipe.atomic();
     pipe.hset_multiple(
@@ -212,6 +258,12 @@ pub async fn submit_async(opts: &Options, spec: JobSpec) -> Result<JobId> {
             ("timestamp", timestamp_s.as_str()),
             ("attemptsMade", "0"),
             ("delay", delay_s.as_str()),
+            // crabcc-specific metadata (non-standard BullMQ fields;
+            // workers ignore unknown hash fields).
+            ("agentName", agent_name_s.as_str()),
+            ("repoPath", repo_path_s.as_str()),
+            ("githubUrl", github_url_s.as_str()),
+            ("agentFolder", spec.agent_folder.as_deref().unwrap_or("")),
         ],
     );
 
@@ -245,7 +297,16 @@ pub async fn submit_async(opts: &Options, spec: JobSpec) -> Result<JobId> {
         "jobs submit (BullMQ wire encoded)"
     );
 
-    Ok(job_id)
+    Ok(JobReceipt {
+        id: job_id,
+        queue: spec.queue.clone(),
+        name: spec.name.clone(),
+        agent_name: spec.agent_name.clone(),
+        repo_path: spec.repo_path.clone(),
+        github_url: spec.github_url.clone(),
+        agent_folder: spec.agent_folder.clone(),
+        delayed: spec.delay_ms.is_some(),
+    })
 }
 
 /// Build the BullMQ `opts` hash field — JSON-stringified subset of
@@ -384,6 +445,66 @@ pub fn ping(opts: &Options) -> Result<()> {
         .build()
         .context("build tokio runtime for jobs::ping")?;
     rt.block_on(ping_async(opts))
+}
+
+/// Remove a waiting or delayed job. No-op (Ok) if the id is not found —
+/// the job may already be active, completed, or never existed.
+pub async fn cancel_async(opts: &Options, queue: &str, job_id: &JobId) -> Result<bool> {
+    let client = redis::Client::open(opts.redis_url.as_str())
+        .with_context(|| format!("open redis client at {}", opts.redis_url))?;
+    let mut conn = client
+        .get_multiplexed_async_connection()
+        .await
+        .context("connect to redis")?;
+
+    let job_key = format!("bull:{queue}:{job_id}");
+    let wait_key = format!("bull:{queue}:wait");
+    let delayed_key = format!("bull:{queue}:delayed");
+
+    let mut pipe = redis::pipe();
+    pipe.atomic();
+    pipe.lrem(&wait_key, 0, job_id.as_str());
+    pipe.zrem(&delayed_key, job_id.as_str());
+    pipe.del(&job_key);
+
+    let _: () = pipe
+        .query_async(&mut conn)
+        .await
+        .with_context(|| format!("cancel pipeline for job {job_id} in {queue}"))?;
+
+    tracing::info!(
+        target: TRACE_TARGET,
+        event = "jobs.cancel",
+        job_id = %job_id,
+        queue = %queue,
+        "jobs cancel"
+    );
+    Ok(true)
+}
+
+pub fn cancel(opts: &Options, queue: &str, job_id: &JobId) -> Result<bool> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("build tokio runtime for jobs::cancel")?;
+    rt.block_on(cancel_async(opts, queue, job_id))
+}
+
+/// Count jobs currently in the `wait` list for a queue.
+pub async fn queue_depth_async(opts: &Options, queue: &str) -> Result<u64> {
+    let client = redis::Client::open(opts.redis_url.as_str())
+        .with_context(|| format!("open redis client at {}", opts.redis_url))?;
+    let mut conn = client
+        .get_multiplexed_async_connection()
+        .await
+        .context("connect to redis")?;
+    let key = format!("bull:{queue}:wait");
+    let len: u64 = redis::cmd("LLEN")
+        .arg(&key)
+        .query_async(&mut conn)
+        .await
+        .with_context(|| format!("LLEN {key}"))?;
+    Ok(len)
 }
 
 // ---------------------------------------------------------------------

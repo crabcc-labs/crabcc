@@ -24,12 +24,13 @@ default = []
 agent-sandbox = []
 
 [dependencies]
-crabcc-core   = { workspace = true }
+crabcc-core   = { workspace = true, features = ["jobs"] }
 crabcc-mcp    = { workspace = true }
 crabcc-memory = { workspace = true }
 crabcc-viz    = { workspace = true }
 anyhow        = { workspace = true }
 clap          = { workspace = true }
+tokio         = { workspace = true }
 clap_complete = "4"
 rusqlite      = { workspace = true }
 # Issue #107 Phase 5a — `crabcc doctor` derives Serialize/Deserialize on
