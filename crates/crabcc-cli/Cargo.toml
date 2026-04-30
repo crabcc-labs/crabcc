@@ -12,6 +12,7 @@ path = "src/main.rs"
 crabcc-core   = { workspace = true }
 crabcc-mcp    = { workspace = true }
 crabcc-memory = { workspace = true }
+crabcc-viz    = { workspace = true }
 anyhow        = { workspace = true }
 clap          = { workspace = true }
 clap_complete = "4"

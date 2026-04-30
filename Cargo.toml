@@ -5,6 +5,7 @@ members = [
     "crates/crabcc-core",
     "crates/crabcc-mcp",
     "crates/crabcc-memory",
+    "crates/crabcc-viz",
 ]
 
 [workspace.package]
@@ -25,6 +26,7 @@ repository = "https://github.com/peterlodri-sec/crabcc"
 crabcc-core = { path = "crates/crabcc-core" }
 crabcc-mcp = { path = "crates/crabcc-mcp" }
 crabcc-memory = { path = "crates/crabcc-memory" }
+crabcc-viz = { path = "crates/crabcc-viz" }
 
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
@@ -70,6 +72,11 @@ moka = { version = "0.12", features = ["sync"] }
 # `memory-embed` cargo feature so stable users (and minimal binaries) keep the
 # 0-byte HashEmbedder default.
 fastembed = "5"
+# v2.5.x (#64) — sync, threaded HTTP server for `crabcc serve`. Localhost-only
+# call-graph visualizer, single-user; sync IO is fine here. ~1k LOC, no async
+# runtime deps. Routes: GET / (bundled HTML) + GET /api/graph (JSON snapshot).
+# WebSocket push (Phase 2) will live alongside, not replace, this.
+tiny_http = "0.12"
 
 [profile.release]
 opt-level     = 3

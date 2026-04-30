@@ -206,6 +206,21 @@ enum Cmd {
     /// surface to stdout (canonical YAML). Pipe through `yq -o json`
     /// if you need JSON.
     Openapi,
+    /// Start the localhost call-graph viewer (issue #64). Binds to
+    /// 127.0.0.1 by default — pass `--bind 0.0.0.0` only on a trusted
+    /// LAN; the server is unauthenticated and exposes architecture.
+    Serve {
+        /// TCP port to bind. 0 picks an ephemeral port (used by tests).
+        #[arg(long, default_value_t = 7878)]
+        port: u16,
+        /// Bind address. Default `127.0.0.1`. Override only when you
+        /// need access from another machine on a trusted network.
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+        /// Skip auto-opening the system browser after the server starts.
+        #[arg(long)]
+        no_open: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -354,6 +369,19 @@ fn main() -> Result<()> {
     if let Some(Cmd::Openapi) = cli.cmd.as_ref() {
         print!("{}", crabcc_mcp::OPENAPI_YAML);
         return Ok(());
+    }
+
+    // `serve` (issue #64) opens the Store lazily per HTTP request — the
+    // foreground process is the listen loop, not a one-shot CLI op.
+    // Bypass the global Store::open so the server starts even before the
+    // first index has been built (the viewer surfaces a clear 400 then).
+    if let Some(Cmd::Serve {
+        port,
+        bind,
+        no_open,
+    }) = cli.cmd.as_ref()
+    {
+        return run_serve(&root, *port, bind, *no_open);
     }
 
     // `compress` is a meta-operation on the index. It owns its own codec
@@ -585,8 +613,28 @@ fn main() -> Result<()> {
         Cmd::Upgrade { .. } => unreachable!("upgrade handled before store init"),
         Cmd::Completions { .. } => unreachable!("completions handled before store init"),
         Cmd::Info { .. } => unreachable!("info handled before store init"),
+        Cmd::Serve { .. } => unreachable!("serve handled before store init"),
     }
     Ok(())
+}
+
+fn run_serve(root: &Path, port: u16, bind: &str, no_open: bool) -> Result<()> {
+    let bind: std::net::IpAddr = bind
+        .parse()
+        .map_err(|e| anyhow::anyhow!("invalid --bind address '{bind}': {e}"))?;
+    if !bind.is_loopback() {
+        eprintln!(
+            "warning: serving on {bind} (non-loopback). The viewer is \
+             unauthenticated and exposes architecture — only do this on \
+             a trusted network."
+        );
+    }
+    crabcc_viz::serve(crabcc_viz::Config {
+        bind,
+        port,
+        root: root.to_path_buf(),
+        no_open,
+    })
 }
 
 fn load_or_build_graph(store: &Store, root: &Path) -> Result<crabcc_core::graph::CallGraph> {

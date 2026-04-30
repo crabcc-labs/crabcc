@@ -1,0 +1,164 @@
+//! Smoke test for `crabcc serve` (issue #64).
+//!
+//! Boots the server on an ephemeral port (port=0 → kernel-picked) against
+//! a temp repo containing one tiny Rust file, then round-trips three
+//! requests over a raw `TcpStream` (no reqwest dep needed):
+//!   1. GET /api/health   → 200 with `{ "status": "ok" }`
+//!   2. GET /             → 200 HTML containing a known marker string
+//!   3. GET /api/graph    → 200 JSON with the root node + at least one edge
+//!
+//! Uses `bind_listener` + `serve_with_listener` so the test learns the
+//! resolved port up front; spawns the request loop on a background thread.
+
+use std::io::{Read, Write};
+use std::net::{IpAddr, Ipv4Addr, TcpStream};
+use std::path::PathBuf;
+use std::time::Duration;
+
+use crabcc_core::index::full_index;
+use crabcc_core::store::Store;
+
+/// Returns (root, port). Spawns the server thread; the test process exit
+/// will tear it down (tiny_http listens on a TcpListener owned by the
+/// thread; dropping the process drops the FD).
+fn boot_test_server() -> (tempfile::TempDir, u16) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let root = dir.path().to_path_buf();
+
+    // Realistic fixture: one Rust file with two functions, one calling the
+    // other. After `full_index` the call-graph has a single edge, which is
+    // enough to exercise the `/api/graph` snapshot path end-to-end.
+    let src = root.join("src");
+    std::fs::create_dir_all(&src).expect("mkdir src");
+    std::fs::write(
+        src.join("lib.rs"),
+        "pub fn outer() { inner(); }\npub fn inner() { let _ = 1; }\n",
+    )
+    .expect("write src");
+
+    let db_path = root.join(".crabcc").join("index.db");
+    std::fs::create_dir_all(db_path.parent().unwrap()).expect("mkdir .crabcc");
+    let store = Store::open(&db_path).expect("open store");
+    full_index(&root, &store).expect("full_index");
+    drop(store); // close so the server's lazy open can re-acquire the file
+
+    let listener =
+        crabcc_viz::bind_listener(IpAddr::V4(Ipv4Addr::LOCALHOST), 0).expect("bind ephemeral");
+    let port = listener.local_addr().expect("local_addr").port();
+    let root_for_thread: PathBuf = root.clone();
+    std::thread::spawn(move || {
+        // Errors from the server thread surface via the test failing on the
+        // round-trip — there's nothing useful to do with them here.
+        let _ = crabcc_viz::serve_with_listener(listener, &root_for_thread);
+    });
+    // tiny_http binds synchronously inside `Server::from_listener`, but
+    // give the worker thread a beat to enter `incoming_requests` before
+    // we slam it with a connect.
+    std::thread::sleep(Duration::from_millis(50));
+    (dir, port)
+}
+
+fn http_get(port: u16, path: &str) -> (u16, String) {
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect");
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .expect("set_read_timeout");
+    let req = format!("GET {path} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+    stream.write_all(req.as_bytes()).expect("write request");
+    let mut raw = String::new();
+    stream.read_to_string(&mut raw).expect("read response");
+    let (head, body) = raw.split_once("\r\n\r\n").unwrap_or((&raw, ""));
+    let status: u16 = head
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .expect("status code");
+    (status, body.to_string())
+}
+
+#[test]
+fn health_endpoint_returns_ok() {
+    let (_dir, port) = boot_test_server();
+    let (status, body) = http_get(port, "/api/health");
+    assert_eq!(status, 200, "health endpoint should return 200");
+    assert!(
+        body.contains("\"status\""),
+        "health body should contain status field: {body}"
+    );
+    assert!(
+        body.contains("\"ok\""),
+        "health body should report ok: {body}"
+    );
+}
+
+#[test]
+fn root_serves_bundled_html() {
+    let (_dir, port) = boot_test_server();
+    let (status, body) = http_get(port, "/");
+    assert_eq!(status, 200, "root should return 200");
+    // The bundled HTML carries the `crabcc · live call-graph` title; that's
+    // a stable marker we can grep for without coupling the test to layout.
+    assert!(
+        body.contains("crabcc"),
+        "root body should be the bundled HTML: {body:.200}"
+    );
+    assert!(
+        body.contains("<canvas"),
+        "root body should contain the graph canvas: {body:.200}"
+    );
+}
+
+#[test]
+fn graph_endpoint_returns_root_node_and_edges() {
+    let (_dir, port) = boot_test_server();
+    // Walk callers of `inner` — there's exactly one (`outer`).
+    let (status, body) = http_get(port, "/api/graph?root=inner&dir=callers&depth=2");
+    assert_eq!(
+        status, 200,
+        "graph endpoint should return 200, got body: {body}"
+    );
+    let v: serde_json::Value =
+        serde_json::from_str(&body).expect("graph endpoint must return valid JSON");
+    assert_eq!(v["root"], "inner");
+    assert_eq!(v["dir"], "callers");
+    let nodes = v["nodes"].as_array().expect("nodes array");
+    assert!(
+        nodes.iter().any(|n| n["id"] == "inner" && n["depth"] == 0),
+        "snapshot must contain root node at depth 0: {body}"
+    );
+    assert!(
+        nodes.iter().any(|n| n["id"] == "outer"),
+        "snapshot must contain caller `outer`: {body}"
+    );
+    let edges = v["edges"].as_array().expect("edges array");
+    assert!(
+        edges
+            .iter()
+            .any(|e| e["src"] == "outer" && e["dst"] == "inner"),
+        "snapshot must contain outer→inner edge: {body}"
+    );
+}
+
+#[test]
+fn graph_endpoint_rejects_missing_root() {
+    let (_dir, port) = boot_test_server();
+    let (status, body) = http_get(port, "/api/graph?dir=callers&depth=2");
+    assert_eq!(
+        status, 400,
+        "missing root should be a 400, got body: {body}"
+    );
+}
+
+#[test]
+fn graph_endpoint_rejects_bad_dir() {
+    let (_dir, port) = boot_test_server();
+    let (status, body) = http_get(port, "/api/graph?root=inner&dir=sideways&depth=2");
+    assert_eq!(status, 400, "bad dir should be a 400, got body: {body}");
+}
+
+#[test]
+fn unknown_route_is_404() {
+    let (_dir, port) = boot_test_server();
+    let (status, _body) = http_get(port, "/does-not-exist");
+    assert_eq!(status, 404);
+}
