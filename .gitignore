@@ -3,6 +3,10 @@
 Cargo.lock
 .crabcc/
 .DS_Store
+# Per-developer scratch — task outputs land here (local-ci, smoke,
+# coverage, profiling, ollama smoke replies). Kept on disk between
+# runs but never checked in.
+.summary/
 
 # Local-only — no longer published to the remote. Kept on disk for the
 # author's reference; ship-relevant content lives in README.md, CLAUDE.md,
