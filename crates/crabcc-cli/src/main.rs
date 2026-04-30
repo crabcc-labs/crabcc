@@ -29,6 +29,7 @@ mod agent_profile;
 mod agent_runs_db;
 mod backup;
 mod compress_cmd;
+mod debug_network;
 mod doctor;
 mod go;
 mod install;
@@ -285,6 +286,20 @@ enum InfoOp {
     Services {
         #[arg(long)]
         json: bool,
+    },
+    /// Capture host network diagnostics — DNS, traceroute, interfaces,
+    /// routes, sanity pings (issue #150). Pairs with `info services`
+    /// (port-level reachability) to triage \"service unreachable\".
+    Network {
+        /// Restrict the sweep to one host (e.g. `redis`, `127.0.0.1`).
+        #[arg(long)]
+        service: Option<String>,
+        /// Emit JSON instead of the human-readable text report.
+        #[arg(long)]
+        json: bool,
+        /// Cap traceroute hops. Default 8; lower for faster runs.
+        #[arg(long, default_value_t = 8)]
+        max_hops: u8,
     },
     /// Per-model metadata stored at $CRABCC_HOME/models/.
     Model {
@@ -1037,6 +1052,13 @@ fn main() -> Result<()> {
                         print_service_discovery_text(&report);
                     }
                     return Ok(());
+                }
+                InfoOp::Network {
+                    service: svc,
+                    json: j,
+                    max_hops: hops,
+                } => {
+                    return debug_network::run(svc.as_deref(), *j, *hops);
                 }
                 InfoOp::Model { op: mop } => {
                     return run_model_info(mop);
@@ -2047,6 +2069,7 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
             Some(InfoOp::Build { .. }) => "info/build",
             Some(InfoOp::Track { .. }) => "info/track",
             Some(InfoOp::Services { .. }) => "info/services",
+            Some(InfoOp::Network { .. }) => "info/network",
             Some(InfoOp::Model { .. }) => "info/model",
         },
         Cmd::Graph { .. } => "graph",
