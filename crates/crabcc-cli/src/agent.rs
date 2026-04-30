@@ -41,6 +41,11 @@ const AGENTS_FILE_CANDIDATES: &[&str] = &["AGENTS.md", ".crabcc/AGENTS.md"];
 /// recognize and falls through to the user's configured default, so a
 /// stale id here degrades gracefully.
 const DEFAULT_MODEL: &str = "claude-opus-4-7";
+/// Default model when [`Backend::Ollama`] is selected and `--model` is
+/// unset. Picks `qwen2.5-coder` from `install/ollama-stack/litellm.config.yaml`
+/// — purpose-built for code, matches crabcc's primary workload (symbol
+/// lookup + code edits). Override with `--model ollama/<other>`.
+const DEFAULT_OLLAMA_MODEL: &str = "ollama/qwen2.5-coder";
 
 /// Where Claude Code looks for skills. `crabcc install-claude` symlinks
 /// `skill/crabcc/SKILL.md` into the directory below; if that file is
@@ -48,12 +53,41 @@ const DEFAULT_MODEL: &str = "claude-opus-4-7";
 /// just without the crabcc primer auto-loaded).
 const SKILL_RELATIVE_PATH: &str = ".claude/skills/crabcc/SKILL.md";
 
+/// Which LLM backend the spawned agent talks to. Default is `Claude`,
+/// matching pre-issue-#105 behaviour. `Ollama` routes through the local
+/// LiteLLM proxy from the bundled Compose stack — see
+/// [`crabcc_core::ollama_stack`] and `install/ollama-stack/`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backend {
+    Claude,
+    Ollama,
+}
+
+impl Backend {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Backend::Claude => "claude",
+            Backend::Ollama => "ollama",
+        }
+    }
+    pub fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "claude" => Ok(Backend::Claude),
+            "ollama" => Ok(Backend::Ollama),
+            other => Err(anyhow!(
+                "unknown agent backend `{other}`; supported: claude, ollama"
+            )),
+        }
+    }
+}
+
 pub struct AgentRequest<'a> {
     pub prompt: &'a str,
     pub root: &'a Path,
     pub dry_run: bool,
     pub model: Option<String>,
     pub no_refresh: bool,
+    pub backend: Backend,
 }
 
 pub trait AgentRuntime {
@@ -121,6 +155,7 @@ impl RunDir {
             "id":             self.id,
             "started_ts":     started,
             "root":           req.root.display().to_string(),
+            "backend":        req.backend.as_str(),
             "model":          req.model,
             "runtime":        runtime_label,
             "prompt_chars":   req.prompt.chars().count(),
@@ -201,11 +236,14 @@ impl AgentRuntime for SubprocessRuntime {
         if let Some(spp) = &system_prompt {
             cmd.arg("--append-system-prompt").arg(&spp.body);
         }
-        // Always pass `--model`. Defaults to `DEFAULT_MODEL` so each
+        // Always pass `--model`. Defaults branch on backend so each
         // invocation is reproducible — relying on the agent CLI's
         // ambient config means two devs on the same prompt can get
         // different answers depending on whose `claude config` we ask.
-        let model = req.model.as_deref().unwrap_or(DEFAULT_MODEL);
+        let model = req.model.as_deref().unwrap_or(match req.backend {
+            Backend::Claude => DEFAULT_MODEL,
+            Backend::Ollama => DEFAULT_OLLAMA_MODEL,
+        });
         cmd.arg("--model").arg(model);
         cmd.arg("--no-chrome");
         cmd.current_dir(req.root);
@@ -215,12 +253,21 @@ impl AgentRuntime for SubprocessRuntime {
         // a future `SandboxRuntime` will need to bind-mount $HOME/.claude/
         // into the sandbox, and grepping for the env-var names here is
         // how that future code will know which vars to plumb.
-        for var in [
+        let mut auth_vars: Vec<&str> = vec![
             "HOME",
             "XDG_CONFIG_HOME",
             "XDG_DATA_HOME",
             "ANTHROPIC_API_KEY",
-        ] {
+        ];
+        // Issue #105 — when the agent is configured to talk to the
+        // local LiteLLM proxy, forward OLLAMA_BASE_URL + OLLAMA_API_KEY
+        // so the spawned subprocess can route LLM calls through the
+        // bundled stack instead of Anthropic. Default backend stays
+        // Claude; no env-var change for existing flows.
+        if req.backend == Backend::Ollama {
+            auth_vars.extend(["OLLAMA_BASE_URL", "OLLAMA_API_KEY"]);
+        }
+        for var in auth_vars {
             if let Ok(v) = std::env::var(var) {
                 cmd.env(var, v);
             }
@@ -349,7 +396,10 @@ fn print_dry_run(
     println!("  run id          : {}", run.id);
     println!("  run dir         : {}", run.dir.display());
     println!("  log (tail -f)   : {}", run.log_path.display());
-    let model_resolved = req.model.as_deref().unwrap_or(DEFAULT_MODEL);
+    let model_resolved = req.model.as_deref().unwrap_or(match req.backend {
+        Backend::Claude => DEFAULT_MODEL,
+        Backend::Ollama => DEFAULT_OLLAMA_MODEL,
+    });
     let model_origin = if req.model.is_some() {
         "explicit"
     } else {
@@ -480,6 +530,27 @@ pub fn run(req: AgentRequest<'_>) -> Result<()> {
         }
     }
 
+    // Issue #105 — when the caller picked the Ollama backend, make
+    // sure the local stack is up before we spawn the agent. Failures
+    // surface on the agent's stderr through anyhow's chain. Skipped
+    // on --dry-run so wiring tests stay docker-free.
+    if req.backend == Backend::Ollama && !req.dry_run {
+        crabcc_core::ollama_stack::check_docker().with_context(|| {
+            "agent --backend ollama needs Docker; install from \
+             https://docs.docker.com/get-docker/ then `crabcc install-claude \
+             --with-ollama-stack`"
+        })?;
+        let opts = crabcc_core::ollama_stack::Options::new()
+            .with_correlation_id(format!("agent-{}", run_dir.id));
+        let up = crabcc_core::ollama_stack::ensure_up(&opts)
+            .context("agent --backend ollama: ensure_up() failed")?;
+        eprintln!(
+            "crabcc agent: ollama stack ready ({} services, {} ms)",
+            up.services_healthy.len(),
+            up.duration_ms
+        );
+    }
+
     let runtime = SubprocessRuntime;
     let result = runtime.run(&req, &run_dir);
     run_dir.finalize();
@@ -509,6 +580,22 @@ pub fn run(req: AgentRequest<'_>) -> Result<()> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn backend_round_trip_strings() {
+        assert_eq!(Backend::from_str("claude").unwrap(), Backend::Claude);
+        assert_eq!(Backend::from_str("ollama").unwrap(), Backend::Ollama);
+        assert_eq!(Backend::Claude.as_str(), "claude");
+        assert_eq!(Backend::Ollama.as_str(), "ollama");
+    }
+
+    #[test]
+    fn backend_rejects_unknown() {
+        let err = Backend::from_str("anthropic-direct").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("unknown agent backend"));
+        assert!(msg.contains("supported"));
+    }
 
     #[test]
     fn rundir_create_makes_lock_and_log() {
@@ -559,6 +646,7 @@ mod tests {
             dry_run: true,
             model: Some("claude-sonnet-4-6".into()),
             no_refresh: true,
+            backend: Backend::Claude,
         };
         run.write_meta(&req, "subprocess (host)").unwrap();
         let body = std::fs::read_to_string(&run.meta_path).unwrap();

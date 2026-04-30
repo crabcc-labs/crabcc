@@ -266,6 +266,13 @@ enum Cmd {
         /// a wrapping script has already brought the index up to date.
         #[arg(long)]
         no_refresh: bool,
+        /// LLM backend the spawned agent talks to. `claude` (default)
+        /// uses Anthropic via Claude Code's existing config. `ollama`
+        /// routes through the local LiteLLM proxy from the bundled
+        /// Compose stack (issue #105) — requires Docker; the stack is
+        /// auto-brought-up before spawn via `ollama_stack::ensure_up`.
+        #[arg(long, value_name = "BACKEND", default_value = "claude")]
+        backend: String,
     },
     /// Start the localhost call-graph viewer (issue #64). Binds to
     /// 127.0.0.1 by default — pass `--bind 0.0.0.0` only on a trusted
@@ -608,14 +615,17 @@ fn main() -> Result<()> {
         dry_run,
         model,
         no_refresh,
+        backend,
     }) = cli.cmd.as_ref()
     {
+        let backend = agent::Backend::from_str(backend)?;
         return agent::run(agent::AgentRequest {
             prompt: run,
             root: &root,
             dry_run: *dry_run,
             model: model.clone(),
             no_refresh: *no_refresh,
+            backend,
         });
     }
 
