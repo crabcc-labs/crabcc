@@ -31,6 +31,7 @@ mod backup;
 mod compress_cmd;
 mod debug_network;
 mod doctor;
+mod fetch_cmd;
 mod go;
 mod install;
 mod jobs_cmd;
@@ -382,6 +383,19 @@ enum Cmd {
     },
     /// One-shot bootstrap: index + graph + memory + claude hand-off.
     Go,
+    /// Fetch URLs out of a prompt, clean HTML to markdown, return in bulk.
+    /// Tries the Chrome bridge first (uses your authenticated session)
+    /// when available, falls back to direct HTTP otherwise.
+    Fetch {
+        /// Prompt or text containing the URLs to fetch.
+        prompt: String,
+        /// Skip the Chrome-bridge check; always go direct.
+        #[arg(long)]
+        no_chrome: bool,
+        /// Output format: `json` (default) or `text`.
+        #[arg(long, default_value = "json")]
+        format: String,
+    },
     /// Start the localhost call-graph viewer (issue #64). Binds to 127.0.0.1
     /// by default — pass `--bind 0.0.0.0` only on a trusted LAN; the server
     /// is unauthenticated and exposes architecture.
@@ -1099,6 +1113,16 @@ fn main() -> Result<()> {
         return go::run(&root, &db);
     }
 
+    // `fetch` is pure I/O — no Store, no index, no daemon required.
+    if let Some(Cmd::Fetch {
+        prompt,
+        no_chrome,
+        format,
+    }) = cli.cmd.as_ref()
+    {
+        return fetch_cmd::run(prompt, *no_chrome, format);
+    }
+
     // `serve` boots crabcc-viz; doesn't need the symbol Store opened
     // here (the viz server lazy-opens its own).
     if let Some(Cmd::Serve {
@@ -1703,6 +1727,7 @@ fn main() -> Result<()> {
         Cmd::Setup { .. } => unreachable!("setup handled before store init"),
         Cmd::Info { .. } => unreachable!("info handled before store init"),
         Cmd::Go => unreachable!("go handled before store init"),
+        Cmd::Fetch { .. } => unreachable!("fetch handled before store init"),
         Cmd::Serve { .. } => unreachable!("serve handled before store init"),
         Cmd::Agent { .. } => unreachable!("agent handled before store init"),
         Cmd::AgentRunAlias { .. } => unreachable!("agent-run handled before store init"),
@@ -2078,6 +2103,7 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::Doctor { .. } => "doctor",
         Cmd::Jobs(_) => "jobs",
         Cmd::Go => "go",
+        Cmd::Fetch { .. } => "fetch",
         Cmd::Serve { .. } => "serve",
         // Deprecated aliases
         Cmd::Refresh { .. } => "refresh",
