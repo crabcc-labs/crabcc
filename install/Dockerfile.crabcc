@@ -71,10 +71,11 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 # Stage 2: runtime — minimal Debian slim with only the dynamic libraries
 # crabcc actually needs. Non-root user. Healthcheck via `crabcc info`.
 # ----------------------------------------------------------------------
-# Use the base image for baked TZ (Europe/Budapest) + locale (en_US.UTF-8)
-# and the pre-created crabcc user. Build it once with:
-#   docker build -t crabcc-base:local -f install/Dockerfile.base .
-FROM crabcc-base:local AS runtime
+# Base image from GitHub Packages (baked TZ + locale + non-root user).
+# CI publishes ghcr.io/peterlodri-sec/crabcc-base on every main push.
+# Local build: docker build -t crabcc-base:local -f install/Dockerfile.base .
+ARG BASE_IMAGE=ghcr.io/peterlodri-sec/crabcc-base:latest
+FROM ${BASE_IMAGE} AS runtime
 
 # Build-time metadata — pass via --build-arg from `task images-build`
 ARG GIT_SHA=unknown

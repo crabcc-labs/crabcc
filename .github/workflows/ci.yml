@@ -1,13 +1,34 @@
 name: CI
 
-# PR CI is intentionally narrow: lint, plus tests for the crates the PR
-# actually touches, plus a 3-command smoke E2E. The full matrix
-# (Ubuntu + macOS, all workspace tests) runs on push to main and on tag
-# (release.yml). PR-time goal is fast feedback, not exhaustive coverage.
 on:
   push:
     branches: [main]
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/ci.yml'
+      - 'scripts/**'
+      - 'install/**'
+      - 'apps/crabcc-iterm2/tests/**'
   pull_request:
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/ci.yml'
+      - 'scripts/**'
+      - 'install/**'
+      - 'apps/crabcc-iterm2/tests/**'
+  # Manual full run — use when paths filter would otherwise skip a needed check.
+  workflow_dispatch:
+    inputs:
+      full:
+        description: 'Force full workspace (bypass scope detection)'
+        type: boolean
+        default: false
 
 # Cancel previous runs on the same ref. When a fixup commit lands on a PR
 # before the prior run finishes, the prior run is killed — saves runner minutes.
@@ -20,13 +41,49 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  # ── usage summary ──────────────────────────────────────────────────────────
+  # Runs first so every CI run prints rate limits + cache size in the summary.
+  # Cheap: API-only, no checkout needed.
+  usage:
+    name: usage summary
+    runs-on: ubuntu-latest
+    steps:
+      - name: rate limits + cache usage
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "## GitHub resource usage" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          gh api /rate_limit | python3 -c "
+          import sys, json, datetime
+          d = json.load(sys.stdin)['resources']
+          rows = [('Resource','Used','Limit','Remaining','Reset')]
+          for k in ('core','graphql','actions','code_scanning_upload'):
+              v = d.get(k, {})
+              if not v: continue
+              reset = datetime.datetime.fromtimestamp(v['reset'], datetime.timezone.utc).strftime('%H:%M UTC')
+              rows.append((k, str(v['used']), str(v['limit']), str(v['remaining']), reset))
+          for r in rows:
+              print('| ' + ' | '.join(r) + ' |')
+          " >> "$GITHUB_STEP_SUMMARY"
+
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+
+          gh api /repos/${{ github.repository }}/actions/cache/usage | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          gb = d['active_caches_size_in_bytes'] / 1e9
+          print(f'**Actions cache:** {d[\"active_caches_count\"]} entries, {gb:.1f} GB')
+          " >> "$GITHUB_STEP_SUMMARY"
+
+  # ── lint ───────────────────────────────────────────────────────────────────
   lint:
     name: lint (fmt + clippy)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          # Issue #87 — Pillar 3: need history for git-diff scoping.
           fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
@@ -38,53 +95,38 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-lint
-          # Only write cache on main — keeps PR builds from churning the cache.
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      # Issue #87 — Pillar 3 (PR-only-changed-files CI). On PR, scope
-      # clippy + aliases-smoke to changed crates / scripts. On push to
-      # main, run everything (full belt-and-suspenders pre-release.yml).
       - name: detect changed scope
         id: scope
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BASE="${{ github.event.pull_request.base.sha }}"
-            HEAD="${{ github.event.pull_request.head.sha }}"
-            CHANGED=$(git diff --name-only "$BASE" "$HEAD")
-            echo "changed files:"; echo "$CHANGED"
-            CRATES=$(echo "$CHANGED" | awk -F/ '/^crates\// {print $2}' | sort -u)
-            ARGS=""
-            for c in $CRATES; do ARGS="$ARGS -p $c"; done
-            echo "clippy_scope=$ARGS" >> "$GITHUB_OUTPUT"
-            if echo "$CHANGED" | grep -qE '^scripts/(install-aliases|aliases-smoke)\.sh$'; then
-              echo "aliases_smoke=1" >> "$GITHUB_OUTPUT"
-            fi
-            if [ -z "$CRATES" ]; then
-              echo "::notice::No crate-level changes — skipping clippy"
-            else
-              echo "::notice::Clippy scope:$ARGS"
-            fi
-          else
+          FORCE_FULL="${{ github.event.inputs.full || 'false' }}"
+          if [ "$FORCE_FULL" = "true" ] || [ "${{ github.event_name }}" != "pull_request" ]; then
             echo "clippy_scope=--workspace" >> "$GITHUB_OUTPUT"
             echo "aliases_smoke=1" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          CHANGED=$(git diff --name-only "$BASE" "$HEAD")
+          echo "changed files:"; echo "$CHANGED"
+          CRATES=$(echo "$CHANGED" | awk -F/ '/^crates\// {print $2}' | sort -u)
+          ARGS=""
+          for c in $CRATES; do ARGS="$ARGS -p $c"; done
+          echo "clippy_scope=$ARGS" >> "$GITHUB_OUTPUT"
+          if echo "$CHANGED" | grep -qE '^scripts/(install-aliases|aliases-smoke)\.sh$'; then
+            echo "aliases_smoke=1" >> "$GITHUB_OUTPUT"
+          fi
+          [ -z "$CRATES" ] && echo "::notice::No crate-level changes — skipping clippy" || echo "::notice::Clippy scope:$ARGS"
 
-      # fmt is workspace-wide unconditionally — sub-second; no value in scoping.
       - name: cargo fmt --check
         run: cargo fmt --all -- --check
 
-      # Scoped clippy: PR runs only against changed crates; push-to-main
-      # runs `--workspace`. Empty scope (docs-only PR) skips entirely.
-      # `--lib --bins` covers the public surface; test-only clippy lints
-      # are caught by `cargo nextest` since it type-checks the same code.
       - name: cargo clippy (scoped)
         if: steps.scope.outputs.clippy_scope != ''
         run: cargo clippy ${{ steps.scope.outputs.clippy_scope }} --lib --bins -- -D warnings
 
-      # Issue #81: shell-only smoke for scripts/install-aliases.sh.
-      # Sub-second; asserts --aggressive verbs and idempotence.
-      # PR runs only when the alias scripts changed; push-to-main always runs.
       - name: aliases-smoke
         if: steps.scope.outputs.aliases_smoke == '1'
         run: bash scripts/aliases-smoke.sh
@@ -93,13 +135,13 @@ jobs:
         if: always()
         run: sccache --show-stats || true
 
+  # ── test ───────────────────────────────────────────────────────────────────
   test:
     name: test (ubuntu, scoped)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          # Need git history to diff PR head against base for crate scoping.
           fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
@@ -111,44 +153,36 @@ jobs:
           shared-key: ci-ubuntu
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: install cargo-nextest (JUnit reporter)
+      - name: install cargo-nextest
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-nextest
 
-      # Scope policy:
-      #   - push to main → full workspace (covers any cross-crate fallout)
-      #   - PR → only the crates touched by the diff. Faster feedback, and
-      #     anything we'd miss is caught by the post-merge run on main.
-      #   - PR with no crate changes (docs/CI only) → skip nextest entirely.
       - name: detect changed crates
         id: scope
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BASE="${{ github.event.pull_request.base.sha }}"
-            HEAD="${{ github.event.pull_request.head.sha }}"
-            CHANGED=$(git diff --name-only "$BASE" "$HEAD")
-            echo "changed files:"
-            echo "$CHANGED"
-            CRATES=$(echo "$CHANGED" | awk -F/ '/^crates\// {print $2}' | sort -u)
-            if [ -z "$CRATES" ]; then
-              echo "scope=" >> "$GITHUB_OUTPUT"
-              echo "::notice::No crate-level changes — skipping nextest + smoke"
-            else
-              ARGS=""
-              for c in $CRATES; do ARGS="$ARGS -p $c"; done
-              # shellcheck disable=SC2086
-              echo "scope=$ARGS" >> "$GITHUB_OUTPUT"
-              echo "::notice::Test scope:$ARGS"
-            fi
-            # Issue #87 — Pillar 3: smoke runs only when crabcc-cli or
-            # crabcc-core changed (it exercises the release CLI binary).
-            if echo "$CHANGED" | grep -qE '^crates/(crabcc-cli|crabcc-core)/'; then
-              echo "smoke=1" >> "$GITHUB_OUTPUT"
-            fi
-          else
+          FORCE_FULL="${{ github.event.inputs.full || 'false' }}"
+          if [ "$FORCE_FULL" = "true" ] || [ "${{ github.event_name }}" != "pull_request" ]; then
             echo "scope=--workspace" >> "$GITHUB_OUTPUT"
+            echo "smoke=1" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          CHANGED=$(git diff --name-only "$BASE" "$HEAD")
+          echo "changed files:"; echo "$CHANGED"
+          CRATES=$(echo "$CHANGED" | awk -F/ '/^crates\// {print $2}' | sort -u)
+          if [ -z "$CRATES" ]; then
+            echo "scope=" >> "$GITHUB_OUTPUT"
+            echo "::notice::No crate-level changes — skipping nextest + smoke"
+          else
+            ARGS=""
+            for c in $CRATES; do ARGS="$ARGS -p $c"; done
+            echo "scope=$ARGS" >> "$GITHUB_OUTPUT"
+            echo "::notice::Test scope:$ARGS"
+          fi
+          if echo "$CHANGED" | grep -qE '^crates/(crabcc-cli|crabcc-core)/'; then
             echo "smoke=1" >> "$GITHUB_OUTPUT"
           fi
 
@@ -156,30 +190,20 @@ jobs:
         if: steps.scope.outputs.scope != ''
         run: cargo nextest run ${{ steps.scope.outputs.scope }} --profile ci
 
-      - name: upload test report (JUnit XML)
+      - name: upload test report
         if: always() && steps.scope.outputs.scope != ''
         uses: actions/upload-artifact@v4
         with:
           name: junit-ubuntu
           path: target/nextest/ci/junit.xml
           if-no-files-found: warn
-          retention-days: 30
+          retention-days: 7
 
-      # nextest compiles in test mode; the smoke step exercises the release
-      # binary so end-users hit the same path. Build it explicitly here.
-      # `continue-on-error: true` keeps these from gating CI / future releases
-      # — the 150+ unit tests already cover correctness. Smoke is a signal
-      # only.
-      - name: build release binary for smoke test
+      - name: build release binary for smoke
         if: steps.scope.outputs.smoke == '1'
         continue-on-error: true
         run: cargo build --release -p crabcc-cli
 
-      # Trimmed smoke set: index → sym → callers. Covers the hot path that
-      # 99% of agent traffic hits. The fuller set (outline / files / prefix /
-      # watch) ran in v1 CI; those are unit-tested and reproven on push-to-main.
-      # `continue-on-error: true` keeps smoke informational — the 200+ unit
-      # tests already cover correctness.
       - name: smoke — index + sym + callers
         if: steps.scope.outputs.smoke == '1'
         continue-on-error: true
@@ -197,6 +221,55 @@ jobs:
           "$BIN" sym hello | jq -e '.[0].name == "hello"'
           "$BIN" callers hello --count | jq -e '.count >= 1'
 
+      - name: iterm2-hud tests (Python, no iTerm2 required)
+        run: python3 -m unittest apps/crabcc-iterm2/tests/test_hud -v
+        continue-on-error: true
+
       - name: sccache stats
         if: always()
         run: sccache --show-stats || true
+
+  # ── docker publish (ghcr.io) ───────────────────────────────────────────────
+  # Publishes crabcc-base to GitHub Packages on every push to main.
+  # The base image is fast to build (no Rust compile — just debian + locale/tz).
+  # Downstream Dockerfiles reference ghcr.io/peterlodri-sec/crabcc-base instead
+  # of rebuilding the locale layer every time.
+  docker-base:
+    name: ghcr.io/crabcc-base
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: [lint, test]
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/peterlodri-sec/crabcc-base
+          tags: |
+            type=raw,value=latest
+            type=sha,prefix=sha-,format=short
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: install/Dockerfile.base
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            TZ=Europe/Budapest
+            LANG=en_US.UTF-8

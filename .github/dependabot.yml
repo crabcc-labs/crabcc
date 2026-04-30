@@ -1,0 +1,64 @@
+version: 2
+
+updates:
+  # ── Rust / Cargo ─────────────────────────────────────────────────────────
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Europe/Budapest
+    # Group ALL Cargo bumps into one PR per week so CI runs once, not N times.
+    groups:
+      cargo-all:
+        patterns: ["*"]
+    # Keep version ranges; skip patch-only bumps on already-locked deps.
+    versioning-strategy: lockfile-only
+    open-pull-requests-limit: 1
+    labels:
+      - dependencies
+      - rust
+    commit-message:
+      prefix: "chore(deps)"
+    # Auto-merge: minor + patch. Major needs a human eye.
+    # Enable via repo Settings → Actions → "Allow auto-merge".
+    # The `auto-merge: true` key is set on the PR by dependabot itself when
+    # the `automerge` label is present and branch protection allows it.
+    # We label minor/patch updates so a label-triggered workflow can merge them.
+
+  # ── GitHub Actions ────────────────────────────────────────────────────────
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:30"
+      timezone: Europe/Budapest
+    groups:
+      actions-all:
+        patterns: ["*"]
+    open-pull-requests-limit: 1
+    labels:
+      - dependencies
+      - github-actions
+    commit-message:
+      prefix: "chore(ci)"
+
+  # ── Docker ────────────────────────────────────────────────────────────────
+  - package-ecosystem: docker
+    directory: /install
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: Europe/Budapest
+    groups:
+      docker-all:
+        patterns: ["*"]
+    open-pull-requests-limit: 1
+    labels:
+      - dependencies
+      - docker
+    commit-message:
+      prefix: "chore(docker)"
