@@ -24,11 +24,22 @@ env:
   # `Compile requests 0` in run #25185569799). With it set, cargo
   # routes every rustc call through sccache and the second-build
   # cache hit rate jumps to ~95% on this workspace.
+  #
+  # Note: rust-cache and sccache are complementary, not redundant —
+  # rust-cache stores the dependency `target/` + `~/.cargo` blobs as
+  # a single GHA artifact (one big restore at job start); sccache
+  # caches per-source-hash rustc output via the GHA cache backend
+  # (lookups during compile). Together they hit both warm-restart
+  # and warm-incremental scenarios.
   RUSTC_WRAPPER: sccache
   SCCACHE_GHA_ENABLED: "true"
-  # Swatinem rust-cache requires `CARGO_INCREMENTAL=0` for cache
-  # determinism — incremental fingerprints poison the cache key.
-  CARGO_INCREMENTAL: 0
+  # CARGO_INCREMENTAL is intentionally NOT set here — `Swatinem/rust-cache`
+  # sets `CARGO_INCREMENTAL=0` itself (per its README's Cache Details
+  # section), and explicit env-vars added at the workflow level become
+  # part of rust-cache's env-vars cache key (default prefixes: CARGO,
+  # CC, CFLAGS, CXX, CMAKE, RUST). Setting it here would slightly
+  # destabilize the key without changing behavior.
+  #
   # Linux-only mold linker — slashes link time on debug + ci profiles
   # for big workspaces (we have 567 deps). The flag is a no-op on
   # macOS jobs (the lld/zld fallback is fine there).
@@ -51,34 +62,28 @@ jobs:
 
       - uses: mozilla-actions/sccache-action@v0.0.9
 
-      # OS-only registry cache — never invalidates on Cargo.lock changes
-      # (Swatinem caches per-lockfile; this layer stays warm across the
-      # whole branch fleet and removes the `Updating crates.io index`
-      # round-trip on cold runs).
-      - name: cache cargo registry index
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: cargo-registry-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-registry-${{ runner.os }}-
-
       # mold linker — Apache-2.0, ~3-5x faster link than lld on big
       # debug + ci profile builds. Apt install is sub-second.
       - name: install mold linker
         run: sudo apt-get install -y --no-install-recommends mold
 
+      # rust-cache caches `~/.cargo` (registry index + cache + git
+      # deps) AND `target/` keyed off Cargo.lock + rustc + env-var
+      # hashes. Don't bolt an extra `actions/cache` step on top of
+      # this for `~/.cargo/registry/*` — the two would compete for
+      # the same paths AND the same 10 GB GHA repo budget. We
+      # measured this in PR #176; rust-cache alone is sufficient
+      # once `RUSTC_WRAPPER=sccache` is set above.
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-lint
-          # Aggressive: save the cache on every branch (not just main) so
-          # repeat PR pushes hit a warm target/, and persist even when
-          # the lint job fails so the next attempt starts warm.
-          save-if: "true"
+          # cache-on-failure isn't the default (false). True keeps the
+          # cache warm across a flaky lint job — next attempt starts
+          # warm even if the previous failed.
           cache-on-failure: "true"
+          # cache-all-crates includes CI tooling deps (cargo-nextest,
+          # taiki-e/install-action artifacts, etc) — adds <1% size,
+          # saves a fresh download next run.
           cache-all-crates: "true"
 
       # Issue #87 — Pillar 3 (PR-only-changed-files CI). On PR, scope
@@ -147,30 +152,17 @@ jobs:
 
       - uses: mozilla-actions/sccache-action@v0.0.9
 
-      # OS-only registry cache — see lint-job comment above. Same key
-      # is shared across both jobs intentionally (single registry
-      # download warms both target/s).
-      - name: cache cargo registry index
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
-            ~/.cargo/git/db
-          key: cargo-registry-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            cargo-registry-${{ runner.os }}-
-
       - name: install mold linker
         run: sudo apt-get install -y --no-install-recommends mold
 
+      # See lint-job comment above for why this is the only cache
+      # layer needed at the dependency-blob level. The `ci-ubuntu`
+      # shared-key is distinct from `ci-lint` so the two jobs don't
+      # share their `target/` (different feature flags + different
+      # RUSTFLAGS for clippy vs nextest would poison a shared key).
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-ubuntu
-          # Aggressive: save the cache on every branch (not just main).
-          # PR re-pushes hit warm target/, the test job specifically
-          # benefits — full workspace nextest is the longest CI step.
-          save-if: "true"
           cache-on-failure: "true"
           cache-all-crates: "true"
 
