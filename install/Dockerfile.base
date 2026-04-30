@@ -51,3 +51,7 @@ RUN useradd --create-home --uid 1000 --shell /usr/sbin/nologin crabcc
 LABEL com.crabcc.role="base"
 LABEL com.crabcc.tz="${TZ}"
 LABEL com.crabcc.locale="${LANG}"
+# OTel resource attributes baked into the image so OTLP exporters pick
+# them up automatically without extra env vars (issue #86).
+LABEL org.opentelemetry.service.name="crabcc"
+LABEL org.opentelemetry.service.namespace="crabcc"

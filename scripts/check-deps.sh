@@ -179,6 +179,7 @@ install_hint() {
         # ----- claude / repomix (npm-installed) -----
         *::claude)          echo "npm install -g @anthropic-ai/claude-code" ;;
         *::repomix)         echo "npm install -g repomix" ;;
+        *::csvlens)         echo "cargo install csvlens" ;;
 
         # ----- fallback -----
         *)                  echo "" ;;
@@ -202,6 +203,7 @@ fd|optional|friendlier find — used by ad-hoc dev workflows|fd --version
 yq|optional|YAML processor (Taskfile linting)|yq --version
 claude|optional|Claude Code CLI — needed for `task docs-refresh`|claude --version
 repomix|optional|Codebase packer — needed for `task repomix`|repomix --version
+csvlens|optional|CSV/SQLite viewer — needed for `task db-inspect` (telemetry/index/internal DBs)|csvlens --version
 EOF
 }
 
