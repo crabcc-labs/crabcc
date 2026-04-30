@@ -71,6 +71,43 @@ tasks:
     cmds:
       - "{{.CARGO}} clippy --workspace --all-targets -- -D warnings"
 
+  chore:
+    desc: All-in-one DX chore — fmt, lint, test, dmg, doctor. Use before opening a release PR.
+    summary: |
+      Runs the full validation chain that gates a release-ready PR:
+      fmt-check → clippy (-D warnings) → tests → DMG build →
+      doctor --quiet. Each step short-circuits on failure so you see
+      the first thing that broke. Stand-alone — does not run prep-pr
+      or write any artifacts beyond dist/crabcc-<version>.dmg.
+    cmds:
+      - task: fmt-check
+      - task: lint
+      - task: test
+      - task: dmg
+      - task: doctor
+      - task: agent-status
+
+  agent-status:
+    desc: Snapshot of the singleton agent-runs DB — active, recent, and kill events.
+    cmds:
+      - "{{.CRABCC}} agent-ls --limit 10"
+      - "{{.CRABCC}} agent-kills --limit 10"
+
+  dmg:
+    desc: Build dist/crabcc-<version>.dmg — installer .app + menubar UI + LaunchAgent (issue #107)
+    summary: |
+      Stages installer/Crabcc.app, populates Resources/ with release-mode
+      crabcc/ccc binaries, skill/, commands/, and install-aliases.sh,
+      compiles the menubar Swift shim, ad-hoc codesigns the bundle, then
+      packages it into dist/crabcc-<version>.dmg via hdiutil. The .app
+      shows up in System Settings → Privacy & Security → App Management
+      thanks to the proper Info.plist + ad-hoc signature.
+      Pass SKIP_BUILD=1 to reuse target/release/{crabcc,ccc} unchanged.
+    vars:
+      SKIP_BUILD: '{{.SKIP_BUILD | default ""}}'
+    cmds:
+      - bash scripts/build-dmg.sh {{if .SKIP_BUILD}}--skip-build{{end}}
+
   install:
     desc: Cargo install crabcc to ~/.cargo/bin/crabcc; auto-bootstraps shell aliases (idempotent)
     summary: |

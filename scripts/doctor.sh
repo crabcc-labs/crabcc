@@ -270,6 +270,47 @@ else
     record_json smoke-index skipped "no crabcc"
 fi
 
+# --- macOS app bundle (Crabcc.app + LaunchAgent) ---------------------------
+if [ "$(uname -s)" = "Darwin" ]; then
+    APP_PATH=""
+    for cand in "/Applications/Crabcc.app" "$HOME/Applications/Crabcc.app"; do
+        [ -d "$cand" ] && { APP_PATH="$cand"; break; }
+    done
+    if [ -n "$APP_PATH" ]; then
+        chk "✓" "$GREEN" "macos-app" "Crabcc.app found at $APP_PATH"
+        record_json macos-app ok "$APP_PATH"
+
+        # Codesign signature
+        if /usr/bin/codesign -dv "$APP_PATH" >/dev/null 2>&1; then
+            sig=$(/usr/bin/codesign -dv "$APP_PATH" 2>&1 | awk -F'=' '/^Signature/{print $2}')
+            chk "✓" "$GREEN" "macos-app-sig" "${sig:-signed}"
+            record_json macos-app-sig ok "${sig:-signed}"
+        else
+            chk "✗" "$RED" "macos-app-sig" "Crabcc.app is unsigned (re-run scripts/build-dmg.sh)"
+            record_json macos-app-sig failed "unsigned"
+            fail_count=$((fail_count + 1))
+        fi
+    else
+        chk "-" "$DIM" "macos-app" "Crabcc.app not installed (run scripts/build-dmg.sh + drag DMG)"
+        record_json macos-app skipped "not installed"
+    fi
+
+    # LaunchAgent presence + load state
+    LA_PLIST="$HOME/Library/LaunchAgents/com.crabcc.agentd.plist"
+    if [ -f "$LA_PLIST" ]; then
+        if /bin/launchctl print "gui/$(id -u)/com.crabcc.agentd" >/dev/null 2>&1; then
+            chk "✓" "$GREEN" "launch-agent" "com.crabcc.agentd loaded"
+            record_json launch-agent ok "loaded"
+        else
+            chk "!" "$YELLOW" "launch-agent" "plist exists but not loaded (try: launchctl bootstrap gui/$(id -u) $LA_PLIST)"
+            record_json launch-agent warn "plist not loaded"
+        fi
+    else
+        chk "-" "$DIM" "launch-agent" "no LaunchAgent plist (install via Crabcc.app or scripts/install-macos-helpers.sh)"
+        record_json launch-agent skipped "no plist"
+    fi
+fi
+
 # --- repair actions (only run for --install / --upgrade) ------------------
 do_install() {
     [ "$QUIET" = "0" ] && printf "\n${BOLD}repair: --install${RESET}\n"
@@ -303,6 +344,32 @@ do_install() {
         log "suggested: $cmd"
     else
         chk "!" "$YELLOW" "mcp-suggest" "claude CLI not installed; install Claude Code first"
+    fi
+
+    # macOS LaunchAgent (only if Crabcc.app is installed).
+    if [ "$(uname -s)" = "Darwin" ]; then
+        local app=""
+        for cand in "/Applications/Crabcc.app" "$HOME/Applications/Crabcc.app"; do
+            [ -d "$cand" ] && { app="$cand"; break; }
+        done
+        if [ -n "$app" ]; then
+            local plist_src="$app/Contents/Resources/com.crabcc.agentd.plist"
+            local plist_dst="$HOME/Library/LaunchAgents/com.crabcc.agentd.plist"
+            mkdir -p "$HOME/Library/LaunchAgents"
+            sed -e "s|__APP_PATH__|$app|g" -e "s|__HOME__|$HOME|g" \
+                "$plist_src" > "$plist_dst"
+            log "wrote LaunchAgent: $plist_dst"
+            local uid; uid=$(id -u)
+            /bin/launchctl bootout "gui/$uid/com.crabcc.agentd" 2>/dev/null || true
+            if /bin/launchctl bootstrap "gui/$uid" "$plist_dst" 2>>"$LOG"; then
+                /bin/launchctl kickstart -k "gui/$uid/com.crabcc.agentd" 2>/dev/null || true
+                chk "✓" "$GREEN" "launch-agent" "com.crabcc.agentd registered + started"
+            else
+                chk "!" "$YELLOW" "launch-agent" "bootstrap failed (see $LOG)"
+            fi
+        else
+            chk "-" "$DIM" "launch-agent" "skipped (no Crabcc.app installed)"
+        fi
     fi
 }
 

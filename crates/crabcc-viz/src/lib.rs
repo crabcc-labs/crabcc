@@ -736,7 +736,7 @@ fn parse_iso8601_unix(s: &str) -> u64 {
     let mp = if mo_u >= 3 { mo_u - 3 } else { mo_u + 9 };
     let doy = (153 * mp + 2) / 5 + d_u - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era as i64 * 146097 + doe as i64 - 719468;
+    let days = era * 146097 + doe as i64 - 719468;
     (days as u64) * 86400 + h * 3600 + mi * 60 + se
 }
 
@@ -2119,7 +2119,10 @@ mod tests {
         assert_eq!(super::parse_iso8601_unix("1970-01-01T00:00:00Z"), 0);
         // 2026-04-30T08:36:43Z. Hand-computed via `date -u -j -f ...`
         // is 1777538203 — must round-trip exactly (drops sub-second).
-        assert_eq!(super::parse_iso8601_unix("2026-04-30T08:36:43Z"), 1777538203);
+        assert_eq!(
+            super::parse_iso8601_unix("2026-04-30T08:36:43Z"),
+            1777538203
+        );
         // Sub-second precision is dropped intentionally.
         assert_eq!(
             super::parse_iso8601_unix("2026-04-30T08:36:43.674476Z"),
@@ -2142,8 +2145,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".crabcc")).unwrap();
         let body = concat!(
-            r#"{"timestamp":"2026-04-30T08:36:43.674476Z","level":"INFO","fields":{"message":"graph build done","kpi":"graph.build","edges":3,"nodes":5,"duration_ms":0},"target":"crabcc_core::graph"}"#, "\n",
-            r#"{"timestamp":"2026-04-30T08:36:44.000000Z","level":"INFO","fields":{"message":"graph cycles done","kpi":"graph.cycles","count":1,"duration_ms":0},"target":"crabcc_core::graph"}"#, "\n",
+            r#"{"timestamp":"2026-04-30T08:36:43.674476Z","level":"INFO","fields":{"message":"graph build done","kpi":"graph.build","edges":3,"nodes":5,"duration_ms":0},"target":"crabcc_core::graph"}"#,
+            "\n",
+            r#"{"timestamp":"2026-04-30T08:36:44.000000Z","level":"INFO","fields":{"message":"graph cycles done","kpi":"graph.cycles","count":1,"duration_ms":0},"target":"crabcc_core::graph"}"#,
+            "\n",
         );
         std::fs::write(dir.path().join(".crabcc/telemetry.jsonl"), body).unwrap();
         let snap = super::telemetry_tail(dir.path(), "").unwrap();
@@ -2162,8 +2167,10 @@ mod tests {
         std::fs::create_dir_all(dir.path().join(".crabcc")).unwrap();
         // Two events; since cuts off the first one.
         let body = concat!(
-            r#"{"timestamp":"2026-04-30T08:36:43.674476Z","level":"INFO","fields":{"kpi":"graph.build"},"target":"x"}"#, "\n",
-            r#"{"timestamp":"2026-04-30T08:36:44.000000Z","level":"INFO","fields":{"kpi":"graph.cycles"},"target":"x"}"#, "\n",
+            r#"{"timestamp":"2026-04-30T08:36:43.674476Z","level":"INFO","fields":{"kpi":"graph.build"},"target":"x"}"#,
+            "\n",
+            r#"{"timestamp":"2026-04-30T08:36:44.000000Z","level":"INFO","fields":{"kpi":"graph.cycles"},"target":"x"}"#,
+            "\n",
         );
         std::fs::write(dir.path().join(".crabcc/telemetry.jsonl"), body).unwrap();
         // 1777538203 = exact ts of event 1; since=1777538204 keeps only event 2.
@@ -2179,7 +2186,8 @@ mod tests {
         // Mix of valid + invalid lines. Bad lines are skipped, not raised.
         let body = concat!(
             "this is not json\n",
-            r#"{"timestamp":"2026-04-30T08:36:43Z","level":"INFO","fields":{"kpi":"x"},"target":"t"}"#, "\n",
+            r#"{"timestamp":"2026-04-30T08:36:43Z","level":"INFO","fields":{"kpi":"x"},"target":"t"}"#,
+            "\n",
             "{ also: bad\n",
         );
         std::fs::write(dir.path().join(".crabcc/telemetry.jsonl"), body).unwrap();

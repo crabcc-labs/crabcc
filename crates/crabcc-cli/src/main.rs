@@ -4,6 +4,8 @@ use crabcc_core::{query, store::Store};
 use std::path::{Path, PathBuf};
 
 mod agent;
+mod agent_guard;
+mod agent_runs_db;
 mod compress_cmd;
 mod go;
 mod install;
@@ -277,6 +279,47 @@ enum Cmd {
         #[arg(long)]
         no_init: bool,
     },
+    /// List agent runs from the singleton ~/.crabcc/_internal.db. Used
+    /// by the macOS menubar Status section + `task agent-status`.
+    #[command(name = "agent-ls")]
+    AgentLs {
+        /// Only show rows with status='running' (live agents).
+        #[arg(long)]
+        active_only: bool,
+        /// Cap the result set. Defaults to 50.
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        /// JSON output (one object per line — easier to grep than --json).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Sweep stuck / zombie agent runs. Wired to a 20-min LaunchAgent
+    /// (com.crabcc.agent-guard.plist). Marks runs whose PID is gone as
+    /// 'crashed' (zombie reap) and SIGTERM/SIGKILL runs whose log file
+    /// hasn't been written to in --idle-secs (default 1800 = 30 min).
+    /// Records every action in agent_kill_events + writes a per-run
+    /// kill log at ~/.crabcc/agents/<id>/.agent-<id>-kill-log.
+    #[command(name = "agent-guard")]
+    AgentGuard {
+        /// Idle threshold in seconds. Default 1800 (30 min).
+        #[arg(long, default_value_t = 1800u64)]
+        idle_secs: u64,
+        /// Grace period in ms between SIGTERM and SIGKILL.
+        #[arg(long, default_value_t = 5000u64)]
+        term_grace_ms: u64,
+        /// JSON summary (single line — easy for the LaunchAgent to log).
+        #[arg(long)]
+        json: bool,
+    },
+    /// List agent kill events from the audit trail. The web UI / viz
+    /// dashboard filters on this surface to show "incidents only".
+    #[command(name = "agent-kills")]
+    AgentKills {
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -536,6 +579,32 @@ fn main() -> Result<()> {
             model: model.clone(),
             no_refresh: *no_refresh,
         });
+    }
+
+    // agent-ls / agent-guard / agent-kills — no Store needed, all read
+    // from / write to ~/.crabcc/_internal.db directly.
+    if let Some(Cmd::AgentLs {
+        active_only,
+        limit,
+        json,
+    }) = cli.cmd.as_ref()
+    {
+        return run_agent_ls(*active_only, *limit, *json);
+    }
+    if let Some(Cmd::AgentGuard {
+        idle_secs,
+        term_grace_ms,
+        json,
+    }) = cli.cmd.as_ref()
+    {
+        return agent_guard::run(agent_guard::GuardConfig {
+            idle_secs: *idle_secs,
+            term_grace_ms: *term_grace_ms,
+            json: *json,
+        });
+    }
+    if let Some(Cmd::AgentKills { limit, json }) = cli.cmd.as_ref() {
+        return run_agent_kills(*limit, *json);
     }
 
     // `compress` is a meta-operation on the index. It owns its own codec
@@ -807,6 +876,109 @@ fn main() -> Result<()> {
         Cmd::Info { .. } => unreachable!("info handled before store init"),
         Cmd::Serve { .. } => unreachable!("serve handled before store init"),
         Cmd::Agent { .. } => unreachable!("agent handled before store init"),
+        Cmd::AgentLs { .. } => unreachable!("agent-ls handled before store init"),
+        Cmd::AgentGuard { .. } => unreachable!("agent-guard handled before store init"),
+        Cmd::AgentKills { .. } => unreachable!("agent-kills handled before store init"),
+    }
+    Ok(())
+}
+
+fn run_agent_ls(active_only: bool, limit: usize, json: bool) -> Result<()> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("HOME not set"))?;
+    let db_path = agent_runs_db::default_db_path(&home);
+    if !db_path.exists() {
+        if json {
+            println!("[]");
+        } else {
+            eprintln!(
+                "crabcc agent-ls: no DB at {} (no agent runs yet)",
+                db_path.display()
+            );
+        }
+        return Ok(());
+    }
+    let conn = agent_runs_db::open(&db_path)?;
+    let _ = agent_runs_db::reap_stale(&conn);
+    let rows = agent_runs_db::list_runs(&conn, active_only, limit)?;
+    if json {
+        let parts: Vec<String> = rows
+            .iter()
+            .map(|r| {
+                format!(
+                    r#"{{"id":"{}","status":"{}","started_ts":{},"finished_ts":{},"pid":{},"repo":"{}","runtime":"{}","model":"{}","exit_code":{}}}"#,
+                    r.id,
+                    r.status,
+                    r.started_ts,
+                    r.finished_ts.map(|v| v.to_string()).unwrap_or_else(|| "null".into()),
+                    r.pid.map(|v| v.to_string()).unwrap_or_else(|| "null".into()),
+                    r.repo.replace('"', "\\\""),
+                    r.runtime.clone().unwrap_or_default(),
+                    r.model.clone().unwrap_or_default(),
+                    r.exit_code.map(|v| v.to_string()).unwrap_or_else(|| "null".into()),
+                )
+            })
+            .collect();
+        println!("[{}]", parts.join(","));
+    } else {
+        println!("ID                 STATUS     PID      EXIT     REPO");
+        for r in rows {
+            println!(
+                "{:<18} {:<10} {:<8} {:<8} {}",
+                r.id,
+                r.status,
+                r.pid.map(|p| p.to_string()).unwrap_or_else(|| "-".into()),
+                r.exit_code
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "-".into()),
+                r.repo,
+            );
+        }
+    }
+    Ok(())
+}
+
+fn run_agent_kills(limit: usize, json: bool) -> Result<()> {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| anyhow::anyhow!("HOME not set"))?;
+    let db_path = agent_runs_db::default_db_path(&home);
+    if !db_path.exists() {
+        if json {
+            println!("[]");
+        }
+        return Ok(());
+    }
+    let conn = agent_runs_db::open(&db_path)?;
+    let evs = agent_runs_db::list_kill_events(&conn, limit)?;
+    if json {
+        let parts: Vec<String> = evs
+            .iter()
+            .map(|e| {
+                format!(
+                    r#"{{"run_id":"{}","reason":"{}","pid":{},"detail":"{}"}}"#,
+                    e.run_id,
+                    e.reason,
+                    e.pid
+                        .map(|p| p.to_string())
+                        .unwrap_or_else(|| "null".into()),
+                    e.detail.replace('"', "\\\""),
+                )
+            })
+            .collect();
+        println!("[{}]", parts.join(","));
+    } else {
+        println!("RUN_ID             REASON     PID      DETAIL");
+        for e in evs {
+            println!(
+                "{:<18} {:<10} {:<8} {}",
+                e.run_id,
+                e.reason,
+                e.pid.map(|p| p.to_string()).unwrap_or_else(|| "-".into()),
+                e.detail,
+            );
+        }
     }
     Ok(())
 }
@@ -891,6 +1063,9 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::Openapi => "openapi",
         Cmd::Go => "go",
         Cmd::Agent { .. } => "agent",
+        Cmd::AgentLs { .. } => "agent-ls",
+        Cmd::AgentGuard { .. } => "agent-guard",
+        Cmd::AgentKills { .. } => "agent-kills",
         Cmd::Serve { .. } => "serve",
         Cmd::InstallClaude { .. } => "install-claude",
     }

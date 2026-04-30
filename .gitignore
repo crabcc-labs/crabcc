@@ -2,6 +2,9 @@
 **/*.rs.bk
 Cargo.lock
 .crabcc/
+# DMG installer build outputs (scripts/build-dmg.sh)
+/dist/
+/build/
 .DS_Store
 # Per-developer scratch — task outputs land here (local-ci, smoke,
 # coverage, profiling, ollama smoke replies). Kept on disk between

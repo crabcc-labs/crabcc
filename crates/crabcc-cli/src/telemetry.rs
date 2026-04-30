@@ -98,11 +98,9 @@ pub fn init() -> TelemetryGuard {
             // terminal. Without this, `RUST_LOG=warn` would silence
             // both stderr AND the file — defeating the dashboard's
             // reason to exist.
-            let file_filter = EnvFilter::try_from_env("CRABCC_TELEMETRY_LOG")
-                .unwrap_or_else(|_| {
-                    EnvFilter::new(
-                        "crabcc_mcp=info,crabcc_core::graph=info,crabcc_cli::agent=info",
-                    )
+            let file_filter =
+                EnvFilter::try_from_env("CRABCC_TELEMETRY_LOG").unwrap_or_else(|_| {
+                    EnvFilter::new("crabcc_mcp=info,crabcc_core::graph=info,crabcc_cli::agent=info")
                 });
             let layer = fmt::layer()
                 .json()

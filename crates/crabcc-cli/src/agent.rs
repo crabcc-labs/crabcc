@@ -414,6 +414,25 @@ pub fn run(req: AgentRequest<'_>) -> Result<()> {
         run_dir.log_path.display()
     );
 
+    // Open the singleton runs DB. Best-effort: if it fails (locked,
+    // disk full), the agent still runs — the menubar's pgrep + lockfile
+    // fallback will catch this run.
+    let db_path = crate::agent_runs_db::default_db_path(&home);
+    let db_conn = crate::agent_runs_db::open(&db_path).ok();
+    if let Some(c) = &db_conn {
+        let _ = crate::agent_runs_db::reap_stale(c);
+        let _ = crate::agent_runs_db::insert_run(
+            c,
+            &run_dir.id,
+            req.root,
+            "subprocess",
+            req.model.as_deref(),
+            &run_dir.log_path,
+            &run_dir.meta_path,
+        );
+        let _ = crate::agent_runs_db::update_pid(c, &run_dir.id, std::process::id());
+    }
+
     // Skill check is cheap (one stat); print a hint when missing so a
     // fresh dev who hasn't run `crabcc install-claude` yet gets a
     // breadcrumb instead of a silently-uninformed agent. Don't auto-
@@ -464,6 +483,18 @@ pub fn run(req: AgentRequest<'_>) -> Result<()> {
     let runtime = SubprocessRuntime;
     let result = runtime.run(&req, &run_dir);
     run_dir.finalize();
+
+    // Record completion in the singleton runs DB. Use -1 as the exit
+    // code for "runtime errored before claude returned" so the row
+    // doesn't sit in 'running' forever.
+    if let Some(c) = &db_conn {
+        let exit_code = match &result {
+            Ok(code) => *code,
+            Err(_) => -1,
+        };
+        let _ = crate::agent_runs_db::mark_finished(c, &run_dir.id, exit_code);
+    }
+
     let code = result?;
     if code != 0 {
         anyhow::bail!(

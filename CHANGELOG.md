@@ -6,6 +6,74 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+## [2.8.0] — 2026-04-30
+
+Minor bump capturing the macOS installer surface (issue [#107](https://github.com/peterlodri-sec/crabcc/issues/107))
+plus agent-run lifecycle tracking. The `Crabcc.app` bundle is the
+user-facing artifact: a menubar app surfacing live process state,
+scheduled LaunchAgent tasks, and recent kill events from a singleton
+SQLite store that every `crabcc agent` invocation now records into.
+
+### Added — macOS installer .app + DMG (issue #107)
+- `installer/Crabcc.app/` — drag-to-install bundle with `LSUIElement`,
+  `com.crabcc.installer` ID, ad-hoc codesigned so it shows up in
+  System Settings → Privacy & Security → App Management.
+- Menubar UI (single-file `menubar.swift`, compiled at build time with
+  `swiftc` — no Xcode project): live status (indexes / watches / agents
+  / agentd), Run Task submenu populated from `Taskfile.yml`, Scheduled
+  Tasks submenu, Recent Kills submenu, About panel, Reindex Now / Run
+  Guard Now / Open Logs / Reinstall actions, JSON-lines telemetry.
+- Three LaunchAgents installed by the bundle:
+  - `com.crabcc.menubar` — RunAtLoad + KeepAlive-on-crash, Interactive
+    QoS so the menubar stays responsive after sleep/wake/restart.
+  - `com.crabcc.agentd` — KeepAlive=true background tick, every 5 min
+    runs `crabcc refresh` against repos in `~/.crabcc/agent/repos.list`.
+    Pure shell with `trap 'wait' SIGCHLD` for zombie-free child reaping.
+  - `com.crabcc.agent-guard` — `StartInterval=1200` (every 20 min)
+    background sweep.
+- `scripts/build-dmg.sh` — stage Crabcc.app, populate Resources with
+  release-mode `crabcc`/`ccc` + skills/ + commands/ + install-aliases.sh,
+  swiftc the menubar shim, ad-hoc codesign the bundle, hand off to
+  `hdiutil` → `dist/crabcc-<version>.dmg` (~8.6 MB UDZO compressed).
+- `task dmg` Taskfile target wires the above end-to-end.
+
+### Added — bootstrap + helper scripts
+- `scripts/bootstrap.sh` — `curl | bash`-able fresh-machine setup:
+  preflight (rustup if missing), clone into `~/workspace/bin/crabcc`,
+  cargo install, ad-hoc codesign (Sequoia provenance fix), aliases,
+  skill/command symlinks, optional `--with-docker` / `--with-launchd` /
+  `--with-macos-app`. Idempotent — same script for fresh + upgrade.
+- `scripts/install-macos-helpers.sh` — register/remove the
+  `com.crabcc.agentd` LaunchAgent against the local repo without
+  building the DMG. Useful for dev-machine smoke + CI.
+- `scripts/doctor.sh` — added `macos-app` + `launch-agent` checks;
+  `--install` now renders + bootstraps the LaunchAgent when Crabcc.app
+  is installed.
+
+### Added — agent run lifecycle DB + guard (issue #107)
+- `~/.crabcc/_internal.db` — singleton SQLite (WAL) recording every
+  `crabcc agent` invocation: PID, repo, runtime, model, log path,
+  exit code, timestamps. `agent_runs` + `agent_kill_events` tables.
+  `agent.rs` writes on start (insert + update_pid) and on exit
+  (mark_finished). Best-effort — bookkeeping never fails the run.
+- `crabcc agent-ls [--active-only] [--json]` — lists rows. Reaps
+  zombies (rows still 'running' whose PID is gone) on every call.
+- `crabcc agent-guard [--idle-secs N] [--json]` — periodic janitor
+  fired by the `com.crabcc.agent-guard` LaunchAgent every 20 min.
+  Detects zombies (PID gone) and stuck runs (log mtime older than
+  `--idle-secs`, default 1800). SIGTERM with 5 s grace, then SIGKILL.
+  Records every action in `agent_kill_events` and writes a per-run
+  `~/.crabcc/agents/<id>/.agent-<id>-kill-log` audit file.
+- `crabcc agent-kills [--json]` — lists kill events for the menubar +
+  future viz dashboard "incidents only" filter.
+
+### Changed
+- `Reinstall / Update…` menubar action now fetches the latest
+  `scripts/bootstrap.sh` from GitHub via `gh` (curl fallback) and runs
+  it — the update path can never get stuck on stale bundled binaries.
+- `README.md` gained "Bootstrap a fresh machine" + "macOS .app + DMG
+  installer" sections.
+
 ## [2.7.0] — 2026-04-30
 
 Minor bump capturing the post-2.6.0 wave: ollama-backed audit sub-agents,
