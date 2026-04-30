@@ -472,11 +472,12 @@ mod tests {
     fn tools_def_returns_all_memory_tools() {
         let tools = tools_def();
         // At least 10 tools; may grow as new tools land
-        assert!(tools.len() >= 10, "expected >=10 tools, got {}", tools.len());
-        let names: Vec<&str> = tools
-            .iter()
-            .map(|t| t["name"].as_str().unwrap())
-            .collect();
+        assert!(
+            tools.len() >= 10,
+            "expected >=10 tools, got {}",
+            tools.len()
+        );
+        let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert!(names.contains(&"memory.init"));
         assert!(names.contains(&"memory.remember"));
         assert!(names.contains(&"memory.search"));
@@ -515,7 +516,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // Create a .git dir so find_git_root resolves
         std::fs::create_dir_all(dir.path().join(".git")).unwrap();
-        let result = dispatch("memory.init", &json!({"cwd": dir.path().to_str()}), dir.path());
+        let result = dispatch(
+            "memory.init",
+            &json!({"cwd": dir.path().to_str()}),
+            dir.path(),
+        );
         assert!(result.is_ok(), "init failed: {:?}", result.err());
         let parsed: Value = serde_json::from_str(&result.unwrap()).unwrap();
         assert_eq!(parsed["status"], "ok");
@@ -525,7 +530,11 @@ mod tests {
     fn dispatch_count_on_fresh_db() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".git")).unwrap();
-        let result = dispatch("memory.count", &json!({"cwd": dir.path().to_str()}), dir.path());
+        let result = dispatch(
+            "memory.count",
+            &json!({"cwd": dir.path().to_str()}),
+            dir.path(),
+        );
         assert!(result.is_ok());
         let parsed: Value = serde_json::from_str(&result.unwrap()).unwrap();
         assert_eq!(parsed["count"], 0);
@@ -608,8 +617,8 @@ mod tests {
         // Health returns the HealthStatus enum serialized as a string
         let parsed: Value = serde_json::from_str(&result).unwrap();
         // Could be "Ok" string or {"status":"Ok"} — check either form
-        let is_ok = parsed == json!("Ok")
-            || parsed.get("status").and_then(|v| v.as_str()) == Some("Ok");
+        let is_ok =
+            parsed == json!("Ok") || parsed.get("status").and_then(|v| v.as_str()) == Some("Ok");
         assert!(is_ok, "expected Ok health, got: {parsed}");
     }
 

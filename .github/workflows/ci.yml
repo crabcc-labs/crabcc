@@ -38,8 +38,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-lint
-          # Only write cache on main — keeps PR builds from churning the cache.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Aggressive: save the cache on every branch (not just main) so
+          # repeat PR pushes hit a warm target/, and persist even when
+          # the lint job fails so the next attempt starts warm.
+          save-if: "true"
+          cache-on-failure: "true"
+          cache-all-crates: "true"
 
       # Issue #87 — Pillar 3 (PR-only-changed-files CI). On PR, scope
       # clippy + aliases-smoke to changed crates / scripts. On push to
@@ -109,7 +113,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-ubuntu
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Aggressive: save the cache on every branch (not just main).
+          # PR re-pushes hit warm target/, the test job specifically
+          # benefits — full workspace nextest is the longest CI step.
+          save-if: "true"
+          cache-on-failure: "true"
+          cache-all-crates: "true"
 
       - name: install cargo-nextest (JUnit reporter)
         uses: taiki-e/install-action@v2
