@@ -82,20 +82,21 @@ $ crabcc refs Assessment --files-only --limit 10
                                                           (–99.6%)
 ```
 
-<details>
-<summary>📚 Table of contents</summary>
+## Table of contents
 
 - [Why](#why)
 - [Install](#install)
+  - [Claude Code integration](#claude-code-integration)
 - [Usage](#usage)
+  - [AI memory (`crabcc memory`, M0–M2 + bench gate)](#ai-memory-crabcc-memory-m0m2--bench-gate)
 - [Token-shaping flags](#token-shaping-flags)
 - [Bench results](#bench-results-mc-mothership-13k-indexed-files)
 - [Architecture](#architecture)
 - [When NOT to use crabcc](#when-not-to-use-crabcc)
 - [Status & roadmap](#status)
+- [Contributing](#contributing)
 
 Deep dives: [`ARCHITECTURE.md`](./ARCHITECTURE.md) · [`docs/RESEARCH-mempalace.md`](./docs/RESEARCH-mempalace.md) · [`docs/RESEARCH-fsst.md`](./docs/RESEARCH-fsst.md) · [`docs/RESEARCH-storage.md`](./docs/RESEARCH-storage.md) · [`examples/`](./examples/) · [`man/crabcc.1`](./man/crabcc.1)
-</details>
 
 ---
 
@@ -486,3 +487,27 @@ dropped in v1.0.1 — `cargo install` from source.)
 | **Distribution: brew tap, mdBook, demos** | 🚧 v2.5 sprint 2 | [#5](https://github.com/peterlodri-sec/crabcc/issues/5) |
 
 Full v2.5 plan: [`docs/ROADMAP-v2.5.md`](./docs/ROADMAP-v2.5.md).
+
+---
+
+## Contributing
+
+Workflow basics:
+
+- `task` builds + tests; `task ci` runs the local CI sweep (fmt + clippy + tests + smoke).
+- Commit format: `type(scope): subject`. See `git log` for style.
+- Schema is **additive** — no `ALTER TABLE … DROP COLUMN`. New columns + idempotent `ALTER` in `Store::open` (mirrored in `crabcc-memory/schema/`).
+- Reuse `crabcc-core` from `crabcc-memory`; don't reinvent `walker::walk_repo`, `hash::sha256_hex`, the `Store::open` PRAGMA pattern, etc.
+
+### Demo assets
+
+The two demo GIFs in `assets/` (`demo.gif`, `demo-memory.gif`) are regenerated via [`vhs`](https://github.com/charmbracelet/vhs) from the matching `.tape` scripts:
+
+```bash
+vhs assets/demo.tape          # → assets/demo.gif
+vhs assets/demo-memory.tape   # → assets/demo-memory.gif
+```
+
+Before committing a regenerated GIF, run it through [**compressO**](https://github.com/codeforreal1/compressO) (Tauri-based desktop GUI; macOS / Linux / Windows) to shrink the file size without re-encoding from scratch. Open compressO, drop the GIF in, save it back to `assets/`. Aim for ≤ 600 KB per demo.
+
+`assets/logo.svg` (and the `logo-*.svg` variants) are hand-tuned — don't run them through any automated optimizer.
