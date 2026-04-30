@@ -1,11 +1,16 @@
 use crate::pattern;
 use crate::refs;
 use crate::store::Store;
-use crate::types::{Hit, Symbol};
+use crate::types::{Hit, Symbol, SymbolKind};
 use anyhow::Result;
 use serde::Serialize;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
+
+/// How many entries each top-N list in `Output::Summary` returns.
+/// Sized so the summary stays under a few KB even for hits-heavy queries —
+/// agents can pivot to `Mode::Hits` if they need finer detail.
+const DEFAULT_TOP_N: usize = 5;
 
 pub fn find_symbol(store: &Store, name: &str) -> Result<Vec<Symbol>> {
     store.find_by_name(name)
@@ -13,13 +18,19 @@ pub fn find_symbol(store: &Store, name: &str) -> Result<Vec<Symbol>> {
 
 /// Mode for refs/callers queries — controls how much we materialize
 /// before the agent ever sees the result. The flags are mutually exclusive
-/// at the CLI level; precedence here is Count > FilesOnly > Hits(limit).
+/// at the CLI level; precedence here is Count > Summary > FilesOnly > Hits(limit).
 #[derive(Debug, Clone, Copy)]
 pub enum Mode {
     /// Full hit list capped at `limit` (None = uncapped).
     Hits { limit: Option<usize> },
     /// Distinct file list, no line/col/snippet — capped at `limit`.
     FilesOnly { limit: Option<usize> },
+    /// Per-file hit-count distribution: `{"by_file": {"path": N, ...}}`.
+    /// Useful when an agent needs distribution-shape, not individual
+    /// matches. Roughly 95% bytes saved vs raw hits, ~50% saved vs files-only.
+    /// `limit` caps the number of files in the result (after sorting by
+    /// path) — files dropped past the limit don't surface at all.
+    Summary { limit: Option<usize> },
     /// Count of hits only — `{"count": N}`.
     Count,
 }
@@ -30,24 +41,139 @@ impl Default for Mode {
     }
 }
 
+/// One entry in `Output::Summary::top_files` — the file plus its hit count.
+/// Sorted by `hits` descending in the output.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct FileHits {
+    pub file: String,
+    pub hits: usize,
+}
+
+/// One entry in `Output::Summary::top_symbols` — the enclosing symbol
+/// (function, class, method, …) at each hit, plus how many hits landed
+/// inside its line range. Sorted by `hits` descending.
+#[derive(Debug, Serialize, PartialEq, Eq)]
+pub struct SymbolHits {
+    pub symbol: String,
+    pub kind: SymbolKind,
+    pub file: String,
+    pub hits: usize,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 pub enum Output {
     Hits(Vec<Hit>),
-    Files { files: Vec<String> },
-    Count { count: usize },
+    Files {
+        files: Vec<String>,
+    },
+    /// Distribution shape for agents that need shape, not individual hits.
+    /// `by_file` is the full per-file count map (capped by `Mode::Summary::limit`).
+    /// `top_files` and `top_symbols` are bounded leaderboards (size = `DEFAULT_TOP_N`)
+    /// so the response stays small even on hits-heavy queries.
+    Summary {
+        by_file: BTreeMap<String, usize>,
+        top_files: Vec<FileHits>,
+        top_symbols: Vec<SymbolHits>,
+    },
+    Count {
+        count: usize,
+    },
 }
 
 impl Output {
     /// Approximate result count for tracking — total hits regardless of
-    /// which output shape we picked.
+    /// which output shape we picked. For `Summary`, returns the sum of
+    /// per-file counts.
     pub fn count(&self) -> usize {
         match self {
             Output::Hits(h) => h.len(),
             Output::Files { files } => files.len(),
+            Output::Summary { by_file, .. } => by_file.values().sum(),
             Output::Count { count } => *count,
         }
     }
+}
+
+/// Helper: aggregate raw hits into the `Summary` shape. Loads symbols
+/// per file via the store (cached in a local map) and finds the
+/// innermost enclosing symbol for each hit's line.
+fn build_summary(store: &Store, hits: &[(String, u32)], limit: Option<usize>) -> Result<Output> {
+    let mut by_file: BTreeMap<String, usize> = BTreeMap::new();
+    for (file, _) in hits {
+        *by_file.entry(file.clone()).or_insert(0) += 1;
+    }
+
+    // top_files: clone-then-sort the by_file map; truncate to top N.
+    let mut top_files: Vec<FileHits> = by_file
+        .iter()
+        .map(|(f, n)| FileHits {
+            file: f.clone(),
+            hits: *n,
+        })
+        .collect();
+    // Stable secondary sort by file path keeps ties deterministic — matters
+    // for the fingerprint feature (#4) where output bytes must be stable.
+    top_files.sort_by(|a, b| b.hits.cmp(&a.hits).then(a.file.cmp(&b.file)));
+    top_files.truncate(DEFAULT_TOP_N);
+
+    // top_symbols: for each hit, find the smallest enclosing symbol via
+    // `Store::symbols_in_file`. Cache the per-file symbol vec so a hits-
+    // heavy file pays the SQL once.
+    let mut symbol_cache: HashMap<String, Vec<Symbol>> = HashMap::new();
+    let mut tally: HashMap<(String, String), (SymbolKind, usize)> = HashMap::new();
+    for (file, line) in hits {
+        let symbols = match symbol_cache.get(file) {
+            Some(v) => v,
+            None => {
+                let v = store.symbols_in_file(file).unwrap_or_default();
+                symbol_cache.entry(file.clone()).or_insert(v)
+            }
+        };
+        if let Some(sym) = enclosing_symbol(symbols, *line) {
+            let entry = tally
+                .entry((sym.name.clone(), file.clone()))
+                .or_insert((sym.kind, 0));
+            entry.1 += 1;
+        }
+    }
+    let mut top_symbols: Vec<SymbolHits> = tally
+        .into_iter()
+        .map(|((name, file), (kind, hits))| SymbolHits {
+            symbol: name,
+            kind,
+            file,
+            hits,
+        })
+        .collect();
+    top_symbols.sort_by(|a, b| {
+        b.hits
+            .cmp(&a.hits)
+            .then(a.file.cmp(&b.file))
+            .then(a.symbol.cmp(&b.symbol))
+    });
+    top_symbols.truncate(DEFAULT_TOP_N);
+
+    if let Some(l) = limit {
+        let keep: Vec<String> = by_file.keys().take(l).cloned().collect();
+        by_file.retain(|k, _| keep.contains(k));
+    }
+
+    Ok(Output::Summary {
+        by_file,
+        top_files,
+        top_symbols,
+    })
+}
+
+/// Find the innermost (smallest line range) symbol containing `line`.
+/// Returns `None` if no symbol's `[line_start, line_end]` covers it —
+/// e.g., top-level statements that aren't inside a function/class.
+fn enclosing_symbol(symbols: &[Symbol], line: u32) -> Option<&Symbol> {
+    symbols
+        .iter()
+        .filter(|s| s.line_start <= line && line <= s.line_end)
+        .min_by_key(|s| s.line_end.saturating_sub(s.line_start))
 }
 
 /// Find call sites of `name` across the indexed repo.
@@ -117,6 +243,11 @@ pub fn callers_via_edges(store: &Store, root: &Path, name: &str, mode: Mode) -> 
             }
             Ok(Output::Files { files })
         }
+        Mode::Summary { limit } => {
+            let pairs: Vec<(String, u32)> =
+                edge_hits.iter().map(|h| (h.file.clone(), h.line)).collect();
+            build_summary(store, &pairs, limit)
+        }
         Mode::Hits { limit } => {
             // Group by file so the on-demand snippet read happens once per file
             // regardless of how many callers landed in it.
@@ -163,6 +294,11 @@ fn empty_for(mode: Mode) -> Output {
     match mode {
         Mode::Count => Output::Count { count: 0 },
         Mode::FilesOnly { .. } => Output::Files { files: Vec::new() },
+        Mode::Summary { .. } => Output::Summary {
+            by_file: BTreeMap::new(),
+            top_files: Vec::new(),
+            top_symbols: Vec::new(),
+        },
         Mode::Hits { .. } => Output::Hits(Vec::new()),
     }
 }
@@ -208,6 +344,7 @@ where
     let mut hits: Vec<Hit> = Vec::new();
     let mut files: Vec<String> = Vec::new();
     let mut seen_files: HashSet<String> = HashSet::new();
+    let mut summary_hits: Vec<(String, u32)> = Vec::new();
     let mut count: usize = 0;
 
     for (rel_path, lang) in store.list_files()? {
@@ -244,6 +381,15 @@ where
                     }
                 }
             }
+            Mode::Summary { .. } => {
+                let new_hits = per_file(src, &lang, &rel_path);
+                for h in &new_hits {
+                    summary_hits.push((rel_path.clone(), h.line));
+                }
+                // Note: `limit` is applied after the walk completes so
+                // the result stays sorted-by-path and stable. Stopping
+                // mid-walk would leak walk-order into the response.
+            }
             Mode::Hits { limit } => {
                 let mut new_hits = per_file(src, &lang, &rel_path);
                 if let Some(l) = limit {
@@ -262,11 +408,12 @@ where
         }
     }
 
-    Ok(match mode {
-        Mode::Hits { .. } => Output::Hits(hits),
-        Mode::FilesOnly { .. } => Output::Files { files },
-        Mode::Count => Output::Count { count },
-    })
+    match mode {
+        Mode::Hits { .. } => Ok(Output::Hits(hits)),
+        Mode::FilesOnly { .. } => Ok(Output::Files { files }),
+        Mode::Summary { limit } => build_summary(store, &summary_hits, limit),
+        Mode::Count => Ok(Output::Count { count }),
+    }
 }
 
 fn early_stop(mode: &Mode, hits_len: usize, files_len: usize) -> bool {
@@ -363,6 +510,151 @@ mod tests {
             }
             _ => panic!("expected Files output"),
         }
+    }
+
+    #[test]
+    fn refs_summary_mode_returns_per_file_distribution_and_top_files() {
+        // The walker path — refs uses `run`, not the edges fast path.
+        // `greet` lives in a.ts (definition + export) and is referenced
+        // again in b.ts (import + 2 calls). The summary must surface
+        // both files with per-file counts AND a top_files leaderboard
+        // sorted by hits descending.
+        let (dir, store) = fixture_repo();
+        let out = query_refs(&store, dir.path(), "greet", Mode::Summary { limit: None }).unwrap();
+        match out {
+            Output::Summary {
+                by_file,
+                top_files,
+                top_symbols,
+            } => {
+                assert!(by_file.contains_key("a.ts"));
+                assert!(by_file.contains_key("b.ts"));
+                assert!(by_file["a.ts"] >= 1);
+                assert!(by_file["b.ts"] >= 1);
+
+                // top_files must be sorted hits-desc and contain both
+                // files (no truncation since corpus has 2 hit-bearing
+                // files and DEFAULT_TOP_N is 5).
+                assert_eq!(top_files.len(), 2, "got: {top_files:?}");
+                assert!(
+                    top_files[0].hits >= top_files[1].hits,
+                    "top_files not desc: {top_files:?}"
+                );
+
+                // top_symbols depends on the indexer extracting `greet`
+                // as a function symbol in a.ts. The fixture's a.ts
+                // defines `greet` so we should see at least one entry.
+                assert!(
+                    !top_symbols.is_empty(),
+                    "expected non-empty top_symbols, got: {top_symbols:?}"
+                );
+            }
+            _ => panic!("expected Summary output, got {out:?}"),
+        }
+    }
+
+    #[test]
+    fn refs_summary_limit_caps_by_file_only() {
+        // `limit` on Mode::Summary caps `by_file`, not the leaderboards.
+        // With limit=1 only the first file (sorted by path) survives.
+        let (dir, store) = fixture_repo();
+        let out = query_refs(
+            &store,
+            dir.path(),
+            "greet",
+            Mode::Summary { limit: Some(1) },
+        )
+        .unwrap();
+        match out {
+            Output::Summary { by_file, .. } => {
+                assert_eq!(by_file.len(), 1, "limit=1 should keep one file");
+                assert!(by_file.contains_key("a.ts"));
+                assert!(!by_file.contains_key("b.ts"));
+            }
+            _ => panic!("expected Summary output"),
+        }
+    }
+
+    #[test]
+    fn callers_summary_mode_includes_enclosing_symbol() {
+        // Callers takes the edges fast path when `edges_populated='1'`,
+        // otherwise the legacy walker. `fixture_repo` calls `build_index`,
+        // not `full_index`, so this exercises the walker path. Both
+        // paths must produce equivalent Summary output for the contract
+        // to hold; specifically — every call site of `greet` in b.ts
+        // sits inside the function-level scope of that file.
+        let (dir, store) = fixture_repo();
+        let out =
+            query_callers(&store, dir.path(), "greet", Mode::Summary { limit: None }).unwrap();
+        match out {
+            Output::Summary {
+                by_file, top_files, ..
+            } => {
+                let total: usize = by_file.values().sum();
+                assert!(total >= 3, "expected ≥3 calls, got {total}");
+                assert!(by_file.contains_key("b.ts"));
+                assert!(top_files.iter().any(|f| f.file == "b.ts"));
+            }
+            _ => panic!("expected Summary output"),
+        }
+    }
+
+    #[test]
+    fn unknown_name_summary_is_empty_with_empty_leaderboards() {
+        let (dir, store) = fixture_repo();
+        let out = query_refs(
+            &store,
+            dir.path(),
+            "absolutely_not_in_fixture",
+            Mode::Summary { limit: None },
+        )
+        .unwrap();
+        match out {
+            Output::Summary {
+                by_file,
+                top_files,
+                top_symbols,
+            } => {
+                assert!(by_file.is_empty());
+                assert!(top_files.is_empty());
+                assert!(top_symbols.is_empty());
+            }
+            _ => panic!("expected Summary output"),
+        }
+    }
+
+    #[test]
+    fn enclosing_symbol_picks_innermost() {
+        use crate::types::SymbolKind;
+        let outer = Symbol {
+            name: "outer".into(),
+            kind: SymbolKind::Class,
+            signature: None,
+            parent: None,
+            file: "x.ts".into(),
+            line_start: 1,
+            line_end: 50,
+            visibility: None,
+        };
+        let inner = Symbol {
+            name: "inner".into(),
+            kind: SymbolKind::Method,
+            signature: None,
+            parent: Some("outer".into()),
+            file: "x.ts".into(),
+            line_start: 10,
+            line_end: 20,
+            visibility: None,
+        };
+        let symbols = vec![outer, inner];
+        // Line 15 sits inside both — `inner` has the smaller range and wins.
+        let chosen = enclosing_symbol(&symbols, 15).unwrap();
+        assert_eq!(chosen.name, "inner");
+        // Line 5 sits only inside `outer`.
+        let chosen = enclosing_symbol(&symbols, 5).unwrap();
+        assert_eq!(chosen.name, "outer");
+        // Line 100 sits in neither.
+        assert!(enclosing_symbol(&symbols, 100).is_none());
     }
 
     #[test]

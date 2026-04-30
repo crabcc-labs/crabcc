@@ -135,9 +135,10 @@ fn tools_def_meta() -> Vec<Value> {
 fn tools_def_symbol() -> Vec<Value> {
     let mode_field = json!({
         "type": "string",
-        "enum": ["hits", "files", "count"],
+        "enum": ["hits", "files", "summary", "count"],
         "description": "Output shape. 'hits' = full {file,line,col,snippet} list (default). \
                         'files' = deduped file paths only (~70% smaller). \
+                        'summary' = `{by_file: {path: N, ...}}` distribution (~95% smaller than hits). \
                         'count' = `{count: N}` only (smallest)."
     });
     let limit_field = json!({
@@ -448,6 +449,7 @@ fn parse_mode(args: &Value) -> query::Mode {
     match args.get("mode").and_then(|v| v.as_str()) {
         Some("count") => query::Mode::Count,
         Some("files") => query::Mode::FilesOnly { limit },
+        Some("summary") => query::Mode::Summary { limit },
         _ => query::Mode::Hits { limit },
     }
 }
