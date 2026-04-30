@@ -84,12 +84,49 @@ The fan-out agents will not re-check these.
 
 ---
 
-## Phase 2 — Parallel fan-out (4 sub-agents in ONE message)
+## Phase 2 — Parallel fan-out (4 sub-agents via local Ollama)
 
-Send a single message with **four `Agent` tool calls** (`general-purpose`).
-Each prompt is self-contained: source links, owned cluster, exact
-`$CRABCC_BIN` / `$REPOMIX_BIN` commands, the JSON contract below, the FP
-policy below. Cap each report ≤ 300 words.
+Same backend as `warp-speed-audit` (#84): the orchestrator runs every
+`crabcc` probe itself, then fans the **analysis** of probe outputs out
+to four parallel local Ollama calls via `scripts/ollama-fanout.sh`.
+Free, local, Metal-accelerated, no per-call token cost.
+
+### Backend setup (once per host)
+
+```bash
+task system-check                # local: RAM / disk / arch / daemon
+# or, for a remote / LAN-exposed Ollama:
+task ollama-network-check        # remote: reachability + tag listing
+task ollama-bootstrap            # install + pull (local only)
+task ollama-smoke                # confirm merged JSON
+```
+
+Default model: **`voytas26/openclaw-oss-20b-deterministic`** —
+OpenClaw-tuned gpt-oss:20b. Strict JSON tool calls, deterministic,
+~13 GB disk + ~16 GB RAM. Override via `CRABCC_OLLAMA_MODEL=…`. On
+lower-RAM hosts use `voytas26/openclaw-qwen3vl-8b-opt` (8 GB RAM).
+
+### Flow
+
+1. **Orchestrator runs probes** — each agent cluster (A/B/C/D below)
+   has a list of `crabcc fuzzy / outline / files` commands. Run them,
+   capture JSON to `/tmp/log-probe-<cluster>.json`.
+2. **Build prompts** — `/tmp/log-prompts.json` is a JSON array of four
+   `{name, prompt}` objects. Each prompt embeds: source URLs, the
+   cluster's owned rules, the cluster's probe JSON (raw), the JSON
+   output contract below, the FP policy below, and "respond with
+   valid JSON only".
+3. **Fan out** — `bash scripts/ollama-fanout.sh --prompts /tmp/log-prompts.json --output /tmp/log-replies.json --json-mode --parallel 4`. Set `OLLAMA_HOST=http://lan-host:11434` if Ollama runs off-box.
+4. **Aggregate** — read `/tmp/log-replies.json`; `jq -r '.[] | .response | fromjson'` extracts findings.
+
+### Optional fallback
+
+If `task system-check` / `task ollama-network-check` returns FAIL or
+Ollama is unreachable, the skill MAY fall back to Claude Code's
+`Agent` tool with the same per-cluster prompts. Default to Ollama.
+Each prompt is self-contained regardless of backend: source links,
+owned cluster, exact `$CRABCC_BIN` / `$REPOMIX_BIN` commands, the JSON
+contract below, the FP policy below. Cap each reply ≤ 300 words.
 
 ### JSON output contract
 
