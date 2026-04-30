@@ -1186,6 +1186,50 @@ tasks:
       - 'ollama pull qwen2.5-coder'
       - 'bash install/ollama-stack/start.sh'
 
+  # ─── telemetry (issues #86 + #90) ────────────────────────────────────────
+  telemetry-watch:
+    desc: Live-tail .crabcc/telemetry.jsonl with csvlens (sortable, filterable)
+    cmds:
+      - |
+        FILE="${CRABCC_TELEMETRY_FILE:-.crabcc/telemetry.jsonl}"
+        command -v csvlens >/dev/null && csvlens "$FILE" || { echo "csvlens missing: cargo install csvlens"; tail -f "$FILE" | jq .; }
+    interactive: true
+
+  telemetry-rotel:
+    desc: Start rotel OTLP collector (:4317 gRPC, :4318 HTTP) — issue #86
+    summary: |
+      rotel receives OTLP spans from crabcc and forwards to the /live dashboard.
+      Aggregated data stays in-memory — NEVER written to _internal.db / index.db.
+      Set: export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+    cmds:
+      - |
+        command -v rotel >/dev/null || cargo install rotel
+        echo "▶ rotel :4317 gRPC  :4318 HTTP"
+        echo "  export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318"
+        rotel start --otlp-grpc-port 4317 --otlp-http-port 4318 --exporter blackhole
+    interactive: true
+
+  telemetry-status:
+    desc: Show telemetry pipeline status (jsonl, OTLP, Telegram)
+    cmds:
+      - |
+        FILE="${CRABCC_TELEMETRY_FILE:-.crabcc/telemetry.jsonl}"
+        echo "── telemetry status ─────────────────────────────────────"
+        [ -f "$FILE" ] && echo "  jsonl:    $FILE ($(wc -l < "$FILE") events)" || echo "  jsonl:    (not yet created)"
+        [ -n "${OTEL_EXPORTER_OTLP_ENDPOINT:-}" ] && echo "  OTLP:     $OTEL_EXPORTER_OTLP_ENDPOINT" || echo "  OTLP:     disabled"
+        [ -n "${TELEGRAM_BOT_TOKEN:-}" ] && echo "  Telegram: configured" || echo "  Telegram: disabled"
+        echo "  NOTE: telemetry NEVER written to index.db or _internal.db"
+
+  db-inspect:
+    desc: 'Open a crabcc SQLite DB with csvlens. Usage: task db-inspect DB=.crabcc/index.db'
+    vars:
+      DB: '{{.DB | default ".crabcc/index.db"}}'
+    cmds:
+      - |
+        command -v csvlens >/dev/null || { echo "cargo install csvlens"; exit 1; }
+        csvlens "{{.DB}}"
+    interactive: true
+
   # ─── ollama stack ─────────────────────────────────────────────────────────
   # ─── telegram bot ─────────────────────────────────────────────────────────
   telegram-bot:
