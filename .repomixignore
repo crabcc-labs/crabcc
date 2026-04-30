@@ -1,0 +1,123 @@
+# .repomixignore — strict exclusion list for `repomix` / `task repomix`.
+#
+# Repomix loads this automatically (gitignore syntax). Keep this file
+# as the single source of truth for "what does NOT belong in an LLM
+# bundle of this repo" — repomix.config.json carries only settings.
+#
+# Decision rule: if a file is generated, derived, or noise for a
+# code-review LLM, exclude it. Source files always stay in.
+
+# ---------------------------------------------------------------------------
+# Build outputs (already in .gitignore but listed for defense in depth)
+# ---------------------------------------------------------------------------
+/target/
+**/target/
+**/target.cargo/
+crates/crabcc-core/fuzz/target/
+**/.crabcc/
+
+# DMG / installer build artifacts (issue #107)
+/dist/
+/build/
+**/dist/
+**/web/dist/
+
+# Repomix's own output (avoid double-packing)
+/.repomix/
+
+# ---------------------------------------------------------------------------
+# Lock + manifest detritus
+# ---------------------------------------------------------------------------
+**/*.lock
+**/*-lock.json
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# ---------------------------------------------------------------------------
+# Generated docs + machine-generated specs
+# ---------------------------------------------------------------------------
+# All markdown — narrative docs, CHANGELOG, ARCHITECTURE, RFCs. Source
+# code carries enough rustdoc to explain itself, and bundling 350 KiB
+# of prose drowns the actual logic.
+**/*.md
+
+# OpenAPI spec is generated/codegen'd from the MCP tool surface. Ship
+# the source modules that build it, not the YAML output.
+crates/crabcc-mcp/openapi.yaml
+**/openapi.yaml
+**/openapi.yml
+
+# Other machine-generated artefacts
+target/doc/
+docs/build/
+**/_book/
+
+# ---------------------------------------------------------------------------
+# Static / binary resources — useless to a code-reviewing LLM
+# ---------------------------------------------------------------------------
+**/*.html
+**/*.png
+**/*.jpg
+**/*.jpeg
+**/*.gif
+**/*.svg
+**/*.icns
+**/*.ico
+**/*.woff
+**/*.woff2
+**/*.ttf
+**/*.eot
+**/*.pdf
+**/*.zip
+**/*.tar
+**/*.tar.gz
+**/*.tgz
+**/*.dmg
+**/*.gif
+assets/
+
+# ---------------------------------------------------------------------------
+# macOS .app bundle scripts + plists (issue #107)
+#
+# These are install-time shell glue that ships inside Crabcc.app.
+# They're code we author, but for an LLM debugging the *Rust crates*
+# they're noise. Re-include explicitly via `--include` if you're
+# auditing the installer surface specifically.
+# ---------------------------------------------------------------------------
+installer/Crabcc.app/Contents/Resources/scripts/
+installer/Crabcc.app/Contents/Resources/*.plist
+installer/Crabcc.app/Contents/Info.plist
+
+# ---------------------------------------------------------------------------
+# Test fixtures + bench datasets — large by design, low signal per token
+# ---------------------------------------------------------------------------
+bench/
+bench/results/
+**/fixtures/
+**/__fixtures__/
+**/test-fixtures/
+**/golden/
+**/snapshots/
+**/*.golden
+**/snapshot.txt
+**/*.snap
+
+# Synthetic JSONL transcripts the memory-bench harness uses
+crates/crabcc-memory-bench/data/
+
+# ---------------------------------------------------------------------------
+# Per-developer scratch + summaries
+# ---------------------------------------------------------------------------
+.summary/
+.git/
+.github/CODEOWNERS
+.vscode/
+.idea/
+
+# ---------------------------------------------------------------------------
+# Misc
+# ---------------------------------------------------------------------------
+**/*.log
+**/.DS_Store
+**/Thumbs.db

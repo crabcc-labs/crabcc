@@ -680,15 +680,67 @@ tasks:
   repomix:
     desc: Pack repo into a token-minimized XML bundle for LLM ingestion (.repomix/crabcc.xml)
     summary: |
-      Tree-sitter compressed (signatures only), no comments, no empty lines,
-      no .md files, no per-file or directory-structure summary headers.
-      XML style is the smallest. Override target with OUT=path.
+      All settings live in repomix.config.json (output path, style,
+      compression). The exclusion list lives in .repomixignore — keep
+      it strict (generated artifacts, lock files, binary resources,
+      bench fixtures all excluded by default).
+
+      Override the target via OUT=path. Pass COPY=1 to also send the
+      bundle to the system clipboard (uses repomix's --copy: pbcopy
+      on macOS, xclip on Linux, clip on Windows/WSL).
+
+      Heads up on piping: `task repomix | pbcopy` does NOT work because
+      repomix writes the XML to a *file* and Taskfile prints progress
+      to stdout. Use `task repomix-copy` or `task repomix && cat
+      .repomix/crabcc.xml | pbcopy` instead.
     vars:
-      OUT: '{{.OUT | default ".repomix/crabcc.xml"}}'
+      OUT:  '{{.OUT  | default .REPOMIX_OUT}}'
+      COPY: '{{.COPY | default ""}}'
     cmds:
       - mkdir -p $(dirname {{.OUT}})
-      - 'repomix --compress --remove-comments --remove-empty-lines --no-file-summary --no-directory-structure --style xml --ignore "**/*.md,**/*.lock,**/target/**,**/.crabcc/**,bench/results/**,assets/**,.repomix/**,**/web/dist/**,**/dist/**,**/*.html" --output {{.OUT}}'
+      - 'repomix --output {{.OUT}}{{if .COPY}} --copy{{end}}'
       - 'wc -c {{.OUT}} | awk ''{ printf "size: %.1f KiB\n", $1/1024 }'''
+
+  repomix-copy:
+    desc: Pack repo + copy the bundle to the system clipboard (macOS/Linux/WSL)
+    summary: |
+      Convenience wrapper around `task repomix COPY=1`. The XML body
+      lands on the clipboard as a single payload — paste into any LLM
+      chat surface that accepts large pastes (Claude, ChatGPT, etc.).
+    cmds:
+      - task: repomix
+        vars:
+          COPY: "1"
+
+  repomix-crate:
+    desc: Pack a single crate into .repomix/<crate>.xml — targeted LLM ingestion
+    summary: |
+      For debug-style LLM sessions, packing the whole workspace is
+      noise. This target accepts CRATE=<name> and runs repomix with
+      `--include "crates/<crate>/**"` so the bundle contains only that
+      crate. Ignore patterns from .repomixignore still apply.
+
+      Examples:
+        task repomix-crate CRATE=crabcc-core
+        task repomix-crate CRATE=crabcc-cli OUT=.repomix/cli.xml
+        task repomix-crate CRATE=crabcc-mcp COPY=1
+    vars:
+      CRATE: '{{.CRATE | default ""}}'
+      OUT:   '{{.OUT   | default ""}}'
+      COPY:  '{{.COPY  | default ""}}'
+    preconditions:
+      - sh: '[ -n "{{.CRATE}}" ]'
+        msg: "CRATE=<name> is required (e.g. CRATE=crabcc-core)"
+      - sh: 'test -d crates/{{.CRATE}}'
+        msg: "crates/{{.CRATE}} not found — check the crate name"
+    cmds:
+      - mkdir -p .repomix
+      - >-
+        repomix
+        --include "crates/{{.CRATE}}/**"
+        --output "{{if .OUT}}{{.OUT}}{{else}}.repomix/{{.CRATE}}.xml{{end}}"
+        {{if .COPY}}--copy{{end}}
+      - 'wc -c "{{if .OUT}}{{.OUT}}{{else}}.repomix/{{.CRATE}}.xml{{end}}" | awk ''{ printf "size: %.1f KiB\n", $1/1024 }'''
 
   clean:
     desc: Remove target/, bench/results/, and any tantivy/sqlite test fixtures
