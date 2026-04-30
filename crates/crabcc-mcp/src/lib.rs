@@ -163,6 +163,12 @@ fn tools_def_symbol() -> Vec<Value> {
                 "name":  str_field("symbol name"),
                 "mode":  mode_field.clone(),
                 "limit": limit_field.clone(),
+                "if_changed": str_field(
+                    "Cache-revalidation hint. Pass the fingerprint from a \
+                     previous call; on match the response collapses to \
+                     {unchanged: true, fingerprint: ...}. On mismatch the \
+                     full result is wrapped as {fingerprint, result}."
+                ),
             }),
             &["name"],
         ),
@@ -175,6 +181,9 @@ fn tools_def_symbol() -> Vec<Value> {
                 "name":  str_field("function or method name"),
                 "mode":  mode_field,
                 "limit": limit_field,
+                "if_changed": str_field(
+                    "Cache-revalidation hint — see `refs.if_changed`."
+                ),
             }),
             &["name"],
         ),
@@ -347,14 +356,22 @@ fn dispatch_tool(params: Option<&Value>, root: &Path) -> Result<String> {
             let mode = parse_mode(&args);
             let r = query::query_refs(&store, root, name, mode)?;
             memory::auto_capture(root, "refs", name, r.count(), &args);
-            Ok(serde_json::to_string(&r)?)
+            let body = serde_json::to_string(&r)?;
+            Ok(crabcc_core::hash::fingerprint_envelope(
+                &body,
+                args.get("if_changed").and_then(|v| v.as_str()),
+            ))
         }
         "callers" => {
             let name = arg_str(&args, "name")?;
             let mode = parse_mode(&args);
             let r = query::query_callers(&store, root, name, mode)?;
             memory::auto_capture(root, "callers", name, r.count(), &args);
-            Ok(serde_json::to_string(&r)?)
+            let body = serde_json::to_string(&r)?;
+            Ok(crabcc_core::hash::fingerprint_envelope(
+                &body,
+                args.get("if_changed").and_then(|v| v.as_str()),
+            ))
         }
         "outline" => {
             let r = outline::outline(&store, arg_str(&args, "file")?)?;
@@ -965,6 +982,56 @@ mod tests {
             "expected count field, got: {parsed}"
         );
         assert!(parsed["count"].as_u64().unwrap() >= 1);
+    }
+
+    #[test]
+    fn handle_tools_call_refs_if_changed_round_trip() {
+        // First call with no `if_changed` returns the result body verbatim.
+        // Agent computes the fingerprint and passes it back on the second
+        // call; the response collapses to the unchanged sentinel.
+        let dir = fixture_root();
+        let first = json!({
+            "jsonrpc": "2.0",
+            "id": 90,
+            "method": "tools/call",
+            "params": { "name": "refs", "arguments": { "name": "hello", "mode": "count" } }
+        });
+        let resp1 = handle(&first, dir.path());
+        let body1 = resp1["result"]["content"][0]["text"].as_str().unwrap();
+
+        let fp = crabcc_core::hash::sha256_hex(body1.as_bytes());
+        let second = json!({
+            "jsonrpc": "2.0",
+            "id": 91,
+            "method": "tools/call",
+            "params": {
+                "name": "refs",
+                "arguments": { "name": "hello", "mode": "count", "if_changed": fp }
+            }
+        });
+        let resp2 = handle(&second, dir.path());
+        let body2 = resp2["result"]["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(body2).unwrap();
+        assert_eq!(parsed["unchanged"], true);
+        assert_eq!(parsed["fingerprint"], fp);
+
+        // And a stale fingerprint produces the wrap-with-fresh-fp shape.
+        let stale = "0".repeat(64);
+        let third = json!({
+            "jsonrpc": "2.0",
+            "id": 92,
+            "method": "tools/call",
+            "params": {
+                "name": "refs",
+                "arguments": { "name": "hello", "mode": "count", "if_changed": stale }
+            }
+        });
+        let resp3 = handle(&third, dir.path());
+        let body3 = resp3["result"]["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(body3).unwrap();
+        assert!(parsed.get("fingerprint").is_some());
+        assert!(parsed.get("result").is_some());
+        assert_ne!(parsed["fingerprint"], stale);
     }
 
     #[test]

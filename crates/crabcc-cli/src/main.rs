@@ -249,6 +249,15 @@ struct ResultOpts {
     /// Emit `{"count": N}` only — no per-hit payload.
     #[arg(long)]
     count: bool,
+    /// Cache-revalidation hint. Pass the fingerprint from a previous
+    /// call; if the result is unchanged, the response is just
+    /// `{"unchanged":true,"fingerprint":"..."}` (zero hits payload).
+    /// Otherwise the response is wrapped as
+    /// `{"fingerprint":"<new>","result":<existing-shape>}`.
+    /// When this flag is omitted, the result body is returned verbatim
+    /// — backwards-compatible for callers that don't opt in.
+    #[arg(long, value_name = "FINGERPRINT")]
+    if_changed: Option<String>,
 }
 
 impl ResultOpts {
@@ -417,7 +426,9 @@ fn main() -> Result<()> {
             let body = sonic_rs::to_string(&out)?;
             crabcc_core::track::record("refs", &name, out.count(), &repo_label(&root), body.len());
             memory::auto_capture(&root, "refs", &name, out.count());
-            println!("{body}");
+            let envelope =
+                crabcc_core::hash::fingerprint_envelope(&body, opts.if_changed.as_deref());
+            println!("{envelope}");
         }
         Cmd::Callers { name, opts } => {
             let mode = opts.to_mode();
@@ -431,7 +442,9 @@ fn main() -> Result<()> {
                 body.len(),
             );
             memory::auto_capture(&root, "callers", &name, out.count());
-            println!("{body}");
+            let envelope =
+                crabcc_core::hash::fingerprint_envelope(&body, opts.if_changed.as_deref());
+            println!("{envelope}");
         }
         Cmd::Outline { file } => {
             let key = file.to_string_lossy();
