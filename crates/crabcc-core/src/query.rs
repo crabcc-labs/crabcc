@@ -16,6 +16,18 @@ pub fn find_symbol(store: &Store, name: &str) -> Result<Vec<Symbol>> {
     store.find_by_name(name)
 }
 
+/// Same as [`find_symbol`] but restricted to a set of repo-relative
+/// file paths. Used by the `--since SHA` CLI/MCP filter.
+pub fn find_symbol_in_files(
+    store: &Store,
+    name: &str,
+    files: &HashSet<String>,
+) -> Result<Vec<Symbol>> {
+    let mut syms = store.find_by_name(name)?;
+    syms.retain(|s| files.contains(&s.file));
+    Ok(syms)
+}
+
 /// Mode for refs/callers queries — controls how much we materialize
 /// before the agent ever sees the result. The flags are mutually exclusive
 /// at the CLI level; precedence here is Count > Summary > FilesOnly > Hits(limit).
@@ -178,7 +190,7 @@ fn enclosing_symbol(symbols: &[Symbol], line: u32) -> Option<&Symbol> {
 
 /// Find call sites of `name` across the indexed repo.
 pub fn find_callers(store: &Store, root: &Path, name: &str) -> Result<Vec<Hit>> {
-    match query_callers(store, root, name, Mode::default())? {
+    match query_callers(store, root, name, Mode::default(), None)? {
         Output::Hits(h) => Ok(h),
         _ => unreachable!("default mode is Hits"),
     }
@@ -186,29 +198,45 @@ pub fn find_callers(store: &Store, root: &Path, name: &str) -> Result<Vec<Hit>> 
 
 /// Find every identifier reference to `name` across the indexed repo.
 pub fn find_refs(store: &Store, root: &Path, name: &str) -> Result<Vec<Hit>> {
-    match query_refs(store, root, name, Mode::default())? {
+    match query_refs(store, root, name, Mode::default(), None)? {
         Output::Hits(h) => Ok(h),
         _ => unreachable!("default mode is Hits"),
     }
 }
 
-pub fn query_callers(store: &Store, root: &Path, name: &str, mode: Mode) -> Result<Output> {
+/// Find call sites of `name`. When `file_filter` is `Some`, only files
+/// in that set are considered — used by the `--since SHA` flag (which
+/// resolves the SHA to a changed-files set via `gitdiff::changed_files_since`).
+pub fn query_callers(
+    store: &Store,
+    root: &Path,
+    name: &str,
+    mode: Mode,
+    file_filter: Option<&HashSet<String>>,
+) -> Result<Output> {
     // Fast path: edges populated by `crabcc index` v2.0+. One SQL query
     // replaces N tree-sitter walks. Falls back to the ast-grep walker for
     // partially-populated indexes (v1.0.0 upgrade where edges_populated='0').
     if edges_ready(store)? {
-        return callers_via_edges(store, root, name, mode);
+        return callers_via_edges(store, root, name, mode, file_filter);
     }
-    run(store, root, name, mode, |src, lang_str, file| {
-        let Some(lang) = pattern::lang_for(lang_str) else {
-            return Vec::new();
-        };
-        let mut hits = pattern::find_callers(src, lang, name);
-        for h in &mut hits {
-            h.file = file.to_string();
-        }
-        hits
-    })
+    run(
+        store,
+        root,
+        name,
+        mode,
+        file_filter,
+        |src, lang_str, file| {
+            let Some(lang) = pattern::lang_for(lang_str) else {
+                return Vec::new();
+            };
+            let mut hits = pattern::find_callers(src, lang, name);
+            for h in &mut hits {
+                h.file = file.to_string();
+            }
+            hits
+        },
+    )
 }
 
 fn edges_ready(store: &Store) -> Result<bool> {
@@ -218,11 +246,24 @@ fn edges_ready(store: &Store) -> Result<bool> {
 /// Pure-SQL caller resolution over the `edges` table. Snippets for the
 /// `Hits` shape are read on demand from disk — we group by file so each
 /// file is read at most once even when many call sites land in the same one.
-pub fn callers_via_edges(store: &Store, root: &Path, name: &str, mode: Mode) -> Result<Output> {
+pub fn callers_via_edges(
+    store: &Store,
+    root: &Path,
+    name: &str,
+    mode: Mode,
+    file_filter: Option<&HashSet<String>>,
+) -> Result<Output> {
     if !is_safe_identifier(name) {
         return Ok(empty_for(mode));
     }
     let edge_hits = store.callers_of(name)?;
+    let edge_hits: Vec<_> = match file_filter {
+        Some(set) => edge_hits
+            .into_iter()
+            .filter(|h| set.contains(&h.file))
+            .collect(),
+        None => edge_hits,
+    };
 
     match mode {
         Mode::Count => Ok(Output::Count {
@@ -318,12 +359,19 @@ fn compact_snippet(s: &str) -> String {
     }
 }
 
-pub fn query_refs(store: &Store, root: &Path, name: &str, mode: Mode) -> Result<Output> {
+pub fn query_refs(
+    store: &Store,
+    root: &Path,
+    name: &str,
+    mode: Mode,
+    file_filter: Option<&HashSet<String>>,
+) -> Result<Output> {
     run(
         store,
         root,
         name,
         mode,
+        file_filter,
         |src, lang_str, file| match refs::find_refs(src, lang_str, name) {
             Ok(mut hits) => {
                 for h in &mut hits {
@@ -336,7 +384,14 @@ pub fn query_refs(store: &Store, root: &Path, name: &str, mode: Mode) -> Result<
     )
 }
 
-fn run<F>(store: &Store, root: &Path, name: &str, mode: Mode, per_file: F) -> Result<Output>
+fn run<F>(
+    store: &Store,
+    root: &Path,
+    name: &str,
+    mode: Mode,
+    file_filter: Option<&HashSet<String>>,
+    per_file: F,
+) -> Result<Output>
 where
     F: Fn(&str, &str, &str) -> Vec<Hit>,
 {
@@ -350,6 +405,13 @@ where
     for (rel_path, lang) in store.list_files()? {
         if early_stop(&mode, hits.len(), files.len()) {
             break;
+        }
+        // `--since SHA` filter — skip files outside the changed-files set
+        // before any IO. Cheaper than reading the file then discarding.
+        if let Some(set) = file_filter {
+            if !set.contains(&rel_path) {
+                continue;
+            }
         }
 
         let full = root.join(&rel_path);
@@ -491,7 +553,7 @@ mod tests {
     #[test]
     fn refs_count_mode_returns_total() {
         let (dir, store) = fixture_repo();
-        let out = query_refs(&store, dir.path(), "greet", Mode::Count).unwrap();
+        let out = query_refs(&store, dir.path(), "greet", Mode::Count, None).unwrap();
         match out {
             Output::Count { count } => assert!(count >= 4, "count: {count}"),
             _ => panic!("expected Count output"),
@@ -501,7 +563,14 @@ mod tests {
     #[test]
     fn refs_files_only_dedupes_per_file() {
         let (dir, store) = fixture_repo();
-        let out = query_refs(&store, dir.path(), "greet", Mode::FilesOnly { limit: None }).unwrap();
+        let out = query_refs(
+            &store,
+            dir.path(),
+            "greet",
+            Mode::FilesOnly { limit: None },
+            None,
+        )
+        .unwrap();
         match out {
             Output::Files { files } => {
                 assert!(files.contains(&"a.ts".to_string()));
@@ -520,7 +589,14 @@ mod tests {
         // both files with per-file counts AND a top_files leaderboard
         // sorted by hits descending.
         let (dir, store) = fixture_repo();
-        let out = query_refs(&store, dir.path(), "greet", Mode::Summary { limit: None }).unwrap();
+        let out = query_refs(
+            &store,
+            dir.path(),
+            "greet",
+            Mode::Summary { limit: None },
+            None,
+        )
+        .unwrap();
         match out {
             Output::Summary {
                 by_file,
@@ -563,6 +639,7 @@ mod tests {
             dir.path(),
             "greet",
             Mode::Summary { limit: Some(1) },
+            None,
         )
         .unwrap();
         match out {
@@ -584,8 +661,14 @@ mod tests {
         // to hold; specifically — every call site of `greet` in b.ts
         // sits inside the function-level scope of that file.
         let (dir, store) = fixture_repo();
-        let out =
-            query_callers(&store, dir.path(), "greet", Mode::Summary { limit: None }).unwrap();
+        let out = query_callers(
+            &store,
+            dir.path(),
+            "greet",
+            Mode::Summary { limit: None },
+            None,
+        )
+        .unwrap();
         match out {
             Output::Summary {
                 by_file, top_files, ..
@@ -607,6 +690,7 @@ mod tests {
             dir.path(),
             "absolutely_not_in_fixture",
             Mode::Summary { limit: None },
+            None,
         )
         .unwrap();
         match out {
@@ -620,6 +704,63 @@ mod tests {
                 assert!(top_symbols.is_empty());
             }
             _ => panic!("expected Summary output"),
+        }
+    }
+
+    #[test]
+    fn find_symbol_in_files_filters_by_path() {
+        // Multiple files defining `greet`; restrict to one.
+        let (_dir, store) = fixture_repo();
+        let only_a: HashSet<String> = ["a.ts".to_string()].into_iter().collect();
+        let syms = find_symbol_in_files(&store, "greet", &only_a).unwrap();
+        assert!(!syms.is_empty(), "expected hit in a.ts");
+        for s in &syms {
+            assert_eq!(s.file, "a.ts");
+        }
+
+        // Empty filter set drops everything — used by `--since` when no
+        // files have changed in the window.
+        let empty: HashSet<String> = HashSet::new();
+        let syms = find_symbol_in_files(&store, "greet", &empty).unwrap();
+        assert!(syms.is_empty());
+    }
+
+    #[test]
+    fn query_refs_with_file_filter_skips_other_files() {
+        // `greet` lives in both a.ts and b.ts. With a filter set
+        // containing only b.ts, the response must only contain b.ts hits.
+        let (dir, store) = fixture_repo();
+        let only_b: HashSet<String> = ["b.ts".to_string()].into_iter().collect();
+        let out = query_refs(
+            &store,
+            dir.path(),
+            "greet",
+            Mode::Hits { limit: None },
+            Some(&only_b),
+        )
+        .unwrap();
+        match out {
+            Output::Hits(hs) => {
+                assert!(!hs.is_empty(), "expected at least one hit in b.ts");
+                for h in &hs {
+                    assert_eq!(h.file, "b.ts", "unexpected file: {h:?}");
+                }
+            }
+            _ => panic!("expected Hits output"),
+        }
+    }
+
+    #[test]
+    fn query_callers_with_empty_filter_returns_zero_hits() {
+        // Empty filter set — equivalent to `--since` against a SHA where
+        // none of the indexed files have changed. Both code paths
+        // (edges + walker) must return zero hits without erroring.
+        let (dir, store) = fixture_repo();
+        let empty: HashSet<String> = HashSet::new();
+        let out = query_callers(&store, dir.path(), "greet", Mode::Count, Some(&empty)).unwrap();
+        match out {
+            Output::Count { count } => assert_eq!(count, 0),
+            _ => panic!("expected Count output"),
         }
     }
 
@@ -660,8 +801,14 @@ mod tests {
     #[test]
     fn callers_limit_caps_results() {
         let (dir, store) = fixture_repo();
-        let out =
-            query_callers(&store, dir.path(), "greet", Mode::Hits { limit: Some(1) }).unwrap();
+        let out = query_callers(
+            &store,
+            dir.path(),
+            "greet",
+            Mode::Hits { limit: Some(1) },
+            None,
+        )
+        .unwrap();
         match out {
             Output::Hits(h) => assert_eq!(h.len(), 1),
             _ => panic!("expected Hits output"),
@@ -671,7 +818,7 @@ mod tests {
     #[test]
     fn callers_count_mode_aggregates() {
         let (dir, store) = fixture_repo();
-        let out = query_callers(&store, dir.path(), "greet", Mode::Count).unwrap();
+        let out = query_callers(&store, dir.path(), "greet", Mode::Count, None).unwrap();
         match out {
             Output::Count { count } => assert!(count >= 2, "got: {count}"),
             _ => panic!("expected Count output"),
@@ -681,8 +828,14 @@ mod tests {
     #[test]
     fn callers_files_only_dedupes() {
         let (dir, store) = fixture_repo();
-        let out =
-            query_callers(&store, dir.path(), "greet", Mode::FilesOnly { limit: None }).unwrap();
+        let out = query_callers(
+            &store,
+            dir.path(),
+            "greet",
+            Mode::FilesOnly { limit: None },
+            None,
+        )
+        .unwrap();
         match out {
             Output::Files { files } => {
                 // greet has callers in both a.ts and b.ts.
@@ -705,6 +858,7 @@ mod tests {
             dir.path(),
             "greet",
             Mode::FilesOnly { limit: Some(1) },
+            None,
         )
         .unwrap();
         match out {
@@ -716,9 +870,16 @@ mod tests {
     #[test]
     fn output_count_helper_matches_payload() {
         let (dir, store) = fixture_repo();
-        let h = query_refs(&store, dir.path(), "greet", Mode::default()).unwrap();
-        let f = query_refs(&store, dir.path(), "greet", Mode::FilesOnly { limit: None }).unwrap();
-        let c = query_refs(&store, dir.path(), "greet", Mode::Count).unwrap();
+        let h = query_refs(&store, dir.path(), "greet", Mode::default(), None).unwrap();
+        let f = query_refs(
+            &store,
+            dir.path(),
+            "greet",
+            Mode::FilesOnly { limit: None },
+            None,
+        )
+        .unwrap();
+        let c = query_refs(&store, dir.path(), "greet", Mode::Count, None).unwrap();
         match (&h, &f, &c) {
             (Output::Hits(hits), Output::Files { files }, Output::Count { count }) => {
                 assert_eq!(h.count(), hits.len());
@@ -733,8 +894,15 @@ mod tests {
     fn limit_zero_treated_as_unlimited_via_default() {
         // The CLI maps `--limit 0` → None; in core that means "no cap". Verify.
         let (dir, store) = fixture_repo();
-        let limited = query_refs(&store, dir.path(), "greet", Mode::Hits { limit: None }).unwrap();
-        let default = query_refs(&store, dir.path(), "greet", Mode::default()).unwrap();
+        let limited = query_refs(
+            &store,
+            dir.path(),
+            "greet",
+            Mode::Hits { limit: None },
+            None,
+        )
+        .unwrap();
+        let default = query_refs(&store, dir.path(), "greet", Mode::default(), None).unwrap();
         assert_eq!(limited.count(), default.count());
     }
 
@@ -744,7 +912,7 @@ mod tests {
     fn callers_via_edges_finds_typescript_calls() {
         let (dir, store) = fixture_repo();
         // After build_index, edges_populated='1' — query_callers takes SQL path.
-        let out = query_callers(&store, dir.path(), "greet", Mode::default()).unwrap();
+        let out = query_callers(&store, dir.path(), "greet", Mode::default(), None).unwrap();
         match out {
             Output::Hits(hits) => {
                 assert!(hits.len() >= 2, "expected ≥2 greet callers: {hits:?}");
@@ -758,13 +926,13 @@ mod tests {
     fn callers_via_edges_count_matches_legacy() {
         // Build the same fixture, run both paths, expect parity.
         let (dir, store) = fixture_repo();
-        let sql = match query_callers(&store, dir.path(), "greet", Mode::Count).unwrap() {
+        let sql = match query_callers(&store, dir.path(), "greet", Mode::Count, None).unwrap() {
             Output::Count { count } => count,
             _ => unreachable!(),
         };
         // Force a legacy run by clearing the gate flag.
         store.meta_set("edges_populated", "0").unwrap();
-        let ast = match query_callers(&store, dir.path(), "greet", Mode::Count).unwrap() {
+        let ast = match query_callers(&store, dir.path(), "greet", Mode::Count, None).unwrap() {
             Output::Count { count } => count,
             _ => unreachable!(),
         };
@@ -779,7 +947,7 @@ mod tests {
     #[test]
     fn callers_via_edges_invalid_name_is_empty() {
         let (dir, store) = fixture_repo();
-        let out = query_callers(&store, dir.path(), "ab cd", Mode::default()).unwrap();
+        let out = query_callers(&store, dir.path(), "ab cd", Mode::default(), None).unwrap();
         match out {
             Output::Hits(hits) => assert!(hits.is_empty()),
             _ => panic!("expected Hits"),
@@ -789,8 +957,14 @@ mod tests {
     #[test]
     fn callers_via_edges_files_only_dedupes() {
         let (dir, store) = fixture_repo();
-        let out =
-            query_callers(&store, dir.path(), "greet", Mode::FilesOnly { limit: None }).unwrap();
+        let out = query_callers(
+            &store,
+            dir.path(),
+            "greet",
+            Mode::FilesOnly { limit: None },
+            None,
+        )
+        .unwrap();
         match out {
             Output::Files { files } => {
                 let set: std::collections::HashSet<&String> = files.iter().collect();

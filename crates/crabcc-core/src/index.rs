@@ -29,6 +29,23 @@ pub struct RefreshStats {
     pub skipped_parse_error: usize,
 }
 
+/// What changed since the last `refresh`. Use this when an agent already
+/// has the previous state cached and only needs to re-read the diff.
+///
+/// `added`    — files freshly indexed (not in the DB before this call).
+/// `modified` — existing files whose bytes changed (mtime + sha both differ).
+/// `removed`  — files that were in the DB but no longer exist on disk.
+///
+/// `touched` (mtime bumped, content unchanged) is intentionally NOT in
+/// this list — agents care about *content* deltas, not metadata.
+#[derive(Debug, Default, Serialize)]
+pub struct RefreshDelta {
+    pub added: Vec<String>,
+    pub modified: Vec<String>,
+    pub removed: Vec<String>,
+    pub stats: RefreshStats,
+}
+
 const MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
 
 pub fn build_index(root: &Path, store: &Store) -> Result<IndexStats> {
@@ -119,7 +136,14 @@ pub fn full_index(root: &Path, store: &Store) -> Result<IndexStats> {
 ///   - file new on disk  → index it
 ///   - file gone on disk → delete its row (cascades to symbols)
 pub fn refresh(root: &Path, store: &Store) -> Result<RefreshStats> {
-    let mut stats = RefreshStats::default();
+    Ok(refresh_delta(root, store)?.stats)
+}
+
+/// Same logic as [`refresh`], but additionally returns the per-bucket
+/// file lists (`added` / `modified` / `removed`). New surface for agents
+/// that want to re-read only what changed.
+pub fn refresh_delta(root: &Path, store: &Store) -> Result<RefreshDelta> {
+    let mut delta = RefreshDelta::default();
     let in_db = store.list_files_with_meta()?;
     let mut seen: HashSet<String> = HashSet::with_capacity(in_db.len());
 
@@ -127,7 +151,7 @@ pub fn refresh(root: &Path, store: &Store) -> Result<RefreshStats> {
         let lang = match extract::detect_lang(&path) {
             Some(l) => l,
             None => {
-                stats.skipped_unsupported += 1;
+                delta.stats.skipped_unsupported += 1;
                 continue;
             }
         };
@@ -147,70 +171,71 @@ pub fn refresh(root: &Path, store: &Store) -> Result<RefreshStats> {
 
         if let Some((stored_sha, stored_mtime)) = in_db.get(&rel) {
             if *stored_mtime == mtime {
-                stats.unchanged += 1;
+                delta.stats.unchanged += 1;
                 continue;
             }
             // mtime changed — read and hash to decide.
             let bytes = match std::fs::read(&path) {
                 Ok(b) => b,
                 Err(_) => {
-                    stats.skipped_unreadable += 1;
+                    delta.stats.skipped_unreadable += 1;
                     continue;
                 }
             };
             if bytes.len() > MAX_FILE_BYTES {
-                stats.skipped_too_large += 1;
+                delta.stats.skipped_too_large += 1;
                 continue;
             }
             let sha = hash::sha256_hex(&bytes);
             if &sha == stored_sha {
                 store.touch_mtime(&rel, mtime)?;
-                stats.touched += 1;
+                delta.stats.touched += 1;
                 continue;
             }
             // Real content change — reindex.
             let src = match std::str::from_utf8(&bytes) {
                 Ok(s) => s,
                 Err(_) => {
-                    stats.skipped_unreadable += 1;
+                    delta.stats.skipped_unreadable += 1;
                     continue;
                 }
             };
             let (symbols, edges) = match extract::extract_file_with_edges(&rel, src, lang) {
                 Ok(pair) => pair,
                 Err(_) => {
-                    stats.skipped_parse_error += 1;
+                    delta.stats.skipped_parse_error += 1;
                     continue;
                 }
             };
             let file_id = store.upsert_file(&rel, &sha, mtime, lang)?;
             store.replace_symbols(file_id, &symbols)?;
             store.replace_edges(file_id, &edges)?;
-            stats.reindexed += 1;
+            delta.stats.reindexed += 1;
+            delta.modified.push(rel);
         } else {
             // New file on disk.
             let bytes = match std::fs::read(&path) {
                 Ok(b) => b,
                 Err(_) => {
-                    stats.skipped_unreadable += 1;
+                    delta.stats.skipped_unreadable += 1;
                     continue;
                 }
             };
             if bytes.len() > MAX_FILE_BYTES {
-                stats.skipped_too_large += 1;
+                delta.stats.skipped_too_large += 1;
                 continue;
             }
             let src = match std::str::from_utf8(&bytes) {
                 Ok(s) => s,
                 Err(_) => {
-                    stats.skipped_unreadable += 1;
+                    delta.stats.skipped_unreadable += 1;
                     continue;
                 }
             };
             let (symbols, edges) = match extract::extract_file_with_edges(&rel, src, lang) {
                 Ok(pair) => pair,
                 Err(_) => {
-                    stats.skipped_parse_error += 1;
+                    delta.stats.skipped_parse_error += 1;
                     continue;
                 }
             };
@@ -218,7 +243,8 @@ pub fn refresh(root: &Path, store: &Store) -> Result<RefreshStats> {
             let file_id = store.upsert_file(&rel, &sha, mtime, lang)?;
             store.replace_symbols(file_id, &symbols)?;
             store.replace_edges(file_id, &edges)?;
-            stats.new += 1;
+            delta.stats.new += 1;
+            delta.added.push(rel);
         }
     }
 
@@ -226,11 +252,18 @@ pub fn refresh(root: &Path, store: &Store) -> Result<RefreshStats> {
     for rel in in_db.keys() {
         if !seen.contains(rel) {
             store.delete_file(rel)?;
-            stats.deleted += 1;
+            delta.stats.deleted += 1;
+            delta.removed.push(rel.clone());
         }
     }
 
-    Ok(stats)
+    // Sort each bucket so the JSON output is deterministic — matters for
+    // the fingerprint feature and for diffing across calls.
+    delta.added.sort();
+    delta.modified.sort();
+    delta.removed.sort();
+
+    Ok(delta)
 }
 
 #[cfg(test)]
@@ -352,6 +385,81 @@ mod tests {
         assert_eq!(stats.deleted, 1, "stats: {stats:?}");
         assert_eq!(store.find_by_name("b").unwrap().len(), 0);
         assert_eq!(store.find_by_name("a").unwrap().len(), 1);
+    }
+
+    // ---- refresh_delta (feature 1: --delta) -------------------------------
+
+    #[test]
+    fn refresh_delta_no_changes_yields_empty_lists() {
+        let (dir, store) = fresh_repo_with(&[
+            ("a.ts", "export function a(){return 1;}"),
+            ("b.rb", "class B; end\n"),
+        ]);
+        let d = refresh_delta(dir.path(), &store).unwrap();
+        assert!(d.added.is_empty(), "added: {:?}", d.added);
+        assert!(d.modified.is_empty(), "modified: {:?}", d.modified);
+        assert!(d.removed.is_empty(), "removed: {:?}", d.removed);
+        assert_eq!(d.stats.unchanged, 2);
+    }
+
+    #[test]
+    fn refresh_delta_captures_added_modified_removed() {
+        let (dir, store) = fresh_repo_with(&[
+            ("a.ts", "export function a(){return 1;}"),
+            ("b.ts", "export function b(){return 2;}"),
+        ]);
+        // Mutate: modify a.ts (force mtime drift), add c.ts, delete b.ts.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        write(
+            &dir.path().join("a.ts"),
+            "export function a(){return 1;}\nexport function aa(){return 11;}\n",
+        );
+        write(&dir.path().join("c.ts"), "export function c(){return 3;}");
+        std::fs::remove_file(dir.path().join("b.ts")).unwrap();
+
+        let d = refresh_delta(dir.path(), &store).unwrap();
+        assert_eq!(d.added, vec!["c.ts"], "added: {:?}", d.added);
+        assert_eq!(d.modified, vec!["a.ts"], "modified: {:?}", d.modified);
+        assert_eq!(d.removed, vec!["b.ts"], "removed: {:?}", d.removed);
+
+        // Stats and lists must agree: counts == list lengths.
+        assert_eq!(d.stats.new, d.added.len());
+        assert_eq!(d.stats.reindexed, d.modified.len());
+        assert_eq!(d.stats.deleted, d.removed.len());
+    }
+
+    #[test]
+    fn refresh_delta_excludes_touched_only_files() {
+        // A file whose mtime bumped but content is identical is `touched`,
+        // not `modified`. Agents that already have the cached body shouldn't
+        // be told to re-read it.
+        let (dir, store) = fresh_repo_with(&[("a.ts", "export function a(){return 1;}")]);
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        // Re-write byte-identical content — mtime advances, sha doesn't.
+        write(&dir.path().join("a.ts"), "export function a(){return 1;}");
+
+        let d = refresh_delta(dir.path(), &store).unwrap();
+        assert!(d.modified.is_empty(), "modified: {:?}", d.modified);
+        assert_eq!(d.stats.touched, 1, "stats: {:?}", d.stats);
+    }
+
+    #[test]
+    fn refresh_delta_buckets_are_sorted() {
+        // Determinism contract — output order must not depend on walk order
+        // or HashSet iteration order. Required for the fingerprint feature
+        // (#4) to produce stable hashes across runs.
+        let (dir, store) = fresh_repo_with(&[("z.ts", "export function z(){return 9;}")]);
+        write(&dir.path().join("a.ts"), "export function a(){return 1;}");
+        write(&dir.path().join("m.ts"), "export function m(){return 5;}");
+        write(&dir.path().join("c.ts"), "export function c(){return 3;}");
+
+        let d = refresh_delta(dir.path(), &store).unwrap();
+        let sorted: Vec<String> = {
+            let mut v = d.added.clone();
+            v.sort();
+            v
+        };
+        assert_eq!(d.added, sorted, "added must be sorted: {:?}", d.added);
     }
 
     #[test]
