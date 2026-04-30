@@ -663,8 +663,11 @@ mod tests {
 
     #[test]
     fn cmd_available_returns_true_for_real_binary() {
-        // `sh` is on PATH on every Unix CI host this repo targets.
-        assert!(cmd_available("sh"));
+        // `cargo` is guaranteed on PATH for any Rust CI run AND
+        // supports `--version`. Don't switch back to `sh` — Ubuntu's
+        // `/bin/sh` is dash, which doesn't accept `--version` and
+        // exits non-zero, defeating the assertion.
+        assert!(cmd_available("cargo"));
     }
 
     #[test]
