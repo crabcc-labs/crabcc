@@ -28,28 +28,35 @@ out="$(bash "$ALIASES_SH" --print --shell zsh 2>&1)"
 echo "$out" | grep -q "alias grep='rg'"   || fail "missing grep→rg alias"
 echo "$out" | grep -q "alias find='fd'"   || fail "missing find→fd alias"
 echo "$out" | grep -q "command -v rg "    || fail "grep alias not gated on command -v"
-echo "$out" | grep -q "alias ccs='crabcc sym'" || fail "missing ccs alias"
-pass "minimal mode emits gated aliases"
+echo "$out" | grep -q "alias ccs='ccc find'" || fail "missing ccs→ccc find alias"
+echo "$out" | grep -q "alias ccm='ccc memory'" || fail "missing ccm→ccc memory alias"
+# Issue #74 — `ccc` is now a binary; the old `alias ccc='crabcc callers'` must be gone.
+echo "$out" | grep -q "alias ccc=" && fail "stale ccc alias still emitted (collides with ccc binary)"
+pass "minimal mode emits ccc-routed gated aliases"
 
 echo "→ 2. minimal mode does NOT emit aggressive verbs (back-compat)"
 echo "$out" | grep -q "alias sym=" && fail "aggressive sym alias leaked into minimal mode"
-echo "$out" | grep -q "alias refs=" && fail "aggressive refs alias leaked into minimal mode"
+echo "$out" | grep -q "alias refs=" && fail "aggressive refs leaked into minimal mode"
+echo "$out" | grep -q "refs() {" && fail "aggressive refs() function leaked into minimal mode"
 pass "minimal mode is back-compat clean"
 
-echo "→ 3. --aggressive emits crabcc verb aliases"
+echo "→ 3. --aggressive emits ccc-routed verb aliases + functions"
 agg="$(bash "$ALIASES_SH" --print --aggressive --shell zsh 2>&1)"
+# Argless verbs are aliases.
 for line in \
-    "alias gr='crabcc grep'" \
-    "alias sym='crabcc sym'" \
-    "alias refs='crabcc refs --files-only'" \
-    "alias callers='crabcc callers --files-only'" \
-    "alias outline='crabcc outline'" \
-    "alias fuzzy='crabcc fuzzy'"
+    "alias sym='ccc find'" \
+    "alias fuzzy='ccc find --mode fuzzy'" \
+    "alias outline='crabcc outline'"
 do
     echo "$agg" | grep -qF "$line" || fail "aggressive missing: $line"
 done
+# Verbs that need an arg mid-line are shell functions.
+for fn in "refs() {" "callers() {" "gr() {"; do
+    echo "$agg" | grep -qF "$fn" || fail "aggressive missing function: $fn"
+done
+echo "$agg" | grep -qF "ccc find" || fail "aggressive functions don't route to ccc"
 echo "$agg" | grep -q "command -v delta" || fail "delta not gated"
-pass "aggressive emits all crabcc verb aliases"
+pass "aggressive emits ccc-routed verbs (aliases + functions)"
 
 echo "→ 4. --aggressive --all-shells --dry-run targets zsh + bash"
 dry="$(bash "$ALIASES_SH" --aggressive --all-shells --dry-run 2>&1)"
