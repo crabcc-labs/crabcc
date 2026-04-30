@@ -755,7 +755,7 @@ mod tests {
 
     #[test]
     fn stderr_tail_truncates_long_input() {
-        let s: String = std::iter::repeat('x').take(2000).collect();
+        let s: String = "x".repeat(2000);
         let t = stderr_tail(&s, 100);
         assert_eq!(t.len(), 100);
         assert!(t.chars().all(|c| c == 'x'));

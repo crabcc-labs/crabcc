@@ -49,9 +49,8 @@ fn serve_io_baseline<R: BufRead, W: Write>(
     let mut line = String::new();
     loop {
         line.clear();
-        match reader.read_line(&mut line)? {
-            0 => break,
-            _ => {}
+        if reader.read_line(&mut line)? == 0 {
+            break;
         }
         let trimmed = line.trim();
         if trimmed.is_empty() {
