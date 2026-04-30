@@ -129,9 +129,57 @@ services:
     networks:
       - dev
 
+  # Issue #109 — Redis backend for the BullMQ-based agent coordination
+  # layer. Disabled by default; enable with `--profile jobs`. The crabcc
+  # service auto-discovers REDIS_URL when this profile is active. The
+  # Node worker (apps/jobs-worker) lands in a follow-up commit and joins
+  # this same service.
+  redis:
+    image: redis:7-alpine
+    profiles:
+      - jobs
+    restart: unless-stopped
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - "256mb"
+      - --maxmemory-policy
+      - allkeys-lru
+      - --save
+      - "60 1000"
+    expose:
+      - "6379"
+    # Internal-only by default; uncomment to expose for Bull Board.
+    # ports:
+    #   - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 384mb
+    logging: *logging
+    networks:
+      - dev
+      - crabcc-shared
+
 volumes:
   crabcc_cache:
   bun_install_cache:
+  redis_data:
 
 networks:
   # Internal dev network — crabcc + viz-web only.
