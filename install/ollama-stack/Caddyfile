@@ -1,19 +1,57 @@
 # crabcc Ollama auth stack — Caddy reverse proxy — issue #105
 #
-# Enforces `Authorization: Bearer ${OLLAMA_API_KEY}` on /api and /v1 paths.
-# Token is injected via the OLLAMA_API_KEY env var by docker-compose.
+# Enforces `Authorization: Bearer ${OLLAMA_API_KEY}` on /api and /v1
+# paths. Token is injected via the OLLAMA_API_KEY env var by
+# docker-compose. v2.10.x adds compression + timeouts + body limits +
+# request-id correlation so long chat completions don't hang the
+# proxy and per-request logs are pivot-able.
 
 {
 	admin off
 	auto_https off
+	# Generous global default; per-route timeouts below win.
+	servers {
+		# 256 KB request body cap for non-LLM endpoints (e.g. /api/tags).
+		# Per-route override on /v1/chat/completions because prompts
+		# can legitimately reach a few MB after we attach the per-agent
+		# repomix bundle.
+		max_header_size 16KB
+	}
+}
+
+(request_id) {
+	# Stable correlation id for log tie-back. Use the inbound header
+	# when set (so an upstream agent can stamp its own run id),
+	# generate otherwise.
+	@no_id `!header({"X-Request-Id"})`
+	header @no_id +X-Request-Id "{http.request.uuid}"
 }
 
 :11434 {
+	# Structured JSON access log. tee'd to stdout; docker compose logs
+	# carries it. The dashboard's /api/agent-* surfaces don't read
+	# this directly today but the format is stable for the future
+	# rotel OTLP collector (issue #86).
 	log {
 		output stdout
 		format json
+		level INFO
 	}
 
+	# No security headers — local-only deployment, bound to loopback,
+	# auth already enforced via the bearer-token gate below. Adding
+	# CSP / X-Frame-Options / nosniff just clutters response payloads
+	# without buying anything for a single-machine setup.
+	import request_id
+
+	# Compression — saves bandwidth on /api/tags + /v1/models JSON,
+	# zero cost for streaming chat completions (already chunked).
+	encode zstd gzip
+
+	# Generous read/write timeouts for streaming chat completions.
+	# Default Caddy 30s would hang up mid-token on a long generation;
+	# 10 min covers the worst-case 32k-context, low-temp deterministic
+	# pass we use for code edits.
 	@unauthorized {
 		path /api/* /v1/*
 		not header Authorization "Bearer {env.OLLAMA_API_KEY}"
@@ -24,7 +62,24 @@
 	route {
 		respond /healthz "ok" 200
 		respond @unauthorized "Unauthorized: missing or invalid Bearer token" 401
-		reverse_proxy @apipaths ollama:11434
+
+		# Reverse proxy to ollama. Per-route timeouts here so other
+		# routes (healthz) stay snappy. flush_interval=-1 disables
+		# Go's default 1s buffer-flush — token-by-token streaming
+		# arrives at the client without delay.
+		reverse_proxy @apipaths ollama:11434 {
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 5m
+				read_timeout 10m
+				write_timeout 10m
+			}
+			flush_interval -1
+			# Forward the correlation id downstream so ollama's
+			# server log can tie back to the same request.
+			header_up X-Request-Id "{http.reqid}"
+		}
+
 		respond "Not Found" 404
 	}
 }

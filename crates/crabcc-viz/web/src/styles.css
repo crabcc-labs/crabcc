@@ -424,3 +424,56 @@ main {
   .profiles-dir::after,
   .kill-reason.stuck { animation: none; }
 }
+
+/* ── Ollama API key reveal/copy panel ── */
+.ollama-key { position: relative; }
+.key-row {
+  display: flex;
+  gap: 0.4em;
+  align-items: center;
+  padding: 6px 8px;
+  background: linear-gradient(90deg, #0a0f1e, #11193a 50%, #0a0f1e);
+  border: 1px solid #1a2348;
+  border-left: 3px solid #00f0ff;
+  margin-bottom: 4px;
+  overflow: hidden;
+}
+.key-display {
+  flex: 1 1 auto;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  color: #6df0ff;
+  text-shadow: 0 0 4px rgba(0, 240, 255, 0.4);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  word-break: break-all;
+  user-select: text;
+}
+.key-btn {
+  flex: 0 0 auto;
+  background: #0d1428;
+  color: #ff2a6d;
+  border: 1px solid #ff2a6d;
+  padding: 2px 8px;
+  font-family: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background 100ms, color 100ms, border-color 100ms;
+}
+.key-btn:hover {
+  background: #ff2a6d;
+  color: #0a0f1e;
+  border-color: #ff2a6d;
+  text-shadow: 0 0 4px rgba(255, 42, 109, 0.6);
+}
+.key-meta {
+  display: flex;
+  gap: 0.8em;
+  font-size: 10px;
+  color: #8aa0d8;
+  padding: 0 8px;
+}
+.key-mode.ok   { color: #6df0ff; }
+.key-mode.warn { color: #ff8c2a; font-weight: 700; }
