@@ -64,7 +64,7 @@ pub fn extract_edges(file: &str, src: &str, lang: &str) -> Result<Vec<Edge>> {
 /// unused by `walk` itself but threaded through so the next phase can
 /// switch transient strings — `impl_target`, `go_receiver_type`,
 /// `strip_generics` outputs — to bump-allocated `&str`s without
-/// changing the public Vec<Symbol> / Vec<Edge> shape). Bump dies with
+/// changing the public `Vec<Symbol>` / `Vec<Edge>` shape). Bump dies with
 /// the function, so the entire scratch region frees in one mmap-level
 /// op rather than thousands of small `drop(String)` calls. See issue
 /// #38 (nightly-features research) for the full ROI analysis and the
