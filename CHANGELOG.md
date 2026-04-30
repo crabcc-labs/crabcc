@@ -6,6 +6,107 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+## [2.7.0] — 2026-04-30
+
+Minor bump capturing the post-2.6.0 wave: ollama-backed audit sub-agents,
+three new skills (warp-speed-audit, rust-logging-audit, crabcc-taskfile),
+the `ccc` combo CLI binary, the `/ccc-init:lazy` bootstrap, structured
+tracing across hot paths, a CI scoping pass that drops PR-time
+wall-clock, and a `gen-summary` step now wired into `prep-pr` and the
+pre-commit hook.
+
+### Added — local Ollama (OpenClaw) backend for audit sub-agents (PR [#100](https://github.com/peterlodri-sec/crabcc/pull/100))
+- `scripts/ollama-fanout.sh` — parallel `/api/generate` fan-out
+  (default `--parallel 4`); JSON-array or JSONL prompts; merged JSON
+  output. `--json-mode` for strict-JSON replies.
+- `scripts/ollama-system-check.sh` — local pre-flight (arch / RAM /
+  disk / daemon) with per-model requirements baked in.
+- `scripts/ollama-network-check.sh` — remote pre-flight (DNS / mDNS /
+  TCP / `/api/version` / `/api/tags` / model presence; optional
+  `--smoke` adds a 1-token round-trip).
+- `scripts/ollama-agent-runtime.sh` — single-shot wrapper for
+  `crabcc agent --run --llm ollama`. Reads `.tool_calls` +
+  `.thinking` + `.response` to handle gpt-oss / OpenClaw model
+  conventions; `format:"json"` deliberately NOT set (clobbers native
+  fields on thinking models).
+- Six new Taskfile entries: `system-check`, `ollama-network-check`,
+  `ollama-bootstrap`, `ollama-smoke`, `ollama-models`,
+  `agent-runtime-smoke`.
+- Default model `voytas26/openclaw-oss-20b-deterministic` (gpt-oss:20b
+  fine-tune for OpenClaw autonomous agents); override via
+  `CRABCC_OLLAMA_MODEL=…`.
+- Both `warp-speed-audit` and `rust-logging-audit` skills get a
+  Phase-2 rewrite: orchestrator runs the `crabcc` probes locally,
+  fans analysis to local Ollama in parallel; Claude-Agent fallback
+  retained for hosts that fail `system-check`.
+
+### Added — `gen-summary` task wired into prep-pr + pre-commit hook (PR [#100](https://github.com/peterlodri-sec/crabcc/pull/100))
+- `scripts/gen-summary.sh` — generate a paste-ready markdown summary of
+  the current branch (commits ahead of base, files changed by crate,
+  issue references, prep-pr gate status). Output:
+  `.summary/gen-summary.md`. Pure git ops; <500 ms typical.
+- `task gen-summary` — invokes the script.
+- `task prep-pr` now calls `gen-summary` as a final step (after
+  fmt + clippy + test + doc); the resulting markdown is paste-ready
+  for `gh pr create --body-file`.
+- Pre-commit hook (`scripts/git-hooks/pre-commit`) refreshes
+  `.summary/gen-summary.md` after the fmt + clippy gate so a `gh pr
+  create` immediately after commit can pick it up.
+
+### Added — rust-logging-audit skill + tracing migration RFC (PR [#92](https://github.com/peterlodri-sec/crabcc/pull/92), issue [#90](https://github.com/peterlodri-sec/crabcc/issues/90))
+- `skill/rust-logging-audit/SKILL.md` — sister skill to
+  `warp-speed-audit`. Audits a Rust repo for `tracing` adoption,
+  hot-path discipline, init-time hygiene, framework mix.
+- `skill/rust-logging-audit/MIGRATION-RFC.md` — concrete 4-phase
+  plan for migrating crabcc to `tracing` + `tracing-opentelemetry`,
+  with rotel (issue [#86](https://github.com/peterlodri-sec/crabcc/issues/86) `/live` panel) as the OTLP terminus.
+
+### Added — crabcc-taskfile skill + auto-bootstrap aliases (PR [#93](https://github.com/peterlodri-sec/crabcc/pull/93))
+- `skill/crabcc-taskfile/SKILL.md` routes intent
+  (build / test / lint / bench / release / install) onto
+  `task <name>` entries.
+- `task install` now idempotently bootstraps shell aliases via
+  `scripts/install-aliases.sh`. Pass `NO_ALIASES=1` to opt out.
+- `task aliases-check` is read-only detection.
+
+### Added — observability: structured `tracing` across hot paths (PR [#99](https://github.com/peterlodri-sec/crabcc/pull/99))
+- info-level entry/exit logs in `crabcc-core` (full_index,
+  refresh_delta, `Store::open_with_compress`) and per-command logs
+  in `crabcc-cli::main` via a stable `cmd_name_for_log()` mapping.
+- debug-level per-query detail in `query::find_symbol`,
+  `query::query_callers`, `query::query_refs` (counts + path +
+  elapsed_ms). Gated behind `RUST_LOG=debug`.
+
+### Added — ccc combo CLI + lazy bootstrap (PRs [#96](https://github.com/peterlodri-sec/crabcc/pull/96), [#98](https://github.com/peterlodri-sec/crabcc/pull/98), issue [#74](https://github.com/peterlodri-sec/crabcc/issues/74))
+- `ccc` — high-level combo CLI binary that fronts the most-used
+  crabcc verbs with shorter alias routing.
+- `/ccc-init:lazy` slash command performs the full repo bootstrap
+  (index / graph / memory / mine / aliases / tools / serve / watch /
+  guard / ollama / upgrade / marker) in one shot.
+
+### Added — slash-command install / upgrade plumbing (PR [#95](https://github.com/peterlodri-sec/crabcc/pull/95))
+- `/crabcc-upgrade` and `/crabcc-install` slash commands wired into
+  the install flow.
+
+### Changed — CI scope on PRs (PR [#91](https://github.com/peterlodri-sec/crabcc/pull/91), Pillar 3 of issue [#87](https://github.com/peterlodri-sec/crabcc/issues/87))
+- PRs run `cargo clippy` only on changed crates; `cargo fmt --check`
+  only on changed `*.rs` files; smoke step skips unless
+  `crabcc-cli` or `crabcc-core` changed; `aliases-smoke` only when
+  `scripts/install-aliases.sh` changed.
+- `push` to `main` keeps the full belt-and-suspenders matrix.
+
+### Changed — release pipeline (PR [#94](https://github.com/peterlodri-sec/crabcc/pull/94))
+- `[profile.dev]` tuned for faster iteration.
+- UPX compression dropped from the release pipeline.
+
+### Changed — repository hygiene (PR [#97](https://github.com/peterlodri-sec/crabcc/pull/97))
+- Drop unused `.devcontainer/` config.
+- README TOC + asset workflow note.
+
+### Changed — workspace version bump
+- `Cargo.toml` `[workspace.package].version` → `2.7.0`.
+- `.gitignore` adds `.summary/` (per-developer task scratch dir).
+
 ## [2.6.0] — 2026-04-30
 
 Minor bump capturing post-v2.5.0 work that stacked on `main` while the

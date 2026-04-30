@@ -647,16 +647,34 @@ tasks:
       - 'flamegraph --profile profiling -p crabcc-cli -o .summary/flamegraph-index.svg -- index --root {{.REPO_FIXTURE}}'
       - 'echo "" && echo "flamegraph SVG written to .summary/flamegraph-index.svg"'
 
+  gen-summary:
+    desc: Generate paste-ready PR summary at .summary/gen-summary.md (commits, files, areas, gate status)
+    summary: |
+      Pure git ops; ~200 ms typical. Auto-detects the PR base from
+      `gh pr view`, falls back to `git config`, then to `origin/main`.
+      Wired into `task prep-pr` (final step) and the pre-commit hook so
+      `gh pr create --body-file .summary/gen-summary.md` is always
+      paste-ready.
+
+      Pass BASE=… to override the base ref. Output is gitignored.
+    vars:
+      BASE: '{{.BASE | default ""}}'
+    cmds:
+      - 'bash scripts/gen-summary.sh{{if .BASE}} --base {{.BASE}}{{end}}'
+
   prep-pr:
-    desc: One-shot pre-PR check — fmt, clippy, test, smoke, doc-build, log to .summary/prep-pr.txt
+    desc: One-shot pre-PR check — fmt, clippy, test, smoke, doc-build, gen-summary, log to .summary/prep-pr.txt
     summary: |
       The combined pre-PR gate. Runs everything CI would run plus a
-      doc-build sanity check, captures the output for paste-into-PR-body
-      use, and exits non-zero on any failure. Idempotent.
+      doc-build sanity check AND `gen-summary` (refreshes
+      `.summary/gen-summary.md` for `gh pr create --body-file`).
+      Captures the output for paste-into-PR-body use, exits non-zero
+      on any failure. Idempotent.
         - cargo fmt --check
         - cargo clippy --workspace --all-targets -- -D warnings
         - cargo test --workspace --no-fail-fast
         - cargo doc --workspace --no-deps  (catches rustdoc warnings)
+        - gen-summary (always last; never fails the gate)
       Pass NO_DOC=1 to skip the doc-build step (faster).
     vars:
       NO_DOC: '{{.NO_DOC | default "0"}}'
