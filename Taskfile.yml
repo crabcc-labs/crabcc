@@ -266,6 +266,18 @@ tasks:
       - 'mkdir -p .summary'
       - 'bash scripts/prep-pr.sh{{if eq .NO_DOC "1"}} --no-doc{{end}}'
 
+  openapi:
+    desc: Print the embedded MCP OpenAPI spec to stdout (use `task openapi > openapi.yaml` to dump)
+    summary: |
+      Routes through `crabcc openapi`, which echoes the byte-identical
+      copy of `crates/crabcc-mcp/openapi.yaml` embedded in the binary at
+      compile time via `include_str!`. The spec is hand-maintained;
+      `cargo test` enforces 1:1 sync with `tools_def()` via the
+      `openapi_spec_lists_every_tool` drift test.
+    deps: [build]
+    cmds:
+      - '{{.CRABCC}} openapi'
+
   doc:
     desc: Build rustdoc HTML for the workspace (no deps; opens index in browser)
     summary: |

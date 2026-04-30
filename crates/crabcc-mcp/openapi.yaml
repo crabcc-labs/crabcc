@@ -1,0 +1,756 @@
+openapi: 3.1.0
+info:
+  title: crabcc MCP server
+  version: "2.4.0"
+  x-spec-source: crates/crabcc-mcp/openapi.yaml
+  summary: Symbol index + AI memory layer, exposed as Model Context Protocol tools.
+  description: |
+    The crabcc MCP server speaks JSON-RPC 2.0 over stdio. Each operation in
+    this document corresponds to one MCP tool name. The "logical" path
+    `POST /tools/{tool_name}` is not a real HTTP endpoint — it's a
+    convenience shape for Swagger UI / Redoc / generated SDKs. The actual
+    wire envelope is:
+
+    ```json
+    {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "method": "tools/call",
+      "params": {"name": "<tool_name>", "arguments": {...}}
+    }
+    ```
+
+    This document is the canonical machine-readable description of the
+    crabcc MCP surface. It is hand-maintained but kept in lockstep with
+    `crates/crabcc-mcp/src/lib.rs` (`tools_def`) and
+    `crates/crabcc-mcp/src/memory.rs` (`memory.*` tools). The
+    `task openapi` target validates the spec and confirms its tool list
+    matches the live `tools_def()`.
+  license:
+    name: MIT
+    identifier: MIT
+  contact:
+    name: crabcc
+    url: https://github.com/peterlodri-sec/crabcc
+
+servers:
+  - url: stdio://crabcc-mcp
+    description: |
+      Default — `crabcc mcp` over stdio. The server URL is symbolic: the
+      transport is line-delimited JSON-RPC on the binary's stdin/stdout.
+
+tags:
+  - name: symbol-index
+    description: Lookups against `.crabcc/index.db`.
+  - name: graph
+    description: Call-graph sidecar (`.crabcc/graph.json`).
+  - name: indexer
+    description: Build / refresh the symbol index.
+  - name: meta
+    description: Build provenance, version, upgrade.
+  - name: memory
+    description: Per-repo AI memory layer at `.crabcc/memory.db`.
+  - name: server
+    description: Server-meta tools (`_openapi`, `_health`). Underscore-prefixed; never collide with repo-scoped tools.
+
+paths:
+  /tools/sym:
+    post:
+      tags: [symbol-index]
+      operationId: sym
+      summary: Find a symbol by exact name.
+      description: Returns full symbol records keyed on the indexed `name` column.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/SymRequest"}
+      responses:
+        "200":
+          description: Array of symbols.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: "#/components/schemas/Symbol"}
+
+  /tools/refs:
+    post:
+      tags: [symbol-index]
+      operationId: refs
+      summary: Find every identifier reference to `name` across the indexed repo.
+      description: |
+        Coarse — matches text equality on identifier nodes. Use
+        `mode=files` for "which files reference X" (~70% smaller payload),
+        `mode=count` for "how many" (smallest).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/NameModeRequest"}
+      responses:
+        "200":
+          description: Hits, file list, or count, depending on `mode`.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/QueryResponse"}
+
+  /tools/callers:
+    post:
+      tags: [symbol-index]
+      operationId: callers
+      summary: Find call sites of `name` (bare and method-receiver shapes).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/NameModeRequest"}
+      responses:
+        "200":
+          description: Hits, file list, or count, depending on `mode`.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/QueryResponse"}
+
+  /tools/outline:
+    post:
+      tags: [symbol-index]
+      operationId: outline
+      summary: All symbols in a file, ordered by line.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  description: Repo-relative file path.
+      responses:
+        "200":
+          description: Symbols ordered by line; use `parent` to reconstruct hierarchy.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: "#/components/schemas/Symbol"}
+
+  /tools/files:
+    post:
+      tags: [symbol-index]
+      operationId: files
+      summary: List indexed files. Token-cheap replacement for `ls -R` / `find -name`.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                under: {type: string, description: Optional path prefix to filter under.}
+                lang:  {type: string, description: "Language filter: typescript|tsx|javascript|ruby|rust|go|python."}
+                ext:   {type: string, description: "Optional file extension (without dot)."}
+                limit: {type: integer, description: "Cap output size."}
+      responses:
+        "200":
+          description: Array of repo-relative file paths.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {type: string}
+
+  /tools/index:
+    post:
+      tags: [indexer]
+      operationId: index
+      summary: Build a fresh full index (wipes existing).
+      requestBody:
+        content:
+          application/json:
+            schema: {type: object}
+      responses:
+        "200":
+          description: Index statistics.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/IndexStats"}
+
+  /tools/refresh:
+    post:
+      tags: [indexer]
+      operationId: refresh
+      summary: Incremental refresh — mtime + sha256 diff vs stored.
+      requestBody:
+        content:
+          application/json:
+            schema: {type: object}
+      responses:
+        "200":
+          description: Per-bucket counts (new/reindexed/touched/unchanged/deleted).
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/RefreshStats"}
+
+  /tools/fuzzy:
+    post:
+      tags: [symbol-index]
+      operationId: fuzzy
+      summary: Fuzzy symbol-name search (Levenshtein distance 2).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query: {type: string, description: Partial or misspelled symbol name.}
+      responses:
+        "200":
+          description: Array of symbols.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: "#/components/schemas/Symbol"}
+
+  /tools/prefix:
+    post:
+      tags: [symbol-index]
+      operationId: prefix
+      summary: Prefix symbol-name search (case-insensitive starts-with).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [query]
+              properties:
+                query: {type: string, description: Symbol-name prefix.}
+      responses:
+        "200":
+          description: Array of symbols.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: "#/components/schemas/Symbol"}
+
+  /tools/graph:
+    post:
+      tags: [graph]
+      operationId: graph
+      summary: BFS expansion over the call-graph sidecar.
+      description: |
+        Returns who calls (or is called by) `name`, capped at `depth`.
+        Loads `.crabcc/graph.json` if present; falls back to a one-shot
+        build from the live `edges` table otherwise.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:  {type: string, description: Symbol name to expand.}
+                dir:
+                  type: string
+                  enum: [callers, callees]
+                  default: callers
+                  description: Direction — incoming (callers) or outgoing (callees).
+                depth: {type: integer, default: 2, description: BFS depth limit.}
+      responses:
+        "200":
+          description: Array of `{name, depth}` records.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: "#/components/schemas/GraphHit"}
+
+  /tools/graph_cycles:
+    post:
+      tags: [graph]
+      operationId: graph_cycles
+      summary: Strongly-connected components of size ≥2 (mutual recursion).
+      requestBody:
+        content:
+          application/json:
+            schema: {type: object}
+      responses:
+        "200":
+          description: Array of arrays of symbol names. Each inner array is one SCC.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: array
+                  items: {type: string}
+
+  /tools/graph_orphans:
+    post:
+      tags: [graph]
+      operationId: graph_orphans
+      summary: Symbols with no incoming callers (dead-code triage starting point).
+      requestBody:
+        content:
+          application/json:
+            schema: {type: object}
+      responses:
+        "200":
+          description: Array of symbol names.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {type: string}
+
+  /tools/upgrade:
+    post:
+      tags: [meta]
+      operationId: upgrade
+      summary: Check GitHub for a newer crabcc release.
+      description: |
+        Private-repo aware: shells out to the user's `gh` auth. Pass
+        `apply=true` to also clean local sidecars after the check
+        (idempotent; user must re-index after).
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                apply:
+                  type: boolean
+                  default: false
+                  description: If true, rm `.crabcc/{index.db,tantivy/,graph.json}` after the version check.
+                repo:
+                  type: string
+                  description: Optional repo override (default `peterlodri-sec/crabcc`).
+      responses:
+        "200":
+          description: Upgrade report.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/UpgradeReport"}
+
+  # ---------------- memory.* tools ----------------
+
+  /tools/memory.init:
+    post:
+      tags: [memory]
+      operationId: memory_init
+      summary: Idempotent open-or-create for `<repo>/.crabcc/memory.db`.
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CwdRequest"}
+      responses:
+        "200":
+          description: Status acknowledgement.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {type: string, example: ok}
+                  root:   {type: string}
+
+  /tools/memory.remember:
+    post:
+      tags: [memory]
+      operationId: memory_remember
+      summary: Store one drawer (manual entry).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - {$ref: "#/components/schemas/CwdRequest"}
+                - type: object
+                  required: [source, body]
+                  properties:
+                    source: {type: string, description: Source identifier (file path / convo id / free string).}
+                    body:   {type: string, description: Verbatim drawer body.}
+                    wing:   {type: string, default: default, description: Wing bucket.}
+                    room:   {type: string, description: Optional room sub-bucket.}
+                    session_id: {type: string, description: Optional session id (terminal id, conversation id).}
+      responses:
+        "200":
+          description: Inserted drawer id.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: {type: integer, format: int64}
+
+  /tools/memory.search:
+    post:
+      tags: [memory]
+      operationId: memory_search
+      summary: Search top-K drawers (default mode is hybrid BM25+vector RRF).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - {$ref: "#/components/schemas/CwdRequest"}
+                - type: object
+                  required: [query]
+                  properties:
+                    query: {type: string}
+                    limit: {type: integer, default: 10}
+                    wing:  {type: string}
+                    room:  {type: string}
+                    mode:
+                      type: string
+                      enum: [hybrid, lexical, vector]
+                      default: hybrid
+                      description: Search mode. Hybrid = RRF fusion; lexical = BM25 only; vector = KNN only.
+      responses:
+        "200":
+          description: Drawer hits.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/QueryResult"}
+
+  /tools/memory.get:
+    post:
+      tags: [memory]
+      operationId: memory_get
+      summary: Fetch one drawer verbatim by id.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - {$ref: "#/components/schemas/CwdRequest"}
+                - type: object
+                  required: [id]
+                  properties:
+                    id: {type: integer, format: int64}
+      responses:
+        "200":
+          description: Drawer or null.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - {$ref: "#/components/schemas/Drawer"}
+                  - {type: "null"}
+
+  /tools/memory.list:
+    post:
+      tags: [memory]
+      operationId: memory_list
+      summary: List drawers (no similarity); ordered by id ASC.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              allOf:
+                - {$ref: "#/components/schemas/CwdRequest"}
+                - type: object
+                  properties:
+                    wing:  {type: string}
+                    limit: {type: integer, default: 50}
+      responses:
+        "200":
+          description: Array of drawers.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: "#/components/schemas/Drawer"}
+
+  /tools/memory.delete:
+    post:
+      tags: [memory]
+      operationId: memory_delete
+      summary: Delete drawers. Specify exactly one of id, source, all.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - {$ref: "#/components/schemas/CwdRequest"}
+                - type: object
+                  properties:
+                    id:     {type: integer, format: int64}
+                    source: {type: string}
+                    all:    {type: boolean}
+      responses:
+        "200":
+          description: Number of rows removed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: {type: integer}
+
+  /tools/memory.count:
+    post:
+      tags: [memory]
+      operationId: memory_count
+      summary: Drawer count for the store.
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CwdRequest"}
+      responses:
+        "200":
+          description: Count.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  count: {type: integer}
+
+  /tools/_openapi:
+    post:
+      tags: [server]
+      operationId: _openapi
+      summary: Return the embedded OpenAPI 3.1 description (this document).
+      description: |
+        Byte-identical copy of `crates/crabcc-mcp/openapi.yaml`, embedded
+        at compile time via `include_str!`. Useful for SDK generators
+        and runtime introspection. Pipe through `yq -o json` for JSON.
+      requestBody:
+        content:
+          application/json:
+            schema: {type: object}
+      responses:
+        "200":
+          description: OpenAPI 3.1 spec as a YAML text blob.
+          content:
+            text/plain:
+              schema: {type: string, format: yaml}
+
+  /tools/_health:
+    post:
+      tags: [server]
+      operationId: _health
+      summary: Liveness + capability probe.
+      description: |
+        No filesystem touches — safe to poll cheaply (used by orchestrators
+        and `crabcc doctor` to confirm the MCP server is alive). Returns
+        the server name, semver, MCP protocol version, and the count of
+        tools currently exposed.
+      requestBody:
+        content:
+          application/json:
+            schema: {type: object}
+      responses:
+        "200":
+          description: Health report.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/HealthReport"}
+
+  /tools/memory.health:
+    post:
+      tags: [memory]
+      operationId: memory_health
+      summary: Health snapshot — Ok / Degraded / Down.
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CwdRequest"}
+      responses:
+        "200":
+          description: Health status.
+          content:
+            application/json:
+              schema:
+                type: string
+                enum: [Ok, Degraded, Down]
+
+components:
+  schemas:
+    CwdRequest:
+      type: object
+      properties:
+        cwd:
+          type: string
+          description: |
+            Path inside a git repo. Server walks up to find the repo root
+            and opens `.crabcc/memory.db` there. Defaults to server
+            startup cwd.
+
+    SymRequest:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string, description: Symbol name to look up.}
+
+    NameModeRequest:
+      type: object
+      required: [name]
+      properties:
+        name:  {type: string}
+        mode:
+          type: string
+          enum: [hits, files, count]
+          default: hits
+          description: |
+            Output shape. `hits` = full {file, line, col, snippet} list;
+            `files` = deduped file paths (≈70% smaller); `count` =
+            `{count: N}` only.
+        limit: {type: integer, description: Cap result size; omit for unlimited.}
+
+    QueryResponse:
+      oneOf:
+        - type: array
+          description: Hit-mode response — array of `Hit`.
+          items: {$ref: "#/components/schemas/Hit"}
+        - type: object
+          description: Files-mode response.
+          properties:
+            files: {type: array, items: {type: string}}
+        - type: object
+          description: Count-mode response.
+          properties:
+            count: {type: integer}
+
+    Hit:
+      type: object
+      required: [file, line, col]
+      properties:
+        file:    {type: string}
+        line:    {type: integer}
+        col:     {type: integer}
+        snippet: {type: string, description: Line text containing the match.}
+
+    Symbol:
+      type: object
+      required: [name, kind, file, line_start, line_end]
+      properties:
+        name:       {type: string}
+        kind:
+          type: string
+          enum: [function, method, class, module, struct, enum, trait, impl, interface, const, static, type, macro, namespace]
+        signature:  {type: string, description: One-line declaration signature.}
+        parent:     {type: string, description: Enclosing symbol name (class/impl/module).}
+        file:       {type: string}
+        line_start: {type: integer}
+        line_end:   {type: integer}
+        visibility: {type: string, enum: [public, private, protected, crate, super, self]}
+
+    Edge:
+      type: object
+      required: [src_symbol, dst_name, kind]
+      properties:
+        src_symbol:  {type: string, description: Caller / containing symbol name.}
+        dst_name:    {type: string, description: Callee / referenced name.}
+        kind:        {type: string, enum: [call], description: Currently only `call` edges are emitted.}
+        src_file_id: {type: integer}
+        src_line:    {type: integer}
+
+    GraphHit:
+      type: object
+      required: [name, depth]
+      properties:
+        name:  {type: string}
+        depth: {type: integer, description: BFS depth from the seed (1 = direct caller/callee).}
+
+    IndexStats:
+      type: object
+      required: [files_indexed, symbols, edges]
+      properties:
+        files_indexed:       {type: integer}
+        symbols:             {type: integer}
+        edges:               {type: integer}
+        skipped_unsupported: {type: integer}
+        skipped_too_large:   {type: integer}
+        skipped_unreadable:  {type: integer}
+        skipped_parse_error: {type: integer}
+
+    RefreshStats:
+      type: object
+      required: [new, reindexed, touched, unchanged, deleted]
+      properties:
+        new:                 {type: integer}
+        reindexed:           {type: integer}
+        touched:             {type: integer}
+        unchanged:           {type: integer}
+        deleted:             {type: integer}
+        skipped_unsupported: {type: integer}
+        skipped_too_large:   {type: integer}
+        skipped_unreadable:  {type: integer}
+        skipped_parse_error: {type: integer}
+
+    UpgradeReport:
+      type: object
+      properties:
+        installed:
+          type: object
+          properties:
+            version: {type: string}
+        latest:
+          type: object
+          properties:
+            tag:  {type: string}
+            url:  {type: string, format: uri}
+        delta:
+          type: object
+          required: [status]
+          properties:
+            status: {type: string, enum: [up_to_date, available, ahead, unknown]}
+            kind:   {type: string, enum: [major, minor, patch]}
+        recommendations:
+          type: array
+          items: {type: string}
+
+    Drawer:
+      type: object
+      required: [id, wing, source_id, body, sha256, created_at]
+      properties:
+        id:         {type: integer, format: int64}
+        wing:       {type: string}
+        room:       {type: string, nullable: true}
+        source_id:  {type: string}
+        body:       {type: string}
+        sha256:     {type: string}
+        created_at: {type: integer, format: int64, description: Unix epoch seconds.}
+        session_id: {type: string, nullable: true}
+
+    DrawerHit:
+      type: object
+      required: [id, score, source_id, body, wing]
+      properties:
+        id:        {type: integer, format: int64}
+        score:     {type: number, format: float, description: Higher = better. RRF-fused for hybrid search.}
+        source_id: {type: string}
+        body:      {type: string}
+        wing:      {type: string}
+        room:      {type: string, nullable: true}
+
+    QueryResult:
+      type: object
+      required: [hits]
+      properties:
+        hits:
+          type: array
+          items: {$ref: "#/components/schemas/DrawerHit"}
+
+    HealthReport:
+      type: object
+      required: [status, server, version, protocol_version, tool_count]
+      properties:
+        status:           {type: string, enum: [ok, degraded, down]}
+        server:           {type: string, example: crabcc-mcp}
+        version:          {type: string, description: Server semver from Cargo.toml.}
+        protocol_version: {type: string, description: MCP protocol version (e.g. 2024-11-05).}
+        tool_count:       {type: integer, description: Total tools exposed by `tools/list`.}

@@ -53,6 +53,20 @@ fi
 # Reset the log so reruns don't accumulate.
 : >"$LOG"
 
+# --- pre-step: openapi drift -----------------------------------------------
+# The MCP OpenAPI spec is hand-maintained but enforced by a unit test
+# (`openapi_spec_lists_every_tool`). Bail out *before* running the
+# expensive cargo gate if the spec file isn't tracked alongside the
+# tools_def() change — easy mistake to make and a clear signal.
+if [ -f crates/crabcc-mcp/openapi.yaml ] \
+        && git diff --name-only HEAD 2>/dev/null \
+        | grep -q "crates/crabcc-mcp/src/lib.rs" \
+        && ! git diff --name-only HEAD 2>/dev/null \
+        | grep -q "crates/crabcc-mcp/openapi.yaml"; then
+    [ "$QUIET" = "0" ] && printf "${BOLD}note:${RESET} crabcc-mcp/src/lib.rs changed but openapi.yaml did not — \
+the drift test may flag this. Update the spec if you added/removed a tool.\n"
+fi
+
 step() {
     local name="$1"; shift
     [ "$QUIET" = "0" ] && printf "${BOLD}▶ %s${RESET}\n" "$name"

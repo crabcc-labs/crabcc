@@ -105,13 +105,9 @@ fn e2e_walkdir_pinned_index_and_sym() {
     let stdout = String::from_utf8(sym.stdout).unwrap();
     assert!(!stdout.trim().is_empty(), "sym output empty");
 
-    let parsed: serde_json::Value =
-        serde_json::from_str(&stdout).expect("sym output must be JSON");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("sym output must be JSON");
     let arr = parsed.as_array().expect("sym JSON top-level must be array");
-    assert!(
-        !arr.is_empty(),
-        "expected at least one hit for `WalkDir`"
-    );
+    assert!(!arr.is_empty(), "expected at least one hit for `WalkDir`");
     let first = &arr[0];
     assert_eq!(first["name"], "WalkDir");
     assert_eq!(first["kind"], "struct");
@@ -135,10 +131,7 @@ fn e2e_walkdir_pinned_index_and_sym() {
 
     let files_json: serde_json::Value =
         serde_json::from_slice(&files.stdout).expect("files output must be JSON");
-    let count = files_json
-        .as_array()
-        .expect("files top-level array")
-        .len();
+    let count = files_json.as_array().expect("files top-level array").len();
     assert!(
         (3..=20).contains(&count),
         "walkdir 2.5.0 has 3-20 .rs files; got {count}"
