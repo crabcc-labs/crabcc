@@ -6,6 +6,19 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+## [2.3.0] — 2026-04-30
+
+### Added — modernized `install.sh` + one-line install
+- One-line install: `gh api -H 'Accept: application/vnd.github.v3.raw'
+  /repos/peterlodri-sec/crabcc/contents/install.sh | bash`. The script
+  prompts for `gh auth login` if needed, clones via `gh`, builds with
+  `cargo install --locked`, wires shell completions for the user's
+  current shell (zsh/bash/fish), links the Claude Code skill + slash
+  commands under `~/.claude/`, and prints a `crabcc go` next-step.
+- Flags: `--no-completions`, `--no-claude`, `--version=`, `--bin-dir=`.
+  Honours `CRABCC_INSTALL_DIR` and `CRABCC_REPO` env.
+- README install section collapsed from a 3-step recipe to one line.
+
 ### Added — `crabcc go` one-shot init + Claude launch
 - New zero-arg subcommand: `crabcc go`. In one breath it (a) detects whether
   the repo is initialized, (b) runs `full_index` (fresh) or `refresh`
