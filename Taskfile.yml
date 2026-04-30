@@ -253,6 +253,54 @@ tasks:
     cmds:
       - 'curl -fsS "${OLLAMA_HOST:-http://127.0.0.1:11434}/api/tags" | jq -r ''.models[] | "\(.name)\t\((.size/1e9)|floor)GB\t\(.modified_at[:10])"'' | column -t'
 
+  # ─── shell-ask integration (install/shell-ask.md) ────────────────────
+  ask:
+    desc: 'Pipe stdin into shell-ask: task ask -- "<prompt>" — gated on `command -v ask`'
+    summary: |
+      Thin wrapper around https://github.com/egoist/shell-ask. Pass the
+      prompt + optional flags after `--`. The crabcc-flavored reusable
+      commands (crabcc-explain, crabcc-cycles, telemetry-digest, cm,
+      openapi-drift) are installed via `task ask-config`.
+
+      Examples:
+        crabcc sym Store      | task ask -- crabcc-explain
+        crabcc graph cycles   | task ask -- crabcc-cycles
+        git diff --cached     | task ask -- cm
+        tail -200 .crabcc/telemetry.jsonl | task ask -- telemetry-digest
+    cmds:
+      - |
+        if ! command -v ask >/dev/null 2>&1; then
+          echo "shell-ask not installed — run \`task ask-install\` (or \`npm i -g shell-ask\`)"
+          exit 1
+        fi
+        ask {{.CLI_ARGS}}
+
+  ask-install:
+    desc: Install shell-ask globally via npm + drop the crabcc command bundle into ~/.config/shell-ask/
+    summary: |
+      Idempotent. Skips the npm install if `ask` is already on PATH.
+      The config is COPIED, not symlinked — re-run after pulling repo
+      updates if you want the latest crabcc commands.
+    cmds:
+      - |
+        if ! command -v ask >/dev/null 2>&1; then
+          npm i -g shell-ask
+        else
+          echo "shell-ask already installed: $(command -v ask)"
+        fi
+      - mkdir -p "$HOME/.config/shell-ask"
+      - 'if [ -f "$HOME/.config/shell-ask/config.json" ] && [ ! -L "$HOME/.config/shell-ask/config.json.crabcc-bak" ]; then mv "$HOME/.config/shell-ask/config.json" "$HOME/.config/shell-ask/config.json.crabcc-bak"; fi'
+      - cp install/shell-ask.json "$HOME/.config/shell-ask/config.json"
+      - 'echo "✓ shell-ask config installed at $HOME/.config/shell-ask/config.json"'
+      - 'echo "  pre-existing config (if any) saved as config.json.crabcc-bak"'
+
+  ask-config:
+    desc: Re-copy install/shell-ask.json to ~/.config/shell-ask/config.json (skip the npm install step)
+    cmds:
+      - mkdir -p "$HOME/.config/shell-ask"
+      - cp install/shell-ask.json "$HOME/.config/shell-ask/config.json"
+      - 'echo "✓ shell-ask config refreshed at $HOME/.config/shell-ask/config.json"'
+
   ollama-network-check:
     desc: Probe a network-exposed Ollama daemon (LAN / VPN / mDNS); pass HOST=… or set $OLLAMA_HOST
     summary: |

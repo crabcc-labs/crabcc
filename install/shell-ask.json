@@ -1,0 +1,37 @@
+{
+  "_comment": "crabcc-flavored shell-ask config. Drop this at ~/.config/shell-ask/config.json (or merge into an existing one). Reusable AI commands tuned for piping crabcc / ccc output. See https://github.com/egoist/shell-ask + install/shell-ask.md.",
+  "default_model": "ollama-qwen3.5:35b-a3b-coding-nvfp4",
+  "ollama_base_url": "http://127.0.0.1:11434/api",
+  "commands": [
+    {
+      "command": "crabcc-explain",
+      "description": "Explain the symbol JSON piped from `crabcc sym <NAME>` or `ccc find <NAME>` in plain English.",
+      "prompt": "You are reading JSON output from crabcc, a symbol index for AI coding agents. The stdin contains an array of symbol records: {name, kind, signature, parent, file, line_start, line_end, visibility}. Write a 2–3 sentence summary covering: (1) what the symbol is and where it lives, (2) its visibility/role in the codebase, (3) one concrete next-step query (e.g. `crabcc callers <name>`). Reply in plain prose, no bullet points."
+    },
+    {
+      "command": "crabcc-cycles",
+      "description": "Triage a `crabcc graph cycles` JSON output — surface which cycles look intentional vs accidental.",
+      "prompt": "You are reading JSON output from `crabcc graph cycles`: an array of strongly-connected components, each a sorted list of mutually-recursive function names. For each cycle of size 2: tag it 'likely intentional mutual recursion' (state machine / parser combinator) or 'possibly accidental cycle' (bug-shaped). For cycles of size ≥3, always flag for review. Output a Markdown table with columns: cycle | size | verdict | one-line rationale."
+    },
+    {
+      "command": "crabcc-orphans",
+      "description": "Triage a `crabcc graph orphans` JSON output — group orphans by likely category.",
+      "prompt": "You are reading a JSON array of function names from `crabcc graph orphans` (defined functions with zero callers). Group into three buckets: (a) public API entry points (main, handlers, FFI exports — leave alone); (b) test helpers / fixtures (tests::, mock_*, _test prefix — leave alone); (c) actual dead code (anything that doesn't fit a/b — flag). Output Markdown with three sections, one bullet per name."
+    },
+    {
+      "command": "telemetry-digest",
+      "description": "Summarize the last N lines of `.crabcc/telemetry.jsonl` — surface throughput / latency anomalies.",
+      "prompt": "You are reading newline-delimited JSON tracing events from crabcc's telemetry sink. Each line: {timestamp, level, target, fields: {kpi?, duration_ms?, count?, edges?, nodes?, ...}}. Compute: (1) per-KPI count, (2) per-KPI p50/p95 of duration_ms, (3) any errors (level=ERROR or warn). Reply in a compact table: kpi | n | p50_ms | p95_ms | notes. Skip kpis with n<3."
+    },
+    {
+      "command": "cm",
+      "description": "Generate a Conventional Commits commit message from a `git diff` (or `git diff --cached`) on stdin. Crabcc-tuned: prefer scopes from the workspace crate names.",
+      "prompt": "Generate a Conventional Commits commit message from the git diff on stdin. Format: `<type>(<scope>): <subject>`. Types: feat, fix, docs, refactor, perf, test, chore, ci. Scope: one of crabcc-cli, crabcc-core, crabcc-mcp, crabcc-memory, crabcc-viz, scripts, ci, docs (pick the dominant changed area; omit scope if cross-cutting). Subject ≤ 70 chars, imperative mood. Body: optional 1–3 short bullets covering 'why', not 'what'. No trailing footer unless the diff includes a `BREAKING CHANGE:` keyword."
+    },
+    {
+      "command": "openapi-drift",
+      "description": "Eyeball a diff of `crates/crabcc-mcp/openapi.yaml` for drift hazards.",
+      "prompt": "You are reading a unified diff of `crates/crabcc-mcp/openapi.yaml`. Flag: (1) tools added without a matching dispatch arm in lib.rs (separate concern, but mention if obvious); (2) field-name renames (likely breaking); (3) required→optional flips (loose); (4) optional→required flips (breaking). Output a Markdown bullet list keyed 'breaking', 'compatible', or 'review'."
+    }
+  ]
+}
