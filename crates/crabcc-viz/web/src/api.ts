@@ -81,6 +81,13 @@ export type TelemetrySnapshot = {
   source: TelemetrySource;
 };
 
+// Issue #86 — OTLP collector health probe.
+export type OtlpHealth = {
+  reachable: boolean;
+  endpoint: string;
+  error?: string | null;
+};
+
 // Issue #112 follow-up — agent dashboard surfaces.
 export type AgentProfileEntry = {
   id: string;
@@ -137,6 +144,8 @@ export const api = {
     getJson<TelemetrySnapshot>(
       `/api/telemetry?since=${sinceTs ?? 0}&limit=${limit}`,
     ),
+  // Issue #86 — OTLP health probe. Returns green/red pill data for /live.
+  otlpHealth: () => getJson<OtlpHealth>("/api/telemetry/otlp-health"),
 };
 
 // Issue #112 follow-up — expose the api surface on window for
