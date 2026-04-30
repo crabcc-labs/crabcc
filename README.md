@@ -397,6 +397,57 @@ container run --rm \
 A successful run prints `crabcc agent: id=<hex>` and writes a row to
 `~/.crabcc/_internal.db` (host-visible because the repo is bind-mounted).
 
+#### Useful run-time flags
+
+Apple `container`'s VMs run with a default 1 GiB / 4 CPU envelope and a
+locked-down capability set; for resource-intensive agent work you can
+override per-invocation. The bundled `compose.yml` already sets
+`mem_limit: 4g` + `cpus: 4` + `cap_drop: ALL` + the SSH-agent passthrough
+on every service; the table below is the equivalent for ad-hoc
+`container run`:
+
+| Flag | What it does |
+|---|---|
+| `--memory 32g --cpus 8` | Override the per-VM ceiling (default 1 GiB / 4 CPU). For repo-wide refactors against the memory crate's bench harness. |
+| `--init` | Runs the lightweight init as PID 1 — forwards signals + reaps zombies. Always pass this for agents that spawn cargo/rustc/gh. |
+| `--ssh` | Mounts `${SSH_AUTH_SOCK}` at `/run/host-services/ssh-auth.sock`. Survives logout/login — `git clone git@github.com:...` Just Works. |
+| `--volume $PWD:/workspace` | Repo root bind-mount. RW; backup loop reads from here. |
+| `--cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE` | Minimum-viable cap set for agent edits. Compose has these. |
+| `--publish 127.0.0.1:7878:7878` | Forward the live dashboard port if you `crabcc serve` inside the agent VM. |
+| `--rm` | Don't accumulate stopped containers. Always pass for short-lived agents. |
+
+Resource-heavy build of the image itself? Bump the builder VM:
+
+```bash
+container builder stop && container builder delete
+container builder start --cpus 8 --memory 16g
+container build -t crabcc-internal-agents:dev -f install/internal-agents/Containerfile .
+```
+
+#### Resource snapshot
+
+```bash
+container stats                              # all running, top-style
+container stats crabcc-agent-core            # one specific
+container stats --no-stream --format json    # one-shot JSON for scripting
+```
+
+#### Logs
+
+```bash
+container compose -f install/internal-agents/compose.yml logs -f crabcc-core
+container logs crabcc-agent-core              # alt ad-hoc form
+container logs --boot crabcc-agent-core       # VM boot + init dmesg (debugging)
+```
+
+#### Inspect
+
+```bash
+container ls --format json --all | jq
+container inspect crabcc-agent-core | jq
+container image inspect crabcc-internal-agents:dev | jq
+```
+
 ## Architecture
 
 ```
