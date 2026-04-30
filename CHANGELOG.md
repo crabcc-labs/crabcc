@@ -6,21 +6,15 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
-### Added — Hybrid-search distractor golden test (closes [#22](https://github.com/peterlodri-sec/crabcc/issues/22))
-- New `hybrid_beats_each_ranker_on_distractor_set` in
-  `crates/crabcc-memory/src/palace.rs` — gated behind `memory-embed`
-  and `#[ignore]`d by default (downloads ~25 MB MiniLM-L6-v2 ONNX on
-  first run). Run with:
-  `cargo test -p crabcc-memory --features memory-embed -- --ignored`.
-- Contrived 7-drawer corpus + 2 queries:
-  - **Semantic axis**: paraphrased query with zero token overlap →
-    `Lexical` misses, `Vector` and `Hybrid` rank the right drawer #1.
-  - **Literal axis**: rare exact-token query (`xyzzy_99_42`) →
-    `Lexical` and `Hybrid` rank the right drawer #1.
-- Asserts hybrid (RRF) wins both axes — the contract that justifies
-  fusion existing instead of forcing callers to pick a mode per query.
-- The implementation itself (FTS5 + RRF) landed in PR #32; this test
-  closes the deliverable specified in #22.
+### Added — MCP `memory.search` ranked-output assertions (closes [#21](https://github.com/peterlodri-sec/crabcc/issues/21))
+- The MCP `memory.search` tool already mirrors the CLI's hybrid /
+  lexical / vector dispatch via `palace.search_with_mode` (#48).
+  This change adds the missing test contract: every hit carries the
+  full `DrawerHit` shape (`id`, `score`, `source_id`, `body`, `wing`),
+  scores are monotonically non-increasing across all three modes, and
+  unknown `mode` values surface as JSON-RPC errors instead of silently
+  falling back to the default. Two new tests in
+  `crates/crabcc-mcp/src/lib.rs`; existing memory smoke tests stay green.
 
 ### Added — Starship status-line surface (closes [#43](https://github.com/peterlodri-sec/crabcc/issues/43))
 - `crabcc info --status-line` — terse one-liner suitable for

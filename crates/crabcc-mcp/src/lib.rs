@@ -679,6 +679,77 @@ mod tests {
     }
 
     #[test]
+    fn memory_search_returns_ranked_hit_shape() {
+        // Asserts the MCP tool surfaces the same ranked DrawerHit shape the
+        // CLI produces (id, score, source_id, body, wing), with scores sorted
+        // descending across ranking modes. Tracks issue #21.
+        let dir = tempfile::tempdir().unwrap();
+        for (src, body) in [
+            ("a", "fox jumps over lazy dog"),
+            ("b", "fox runs through forest"),
+            ("c", "cat sleeps on mat"),
+        ] {
+            call_tool(
+                dir.path(),
+                "memory.remember",
+                json!({"source": src, "body": body}),
+            );
+        }
+
+        for mode in ["hybrid", "lexical", "vector"] {
+            let r = call_tool(
+                dir.path(),
+                "memory.search",
+                json!({"query": "fox jumps", "limit": 3, "mode": mode}),
+            );
+            let parsed = parse_text_content(&r);
+            let hits = parsed["hits"].as_array().expect("hits is array");
+            assert!(!hits.is_empty(), "{mode}: expected at least one hit");
+
+            // Every hit must carry the full DrawerHit shape with valid types.
+            for h in hits {
+                assert!(h["id"].is_i64(), "{mode}: id missing/wrong type");
+                assert!(h["score"].is_f64(), "{mode}: score missing/wrong type");
+                assert!(h["source_id"].is_string(), "{mode}: source_id missing");
+                assert!(h["body"].is_string(), "{mode}: body missing");
+                assert!(h["wing"].is_string(), "{mode}: wing missing");
+            }
+
+            // Scores must be monotonically non-increasing — this is the
+            // contract callers depend on for "top-K".
+            let scores: Vec<f64> = hits.iter().map(|h| h["score"].as_f64().unwrap()).collect();
+            assert!(
+                scores.windows(2).all(|w| w[0] >= w[1]),
+                "{mode}: scores not sorted desc: {scores:?}"
+            );
+
+            // Rank-1 should clearly favour the matching token over the
+            // unrelated `cat sleeps` drawer.
+            assert_ne!(
+                hits[0]["source_id"], "c",
+                "{mode}: unrelated drawer ranked first"
+            );
+        }
+    }
+
+    #[test]
+    fn memory_search_rejects_unknown_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        call_tool(
+            dir.path(),
+            "memory.remember",
+            json!({"source": "1", "body": "anything"}),
+        );
+        let resp = call_tool(
+            dir.path(),
+            "memory.search",
+            json!({"query": "anything", "mode": "fancy"}),
+        );
+        // Bad mode surfaces as a JSON-RPC error, not a silent fallback.
+        assert!(resp.get("error").is_some(), "expected JSON-RPC error");
+    }
+
+    #[test]
     fn memory_count_and_delete_via_handle() {
         let dir = tempfile::tempdir().unwrap();
         call_tool(
