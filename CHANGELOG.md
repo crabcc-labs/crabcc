@@ -6,6 +6,57 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+### Added — `docs/GRAPH.md` + `docs/RESEARCH-graph-prompt.md`
+- New per-feature doc explaining the call-graph sidecar
+  (`.crabcc/graph.json`): on-disk shape, build paths
+  (`build_from_edges` vs `build_legacy`), internal consumers (`graph
+  walk`/`cycles`/`orphans`/`crabcc go`), and the JSON-vs-SQL design
+  trade-off.
+- Companion research prompt: a drop-in template for further LLM
+  research into where the sidecar should go next (storage layout,
+  petgraph vs hand-rolled, incremental maintenance, edge-taxonomy
+  expansion, scale limits of Tarjan SCC, recursive-CTE
+  reconsiderations, visualization). Structured so the model can split
+  work across sections.
+
+### Added — `task coverage` + `scripts/coverage.sh`
+- Workspace coverage report via `cargo-llvm-cov`, auto-installed on
+  first run. `FORMAT=html` (default), `lcov`, `json`, or `text`. Output
+  lands under `.summary/coverage/`.
+
+### Added — `task doc` (rustdoc)
+- Build the workspace rustdoc tree with `cargo doc --no-deps` and open
+  `index.html` in the browser. Pass `OPEN=0` to skip the open, `DEPS=1`
+  to include external-crate docs.
+
+### Added — `task prep-pr` + `scripts/prep-pr.sh`
+- Single-call pre-PR gate: fmt-check + clippy + test + doc-build (with
+  `RUSTDOCFLAGS=-D warnings`). Output is teed to
+  `.summary/prep-pr.txt` for paste-into-PR-body use. Exits non-zero on
+  any failure.
+
+### Added — richer crate-level rustdoc on `crabcc-core` and `crabcc-memory`
+- `crabcc-core`'s `lib.rs` gained a full intro: per-repo state layout
+  (`.crabcc/index.db`, `tantivy/`, `graph.json`, `fsst.symbols`), a
+  modules-at-a-glance table, a `no_run` index-then-query example, and a
+  cargo-features section.
+- `crabcc-memory`'s `lib.rs` was expanded with a layers table, a
+  `no_run` `Palace::open` + `remember` + `search` example, the search-mode
+  matrix (hybrid/lexical/vector), the M0→M1b roadmap, and the cargo
+  features list.
+
+### Fixed — Taskfile YAML parse error
+- The `smoke` target's bash heredoc (`cat > a.ts <<'EOF' …`) was
+  inlined as a YAML plain scalar, which made the parser choke on
+  `name: string`. Wrapped in a `|` literal block scalar — `task --list`
+  now parses cleanly.
+
+### Refreshed — Taskfile top-of-file comments
+- "Quick start" and "Workflow extras" sections grouped by daily-driver
+  vs. situational. New rows for `coverage`, `doc`, `prep-pr`,
+  `local-ci`, `version`, `check-deps`, `doctor`, `aliases`,
+  `docs-refresh`.
+
 ## [2.3.0] — 2026-04-30
 
 ### Added — modernized `install.sh` + one-line install
