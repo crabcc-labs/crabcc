@@ -330,7 +330,7 @@ tasks:
       - 'scripts/local-ci.sh --release'
 
   release:
-    desc: Cut a release tag (CI builds + UPX-compresses + uploads on push)
+    desc: Cut a release tag (CI builds + uploads tarballs on push)
     summary: |
       Pass VERSION=x.y.z. Updates Cargo.toml versions, commits, tags, and pushes.
       The release.yml GitHub Actions workflow takes it from there.
