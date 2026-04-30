@@ -70,6 +70,25 @@ All notable changes to crabcc are documented here. Format follows
 - Standalone target that mirrors GitHub `ci.yml` (fmt-check + lint +
   test) and saves output to `.summary/local-ci.txt`. Used in PR
   descriptions when upstream CI is rate-limited.
+## [2.2.2] — 2026-04-30
+
+### Added — `sqlite-vec` ANN backend behind `memory-vec` feature ([#17](https://github.com/peterlodri-sec/crabcc/issues/17))
+
+- **`memory-vec` cargo feature** on `crabcc-memory` (default OFF). When on,
+  pulls in the bundled `sqlite-vec` C extension via the `sqlite-vec = "0.1"`
+  Rust binding — links statically, no system-side install needed.
+- **Auto-extension registration** — `SqliteBackend::open` calls
+  `sqlite3_auto_extension(sqlite3_vec_init)` exactly once per process via
+  `std::sync::Once`. Every subsequent rusqlite `Connection` inherits the
+  extension transparently.
+- **`drawers_vec` virtual table** — created at every `Backend::open` (gated
+  `IF NOT EXISTS`). Schema: `drawer_id INTEGER PRIMARY KEY, embedding
+  FLOAT[384]`. Dim matches MiniLM-L6-v2 (the M1 default in [#18](https://github.com/peterlodri-sec/crabcc/issues/18)).
+  Empty until [#20](https://github.com/peterlodri-sec/crabcc/issues/20) wires the search path; M0 hash embeddings
+  continue to live in `drawer_embeddings.bytes`.
+- **+3 unit tests** in a new gated `vec_extension` test module — `vec_version()`
+  round-trips, `drawers_vec` exists in `sqlite_master` after open, and the
+  virtual-table creation is idempotent across three back-to-back opens.
 
 ## [2.2.1] — 2026-04-30
 

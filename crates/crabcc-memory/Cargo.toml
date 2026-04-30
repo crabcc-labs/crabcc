@@ -12,6 +12,11 @@ default = ["compress"]
 # graph) or at runtime by opening the backend without a sibling fsst.symbols
 # file present.
 compress = ["crabcc-core/compress"]
+# v2.5.1 (#17) — load the bundled sqlite-vec C extension at Backend::open
+# and create a `drawers_vec` virtual table for ANN search. Default OFF —
+# pulls in the sqlite-vec FFI dep + ~few hundred KB of compiled extension.
+# #20 wires the actual search path; until then the table stays empty.
+memory-vec = ["dep:sqlite-vec"]
 
 [dependencies]
 # Reuse: hash::sha256_hex, store pragma pattern, walker/watch/fts in later phases.
@@ -23,6 +28,10 @@ rusqlite = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
+# Optional — only built when the `memory-vec` feature is on. Bundles the
+# sqlite-vec C extension; we register it via sqlite3_auto_extension so every
+# rusqlite Connection inherits it.
+sqlite-vec = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

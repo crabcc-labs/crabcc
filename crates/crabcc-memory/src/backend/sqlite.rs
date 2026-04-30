@@ -24,6 +24,42 @@ use std::sync::Mutex;
 
 const SCHEMA: &str = include_str!("../../schema/001_init.sql");
 
+/// Register the bundled `sqlite-vec` C extension as a SQLite auto-extension
+/// so every subsequent `Connection::open` picks it up. Once-only per process —
+/// `sqlite3_auto_extension` is cumulative; calling it twice would install the
+/// same entry point twice. `Once::call_once` guarantees the body runs at most
+/// once, so this helper is safe to call from every `Backend::open`.
+///
+/// v2.5.1 (#17) — extension registration; the `drawers_vec` virtual table is
+/// created in `Backend::open` (gated `IF NOT EXISTS`).
+#[cfg(feature = "memory-vec")]
+fn register_sqlite_vec_once() {
+    use std::sync::Once;
+    static REGISTERED: Once = Once::new();
+    REGISTERED.call_once(|| {
+        // Safety: `sqlite_vec::sqlite3_vec_init` is the C entry point of the
+        // bundled sqlite-vec extension. Its real C signature matches the
+        // `sqlite3_auto_extension` contract; the Rust binding declares it
+        // zero-arg, so we transmute through `*const ()` to the explicit
+        // SQLite extension entry-point type. Same pattern as the upstream
+        // sqlite-vec Rust binding's own test, with the explicit type
+        // annotation clippy's `missing_transmute_annotations` lint requires.
+        type SqliteExtInit = unsafe extern "C" fn(
+            *mut rusqlite::ffi::sqlite3,
+            *mut *const std::os::raw::c_char,
+            *const rusqlite::ffi::sqlite3_api_routines,
+        ) -> std::os::raw::c_int;
+        unsafe {
+            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
+                *const (),
+                SqliteExtInit,
+            >(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            )));
+        }
+    });
+}
+
 pub struct SqliteBackend {
     conn: Mutex<Connection>,
     /// Optional FSST codec, loaded from `<db_dir>/fsst.symbols` at open time.
@@ -42,6 +78,9 @@ const _: fn() = || {
 
 impl SqliteBackend {
     pub fn open(path: &Path) -> Result<Self> {
+        #[cfg(feature = "memory-vec")]
+        register_sqlite_vec_once();
+
         let conn = Connection::open(path).context("open memory.db")?;
         // Mirrors crabcc_core::store::Store::open. Documented there; keeping
         // the same set of pragmas so a single `.crabcc/` directory has
@@ -178,6 +217,20 @@ impl SqliteBackend {
         }
 
         let _ = conn.execute_batch("PRAGMA optimize;");
+
+        // v2.5.1 (#17) — sqlite-vec virtual table for ANN search. Empty
+        // until #20 wires the search path. Dim is fixed at 384 to match
+        // MiniLM-L6-v2 (M1 default in #18). M0 hash embeddings continue to
+        // live in `drawer_embeddings.bytes`; only M1+ vectors will land in
+        // this table. `IF NOT EXISTS` makes re-open idempotent.
+        #[cfg(feature = "memory-vec")]
+        conn.execute_batch(
+            "CREATE VIRTUAL TABLE IF NOT EXISTS drawers_vec USING vec0(
+                drawer_id INTEGER PRIMARY KEY,
+                embedding FLOAT[384]
+             );",
+        )
+        .context("create drawers_vec virtual table")?;
 
         // Codec discovery — sibling `fsst.symbols` next to the DB. Same shape
         // as the symbol-store's discovery so a single `.crabcc/fsst.symbols`
@@ -1020,6 +1073,58 @@ mod tests {
             )
             .unwrap();
         assert_eq!(at, 0);
+    }
+
+    // v2.5.1 (#17) — sqlite-vec extension + drawers_vec virtual table.
+    #[cfg(feature = "memory-vec")]
+    mod vec_extension {
+        use super::*;
+
+        #[test]
+        fn vec_version_returns_versioned_string() {
+            // Opening any SqliteBackend triggers `register_sqlite_vec_once`,
+            // after which every Connection on this process can call
+            // `vec_version()`. Round-trip through a sibling connection so
+            // we exercise the auto-extension path, not just the inner conn.
+            let dir = tempdir().unwrap();
+            let path = dir.path().join("memory.db");
+            let _ = SqliteBackend::open(&path).unwrap();
+            let probe = Connection::open(&path).unwrap();
+            let v: String = probe
+                .query_row("SELECT vec_version()", [], |r| r.get(0))
+                .unwrap();
+            assert!(v.starts_with('v'), "expected `v` prefix, got: {v}");
+        }
+
+        #[test]
+        fn drawers_vec_virtual_table_exists_after_open() {
+            // The vec0 virtual table must be created at Backend::open time
+            // and visible from any subsequent connection.
+            let dir = tempdir().unwrap();
+            let path = dir.path().join("memory.db");
+            let _ = SqliteBackend::open(&path).unwrap();
+            let probe = Connection::open(&path).unwrap();
+            let n: i64 = probe
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master \
+                     WHERE type = 'table' AND name = 'drawers_vec'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "drawers_vec virtual table missing");
+        }
+
+        #[test]
+        fn drawers_vec_creation_idempotent_on_repeat_open() {
+            // CREATE VIRTUAL TABLE IF NOT EXISTS must not error on the 2nd /
+            // 3rd open of the same db. Mirrors the existing migration tests.
+            let dir = tempdir().unwrap();
+            let path = dir.path().join("memory.db");
+            let _ = SqliteBackend::open(&path).unwrap();
+            let _ = SqliteBackend::open(&path).unwrap();
+            let _ = SqliteBackend::open(&path).unwrap();
+        }
     }
 
     #[cfg(feature = "compress")]
