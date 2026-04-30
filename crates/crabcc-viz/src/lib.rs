@@ -337,6 +337,10 @@ fn handle(request: Request, root: &Path) -> Result<()> {
                 Ok(()) => Ok(()),
                 Err(e) => Err(e),
             },
+            "/api/reindex" => match reindex_pwd(root) {
+                Ok(snap) => respond_json(request, &snap),
+                Err(e) => respond_status(request, 500, &format!("reindex failed: {e}")),
+            },
             _ => respond_status(request, 405, "method not allowed"),
         };
     }
@@ -1676,6 +1680,76 @@ fn respond_html(request: Request, body: &str) -> Result<()> {
     resp.add_header(header("Cache-Control", "no-store"));
     request.respond(resp)?;
     Ok(())
+}
+
+/// Run `crabcc index` against `root` and capture both the structured-JSON
+/// stats (stdout) and the tracing log lines (stderr). Returns a single
+/// `ReindexReport` JSON envelope so the UI panel can render counts,
+/// duration, and per-stage log lines without a second round-trip.
+fn reindex_pwd(root: &Path) -> Result<ReindexReport> {
+    let self_exe = std::env::current_exe().context("locate self_exe")?;
+    let started = std::time::Instant::now();
+    let mut cmd = std::process::Command::new(&self_exe);
+    cmd.arg("--root").arg(root);
+    cmd.arg("index");
+    // Scope the log filter so we surface our own info-level boundary
+    // logs (full_index start/done, refresh deltas, query stats) and not
+    // tantivy's per-commit chatter. RUST_LOG defaults to "warn", so an
+    // unscoped subprocess would be silent.
+    cmd.env(
+        "RUST_LOG",
+        "crabcc=info,crabcc_core=info,crabcc_cli=info,crabcc_mcp=info,crabcc_memory=info",
+    );
+    cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let output = cmd.output().context("spawn `crabcc index`")?;
+    let elapsed_ms = started.elapsed().as_millis() as u64;
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+
+    if !output.status.success() {
+        anyhow::bail!(
+            "crabcc index exited with {}: {}",
+            output.status,
+            stderr.lines().last().unwrap_or("(no stderr)")
+        );
+    }
+
+    // stdout is the IndexStats JSON one-shot from main.rs.
+    let stats: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|_| serde_json::json!({"raw_stdout": stdout.trim()}));
+
+    // stderr is a stream of structured tracing lines. Cap the buffer so
+    // a 100k-file reindex doesn't blow up the response payload — the UI
+    // only renders the tail anyway.
+    let logs: Vec<String> = stderr
+        .lines()
+        .map(|l| l.to_string())
+        .rev()
+        .take(MAX_REINDEX_LOG_LINES)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+
+    Ok(ReindexReport {
+        root: root.display().to_string(),
+        elapsed_ms,
+        stats,
+        logs,
+    })
+}
+
+const MAX_REINDEX_LOG_LINES: usize = 200;
+
+#[derive(Serialize)]
+struct ReindexReport {
+    root: String,
+    elapsed_ms: u64,
+    stats: serde_json::Value,
+    logs: Vec<String>,
 }
 
 fn respond_json<T: Serialize>(request: Request, value: &T) -> Result<()> {

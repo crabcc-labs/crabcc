@@ -93,18 +93,24 @@ fn health_endpoint_returns_ok() {
 
 #[test]
 fn root_serves_bundled_html() {
+    // PR #78 promoted /live to be the default root. Both / and /live now
+    // serve live.html (the dashboard); the original canvas-based viewer
+    // moved to /graph.
     let (_dir, port) = boot_test_server();
     let (status, body) = http_get(port, "/");
     assert_eq!(status, 200, "root should return 200");
-    // The bundled HTML carries the `crabcc · live call-graph` title; that's
-    // a stable marker we can grep for without coupling the test to layout.
     assert!(
-        body.contains("crabcc"),
-        "root body should be the bundled HTML: {body:.200}"
+        body.contains("crabcc · live"),
+        "root body should be the live dashboard: {body:.200}"
     );
+
+    // The interactive graph viewer is now at /graph and is where the
+    // <canvas> + vis-network bootstrap logic lives.
+    let (graph_status, graph_body) = http_get(port, "/graph");
+    assert_eq!(graph_status, 200, "graph endpoint should return 200");
     assert!(
-        body.contains("<canvas"),
-        "root body should contain the graph canvas: {body:.200}"
+        graph_body.contains("<canvas"),
+        "/graph body should contain the graph canvas: {graph_body:.200}"
     );
 }
 
@@ -180,9 +186,14 @@ fn live_dashboard_serves_distinct_html() {
         body.contains("/api/bootstrap"),
         "live page must reference the bootstrap endpoint: {body:.500}"
     );
-    // Ensure / and /live aren't accidentally serving the same payload.
+    // Per PR #78, / is an explicit alias for /live — both serve the
+    // dashboard. Locking that contract in so a future routing change
+    // surfaces here rather than at user-report time.
     let (_, idx_body) = http_get(port, "/");
-    assert_ne!(idx_body, body, "/ and /live must serve distinct HTML pages");
+    assert_eq!(
+        idx_body, body,
+        "/ must alias /live (same dashboard payload)"
+    );
 }
 
 #[test]

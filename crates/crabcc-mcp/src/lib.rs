@@ -494,7 +494,20 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
             Ok(serde_json::to_string(&r)?)
         }
         "index" => {
+            let started = std::time::Instant::now();
             let r = index::full_index(root, &store)?;
+            // Logs flag: when truthy, return an envelope with stats +
+            // elapsed_ms + (empty here — in-process logs aren't piped).
+            // Mirrors the shape of /api/reindex from crabcc-viz so the
+            // /live dashboard and MCP clients consume identical JSON.
+            if args.get("logs").and_then(|v| v.as_bool()).unwrap_or(false) {
+                let env = serde_json::json!({
+                    "stats": r,
+                    "elapsed_ms": started.elapsed().as_millis() as u64,
+                    "logs": Vec::<String>::new(),
+                });
+                return Ok(env.to_string());
+            }
             Ok(serde_json::to_string(&r)?)
         }
         "refresh" => {
