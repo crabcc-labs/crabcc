@@ -1403,3 +1403,31 @@ tasks:
     desc: Show ollama-stack container status
     cmds:
       - 'bash install/ollama-stack/start.sh --status'
+
+  # ─── plugin marketplace sync ────────────────────────────────────────────
+  # Mirrors the canonical skill + slash-command files into the private
+  # plugin marketplace repo (peterlodri-sec/crabcc-plugins). Run this
+  # before bumping the marketplace version so subscribers get a clean
+  # `/plugin update crabcc`.
+  #
+  # Override the marketplace path: task sync-marketplace MARKETPLACE_PATH=/some/where
+  sync-marketplace:
+    desc: Copy SKILL.md + slash commands into the crabcc-plugins marketplace repo
+    vars:
+      MARKETPLACE_PATH: '{{.MARKETPLACE_PATH | default "/Users/peter.lodri/workspace/bin/crabcc-plugins"}}'
+    cmds:
+      - |
+        set -euo pipefail
+        DEST="{{.MARKETPLACE_PATH}}"
+        if [ ! -d "$DEST/.claude-plugin" ]; then
+          echo "✗ $DEST is not a crabcc-plugins marketplace checkout (missing .claude-plugin/)" >&2
+          exit 1
+        fi
+        mkdir -p "$DEST/skills/crabcc" "$DEST/commands/crabcc/generate"
+        cp skill/crabcc/SKILL.md               "$DEST/skills/crabcc/SKILL.md"
+        cp commands/crabcc-init.md             "$DEST/commands/crabcc-init.md"
+        cp commands/crabcc-upgrade.md          "$DEST/commands/crabcc-upgrade.md"
+        cp commands/crabcc-install.md          "$DEST/commands/crabcc-install.md"
+        cp commands/crabcc/generate/context.md "$DEST/commands/crabcc/generate/context.md"
+        echo "✓ synced 1 skill + 4 commands → $DEST"
+        echo "  next: cd $DEST && git status   (review, then bump versions in marketplace.json + plugin.json)"

@@ -80,6 +80,25 @@ pub fn run(opts: InstallOptions) -> Result<()> {
         return print_stack_instructions();
     }
 
+    // Deprecation notice — `crabcc install-claude` is superseded by the
+    // private plugin marketplace. Slated for removal one release after
+    // v0.1.0 of crabcc-plugins ships and we've validated the upgrade path
+    // end-to-end. Continues to do its work for now (idempotent symlinks).
+    eprintln!(
+        "\x1b[33m\u{26A0}\x1b[0m \x1b[1mDeprecated:\x1b[0m `crabcc install-claude` will be removed.\n\
+         \n\
+         Use the plugin marketplace instead:\n\
+         \n\
+         \x20\x20/plugin marketplace add https://github.com/peterlodri-sec/crabcc-plugins\n\
+         \x20\x20/plugin install crabcc\n\
+         \n\
+         Updates flow through `/plugin update crabcc`. The marketplace bundles the\n\
+         MCP server, the `crabcc` skill, slash commands, and a SessionStart presence\n\
+         check for the `crabcc` binary itself.\n\
+         \n\
+         Continuing with the legacy symlink install for this run …\n"
+    );
+
     let yes = opts.yes;
     let repo_root = git_repo_root()?;
     let home = std::env::var_os("HOME")
