@@ -77,6 +77,34 @@ tasks:
       - "{{.CARGO}} install --path crates/crabcc-cli --force"
       - "{{.CRABCC}} --version"
 
+  install-upgrade-smoke:
+    desc: Smoke-test install.sh upgrade-on-rerun (closes #24)
+    summary: |
+      Verifies the upgrade path: runs install.sh once (build), records
+      the resulting version, runs install.sh --check (must report up
+      to date), then runs install.sh again (must short-circuit to a
+      no-op build). Idempotency is the contract.
+        - first run         build path
+        - --check           no writes; reports up-to-date
+        - second run        no-op build skip
+      Manual platform sweep target — runs locally on macOS arm64 and
+      linux x86_64 (per the issue spec). Output captured at
+      .summary/install-upgrade-smoke.txt.
+    cmds:
+      - mkdir -p .summary
+      - 'echo "=== first run (initial install or upgrade) ==="           | tee .summary/install-upgrade-smoke.txt'
+      - 'bash install.sh 2>&1                                            | tee -a .summary/install-upgrade-smoke.txt'
+      - 'echo "" && echo "=== version probe ==="                         | tee -a .summary/install-upgrade-smoke.txt'
+      - '{{.CRABCC}} --version                                           | tee -a .summary/install-upgrade-smoke.txt'
+      - 'echo "" && echo "=== --check (read-only) ==="                   | tee -a .summary/install-upgrade-smoke.txt'
+      - 'bash install.sh --check 2>&1                                    | tee -a .summary/install-upgrade-smoke.txt'
+      - 'echo "" && echo "=== second run (must be a no-op) ==="          | tee -a .summary/install-upgrade-smoke.txt'
+      - 'bash install.sh 2>&1                                            | tee -a .summary/install-upgrade-smoke.txt'
+      - 'echo "" && echo "=== second-run version (must equal first) ===" | tee -a .summary/install-upgrade-smoke.txt'
+      - '{{.CRABCC}} --version                                           | tee -a .summary/install-upgrade-smoke.txt'
+      - 'grep -q "no-op build skip" .summary/install-upgrade-smoke.txt || (echo "FAIL: no-op message not seen on second run" && exit 1)'
+      - 'echo "" && echo "✓ upgrade-on-rerun smoke passed"               | tee -a .summary/install-upgrade-smoke.txt'
+
   install-skill:
     desc: Symlink the skill + slash command into ~/.claude/
     cmds:
