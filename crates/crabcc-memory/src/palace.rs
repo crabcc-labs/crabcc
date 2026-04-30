@@ -899,4 +899,119 @@ mod tests {
         assert_eq!(r.hits.len(), 1);
         assert_eq!(r.hits[0].source_id, "doc:1");
     }
+
+    // ─── moka cache integration (issue #30) ───────────────────────────
+
+    #[test]
+    fn registry_evicts_palace_after_tti() {
+        // Tight TTI so the test resolves in <1s. Each open_for call
+        // refreshes the idle timer; sleeping past it without further
+        // access must trigger eviction on the next maintenance pass.
+        use std::thread::sleep;
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        let reg = PalaceRegistry::with_test_timings(
+            8,
+            Duration::from_millis(80),
+            Duration::from_secs(60),
+        );
+
+        let _p = reg.open_for(dir.path()).unwrap();
+        assert_eq!(reg.count(), 1, "freshly opened palace must be cached");
+
+        sleep(Duration::from_millis(150));
+        // count() runs pending tasks, which is what actually evicts
+        // expired entries in moka's lazy maintenance model.
+        assert_eq!(
+            reg.count(),
+            0,
+            "palace must be evicted once idle for longer than TTI"
+        );
+    }
+
+    #[test]
+    fn registry_capacity_bound_evicts_oldest() {
+        // capacity = 2; opening a third palace must drop one of the
+        // earlier two so the cache stays at most two entries.
+        let a = tempdir().unwrap();
+        std::fs::create_dir_all(a.path().join(".git")).unwrap();
+        let b = tempdir().unwrap();
+        std::fs::create_dir_all(b.path().join(".git")).unwrap();
+        let c = tempdir().unwrap();
+        std::fs::create_dir_all(c.path().join(".git")).unwrap();
+
+        let reg = PalaceRegistry::with_test_timings(
+            2,
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+        );
+        reg.open_for(a.path()).unwrap();
+        reg.open_for(b.path()).unwrap();
+        reg.open_for(c.path()).unwrap();
+        reg.run_pending_tasks();
+        assert!(
+            reg.count() <= 2,
+            "cache must not exceed max_capacity, got {}",
+            reg.count()
+        );
+    }
+
+    #[test]
+    fn git_root_memo_invalidates_after_ttl() {
+        // 50ms TTL — first lookup populates, second within window is a
+        // hit, sleeping past the TTL drops the entry.
+        use std::thread::sleep;
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        let reg = PalaceRegistry::with_test_timings(
+            8,
+            Duration::from_secs(60),
+            Duration::from_millis(50),
+        );
+
+        let canonical = dir.path().canonicalize().unwrap();
+        assert_eq!(reg.resolve_git_root(dir.path()).unwrap(), canonical);
+        assert_eq!(
+            reg.git_root_cache_count(),
+            1,
+            "first lookup must populate the memo"
+        );
+        // Second call inside the TTL window — still cached.
+        let _ = reg.resolve_git_root(dir.path());
+        assert_eq!(reg.git_root_cache_count(), 1);
+
+        sleep(Duration::from_millis(100));
+        // run_pending_tasks() drives moka's lazy expiration so the
+        // count reflects the post-TTL state.
+        assert_eq!(
+            reg.git_root_cache_count(),
+            0,
+            "memo must drop the entry once TTL elapses"
+        );
+    }
+
+    #[test]
+    fn git_root_memo_skips_walk_on_hit() {
+        // Same `cwd` looked up twice in quick succession — second call
+        // must return the cached value even after we delete the .git
+        // marker on disk. (Outside the TTL window the marker delete
+        // would propagate; inside it the memo wins.)
+        let dir = tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        let reg = PalaceRegistry::with_test_timings(
+            8,
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+        );
+
+        let first = reg.resolve_git_root(dir.path()).unwrap();
+        std::fs::remove_dir_all(dir.path().join(".git")).unwrap();
+        // Without the memo, removing .git would now make the walk
+        // return None for this `start`; with the memo the prior Some
+        // wins.
+        let second = reg
+            .resolve_git_root(dir.path())
+            .expect("memoized result must survive .git removal within TTL");
+        assert_eq!(first, second);
+    }
 }

@@ -197,4 +197,89 @@ mod tests {
         let by_batch = e.embed_batch(&texts).unwrap();
         assert_eq!(by_one, by_batch);
     }
+
+    // ─── CachedEmbedder (issue #30 #3) ────────────────────────────────
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Counts inner-embedder calls so tests can assert that cache hits
+    /// short-circuit the inner call entirely.
+    struct CountingEmbedder {
+        inner: HashEmbedder,
+        calls: AtomicUsize,
+    }
+
+    impl CountingEmbedder {
+        fn new() -> Self {
+            Self {
+                inner: HashEmbedder::new(),
+                calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Embedder for CountingEmbedder {
+        fn dim(&self) -> usize {
+            self.inner.dim()
+        }
+        fn embed_one(&self, text: &str) -> Result<Vec<f32>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.embed_one(text)
+        }
+    }
+
+    #[test]
+    fn cached_embedder_hit_skips_recompute() {
+        let counter = Arc::new(CountingEmbedder::new());
+        let cached = CachedEmbedder::new(counter.clone());
+
+        let v1 = cached.embed_one("the fox jumps").unwrap();
+        let v2 = cached.embed_one("the fox jumps").unwrap();
+        assert_eq!(v1, v2, "cached vector must equal first call");
+        assert_eq!(
+            counter.calls(),
+            1,
+            "second embed_one with identical text must hit cache, not call inner"
+        );
+        assert_eq!(cached.cache_entry_count(), 1);
+    }
+
+    #[test]
+    fn cached_embedder_miss_calls_inner() {
+        // Distinct inputs → distinct sha256 keys → two inner calls.
+        let counter = Arc::new(CountingEmbedder::new());
+        let cached = CachedEmbedder::new(counter.clone());
+
+        let _ = cached.embed_one("alpha").unwrap();
+        let _ = cached.embed_one("beta").unwrap();
+        assert_eq!(counter.calls(), 2);
+        assert_eq!(cached.cache_entry_count(), 2);
+    }
+
+    #[test]
+    fn cached_embedder_capacity_bound() {
+        // capacity=2; third distinct key forces eviction.
+        let counter = Arc::new(CountingEmbedder::new());
+        let cached = CachedEmbedder::with_capacity(counter, 2);
+
+        for s in ["a", "b", "c"] {
+            let _ = cached.embed_one(s).unwrap();
+        }
+        assert!(
+            cached.cache_entry_count() <= 2,
+            "cache must not exceed max_capacity, got {}",
+            cached.cache_entry_count()
+        );
+    }
+
+    #[test]
+    fn cached_embedder_dim_passes_through() {
+        let inner = Arc::new(HashEmbedder::with_dim(128));
+        let cached = CachedEmbedder::new(inner);
+        assert_eq!(cached.dim(), 128);
+    }
 }
