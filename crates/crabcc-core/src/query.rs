@@ -4,7 +4,7 @@ use crate::store::Store;
 use crate::types::{Hit, Symbol};
 use anyhow::Result;
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 pub fn find_symbol(store: &Store, name: &str) -> Result<Vec<Symbol>> {
@@ -67,6 +67,12 @@ pub fn find_refs(store: &Store, root: &Path, name: &str) -> Result<Vec<Hit>> {
 }
 
 pub fn query_callers(store: &Store, root: &Path, name: &str, mode: Mode) -> Result<Output> {
+    // Fast path: edges populated by `crabcc index` v2.0+. One SQL query
+    // replaces N tree-sitter walks. Falls back to the ast-grep walker for
+    // partially-populated indexes (v1.0.0 upgrade where edges_populated='0').
+    if edges_ready(store)? {
+        return callers_via_edges(store, root, name, mode);
+    }
     run(store, root, name, mode, |src, lang_str, file| {
         let Some(lang) = pattern::lang_for(lang_str) else {
             return Vec::new();
@@ -77,6 +83,103 @@ pub fn query_callers(store: &Store, root: &Path, name: &str, mode: Mode) -> Resu
         }
         hits
     })
+}
+
+fn edges_ready(store: &Store) -> Result<bool> {
+    Ok(store.meta_get("edges_populated")?.as_deref() == Some("1"))
+}
+
+/// Pure-SQL caller resolution over the `edges` table. Snippets for the
+/// `Hits` shape are read on demand from disk — we group by file so each
+/// file is read at most once even when many call sites land in the same one.
+pub fn callers_via_edges(store: &Store, root: &Path, name: &str, mode: Mode) -> Result<Output> {
+    if !is_safe_identifier(name) {
+        return Ok(empty_for(mode));
+    }
+    let edge_hits = store.callers_of(name)?;
+
+    match mode {
+        Mode::Count => Ok(Output::Count {
+            count: edge_hits.len(),
+        }),
+        Mode::FilesOnly { limit } => {
+            let mut seen: HashSet<String> = HashSet::new();
+            let mut files: Vec<String> = Vec::new();
+            for h in &edge_hits {
+                if seen.insert(h.file.clone()) {
+                    files.push(h.file.clone());
+                    if let Some(l) = limit {
+                        if files.len() >= l {
+                            break;
+                        }
+                    }
+                }
+            }
+            Ok(Output::Files { files })
+        }
+        Mode::Hits { limit } => {
+            // Group by file so the on-demand snippet read happens once per file
+            // regardless of how many callers landed in it.
+            let mut grouped: BTreeMap<String, Vec<u32>> = BTreeMap::new();
+            for h in edge_hits {
+                grouped.entry(h.file).or_default().push(h.line);
+            }
+            let mut hits: Vec<Hit> = Vec::new();
+            for (file, mut lines) in grouped {
+                if let Some(l) = limit {
+                    if hits.len() >= l {
+                        break;
+                    }
+                }
+                lines.sort_unstable();
+                let full = root.join(&file);
+                let text = match std::fs::read_to_string(&full) {
+                    Ok(s) => s,
+                    Err(_) => continue,
+                };
+                let by_line: Vec<&str> = text.lines().collect();
+                for line in lines {
+                    if let Some(l) = limit {
+                        if hits.len() >= l {
+                            break;
+                        }
+                    }
+                    let idx = (line as usize).saturating_sub(1);
+                    let raw = by_line.get(idx).copied().unwrap_or("");
+                    hits.push(Hit {
+                        file: file.clone(),
+                        line,
+                        col: 1,
+                        snippet: compact_snippet(raw),
+                    });
+                }
+            }
+            Ok(Output::Hits(hits))
+        }
+    }
+}
+
+fn empty_for(mode: Mode) -> Output {
+    match mode {
+        Mode::Count => Output::Count { count: 0 },
+        Mode::FilesOnly { .. } => Output::Files { files: Vec::new() },
+        Mode::Hits { .. } => Output::Hits(Vec::new()),
+    }
+}
+
+fn is_safe_identifier(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars().all(|c| c.is_alphanumeric() || c == '_')
+        && !s.chars().next().unwrap().is_ascii_digit()
+}
+
+fn compact_snippet(s: &str) -> String {
+    let one_line: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one_line.len() > 80 {
+        format!("{}…", &one_line[..80])
+    } else {
+        one_line
+    }
 }
 
 pub fn query_refs(store: &Store, root: &Path, name: &str, mode: Mode) -> Result<Output> {
@@ -341,5 +444,67 @@ mod tests {
         let limited = query_refs(&store, dir.path(), "greet", Mode::Hits { limit: None }).unwrap();
         let default = query_refs(&store, dir.path(), "greet", Mode::default()).unwrap();
         assert_eq!(limited.count(), default.count());
+    }
+
+    // ---- SQL-edges caller path ----
+
+    #[test]
+    fn callers_via_edges_finds_typescript_calls() {
+        let (dir, store) = fixture_repo();
+        // After build_index, edges_populated='1' — query_callers takes SQL path.
+        let out = query_callers(&store, dir.path(), "greet", Mode::default()).unwrap();
+        match out {
+            Output::Hits(hits) => {
+                assert!(hits.len() >= 2, "expected ≥2 greet callers: {hits:?}");
+                assert!(hits.iter().any(|h| h.file == "b.ts"));
+            }
+            _ => panic!("expected Hits"),
+        }
+    }
+
+    #[test]
+    fn callers_via_edges_count_matches_legacy() {
+        // Build the same fixture, run both paths, expect parity.
+        let (dir, store) = fixture_repo();
+        let sql = match query_callers(&store, dir.path(), "greet", Mode::Count).unwrap() {
+            Output::Count { count } => count,
+            _ => unreachable!(),
+        };
+        // Force a legacy run by clearing the gate flag.
+        store.meta_set("edges_populated", "0").unwrap();
+        let ast = match query_callers(&store, dir.path(), "greet", Mode::Count).unwrap() {
+            Output::Count { count } => count,
+            _ => unreachable!(),
+        };
+        // Restore the flag so other tests aren't affected.
+        store.meta_set("edges_populated", "1").unwrap();
+        // SQL path should agree with the ast-grep walker on first-party code.
+        // We allow ±1 because tree-sitter and ast-grep may differ on edge
+        // cases like template-string method calls.
+        assert!((sql as i64 - ast as i64).abs() <= 1, "sql={sql} ast={ast}");
+    }
+
+    #[test]
+    fn callers_via_edges_invalid_name_is_empty() {
+        let (dir, store) = fixture_repo();
+        let out = query_callers(&store, dir.path(), "ab cd", Mode::default()).unwrap();
+        match out {
+            Output::Hits(hits) => assert!(hits.is_empty()),
+            _ => panic!("expected Hits"),
+        }
+    }
+
+    #[test]
+    fn callers_via_edges_files_only_dedupes() {
+        let (dir, store) = fixture_repo();
+        let out =
+            query_callers(&store, dir.path(), "greet", Mode::FilesOnly { limit: None }).unwrap();
+        match out {
+            Output::Files { files } => {
+                let set: std::collections::HashSet<&String> = files.iter().collect();
+                assert_eq!(set.len(), files.len(), "duplicates: {files:?}");
+            }
+            _ => panic!("expected Files"),
+        }
     }
 }

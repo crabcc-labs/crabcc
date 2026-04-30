@@ -9,6 +9,7 @@ use std::time::UNIX_EPOCH;
 pub struct IndexStats {
     pub files_indexed: usize,
     pub symbols: usize,
+    pub edges: usize,
     pub skipped_unsupported: usize,
     pub skipped_too_large: usize,
     pub skipped_unreadable: usize,
@@ -66,8 +67,8 @@ pub fn build_index(root: &Path, store: &Store) -> Result<IndexStats> {
             .to_string_lossy()
             .into_owned();
 
-        let symbols = match extract::extract_file(&rel, src, lang) {
-            Ok(s) => s,
+        let (symbols, edges) = match extract::extract_file_with_edges(&rel, src, lang) {
+            Ok(pair) => pair,
             Err(_) => {
                 stats.skipped_parse_error += 1;
                 continue;
@@ -84,8 +85,10 @@ pub fn build_index(root: &Path, store: &Store) -> Result<IndexStats> {
 
         let file_id = store.upsert_file(&rel, &sha, mtime, lang)?;
         store.replace_symbols(file_id, &symbols)?;
+        store.replace_edges(file_id, &edges)?;
         stats.files_indexed += 1;
         stats.symbols += symbols.len();
+        stats.edges += edges.len();
     }
 
     Ok(stats)
@@ -93,9 +96,17 @@ pub fn build_index(root: &Path, store: &Store) -> Result<IndexStats> {
 
 /// Wipe the index and rebuild from scratch. Use this when the schema or
 /// extractor rules change and the existing index is stale by construction.
+///
+/// Flips the `edges_populated` meta flag to '1' on success — that gate is
+/// what `query::query_callers` checks before taking the SQL-only fast path.
+/// Refresh deliberately doesn't touch the flag: if it was '1', edges stayed
+/// consistent through the per-file replace; if it was '0' (v1.0.0 upgrade),
+/// only changed files got edges and the SQL path would lie.
 pub fn full_index(root: &Path, store: &Store) -> Result<IndexStats> {
     store.clear_all()?;
-    build_index(root, store)
+    let stats = build_index(root, store)?;
+    store.meta_set("edges_populated", "1")?;
+    Ok(stats)
 }
 
 /// Incrementally update the index against the current state of `root`.
@@ -165,8 +176,8 @@ pub fn refresh(root: &Path, store: &Store) -> Result<RefreshStats> {
                     continue;
                 }
             };
-            let symbols = match extract::extract_file(&rel, src, lang) {
-                Ok(s) => s,
+            let (symbols, edges) = match extract::extract_file_with_edges(&rel, src, lang) {
+                Ok(pair) => pair,
                 Err(_) => {
                     stats.skipped_parse_error += 1;
                     continue;
@@ -174,6 +185,7 @@ pub fn refresh(root: &Path, store: &Store) -> Result<RefreshStats> {
             };
             let file_id = store.upsert_file(&rel, &sha, mtime, lang)?;
             store.replace_symbols(file_id, &symbols)?;
+            store.replace_edges(file_id, &edges)?;
             stats.reindexed += 1;
         } else {
             // New file on disk.
@@ -195,8 +207,8 @@ pub fn refresh(root: &Path, store: &Store) -> Result<RefreshStats> {
                     continue;
                 }
             };
-            let symbols = match extract::extract_file(&rel, src, lang) {
-                Ok(s) => s,
+            let (symbols, edges) = match extract::extract_file_with_edges(&rel, src, lang) {
+                Ok(pair) => pair,
                 Err(_) => {
                     stats.skipped_parse_error += 1;
                     continue;
@@ -205,6 +217,7 @@ pub fn refresh(root: &Path, store: &Store) -> Result<RefreshStats> {
             let sha = hash::sha256_hex(&bytes);
             let file_id = store.upsert_file(&rel, &sha, mtime, lang)?;
             store.replace_symbols(file_id, &symbols)?;
+            store.replace_edges(file_id, &edges)?;
             stats.new += 1;
         }
     }

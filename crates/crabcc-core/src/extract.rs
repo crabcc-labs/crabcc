@@ -1,4 +1,4 @@
-use crate::types::{Symbol, SymbolKind};
+use crate::types::{Edge, Symbol, SymbolKind};
 use anyhow::{anyhow, Result};
 use std::path::Path;
 use tree_sitter::{Node, Parser};
@@ -18,16 +18,7 @@ pub fn detect_lang(path: &Path) -> Option<&'static str> {
 }
 
 pub fn extract_file(file: &str, src: &str, lang: &str) -> Result<Vec<Symbol>> {
-    let ts_lang = match lang {
-        "typescript" => tree_sitter_typescript::language_typescript(),
-        "tsx" => tree_sitter_typescript::language_tsx(),
-        "javascript" => tree_sitter_javascript::language(),
-        "ruby" => tree_sitter_ruby::language(),
-        "rust" => tree_sitter_rust::language(),
-        "go" => tree_sitter_go::language(),
-        "python" => tree_sitter_python::language(),
-        _ => return Err(anyhow!("unsupported lang: {lang}")),
-    };
+    let ts_lang = ts_language(lang)?;
     let mut parser = Parser::new();
     parser
         .set_language(&ts_lang)
@@ -39,6 +30,60 @@ pub fn extract_file(file: &str, src: &str, lang: &str) -> Result<Vec<Symbol>> {
     let mut out = Vec::new();
     walk(tree.root_node(), src.as_bytes(), file, lang, None, &mut out);
     Ok(out)
+}
+
+/// Extract every call edge in the file. `src_symbol` is the *enclosing*
+/// function/method name when the call is inside one (`None` for top-level
+/// expression statements). `dst_name` is the bare callee identifier — for
+/// member calls like `obj.foo(x)` we record `foo`, matching the unresolved
+/// name space the rest of crabcc operates in.
+///
+/// Co-located with `extract_file` because both share a parser and a walker
+/// shape; running them together would double-parse without saving anything.
+/// The shared entrypoint is `extract_file_with_edges` below.
+pub fn extract_edges(file: &str, src: &str, lang: &str) -> Result<Vec<Edge>> {
+    let (_, edges) = extract_file_with_edges(file, src, lang)?;
+    Ok(edges)
+}
+
+/// Single-parse extraction of both symbols and edges. Used by the indexer to
+/// avoid paying tree-sitter twice per file. The two outputs are independent
+/// (tests can request one or the other), but in production we always want
+/// both — the indexer hot path goes through here.
+pub fn extract_file_with_edges(
+    file: &str,
+    src: &str,
+    lang: &str,
+) -> Result<(Vec<Symbol>, Vec<Edge>)> {
+    let ts_lang = ts_language(lang)?;
+    let mut parser = Parser::new();
+    parser
+        .set_language(&ts_lang)
+        .map_err(|e| anyhow!("set_language: {e}"))?;
+    let tree = parser
+        .parse(src, None)
+        .ok_or_else(|| anyhow!("parse failed"))?;
+
+    let bytes = src.as_bytes();
+    let root = tree.root_node();
+    let mut symbols = Vec::new();
+    walk(root, bytes, file, lang, None, &mut symbols);
+    let mut edges = Vec::new();
+    walk_edges(root, bytes, lang, None, &mut edges);
+    Ok((symbols, edges))
+}
+
+fn ts_language(lang: &str) -> Result<tree_sitter::Language> {
+    Ok(match lang {
+        "typescript" => tree_sitter_typescript::language_typescript(),
+        "tsx" => tree_sitter_typescript::language_tsx(),
+        "javascript" => tree_sitter_javascript::language(),
+        "ruby" => tree_sitter_ruby::language(),
+        "rust" => tree_sitter_rust::language(),
+        "go" => tree_sitter_go::language(),
+        "python" => tree_sitter_python::language(),
+        _ => return Err(anyhow!("unsupported lang: {lang}")),
+    })
 }
 
 fn walk(
@@ -145,6 +190,164 @@ fn go_receiver_type(node: &Node, src: &[u8]) -> Option<String> {
 fn node_name<'a>(node: &Node, src: &'a [u8]) -> Option<&'a str> {
     node.child_by_field_name("name")
         .and_then(|n| n.utf8_text(src).ok())
+}
+
+/// Walk emitting one edge per call expression. Tracks the immediate enclosing
+/// function/method as `src_symbol`; when the call sits at file scope (an
+/// `import` side-effect, a top-level smoke test, etc.) we leave it null.
+fn walk_edges(node: Node, src: &[u8], lang: &str, enclosing: Option<&str>, out: &mut Vec<Edge>) {
+    // If we're entering a callable, push a new enclosing for its body.
+    let new_enclosing: Option<String> = if is_callable(lang, node.kind()) {
+        node_name(&node, src).map(String::from)
+    } else {
+        None
+    };
+    let next = new_enclosing.as_deref().or(enclosing);
+
+    if let Some((dst, line)) = call_target(&node, src, lang) {
+        out.push(Edge {
+            src_file: String::new(), // store layer keys edges by file_id, not path
+            src_symbol: next.map(String::from),
+            dst_name: dst,
+            kind: "call".into(),
+            line,
+        });
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        walk_edges(child, src, lang, next, out);
+    }
+}
+
+fn is_callable(lang: &str, kind: &str) -> bool {
+    match lang {
+        "typescript" | "tsx" => matches!(
+            kind,
+            "function_declaration"
+                | "method_definition"
+                | "method_signature"
+                | "abstract_method_signature"
+                | "function_expression"
+                | "arrow_function"
+                | "generator_function"
+                | "generator_function_declaration"
+        ),
+        "javascript" => matches!(
+            kind,
+            "function_declaration"
+                | "method_definition"
+                | "function_expression"
+                | "arrow_function"
+                | "generator_function"
+                | "generator_function_declaration"
+        ),
+        "ruby" => matches!(kind, "method" | "singleton_method"),
+        "rust" => matches!(kind, "function_item"),
+        "go" => matches!(kind, "function_declaration" | "method_declaration"),
+        "python" => matches!(kind, "function_definition"),
+        _ => false,
+    }
+}
+
+/// Returns `(dst_name, 1-based-line)` if this node is a call expression we
+/// can extract a callee name from. Falls back to `None` for syntax we
+/// can't usefully resolve (e.g. `(a || b)()`, `arr[0]()`).
+fn call_target(node: &Node, src: &[u8], lang: &str) -> Option<(String, u32)> {
+    let line = (node.start_position().row + 1) as u32;
+    match (lang, node.kind()) {
+        // TS / TSX / JS share the call_expression node shape.
+        ("typescript" | "tsx" | "javascript", "call_expression") => {
+            let func = node.child_by_field_name("function")?;
+            let dst = match func.kind() {
+                "identifier" | "property_identifier" => func.utf8_text(src).ok()?.to_string(),
+                "member_expression" => func
+                    .child_by_field_name("property")
+                    .and_then(|p| p.utf8_text(src).ok())?
+                    .to_string(),
+                // `import("…")` and other dynamic forms — skip; nothing to
+                // attribute to a symbol name.
+                _ => return None,
+            };
+            Some((dst, line))
+        }
+        // Tree-sitter ruby uses `call` for both `obj.foo(x)` and `foo(x)`.
+        ("ruby", "call") => {
+            let m = node.child_by_field_name("method")?;
+            // The method field can be `identifier` / `constant` / `operator`.
+            // Skip operators (`.+`, `.<<`) — they're not interesting graph edges.
+            if matches!(m.kind(), "identifier" | "constant") {
+                Some((m.utf8_text(src).ok()?.to_string(), line))
+            } else {
+                None
+            }
+        }
+        // Rust: call_expression has `function` field; macros are macro_invocation.
+        // Both unwrap through field/scope expressions to the trailing identifier.
+        ("rust", "call_expression") => {
+            let func = node.child_by_field_name("function")?;
+            rust_callee(&func, src).map(|n| (n, line))
+        }
+        ("rust", "macro_invocation") => {
+            let m = node.child_by_field_name("macro")?;
+            match m.kind() {
+                "identifier" => Some((m.utf8_text(src).ok()?.to_string(), line)),
+                "scoped_identifier" => m
+                    .child_by_field_name("name")
+                    .and_then(|n| n.utf8_text(src).ok())
+                    .map(|s| (s.to_string(), line)),
+                _ => None,
+            }
+        }
+        // Go: call_expression with `function` field. Receiver-form `r.Save()`
+        // is `selector_expression` whose `field` is the called name.
+        ("go", "call_expression") => {
+            let func = node.child_by_field_name("function")?;
+            match func.kind() {
+                "identifier" => Some((func.utf8_text(src).ok()?.to_string(), line)),
+                "selector_expression" => func
+                    .child_by_field_name("field")
+                    .and_then(|f| f.utf8_text(src).ok())
+                    .map(|s| (s.to_string(), line)),
+                _ => None,
+            }
+        }
+        // Python: `call` has `function` field; attribute access for `obj.foo()`.
+        ("python", "call") => {
+            let func = node.child_by_field_name("function")?;
+            match func.kind() {
+                "identifier" => Some((func.utf8_text(src).ok()?.to_string(), line)),
+                "attribute" => func
+                    .child_by_field_name("attribute")
+                    .and_then(|a| a.utf8_text(src).ok())
+                    .map(|s| (s.to_string(), line)),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Rust callees can be `identifier` (`foo()`), `field_expression` (`x.foo()`),
+/// `scoped_identifier` (`mod::foo()`), or `generic_function` wrapping any of
+/// the above. We unwrap to the trailing simple name — same shape as everywhere
+/// else in crabcc.
+fn rust_callee(func: &Node, src: &[u8]) -> Option<String> {
+    match func.kind() {
+        "identifier" => func.utf8_text(src).ok().map(String::from),
+        "field_expression" => func
+            .child_by_field_name("field")
+            .and_then(|f| f.utf8_text(src).ok())
+            .map(String::from),
+        "scoped_identifier" => func
+            .child_by_field_name("name")
+            .and_then(|n| n.utf8_text(src).ok())
+            .map(String::from),
+        "generic_function" => func
+            .child_by_field_name("function")
+            .and_then(|f| rust_callee(&f, src)),
+        _ => None,
+    }
 }
 
 fn symbol_kind_for(lang: &str, kind: &str) -> Option<SymbolKind> {
@@ -802,5 +1005,119 @@ mod tests {
     #[test]
     fn unsupported_lang_errors() {
         assert!(extract_file("a.txt", "hello", "klingon").is_err());
+    }
+
+    // ---- Edge extraction ----
+
+    fn edges(file: &str, src: &str, lang: &str) -> Vec<Edge> {
+        extract_edges(file, src, lang).unwrap()
+    }
+
+    fn dst_names(es: &[Edge]) -> Vec<&str> {
+        es.iter().map(|e| e.dst_name.as_str()).collect()
+    }
+
+    #[test]
+    fn ts_edges_bare_call_attributes_to_caller() {
+        let src = "function high(){ low(); mid(); }\nfunction low(){}\nfunction mid(){}\n";
+        let es = edges("a.ts", src, "typescript");
+        // high() calls low() and mid().
+        let from_high: Vec<&str> = es
+            .iter()
+            .filter(|e| e.src_symbol.as_deref() == Some("high"))
+            .map(|e| e.dst_name.as_str())
+            .collect();
+        assert!(from_high.contains(&"low"), "edges: {es:?}");
+        assert!(from_high.contains(&"mid"), "edges: {es:?}");
+    }
+
+    #[test]
+    fn ts_edges_member_call_keeps_property_name() {
+        let src = "function f(){ obj.greet('hi'); }\n";
+        let es = edges("a.ts", src, "typescript");
+        let dst: Vec<&str> = es.iter().map(|e| e.dst_name.as_str()).collect();
+        assert!(dst.contains(&"greet"), "edges: {es:?}");
+        // Bare `obj` (a property access on its own) is not a call — should not
+        // appear as an edge.
+        assert!(!dst.contains(&"obj"), "edges: {es:?}");
+    }
+
+    #[test]
+    fn ts_edges_top_level_call_has_no_caller() {
+        let src = "function greet(n){ return n; }\ngreet('world');\n";
+        let es = edges("a.ts", src, "typescript");
+        let top = es
+            .iter()
+            .find(|e| e.dst_name == "greet" && e.src_symbol.is_none());
+        assert!(top.is_some(), "expected top-level greet call: {es:?}");
+    }
+
+    #[test]
+    fn ts_edges_arrow_function_is_callable() {
+        let src = "const f = () => { foo(); };\n";
+        let es = edges("a.ts", src, "typescript");
+        // Arrow with no name → src_symbol is None, but it should still NOT
+        // attribute the call to whatever's outside the arrow.
+        // We accept None here (anonymous arrow has no name).
+        let foo_calls: Vec<&Edge> = es.iter().filter(|e| e.dst_name == "foo").collect();
+        assert_eq!(foo_calls.len(), 1, "edges: {es:?}");
+    }
+
+    #[test]
+    fn ts_edges_method_attributes_to_method_not_class() {
+        let src = "class G { greet(n){ return helper(n); } }\nfunction helper(x){ return x; }\n";
+        let es = edges("a.ts", src, "typescript");
+        // helper() inside greet() should attribute to greet, not G.
+        let helper_call = es.iter().find(|e| e.dst_name == "helper").unwrap();
+        assert_eq!(helper_call.src_symbol.as_deref(), Some("greet"));
+    }
+
+    #[test]
+    fn js_edges_basic() {
+        let src = "function a(){ b(); }\nfunction b(){}\n";
+        let es = edges("a.js", src, "javascript");
+        assert!(dst_names(&es).contains(&"b"));
+    }
+
+    #[test]
+    fn ruby_edges_bare_call() {
+        let src = "def high\n  low\n  mid()\nend\ndef low; end\ndef mid; end\n";
+        let es = edges("a.rb", src, "ruby");
+        let from_high: Vec<&str> = es
+            .iter()
+            .filter(|e| e.src_symbol.as_deref() == Some("high"))
+            .map(|e| e.dst_name.as_str())
+            .collect();
+        // Only `mid()` (with parens) is a call node; bare `low` is just
+        // an identifier reference until you add parens or a receiver.
+        assert!(from_high.contains(&"mid"), "edges: {es:?}");
+    }
+
+    #[test]
+    fn ruby_edges_method_receiver() {
+        let src = "class C\n  def go\n    Foo.new.bar(1)\n  end\nend\n";
+        let es = edges("a.rb", src, "ruby");
+        let names = dst_names(&es);
+        // Foo.new.bar(1) parses as nested calls: bar on (new on Foo).
+        // Both `bar` and `new` should appear; the receiver `Foo` should not.
+        assert!(names.contains(&"bar"), "edges: {es:?}");
+        assert!(names.contains(&"new"), "edges: {es:?}");
+        // The `bar` call should attribute to the enclosing method `go`.
+        let bar = es.iter().find(|e| e.dst_name == "bar").unwrap();
+        assert_eq!(bar.src_symbol.as_deref(), Some("go"));
+    }
+
+    #[test]
+    fn extract_file_with_edges_single_parse_returns_both() {
+        let src = "function f(){ g(); }\nfunction g(){}\n";
+        let (syms, es) = extract_file_with_edges("a.ts", src, "typescript").unwrap();
+        assert!(syms.iter().any(|s| s.name == "f"));
+        assert!(syms.iter().any(|s| s.name == "g"));
+        assert!(es.iter().any(|e| e.dst_name == "g"));
+    }
+
+    #[test]
+    fn extract_edges_unsupported_lang_errors() {
+        assert!(extract_edges("a.txt", "x", "klingon").is_err());
     }
 }

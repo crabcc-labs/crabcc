@@ -6,6 +6,85 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+(empty — see v2.0.0 below)
+
+## [2.0.0] — 2026-04-30
+
+**Edges-at-extract.** The `edges` table — sketched in v0.1, dormant in v1.x — is
+now populated during `extract::walk` itself, one row per call site. Caller queries
+become pure SQL; `crabcc graph build` drops from O(symbols × files) to a single
+SELECT; new `graph cycles` and `graph orphans` queries fall out of the same data
+for free.
+
+Tracks issue [#3](https://github.com/peterlodri-sec/crabcc/issues/3). Co-shipped
+with the FSST string-compression foundation already on main (v2.0.0-alpha,
+issue #1) — together they form the v2.0.0 cut.
+
+### Added
+- **`extract::extract_edges`** — emits an `Edge` for every call expression
+  encountered while descending a function/method body. Per-language node-kind
+  matching: TS/TSX/JS `call_expression` (with `member_expression` receiver
+  unwrap → property name); Ruby `call`; Rust `call_expression` with
+  `field_expression` / `scoped_identifier` receivers; Go `call_expression`
+  with `selector_expression`; Python `call` with `attribute` receivers.
+  Co-located with symbol extraction via `extract_file_with_edges` to share
+  the parser pass.
+- **`Store::replace_edges(file_id, &[Edge])`** — mirrors `replace_symbols`.
+  Plus `edge_count`, `callers_of`, `iter_call_edges`, `meta_get`, `meta_set`.
+- **Pure-SQL caller path** — `query::callers_via_edges` and the gated
+  fast-path in `query_callers`. One `SELECT … FROM edges WHERE dst_name = ?
+  AND kind = 'call'` plus on-demand snippet fetch grouped by file.
+  ~9ms on a fixture that previously took 1s+ via the per-file ast-grep walk.
+- **`crabcc graph cycles`** — Tarjan SCC (iterative; deep call chains don't
+  stack-overflow), filtered to size ≥ 2.
+- **`crabcc graph orphans`** — defined symbols with no incoming callers
+  (dead-code triage starting point).
+- **`crabcc graph build` / `crabcc graph walk NAME`** — `graph` is now a
+  parent subcommand. **Breaking** vs v1.x: `crabcc graph-build` →
+  `crabcc graph build`; `crabcc graph NAME` → `crabcc graph walk NAME`.
+- **MCP tools**: `graph_cycles`, `graph_orphans`. The existing `graph` tool
+  is unchanged.
+- **`IndexStats.edges`** field — full-index now reports symbol AND edge
+  counts in the JSON summary.
+- **Microbench**: `bench_graph_build_speedup` (gated `#[ignore]`) reports
+  legacy vs SQL build wall-time on a synthetic 50-function fixture.
+  Local result: **57× faster on 5 files / 50 fns** (54µs vs 3097µs).
+
+### Changed
+- **Schema v2**: `edges.src_symbol` is now TEXT (the enclosing symbol name)
+  rather than INTEGER (FK to `symbols.id`). Mirrors `dst_name` and avoids a
+  join on every caller query. New composite index `idx_edges_dst_kind` covers
+  the hot SQL caller path. The migration in `Store::open` runs unconditionally:
+  PRAGMA-introspects the column type and recreates the table only if the old
+  shape is detected. v1.x indexes are upgraded losslessly (the table was
+  always empty for them).
+- **`CallGraph::build`** dispatches via the `edges_populated` meta flag:
+  `build_from_edges` (single SQL scan) when '1', `build_legacy` (the
+  pre-v2.0 walker, kept verbatim) otherwise. `crabcc index` sets the flag.
+  `refresh` maintains it — partial v1→v2 upgrades correctly stay in legacy
+  mode until the next full reindex.
+- **CI**: PR runs scoped to crates touched by the diff; Ubuntu only; smoke
+  E2E trimmed to the `index → sym → callers` hot path. Push-to-main keeps
+  the full `--workspace` matrix as the backstop.
+
+### Removed
+- Top-level `crabcc graph-build` command (replaced by `crabcc graph build`).
+
+### Internal
+- **+22 unit tests** for edges (extract per-language, graph build/cycles/
+  orphans, SQL caller parity, MCP tool dispatch) plus 1 perf microbench.
+
+### Migration
+
+If you have a v1.x `.crabcc/index.db`:
+
+```bash
+crabcc index   # rebuild — flips edges_populated='1', enables fast paths
+```
+
+Until you do, queries fall back to the v1.x ast-grep walker — correct,
+just no faster than before.
+
 ## [1.1.0] — 2026-04-30
 
 ### Added — Language coverage (issue #4)

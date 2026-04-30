@@ -222,17 +222,23 @@ const _: fn() = || {
 
 ```mermaid
 flowchart LR
-    A[crabcc graph-build] --> B[CallGraph::build<br/>iterate symbols × find_callers]
+    A[crabcc graph build] --> B[CallGraph::build_from_edges<br/>SELECT src_symbol, dst_name FROM edges]
     B --> C[(.crabcc/graph.json)]
-    D[crabcc graph foo --depth 2] --> E{cache exists?}
+    D[crabcc graph walk foo --depth 2] --> E{cache exists?}
     E -->|yes| F[CallGraph::load]
     E -->|no| G[CallGraph::build on the fly]
     F --> H[BFS callees / callers]
     G --> H
     H --> I[stdout JSON]
+    J[crabcc graph cycles] --> F
+    J --> K[Tarjan SCC, size ≥ 2]
+    K --> I
+    L[crabcc graph orphans] --> F
+    L --> M[callees \\ callers]
+    M --> I
 ```
 
-Build is currently O(symbols × files) — slow on huge repos but correct. Track B of the next sprint moves edges to extraction time, dropping build to O(files).
+v2.0+: build is O(files) — `extract::extract_edges` writes one row per call site at index time, and `CallGraph::build_from_edges` is a single SQL scan. The legacy O(symbols × files) walker remains as `build_legacy`, called transparently for v1.0.0 indexes whose `meta.edges_populated` flag is unset.
 
 ---
 
@@ -409,7 +415,8 @@ Issue tracker: <https://github.com/peterlodri-sec/crabcc/issues>
 | `crabcc watch` doesn't pick up changes | `watch.rs::should_trigger` | feedback-loop guard / extension filter / FS event timing |
 | Tests pass locally, fail in CI | `.github/workflows/ci.yml` | env mismatch, missing release-mode build, fmt drift |
 | Slow `find_by_name` | `Store::open` PRAGMAs, `idx_symbols_name` | missing index, ANALYZE not run |
-| `crabcc graph foo` is slow | `graph.rs::build` | O(symbols × files); plan = move to edges table (Track B) |
+| `crabcc graph` is slow on a v1.0.0 index | run `crabcc index` once | edges-at-extract requires a v2.0 reindex; until then `build_legacy` is used |
+| `crabcc callers Foo` results differ from grep | `extract.rs::call_target` | edge extraction is exact-AST; bare Ruby `foo` (no parens) is parsed as identifier, not call |
 | MCP tool not found | `crabcc-mcp/src/lib.rs::tools_def` + `dispatch_tool` | tool added in only one of the two places |
 
 ---

@@ -40,18 +40,24 @@ CREATE INDEX IF NOT EXISTS idx_symbols_name_kind   ON symbols(name, kind);
 -- but the index makes `crabcc files --lang ruby` a constant-time SQL.
 CREATE INDEX IF NOT EXISTS idx_files_lang          ON files(lang);
 
--- references / call edges. src_symbol may be null for top-level usage.
+-- references / call edges. src_symbol = enclosing symbol *name* (null for
+-- top-level usage). Name-based to mirror dst_name and the graph adjacency
+-- structure (BTreeMap<String, BTreeSet<String>>) — avoids a join on every
+-- caller query. v1.0.0 stored this column as INTEGER (FK to symbols.id) but
+-- it was never populated; store.rs migrates old DBs in-place on open.
 CREATE TABLE IF NOT EXISTS edges (
     id          INTEGER PRIMARY KEY,
     src_file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-    src_symbol  INTEGER          REFERENCES symbols(id) ON DELETE SET NULL,
-    dst_name    TEXT    NOT NULL,           -- resolved later; name-based for v1
+    src_symbol  TEXT,                       -- enclosing symbol name; null = file-level
+    dst_name    TEXT    NOT NULL,           -- target symbol name (unresolved)
     kind        TEXT    NOT NULL,           -- call|import|inherit|impl|ref
     line        INTEGER NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst_name);
-CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src_file_id);
+CREATE INDEX IF NOT EXISTS idx_edges_dst        ON edges(dst_name);
+CREATE INDEX IF NOT EXISTS idx_edges_src        ON edges(src_file_id);
+-- Caller lookups filter by (dst_name, kind='call'); composite covers it.
+CREATE INDEX IF NOT EXISTS idx_edges_dst_kind   ON edges(dst_name, kind);
 
 -- meta (schema version, last full reindex, etc.)
 CREATE TABLE IF NOT EXISTS meta (

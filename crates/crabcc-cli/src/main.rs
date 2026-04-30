@@ -97,17 +97,10 @@ enum Cmd {
         #[arg(long, default_value_t = 500)]
         debounce: u64,
     },
-    /// Build the call-graph sidecar (.crabcc/graph.json).
-    GraphBuild,
-    /// Query the call-graph: who calls / what does this symbol call?
+    /// Call-graph operations: build, walk, cycles, orphans.
     Graph {
-        name: String,
-        /// Direction: 'callers' (default) walks upward; 'callees' walks downward.
-        #[arg(long, default_value = "callers")]
-        dir: String,
-        /// BFS depth limit.
-        #[arg(long, default_value_t = 2)]
-        depth: usize,
+        #[command(subcommand)]
+        op: GraphOp,
     },
     /// Symlink the crabcc skill + slash-command into `~/.claude/`, then
     /// print the `claude mcp add` invocation and hook JSON snippets to
@@ -146,6 +139,27 @@ enum Cmd {
         #[command(subcommand)]
         sub: memory::MemoryCmd,
     },
+}
+
+#[derive(Subcommand)]
+enum GraphOp {
+    /// Rebuild the call-graph sidecar (.crabcc/graph.json) from the index.
+    Build,
+    /// BFS expansion: who calls / what does this symbol call?
+    Walk {
+        name: String,
+        /// Direction: 'callers' (default) walks upward; 'callees' walks downward.
+        #[arg(long, default_value = "callers")]
+        dir: String,
+        /// BFS depth limit.
+        #[arg(long, default_value_t = 2)]
+        depth: usize,
+    },
+    /// Find cycles: strongly-connected components of size ≥2 (mutual recursion).
+    Cycles,
+    /// List orphans: symbols that call others but have no incoming callers
+    /// in the indexed graph. Useful as a dead-code triage starting point.
+    Orphans,
 }
 
 /// Shaping flags for refs/callers. `--files-only` and `--count` are
@@ -362,47 +376,91 @@ fn main() -> Result<()> {
             let store = std::sync::Arc::new(std::sync::Mutex::new(store));
             crabcc_core::watch::watch(&root, store, std::time::Duration::from_millis(debounce))?;
         }
-        Cmd::GraphBuild => {
-            let g = crabcc_core::graph::CallGraph::build(&store, &root)?;
-            let path = root.join(".crabcc").join("graph.json");
-            g.save(&path)?;
-            println!(
-                "{}",
-                serde_json::to_string(&serde_json::json!({
-                    "edges":  g.edge_count,
-                    "callers": g.callers.len(),
-                    "callees": g.callees.len(),
-                    "path":   path.to_string_lossy(),
-                }))?
-            );
-        }
-        Cmd::Graph {
-            name,
-            dir: direction,
-            depth,
-        } => {
-            let path = root.join(".crabcc").join("graph.json");
-            let g = if path.exists() {
-                crabcc_core::graph::CallGraph::load(&path)?
-            } else {
-                // No cache: build on demand. Slower, but correct.
-                eprintln!("crabcc graph: no .crabcc/graph.json — building on the fly (run `crabcc graph-build` to cache)");
-                crabcc_core::graph::CallGraph::build(&store, &root)?
-            };
-            let hits = match direction.as_str() {
-                "callees" => g.outgoing(&name, depth),
-                _ => g.incoming(&name, depth),
-            };
-            let body = serde_json::to_string(&hits)?;
-            crabcc_core::track::record("graph", &name, hits.len(), &repo_label(&root), body.len());
-            println!("{body}");
-        }
+        Cmd::Graph { op } => match op {
+            GraphOp::Build => {
+                let g = crabcc_core::graph::CallGraph::build(&store, &root)?;
+                let path = root.join(".crabcc").join("graph.json");
+                g.save(&path)?;
+                println!(
+                    "{}",
+                    serde_json::to_string(&serde_json::json!({
+                        "edges":   g.edge_count,
+                        "callers": g.callers.len(),
+                        "callees": g.callees.len(),
+                        "path":    path.to_string_lossy(),
+                    }))?
+                );
+            }
+            GraphOp::Walk {
+                name,
+                dir: direction,
+                depth,
+            } => {
+                let path = root.join(".crabcc").join("graph.json");
+                let g = if path.exists() {
+                    crabcc_core::graph::CallGraph::load(&path)?
+                } else {
+                    eprintln!(
+                        "crabcc graph walk: no .crabcc/graph.json — building on the fly (run `crabcc graph build` to cache)"
+                    );
+                    crabcc_core::graph::CallGraph::build(&store, &root)?
+                };
+                let hits = match direction.as_str() {
+                    "callees" => g.outgoing(&name, depth),
+                    _ => g.incoming(&name, depth),
+                };
+                let body = serde_json::to_string(&hits)?;
+                crabcc_core::track::record(
+                    "graph",
+                    &name,
+                    hits.len(),
+                    &repo_label(&root),
+                    body.len(),
+                );
+                println!("{body}");
+            }
+            GraphOp::Cycles => {
+                let g = load_or_build_graph(&store, &root)?;
+                let cycles = g.cycles();
+                let body = serde_json::to_string(&cycles)?;
+                crabcc_core::track::record(
+                    "graph-cycles",
+                    "cycles",
+                    cycles.len(),
+                    &repo_label(&root),
+                    body.len(),
+                );
+                println!("{body}");
+            }
+            GraphOp::Orphans => {
+                let g = load_or_build_graph(&store, &root)?;
+                let orphans = g.orphans();
+                let body = serde_json::to_string(&orphans)?;
+                crabcc_core::track::record(
+                    "graph-orphans",
+                    "orphans",
+                    orphans.len(),
+                    &repo_label(&root),
+                    body.len(),
+                );
+                println!("{body}");
+            }
+        },
         // Handled by the early-return branches above before the store opens.
         Cmd::InstallClaude { .. } => unreachable!("install-claude handled before store init"),
         Cmd::Compress { .. } => unreachable!("compress handled before store init"),
         Cmd::Memory { .. } => unreachable!("memory handled before store init"),
     }
     Ok(())
+}
+
+fn load_or_build_graph(store: &Store, root: &Path) -> Result<crabcc_core::graph::CallGraph> {
+    let path = root.join(".crabcc").join("graph.json");
+    if path.exists() {
+        crabcc_core::graph::CallGraph::load(&path)
+    } else {
+        crabcc_core::graph::CallGraph::build(store, root)
+    }
 }
 
 fn list_files(

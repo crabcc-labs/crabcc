@@ -200,6 +200,21 @@ fn tools_def_symbol() -> Vec<Value> {
             }),
             &["name"],
         ),
+        tool_schema(
+            "graph_cycles",
+            "Find strongly-connected components of size ≥2 in the call-graph \
+             (mutual-recursion / cycle candidates). Returns array of arrays of \
+             symbol names.",
+            json!({}),
+            &[],
+        ),
+        tool_schema(
+            "graph_orphans",
+            "List symbols that call others but have no incoming callers. \
+             Dead-code triage starting point. Returns array of names.",
+            json!({}),
+            &[],
+        ),
     ]
 }
 
@@ -306,12 +321,7 @@ fn dispatch_tool(params: Option<&Value>, root: &Path) -> Result<String> {
                 .and_then(|v| v.as_str())
                 .unwrap_or("callers");
             let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(2) as usize;
-            let path = root.join(".crabcc").join("graph.json");
-            let g = if path.exists() {
-                crabcc_core::graph::CallGraph::load(&path)?
-            } else {
-                crabcc_core::graph::CallGraph::build(&store, root)?
-            };
+            let g = load_or_build_graph(&store, root)?;
             let hits = if dir == "callees" {
                 g.outgoing(&name, depth)
             } else {
@@ -319,7 +329,24 @@ fn dispatch_tool(params: Option<&Value>, root: &Path) -> Result<String> {
             };
             Ok(serde_json::to_string(&hits)?)
         }
+        "graph_cycles" => {
+            let g = load_or_build_graph(&store, root)?;
+            Ok(serde_json::to_string(&g.cycles())?)
+        }
+        "graph_orphans" => {
+            let g = load_or_build_graph(&store, root)?;
+            Ok(serde_json::to_string(&g.orphans())?)
+        }
         other => Err(anyhow::anyhow!("unknown tool: {other}")),
+    }
+}
+
+fn load_or_build_graph(store: &Store, root: &Path) -> Result<crabcc_core::graph::CallGraph> {
+    let path = root.join(".crabcc").join("graph.json");
+    if path.exists() {
+        crabcc_core::graph::CallGraph::load(&path)
+    } else {
+        crabcc_core::graph::CallGraph::build(store, root)
     }
 }
 
@@ -763,5 +790,50 @@ mod tests {
         let content = resp["result"]["content"][0]["text"].as_str().unwrap();
         let parsed: Value = serde_json::from_str(content).unwrap();
         assert_eq!(parsed.as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn handle_tools_list_includes_graph_cycles_and_orphans() {
+        let dir = tempfile::tempdir().unwrap();
+        let req = json!({"jsonrpc": "2.0", "id": 13, "method": "tools/list"});
+        let resp = handle(&req, dir.path());
+        let tools = resp["result"]["tools"].as_array().unwrap();
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+        assert!(names.contains(&"graph_cycles"), "tools: {names:?}");
+        assert!(names.contains(&"graph_orphans"), "tools: {names:?}");
+    }
+
+    #[test]
+    fn handle_tools_call_graph_orphans_returns_array() {
+        let dir = fixture_root();
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 14,
+            "method": "tools/call",
+            "params": { "name": "graph_orphans", "arguments": {} }
+        });
+        let resp = handle(&req, dir.path());
+        let content = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(content).unwrap();
+        // The fixture has hello() called from a top-level expression — so its
+        // caller (None) doesn't show up; but any function with outgoing edges
+        // and no callers is reported. We just check the shape.
+        assert!(parsed.is_array(), "got: {parsed}");
+    }
+
+    #[test]
+    fn handle_tools_call_graph_cycles_returns_array() {
+        let dir = fixture_root();
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 15,
+            "method": "tools/call",
+            "params": { "name": "graph_cycles", "arguments": {} }
+        });
+        let resp = handle(&req, dir.path());
+        let content = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(content).unwrap();
+        // The fixture has no mutual recursion, so cycles should be empty.
+        assert_eq!(parsed.as_array().unwrap().len(), 0, "got: {parsed}");
     }
 }
