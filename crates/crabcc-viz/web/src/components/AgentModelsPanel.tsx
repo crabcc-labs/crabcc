@@ -1,5 +1,11 @@
 import { memo, useEffect, useState } from "react";
 import { api, type AgentModelEntry } from "../api";
+import {
+  logFetchErr,
+  logFetchOk,
+  logMount,
+  logUnmount,
+} from "../lifecycle";
 
 // Lists per-model metadata files at $CRABCC_HOME/models/.model.<provider>.<name>.info.
 // The bundled default is `ollama:qwen2.5-coder` (the new default backend
@@ -10,6 +16,7 @@ export const AgentModelsPanel = memo(function AgentModelsPanel() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    logMount("AgentModelsPanel");
     let alive = true;
     const load = () => {
       api
@@ -19,14 +26,20 @@ export const AgentModelsPanel = memo(function AgentModelsPanel() {
           setModels(r.models);
           setDir(r.dir);
           setError(null);
+          logFetchOk("/api/agent-models", `${r.models.length} models`);
         })
-        .catch((e) => alive && setError(String(e)));
+        .catch((e) => {
+          if (!alive) return;
+          setError(String(e));
+          logFetchErr("/api/agent-models", e);
+        });
     };
     load();
     const t = window.setInterval(load, 30_000);
     return () => {
       alive = false;
       window.clearInterval(t);
+      logUnmount("AgentModelsPanel");
     };
   }, []);
 

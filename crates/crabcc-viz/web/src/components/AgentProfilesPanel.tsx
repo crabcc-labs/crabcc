@@ -1,5 +1,11 @@
 import { memo, useEffect, useState } from "react";
 import { api, type AgentProfileEntry } from "../api";
+import {
+  logFetchErr,
+  logFetchOk,
+  logMount,
+  logUnmount,
+} from "../lifecycle";
 
 // Lists the per-crate agent profiles shipped under internal_agents/.
 // Read-only for v1; future iterations add "launch this profile" CTA
@@ -10,6 +16,7 @@ export const AgentProfilesPanel = memo(function AgentProfilesPanel() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    logMount("AgentProfilesPanel");
     let alive = true;
     const load = () => {
       api
@@ -19,14 +26,20 @@ export const AgentProfilesPanel = memo(function AgentProfilesPanel() {
           setProfiles(r.profiles);
           setDir(r.dir);
           setError(null);
+          logFetchOk("/api/agent-profiles", `${r.profiles.length} profiles`);
         })
-        .catch((e) => alive && setError(String(e)));
+        .catch((e) => {
+          if (!alive) return;
+          setError(String(e));
+          logFetchErr("/api/agent-profiles", e);
+        });
     };
     load();
     const t = window.setInterval(load, 5_000);
     return () => {
       alive = false;
       window.clearInterval(t);
+      logUnmount("AgentProfilesPanel");
     };
   }, []);
 

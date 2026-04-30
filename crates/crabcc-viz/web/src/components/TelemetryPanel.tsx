@@ -7,7 +7,9 @@
 //
 // Polling lives in App.tsx; this component is purely presentational.
 
+import { useEffect } from "react";
 import type { OtlpHealth, TelemetryEvent, TelemetrySource } from "../api";
+import { logMount, logUnmount } from "../lifecycle";
 
 const LEVEL_DOT: Record<string, string> = {
   TRACE: "#8aa",
@@ -99,6 +101,11 @@ export function TelemetryPanel({
   otlpPollMs?: number;
   now: number;
 }) {
+  useEffect(() => {
+    logMount("TelemetryPanel");
+    return () => logUnmount("TelemetryPanel");
+  }, []);
+
   const ordered = [...events].sort((a, b) => b.ts - a.ts);
 
   return (

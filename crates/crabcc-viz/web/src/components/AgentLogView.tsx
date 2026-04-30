@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
+import { logMount, logUnmount } from "../lifecycle";
 
 /// Tail of an agent's log file. Polls /api/agents/{id}/log incrementally
 /// (?since=cursor) at 1s cadence so a running agent's output streams
@@ -14,6 +15,8 @@ export function AgentLogView({ id }: { id: string }) {
   const stagnation = useRef(0);
 
   useEffect(() => {
+    const label = `AgentLogView(${id.slice(0, 8)})`;
+    logMount(label);
     let alive = true;
     cursor.current = 0;
     stagnation.current = 0;
@@ -43,6 +46,7 @@ export function AgentLogView({ id }: { id: string }) {
     return () => {
       alive = false;
       clearInterval(iv);
+      logUnmount(label);
     };
   }, [id]);
 

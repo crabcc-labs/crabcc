@@ -1,6 +1,7 @@
-import { memo, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import type { AgentSummary } from "../api";
 import { AgentLogView } from "./AgentLogView";
+import { logMount, logUnmount } from "../lifecycle";
 
 export const AgentsPanel = memo(function AgentsPanel({
   agents,
@@ -8,6 +9,11 @@ export const AgentsPanel = memo(function AgentsPanel({
   agents: AgentSummary[];
 }) {
   const [openId, setOpenId] = useState<string | null>(null);
+
+  useEffect(() => {
+    logMount("AgentsPanel");
+    return () => logUnmount("AgentsPanel");
+  }, []);
 
   if (agents.length === 0) {
     return <div className="empty">No agent runs yet.</div>;

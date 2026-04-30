@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { logSseConnect, logSseDisconnect } from "./lifecycle";
 
 /// Subscribe to a Server-Sent Events stream at `path`. Each line
 /// labelled `event: <topic>` followed by `data: <json>` becomes an
@@ -26,9 +27,11 @@ export function useEventStream(
       es.onopen = () => {
         setConnected(true);
         backoff = 500;
+        logSseConnect(path);
       };
       es.onerror = () => {
         setConnected(false);
+        logSseDisconnect(path);
         es?.close();
         es = null;
         if (alive) {

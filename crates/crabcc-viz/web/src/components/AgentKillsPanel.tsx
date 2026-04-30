@@ -1,5 +1,11 @@
 import { memo, useEffect, useState } from "react";
 import { api, type AgentKillRow } from "../api";
+import {
+  logFetchErr,
+  logFetchOk,
+  logMount,
+  logUnmount,
+} from "../lifecycle";
 
 // Surfaces rows from agent_kill_events — what `crabcc agent-guard`
 // has SIGTERM/SIGKILL'd (zombies + stuck runs > idle threshold) over
@@ -10,6 +16,7 @@ export const AgentKillsPanel = memo(function AgentKillsPanel() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    logMount("AgentKillsPanel");
     let alive = true;
     const load = () => {
       api
@@ -19,14 +26,20 @@ export const AgentKillsPanel = memo(function AgentKillsPanel() {
           setRows(r.rows);
           setDb(r.db);
           setError(null);
+          logFetchOk("/api/agent-kills", `${r.rows.length} rows`);
         })
-        .catch((e) => alive && setError(String(e)));
+        .catch((e) => {
+          if (!alive) return;
+          setError(String(e));
+          logFetchErr("/api/agent-kills", e);
+        });
     };
     load();
     const t = window.setInterval(load, 10_000);
     return () => {
       alive = false;
       window.clearInterval(t);
+      logUnmount("AgentKillsPanel");
     };
   }, []);
 

@@ -18,6 +18,7 @@ import {
 } from "./components/SettingsPanel";
 import { usePolling } from "./usePolling";
 import { useEventStream } from "./useEventStream";
+import { logFetchOk, logUserAction } from "./lifecycle";
 import {
   api,
   type ActivityHit,
@@ -34,7 +35,10 @@ export function App() {
   const [activity, setActivity] = useState<ActivityHit[]>([]);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
-  const bootstrap = usePolling(api.bootstrap, 0);
+  const bootstrap = usePolling(api.bootstrap, 0, [], {
+    source: "/api/bootstrap",
+    summarize: (b) => `repo=${b.repo} version=${b.version}`,
+  });
 
   // Apply new settings + reload the page so all polling intervals update.
   const applySettings = useCallback((s: Settings) => {
@@ -48,12 +52,20 @@ export function App() {
   const telemetry = usePolling(
     () => api.telemetry(0, settings.telMaxEvents),
     settings.telPollMs,
+    [],
+    {
+      source: "/api/telemetry",
+      summarize: (t) => `${t.events?.length ?? 0} events`,
+    },
   );
   const telEvents: TelemetryEvent[] = telemetry.data?.events ?? [];
   const telSource: TelemetrySource | null = telemetry.data?.source ?? null;
 
   // Issue #86 — OTLP health probe. Interval from settings (default 30 s).
-  const otlpHealth = usePolling(api.otlpHealth, settings.otlpPollMs);
+  const otlpHealth = usePolling(api.otlpHealth, settings.otlpPollMs, [], {
+    source: "/api/otlp-health",
+    summarize: (h) => (h.reachable ? "reachable" : "down"),
+  });
   const otlpData: OtlpHealth | null = otlpHealth.data ?? null;
 
   // Tick the wall clock once per second so the relative-age timestamps
@@ -72,11 +84,16 @@ export function App() {
   const { connected } = useEventStream("/api/events", {
     activity: (p) => {
       const data = p as { items?: ActivityHit[] } | null;
-      setActivity(data?.items ?? []);
+      const items = data?.items ?? [];
+      setActivity(items);
+      logFetchOk("sse:activity", `${items.length} items`);
     },
     agents: (p) => {
       const data = p as { agents?: AgentSummary[] } | null;
-      setAgents(data?.agents ?? []);
+      const list = data?.agents ?? [];
+      setAgents(list);
+      const running = list.filter((a) => a.status === "running").length;
+      logFetchOk("sse:agents", `${list.length} agents (${running} running)`);
     },
   });
 
@@ -91,8 +108,14 @@ export function App() {
         root={bootstrap.data?.root ?? "?"}
         version={bootstrap.data?.version ?? "?"}
         live={connected}
-        onReindex={() => setReindexOpen(true)}
-        onRandomQuery={() => api.randomQuery().catch(() => {})}
+        onReindex={() => {
+          logUserAction("reindex requested");
+          setReindexOpen(true);
+        }}
+        onRandomQuery={() => {
+          logUserAction("random-query requested");
+          return api.randomQuery().catch(() => {});
+        }}
       />
       <main>
         <section className="col">
