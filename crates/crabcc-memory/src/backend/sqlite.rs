@@ -617,8 +617,7 @@ impl Backend for SqliteBackend {
                      JOIN wings w ON w.id = d.wing_id
                      WHERE w.name = ?1 AND d.created_at < ?2",
                 )?;
-                let rows = stmt
-                    .query_map(params![wing, before], |r| r.get::<_, DrawerId>(0))?;
+                let rows = stmt.query_map(params![wing, before], |r| r.get::<_, DrawerId>(0))?;
                 rows.collect::<rusqlite::Result<Vec<_>>>()?
             }
         };
