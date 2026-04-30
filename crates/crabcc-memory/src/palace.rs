@@ -1055,64 +1055,157 @@ mod tests {
     fn golden_drawers() -> &'static [(&'static str, &'static str)] {
         &[
             // cluster 1: HTTP servers
-            ("http:1", "configure listen address and port for the HTTP server"),
-            ("http:2", "rate limiting middleware for inbound HTTP requests"),
-            ("http:3", "TLS termination and certificate auto-renewal via ACME"),
+            (
+                "http:1",
+                "configure listen address and port for the HTTP server",
+            ),
+            (
+                "http:2",
+                "rate limiting middleware for inbound HTTP requests",
+            ),
+            (
+                "http:3",
+                "TLS termination and certificate auto-renewal via ACME",
+            ),
             ("http:4", "CORS headers for cross-origin browser requests"),
             ("http:5", "websocket upgrade handshake on the HTTP listener"),
             // cluster 2: SQL / databases
             ("db:1", "create a new postgres database with utf8 encoding"),
             ("db:2", "alter table to add a non-null default column"),
             ("db:3", "transaction isolation levels for sqlite WAL mode"),
-            ("db:4", "rollback strategy for a failed batch insert into postgres"),
-            ("db:5", "connection pooling for high-throughput SQL workloads"),
+            (
+                "db:4",
+                "rollback strategy for a failed batch insert into postgres",
+            ),
+            (
+                "db:5",
+                "connection pooling for high-throughput SQL workloads",
+            ),
             // cluster 3: tree-sitter / parsing
             ("ts:1", "tree-sitter walks symbol tables in source code"),
             ("ts:2", "ast-grep patterns for matching function call sites"),
             ("ts:3", "incremental reparse on edit using tree-sitter"),
-            ("ts:4", "node kind dispatch table for typescript and javascript"),
+            (
+                "ts:4",
+                "node kind dispatch table for typescript and javascript",
+            ),
             ("ts:5", "tree-sitter-rust grammar handles impl blocks"),
             // cluster 4: embeddings / vectors
             ("vec:1", "MiniLM-L6-v2 produces 384-dim semantic embeddings"),
-            ("vec:2", "cosine similarity over L2 normalized float vectors"),
-            ("vec:3", "sqlite-vec virtual table for ANN nearest neighbor search"),
+            (
+                "vec:2",
+                "cosine similarity over L2 normalized float vectors",
+            ),
+            (
+                "vec:3",
+                "sqlite-vec virtual table for ANN nearest neighbor search",
+            ),
             ("vec:4", "fastembed batch embed reuses the ort session"),
-            ("vec:5", "FNV xorshift fallback for deterministic test embeddings"),
+            (
+                "vec:5",
+                "FNV xorshift fallback for deterministic test embeddings",
+            ),
             // cluster 5: filesystem / IO
             ("fs:1", "ignore-aware repository walk respecting gitignore"),
-            ("fs:2", "memchr fast prefilter for byte needle in source files"),
+            (
+                "fs:2",
+                "memchr fast prefilter for byte needle in source files",
+            ),
             ("fs:3", "mmap large index database read only access"),
-            ("fs:4", "filesystem watcher debouncing rapid file save bursts"),
-            ("fs:5", "atomic write to temp file then rename for durability"),
+            (
+                "fs:4",
+                "filesystem watcher debouncing rapid file save bursts",
+            ),
+            (
+                "fs:5",
+                "atomic write to temp file then rename for durability",
+            ),
             // cluster 6: compression
-            ("zip:1", "FSST symbol table compresses repeated string prefixes"),
-            ("zip:2", "zstd level tradeoff between size and decompression speed"),
+            (
+                "zip:1",
+                "FSST symbol table compresses repeated string prefixes",
+            ),
+            (
+                "zip:2",
+                "zstd level tradeoff between size and decompression speed",
+            ),
             ("zip:3", "decode FSST encoded rows lazily on read"),
-            ("zip:4", "bench compression ratio across natural language and code"),
-            ("zip:5", "cargo feature gate for optional fsst-rs dependency"),
+            (
+                "zip:4",
+                "bench compression ratio across natural language and code",
+            ),
+            (
+                "zip:5",
+                "cargo feature gate for optional fsst-rs dependency",
+            ),
             // cluster 7: caching
-            ("cache:1", "moka time to idle eviction closes idle SQLite connections"),
-            ("cache:2", "sha256 keyed cache for repeated embedding queries"),
+            (
+                "cache:1",
+                "moka time to idle eviction closes idle SQLite connections",
+            ),
+            (
+                "cache:2",
+                "sha256 keyed cache for repeated embedding queries",
+            ),
             ("cache:3", "git root memoization with a 60 second TTL"),
-            ("cache:4", "bounded LRU palace registry keyed by canonical repo root"),
-            ("cache:5", "FSST codec arc shared across store sessions no contention"),
+            (
+                "cache:4",
+                "bounded LRU palace registry keyed by canonical repo root",
+            ),
+            (
+                "cache:5",
+                "FSST codec arc shared across store sessions no contention",
+            ),
             // cluster 8: testing
-            ("test:1", "tempfile based integration test cleans up in drop"),
-            ("test:2", "ignore attribute for network dependent end to end checks"),
+            (
+                "test:1",
+                "tempfile based integration test cleans up in drop",
+            ),
+            (
+                "test:2",
+                "ignore attribute for network dependent end to end checks",
+            ),
             ("test:3", "snapshot comparison for golden file fixtures"),
             ("test:4", "criterion benchmark harness reports throughput"),
-            ("test:5", "table driven tests with parameterized search queries"),
+            (
+                "test:5",
+                "table driven tests with parameterized search queries",
+            ),
             // cluster 9: tokens / shaping
             ("tok:1", "tokens per query saved versus raw grep walk"),
-            ("tok:2", "limit flag short circuits per file walk early stop"),
-            ("tok:3", "files only output dedupes hits across the same file"),
-            ("tok:4", "count mode emits only an integer not the matched lines"),
-            ("tok:5", "JSON projection via jq pipeline trims irrelevant fields"),
+            (
+                "tok:2",
+                "limit flag short circuits per file walk early stop",
+            ),
+            (
+                "tok:3",
+                "files only output dedupes hits across the same file",
+            ),
+            (
+                "tok:4",
+                "count mode emits only an integer not the matched lines",
+            ),
+            (
+                "tok:5",
+                "JSON projection via jq pipeline trims irrelevant fields",
+            ),
             // cluster 10: misc / off-topic
-            ("misc:1", "release pipeline builds linux mac windows binaries"),
-            ("misc:2", "homebrew tap distributes prebuilt mac arm64 binaries"),
-            ("misc:3", "starship custom module renders crabcc status in the prompt"),
-            ("misc:4", "claude code skill auto routes lookups to crabcc CLI"),
+            (
+                "misc:1",
+                "release pipeline builds linux mac windows binaries",
+            ),
+            (
+                "misc:2",
+                "homebrew tap distributes prebuilt mac arm64 binaries",
+            ),
+            (
+                "misc:3",
+                "starship custom module renders crabcc status in the prompt",
+            ),
+            (
+                "misc:4",
+                "claude code skill auto routes lookups to crabcc CLI",
+            ),
             ("misc:5", "MCP JSON RPC dispatches tool calls over stdio"),
         ]
     }
@@ -1149,9 +1242,7 @@ mod tests {
             if ids.iter().any(|id| id == expected) {
                 hits += 1;
             } else {
-                eprintln!(
-                    "miss: query={query:?} expected={expected:?} top5={ids:?}"
-                );
+                eprintln!("miss: query={query:?} expected={expected:?} top5={ids:?}");
             }
         }
 
