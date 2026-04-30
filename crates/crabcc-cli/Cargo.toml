@@ -32,6 +32,10 @@ anyhow        = { workspace = true }
 clap          = { workspace = true }
 clap_complete = "4"
 rusqlite      = { workspace = true }
+# Issue #107 Phase 5a — `crabcc doctor` derives Serialize/Deserialize on
+# its CheckResult / DoctorReport types directly (the surface the menubar
+# app + Chrome extension consume).
+serde         = { workspace = true }
 serde_json    = { workspace = true }
 sonic-rs      = { workspace = true }
 tracing       = { workspace = true }

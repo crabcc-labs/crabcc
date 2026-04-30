@@ -7,6 +7,7 @@ mod agent;
 mod agent_guard;
 mod agent_runs_db;
 mod compress_cmd;
+mod doctor;
 mod go;
 mod install;
 mod memory;
@@ -142,6 +143,18 @@ enum Cmd {
     OllamaStack {
         #[command(subcommand)]
         op: OllamaStackOp,
+    },
+    /// Diagnostic surface — issue #107 Phase 5a. JSON by default for the
+    /// menubar app + Chrome extension; pass `--text` for the human-readable
+    /// checklist. Subcommands: `docker` (preflight + OrbStack detection),
+    /// `stack` (Compose health + container list), `keys` (~/.crabcc.local
+    /// .api-key + .env mode + parity). No subcommand = run all + aggregate.
+    Doctor {
+        #[command(subcommand)]
+        op: Option<DoctorOp>,
+        /// Format the report as a human checklist instead of JSON.
+        #[arg(long)]
+        text: bool,
     },
     /// Symlink the crabcc skill + slash-command into `~/.claude/`, then
     /// print the `claude mcp add` invocation and hook JSON snippets to
@@ -376,6 +389,18 @@ enum GraphOp {
     /// List orphans: symbols that call others but have no incoming callers
     /// in the indexed graph. Useful as a dead-code triage starting point.
     Orphans,
+}
+
+#[derive(Subcommand)]
+enum DoctorOp {
+    /// `docker --version` + `docker compose version` + OrbStack detection.
+    Docker,
+    /// Bundled Compose-stack health: per-container JSON via
+    /// `ollama_stack::status`, plus an `unhealthy` summary.
+    Stack,
+    /// Inspect `~/.crabcc.local.api-key` and the auth-stack `.env`:
+    /// presence, file mode, master-key parity.
+    Keys,
 }
 
 #[derive(Subcommand)]
@@ -692,6 +717,17 @@ fn main() -> Result<()> {
         return run_ollama_stack(op);
     }
 
+    // `doctor` is the diagnostic surface (issue #107 Phase 5a). No Store
+    // touched; each subcommand is read-only against the local environment.
+    if let Some(Cmd::Doctor { op, text }) = cli.cmd.as_ref() {
+        return match op {
+            None => doctor::run_all(*text),
+            Some(DoctorOp::Docker) => doctor::run_docker(*text),
+            Some(DoctorOp::Stack) => doctor::run_stack(*text),
+            Some(DoctorOp::Keys) => doctor::run_keys(*text),
+        };
+    }
+
     // `compress` is a meta-operation on the index. It owns its own codec
     // lifecycle (we're MAKING the codec, not consuming one), so it bypasses
     // the global `Store::open` that would auto-load whatever is on disk.
@@ -965,6 +1001,7 @@ fn main() -> Result<()> {
         Cmd::AgentGuard { .. } => unreachable!("agent-guard handled before store init"),
         Cmd::AgentKills { .. } => unreachable!("agent-kills handled before store init"),
         Cmd::OllamaStack { .. } => unreachable!("ollama-stack handled before store init"),
+        Cmd::Doctor { .. } => unreachable!("doctor handled before store init"),
     }
     Ok(())
 }
@@ -1155,6 +1192,7 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::Serve { .. } => "serve",
         Cmd::InstallClaude { .. } => "install-claude",
         Cmd::OllamaStack { .. } => "ollama-stack",
+        Cmd::Doctor { .. } => "doctor",
     }
 }
 
