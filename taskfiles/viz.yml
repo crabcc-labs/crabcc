@@ -1,0 +1,134 @@
+# /live dashboard (viz) + repomix bundling tasks.
+version: '3'
+
+vars:
+  CARGO: cargo
+  REPOMIX_OUT: .repomix/crabcc.xml
+
+tasks:
+  viz-web-build:
+    desc: |
+      Build the React /live dashboard bundle (phase 1 of #17). Outputs
+      a single self-contained HTML at crates/crabcc-viz/web/dist/live.html
+      which the Rust crate include_str!s at compile time. Re-run after
+      editing crates/crabcc-viz/web/src/.
+    cmds:
+      - 'cd crates/crabcc-viz/web && bun install --silent && bun run build'
+
+  viz-web-test:
+    desc: Run the React frontend's bun:test suite + tsgo typecheck.
+    cmds:
+      - 'cd crates/crabcc-viz/web && bun install --silent && bun run typecheck && bun test src'
+
+  viz-web-dev:
+    desc: |
+      Watch crates/crabcc-viz/web/src/ and rebuild dist/live.html on save.
+      Pair with `task viz` in another terminal to see live reloads after
+      Cmd-R in the browser.
+    cmds:
+      - 'cd crates/crabcc-viz/web && bun install --silent && bun run dev'
+
+  viz:
+    desc: |
+      Start the localhost call-graph viewer (issue #64). Builds release,
+      makes sure the index + graph sidecar exist, then opens the browser.
+      Pass PORT=NNNN to override the default 7878. Pass NO_OPEN=1 to skip
+      the auto-browser-open (useful over SSH or in test loops).
+    deps: [build]
+    vars:
+      PORT: '{{.PORT | default "7878"}}'
+      NO_OPEN: '{{.NO_OPEN | default ""}}'
+    cmds:
+      - |
+        set -e
+        if [ ! -f .crabcc/index.db ]; then
+          echo "no .crabcc/index.db — building one now…" >&2
+          ./target/release/crabcc index >/dev/null
+        fi
+        if [ ! -f .crabcc/graph.json ]; then
+          echo "no .crabcc/graph.json — building call-graph sidecar…" >&2
+          ./target/release/crabcc graph build >/dev/null
+        fi
+        ARGS="--port {{.PORT}}"
+        if [ -n "{{.NO_OPEN}}" ]; then ARGS="$ARGS --no-open"; fi
+        exec ./target/release/crabcc serve $ARGS
+
+  viz-test:
+    desc: Run the crabcc-viz smoke + unit tests (no browser, no port collision)
+    cmds:
+      - "{{.CARGO}} test -p crabcc-viz"
+
+  viz-sim:
+    desc: |
+      Simulate ongoing low-effort agent activity against the viz crate
+      (#64 demo). Loops symbol lookups every ~3s so the live dashboard
+      at /live shows continuous tool calls + a slowly-growing relation
+      graph. Pair with `task viz` in another shell. Ctrl-C to stop.
+    cmds:
+      - bash scripts/viz-simulate.sh
+    interactive: true
+
+  repomix:
+    desc: Pack repo into a token-minimized XML bundle for LLM ingestion (.repomix/crabcc.xml)
+    summary: |
+      All settings live in repomix.config.json (output path, style,
+      compression). The exclusion list lives in .repomixignore — keep
+      it strict (generated artifacts, lock files, binary resources,
+      bench fixtures all excluded by default).
+
+      Override the target via OUT=path. Pass COPY=1 to also send the
+      bundle to the system clipboard (uses repomix's --copy: pbcopy
+      on macOS, xclip on Linux, clip on Windows/WSL).
+
+      Heads up on piping: `task repomix | pbcopy` does NOT work because
+      repomix writes the XML to a *file* and Taskfile prints progress
+      to stdout. Use `task repomix-copy` or `task repomix && cat
+      .repomix/crabcc.xml | pbcopy` instead.
+    vars:
+      OUT:  '{{.OUT  | default .REPOMIX_OUT}}'
+      COPY: '{{.COPY | default ""}}'
+    cmds:
+      - mkdir -p $(dirname {{.OUT}})
+      - 'repomix --output {{.OUT}}{{if .COPY}} --copy{{end}}'
+      - 'wc -c {{.OUT}} | awk ''{ printf "size: %.1f KiB\n", $1/1024 }'''
+
+  repomix-copy:
+    desc: Pack repo + copy the bundle to the system clipboard (macOS/Linux/WSL)
+    summary: |
+      Convenience wrapper around `task repomix COPY=1`. The XML body
+      lands on the clipboard as a single payload — paste into any LLM
+      chat surface that accepts large pastes (Claude, ChatGPT, etc.).
+    cmds:
+      - task: repomix
+        vars:
+          COPY: "1"
+
+  repomix-crate:
+    desc: Pack a single crate into .repomix/<crate>.xml — targeted LLM ingestion
+    summary: |
+      For debug-style LLM sessions, packing the whole workspace is
+      noise. This target accepts CRATE=<name> and runs repomix with
+      `--include "crates/<crate>/**"` so the bundle contains only that
+      crate. Ignore patterns from .repomixignore still apply.
+
+      Examples:
+        task repomix-crate CRATE=crabcc-core
+        task repomix-crate CRATE=crabcc-cli OUT=.repomix/cli.xml
+        task repomix-crate CRATE=crabcc-mcp COPY=1
+    vars:
+      CRATE: '{{.CRATE | default ""}}'
+      OUT:   '{{.OUT   | default ""}}'
+      COPY:  '{{.COPY  | default ""}}'
+    preconditions:
+      - sh: '[ -n "{{.CRATE}}" ]'
+        msg: "CRATE=<name> is required (e.g. CRATE=crabcc-core)"
+      - sh: 'test -d crates/{{.CRATE}}'
+        msg: "crates/{{.CRATE}} not found — check the crate name"
+    cmds:
+      - mkdir -p .repomix
+      - >-
+        repomix
+        --include "crates/{{.CRATE}}/**"
+        --output "{{if .OUT}}{{.OUT}}{{else}}.repomix/{{.CRATE}}.xml{{end}}"
+        {{if .COPY}}--copy{{end}}
+      - 'wc -c "{{if .OUT}}{{.OUT}}{{else}}.repomix/{{.CRATE}}.xml{{end}}" | awk ''{ printf "size: %.1f KiB\n", $1/1024 }'''

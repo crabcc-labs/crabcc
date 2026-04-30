@@ -1,0 +1,35 @@
+name        = "crabcc-memory"
+crate       = "crabcc-memory"
+description = "AI memory layer — SqliteBackend + hybrid search + miners."
+
+model           = "claude-opus-4-7"
+max_iterations  = 25
+timeout_secs    = 1800
+
+[env]
+CRABCC_BUILD_PROFILE  = "release-native"
+CRABCC_NO_HINT        = "1"
+RUST_LOG              = "crabcc_memory=info,warn"
+
+[tools]
+allowed = [
+    "Bash",
+    "Read",
+    "Edit",
+    "Write",
+    "Grep",
+    "Glob",
+    "mcp__crabcc__sym",
+    "mcp__crabcc__refs",
+    "mcp__crabcc__callers",
+    "mcp__crabcc__outline",
+]
+
+[gates]
+bench       = ["task memory-bench"]   # LongMemEval R@k harness
+test        = [
+    "cargo test -p crabcc-memory --release",
+    "cargo test -p crabcc-memory --release --features memory-embed",
+]
+lint        = ["cargo clippy -p crabcc-memory --all-targets -- -D warnings"]
+fmt         = ["cargo fmt -p crabcc-memory -- --check"]

@@ -231,11 +231,38 @@ impl AgentRuntime for SubprocessRuntime {
         })?;
         let system_prompt = read_system_prompt(req.root);
 
+        // Compose --append-system-prompt: AGENTS.md body (if present) ⊕
+        // the loaded internal-agent profile's prompt (if any). At most
+        // one --append-system-prompt arg — Claude Code concatenates
+        // a single value rather than accumulating multiple invocations.
+        let mut sp_body = system_prompt
+            .as_ref()
+            .map(|s| s.body.clone())
+            .unwrap_or_default();
+        ACTIVE_PROFILE.with(|cell| {
+            if let Some(profile) = cell.borrow().as_ref() {
+                if !sp_body.is_empty() {
+                    sp_body.push_str("\n\n---\n\n");
+                }
+                sp_body.push_str(&profile.system_prompt);
+            }
+        });
+
         let mut cmd = Command::new(&claude);
         cmd.arg("--print").arg(req.prompt);
-        if let Some(spp) = &system_prompt {
-            cmd.arg("--append-system-prompt").arg(&spp.body);
+        if !sp_body.is_empty() {
+            cmd.arg("--append-system-prompt").arg(&sp_body);
         }
+        // Profile env exports: CRABCC_BUILD_PROFILE, RUST_LOG, etc.
+        // Applied before the auth-passthrough block below so explicit
+        // user vars (HOME, ANTHROPIC_API_KEY) win on collision.
+        ACTIVE_PROFILE.with(|cell| {
+            if let Some(profile) = cell.borrow().as_ref() {
+                for (k, v) in profile.env_iter() {
+                    cmd.env(k, v);
+                }
+            }
+        });
         // Always pass `--model`. Defaults branch on backend so each
         // invocation is reproducible — relying on the agent CLI's
         // ambient config means two devs on the same prompt can get
@@ -453,6 +480,36 @@ fn home_dir() -> Result<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or_else(|| anyhow!("HOME not set; cannot locate ~/.crabcc/agents/"))
+}
+
+// Thread-local profile slot. Set before `run()`, consulted by
+// SubprocessRuntime::run when composing --append-system-prompt + env.
+// A thread-local is the smallest seam that lets `run_with_profile`
+// thread the profile through without changing AgentRequest's shape
+// (which test fixtures + the original `pub fn run` API depend on).
+std::thread_local! {
+    pub(crate) static ACTIVE_PROFILE: std::cell::RefCell<Option<crate::agent_profile::AgentProfile>>
+        = const { std::cell::RefCell::new(None) };
+}
+
+/// Public entry point that loads an internal agent profile alongside
+/// the regular run. The profile's composed system prompt is appended
+/// to the existing AGENTS.md preamble; its `[env]` is exported to the
+/// spawned agent's child process. See `agent_profile.rs`.
+pub fn run_with_profile(
+    req: AgentRequest<'_>,
+    profile: Option<crate::agent_profile::AgentProfile>,
+) -> Result<()> {
+    if let Some(p) = profile {
+        ACTIVE_PROFILE.with(|cell| {
+            *cell.borrow_mut() = Some(p);
+        });
+    }
+    let result = run(req);
+    ACTIVE_PROFILE.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
+    result
 }
 
 pub fn run(req: AgentRequest<'_>) -> Result<()> {

@@ -1,0 +1,100 @@
+# Bench / compress / memory-bench / memory-smoke tasks.
+version: '3'
+
+vars:
+  CARGO: cargo
+  CRABCC: ~/.cargo/bin/crabcc
+  REPO_FIXTURE: '{{.REPO_FIXTURE | default "/Users/peter.lodri/workspace/mc-mothership"}}'
+
+tasks:
+  bench:
+    desc: Run the raw-CLI A/B benchmark against REPO_FIXTURE
+    deps: [install]
+    cmds:
+      - "( cd {{.REPO_FIXTURE}} && {{.CRABCC}} index >/dev/null )"
+      - 'PATH="$HOME/.cargo/bin:$PATH" python3 bench/raw-bench.py {{.REPO_FIXTURE}}'
+
+  bench-viz:
+    desc: Generate REPORT.md + PNG charts from latest bench results
+    cmds:
+      - 'test -f bench/results/raw.json || (echo "run `task bench` first" && exit 1)'
+      - 'if command -v {{"/tmp/crabcc-bench-venv/bin/python"}} >/dev/null 2>&1; then /tmp/crabcc-bench-venv/bin/python bench/visualize.py; else python3 bench/visualize.py; fi'
+
+  bench-all:
+    desc: Bench + visualize in one shot
+    cmds:
+      - task: bench
+      - task: bench-viz
+
+  bench-e2e:
+    desc: |
+      Full end-to-end bench sweep against REPO_FIXTURE — runs every harness
+      under bench/ + the moka cache micro-bench + the pinned-walkdir e2e
+      integration test. Results land in bench/results/ (JSON snapshots) and
+      the rendered Markdown reports stay in tree.
+    deps: [build]
+    cmds:
+      # 1. Raw CLI A/B (crabcc vs grep/find/rg/fd) → bench/results/raw.json
+      - task: bench
+      # 2. PNG charts + bench/results/REPORT.md
+      - task: bench-viz
+      # 3. FSST off-vs-on gate (single trial) → bench/results/fsst-gate.md
+      - task: bench-compress
+      # 4. moka cache micro-bench → bench/results/cache-bench-REPORT.md
+      - 'python3 bench/cache-bench.py'
+      # 5. e2e integration test against pinned BurntSushi/walkdir 2.5.0
+      - '{{.CARGO}} test -p crabcc-cli --test e2e_walkdir -- --ignored --nocapture'
+      # 6. Surface the three rendered reports together so the run summary
+      # has everything in one scroll.
+      - 'echo "" && echo "── bench-e2e summary ──" && ls -la bench/results/ | head -30'
+
+  compress:
+    desc: Train FSST symbol table on the current index + re-encode all rows + report stats
+    deps: [build]
+    cmds:
+      - "{{.CRABCC}} compress"
+      - "{{.CRABCC}} compress --rebuild"
+      - "{{.CRABCC}} compress --stats"
+
+  bench-compress:
+    desc: Run the FSST off-vs-on gate bench against REPO_FIXTURE (single trial)
+    deps: [build]
+    cmds:
+      - 'python3 bench/compress-bench.py --repo {{.REPO_FIXTURE}} --crabcc target/release/crabcc --trials 1 --decode-calls 2000'
+      - 'echo "" && cat bench/results/fsst-gate.md'
+
+  memory-smoke:
+    desc: Exercise the memory CLI surface (M3-light + M1 hybrid) against a tempdir
+    deps: [install]
+    cmds:
+      - mkdir -p /tmp/crabcc-mem-smoke
+      - "{{.CRABCC}} --root /tmp/crabcc-mem-smoke memory init | jq -e '.status == \"ok\"'"
+      - "{{.CRABCC}} --root /tmp/crabcc-mem-smoke memory remember 'doc:1' 'fox jumps' | jq -e '.id >= 1'"
+      - "{{.CRABCC}} --root /tmp/crabcc-mem-smoke memory remember 'doc:2' 'lazy dogs' --room animals | jq -e '.id >= 1'"
+      - "{{.CRABCC}} --root /tmp/crabcc-mem-smoke memory count | jq -e '.count == 2'"
+      - "{{.CRABCC}} --root /tmp/crabcc-mem-smoke memory list --limit 5 | jq -e 'length == 2'"
+      - "{{.CRABCC}} --root /tmp/crabcc-mem-smoke memory search 'fox' --limit 3 | jq -e '.hits | length >= 1'"
+      - "{{.CRABCC}} --root /tmp/crabcc-mem-smoke memory search 'fox' --mode lexical --limit 3 | jq -e '.hits[0].source_id == \"doc:1\"'"
+      - "{{.CRABCC}} --root /tmp/crabcc-mem-smoke memory search 'fox' --mode vector --limit 3 | jq -e '.hits | length >= 1'"
+      - "{{.CRABCC}} --root /tmp/crabcc-mem-smoke memory search 'fox' --mode hybrid --limit 3 | jq -e '.hits | length >= 1'"
+      - "{{.CRABCC}} --root /tmp/crabcc-mem-smoke memory health | jq -e '. == \"Ok\"'"
+      - test -f /tmp/crabcc-mem-smoke/.crabcc/memory.db
+      - rm -rf /tmp/crabcc-mem-smoke
+
+  memory-bench:
+    desc: |
+      LongMemEval R@k bench gate (issue #2). Runs the bundled synthetic
+      fixture by default; pass DATASET=path/to/longmemeval_oracle.json to
+      run against the real held-out 450q set.
+    vars:
+      DATASET: '{{.DATASET | default ""}}'
+      THRESHOLD: '{{.THRESHOLD | default "0.966"}}'
+      MODE: '{{.MODE | default ""}}'
+    cmds:
+      - mkdir -p target/bench
+      - >-
+        cargo run --release -p crabcc-memory-bench --
+        {{if .DATASET}}--dataset {{.DATASET}}{{end}}
+        {{if .MODE}}--mode {{.MODE}}{{end}}
+        --threshold {{.THRESHOLD}}
+        --output target/bench/memory.ndjson

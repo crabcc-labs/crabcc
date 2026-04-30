@@ -1,0 +1,66 @@
+# compose.yml — internal-agents fan-out for Apple `container compose`
+# and Docker `docker compose`. Same file, same surface.
+#
+# Bring up all five per-crate agents:
+#     container compose -f install/internal-agents/compose.yml up
+#     # or with --build the first time:
+#     container compose -f install/internal-agents/compose.yml up --build
+#
+# Stream logs from one:
+#     container compose -f install/internal-agents/compose.yml logs -f crabcc-core
+#
+# Tear down:
+#     container compose -f install/internal-agents/compose.yml down
+
+name: crabcc-internal-agents
+
+x-agent: &agent-base
+  image: crabcc-internal-agents:dev
+  build:
+    context: ../..
+    dockerfile: install/internal-agents/Containerfile
+  volumes:
+    - ..:/workspace                    # repo root, RW
+    - cargo-cache:/cargo               # shared cargo registry/git
+  working_dir: /workspace
+  environment:
+    CARGO_HOME: /cargo
+    CRABCC_NO_HINT: "1"
+    RUST_LOG: "crabcc_core=info,warn"
+  # `init: true` is necessary so PID 1 reaps zombies — agents spawn
+  # subprocesses (cargo, rustc, gh) and we don't want to pin them.
+  init: true
+
+services:
+  crabcc-core:
+    <<: *agent-base
+    container_name: crabcc-agent-core
+    environment:
+      CRABCC_PROFILE: internal/crabcc-core
+
+  crabcc-cli:
+    <<: *agent-base
+    container_name: crabcc-agent-cli
+    environment:
+      CRABCC_PROFILE: internal/crabcc-cli
+
+  crabcc-mcp:
+    <<: *agent-base
+    container_name: crabcc-agent-mcp
+    environment:
+      CRABCC_PROFILE: internal/crabcc-mcp
+
+  crabcc-memory:
+    <<: *agent-base
+    container_name: crabcc-agent-memory
+    environment:
+      CRABCC_PROFILE: internal/crabcc-memory
+
+  crabcc-viz:
+    <<: *agent-base
+    container_name: crabcc-agent-viz
+    environment:
+      CRABCC_PROFILE: internal/crabcc-viz
+
+volumes:
+  cargo-cache:

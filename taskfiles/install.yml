@@ -1,0 +1,185 @@
+# Install / packaging / housekeeping tasks: install, dmg, man, aliases,
+# uninstall, clean, check-deps, doctor, openapi, doc, version.
+version: '3'
+
+vars:
+  CARGO: cargo
+  CRABCC: ~/.cargo/bin/crabcc
+  CRABCC_VERSION:
+    sh: bash scripts/version.sh
+
+tasks:
+  install:
+    desc: Cargo install crabcc to ~/.cargo/bin/crabcc; auto-bootstraps shell aliases (idempotent)
+    summary: |
+      Builds release, installs the binary to ~/.cargo/bin/crabcc, then
+      runs scripts/install-aliases.sh which writes a fenced
+      `# >>> crabcc-aliases >>>` block into ~/.zshrc / ~/.bashrc /
+      fish config — only on shells that exist, only if the block isn't
+      already present (idempotent — safe to re-run).
+      Pass NO_ALIASES=1 to skip the alias step.
+    deps: [build]
+    vars:
+      NO_ALIASES: '{{.NO_ALIASES | default ""}}'
+    cmds:
+      - "{{.CARGO}} install --path crates/crabcc-cli --force"
+      - "{{.CRABCC}} --version"
+      - 'if [ -z "{{.NO_ALIASES}}" ]; then bash scripts/install-aliases.sh; else echo "NO_ALIASES=1 — skipping alias bootstrap"; fi'
+
+  install-skill:
+    desc: Symlink the skill + slash command into ~/.claude/
+    cmds:
+      - mkdir -p ~/.claude/skills/crabcc ~/.claude/commands
+      - ln -sf "$(pwd)/skill/crabcc/SKILL.md" ~/.claude/skills/crabcc/SKILL.md
+      - ln -sf "$(pwd)/commands/crabcc-init.md" ~/.claude/commands/crabcc-init.md
+      - ln -sf "$(pwd)/commands/crabcc-upgrade.md" ~/.claude/commands/crabcc-upgrade.md
+      - ln -sf "$(pwd)/commands/crabcc-install.md" ~/.claude/commands/crabcc-install.md
+      - 'echo "skill + 3 commands symlinked. Add the MCP server to ~/.claude.json manually if needed."'
+
+  install-upgrade-smoke:
+    desc: Smoke-test install.sh upgrade-on-rerun (closes #24)
+    summary: |
+      Verifies the upgrade path: runs install.sh once (build), records
+      the resulting version, runs install.sh --check (must report up
+      to date), then runs install.sh again (must short-circuit to a
+      no-op build). Idempotency is the contract.
+        - first run         build path
+        - --check           no writes; reports up-to-date
+        - second run        no-op build skip
+      Manual platform sweep target — runs locally on macOS arm64 and
+      linux x86_64 (per the issue spec). Output captured at
+      .summary/install-upgrade-smoke.txt.
+    cmds:
+      - mkdir -p .summary
+      - 'echo "=== first run (initial install or upgrade) ==="           | tee .summary/install-upgrade-smoke.txt'
+      - 'bash install.sh 2>&1                                            | tee -a .summary/install-upgrade-smoke.txt'
+      - 'echo "" && echo "=== version probe ==="                         | tee -a .summary/install-upgrade-smoke.txt'
+      - '{{.CRABCC}} --version                                           | tee -a .summary/install-upgrade-smoke.txt'
+      - 'echo "" && echo "=== --check (read-only) ==="                   | tee -a .summary/install-upgrade-smoke.txt'
+      - 'bash install.sh --check 2>&1                                    | tee -a .summary/install-upgrade-smoke.txt'
+      - 'echo "" && echo "=== second run (must be a no-op) ==="          | tee -a .summary/install-upgrade-smoke.txt'
+      - 'bash install.sh 2>&1                                            | tee -a .summary/install-upgrade-smoke.txt'
+      - 'echo "" && echo "=== second-run version (must equal first) ===" | tee -a .summary/install-upgrade-smoke.txt'
+      - '{{.CRABCC}} --version                                           | tee -a .summary/install-upgrade-smoke.txt'
+      - 'grep -q "no-op build skip" .summary/install-upgrade-smoke.txt || (echo "FAIL: no-op message not seen on second run" && exit 1)'
+      - 'echo "" && echo "✓ upgrade-on-rerun smoke passed"               | tee -a .summary/install-upgrade-smoke.txt'
+
+  aliases:
+    desc: Install developer-friendly CLI aliases (grep→rg, find→fd, …) into the user shell rc
+    summary: |
+      Idempotent: writes a fenced `# >>> crabcc-aliases >>>` block into
+      ~/.zshrc / ~/.bashrc / ~/.config/fish/config.fish. Each alias is
+      gated on `command -v <tool>` so the rc stays clean if the modern
+      tool isn't installed yet. Pass MODE=remove to strip the block,
+      MODE=print to dry-run.
+    vars:
+      MODE: '{{.MODE | default "install"}}'
+    cmds:
+      - 'bash scripts/install-aliases.sh{{if eq .MODE "remove"}} --remove{{end}}{{if eq .MODE "print"}} --print{{end}}'
+
+  aliases-check:
+    desc: Detect whether crabcc shell aliases are installed (read-only)
+    summary: |
+      Greps ~/.zshrc / ~/.bashrc / ~/.config/fish/config.fish for the
+      fenced `# >>> crabcc-aliases >>>` block written by
+      scripts/install-aliases.sh. Prints status per shell rc and exits 0
+      if at least one shell has the block, 1 if none do. Pure detection —
+      never modifies any file. Use `task aliases` to install if missing.
+    silent: true
+    cmds:
+      - bash scripts/aliases-check.sh
+
+  dmg:
+    desc: Build dist/crabcc-<version>.dmg — installer .app + menubar UI + LaunchAgent (issue #107)
+    summary: |
+      Stages installer/Crabcc.app, populates Resources/ with release-mode
+      crabcc/ccc binaries, skill/, commands/, and install-aliases.sh,
+      compiles the menubar Swift shim, ad-hoc codesigns the bundle, then
+      packages it into dist/crabcc-<version>.dmg via hdiutil. The .app
+      shows up in System Settings → Privacy & Security → App Management
+      thanks to the proper Info.plist + ad-hoc signature.
+      Pass SKIP_BUILD=1 to reuse target/release/{crabcc,ccc} unchanged.
+    vars:
+      SKIP_BUILD: '{{.SKIP_BUILD | default ""}}'
+    cmds:
+      - bash scripts/build-dmg.sh {{if .SKIP_BUILD}}--skip-build{{end}}
+
+  man:
+    desc: Render the manpage to a viewable PDF preview (and confirm troff syntax)
+    cmds:
+      - 'man -t man/crabcc.1 | open -fa Preview'
+
+  install-man:
+    desc: Install crabcc.1 into the local man-page tree
+    cmds:
+      - sudo install -m 0644 man/crabcc.1 /usr/local/share/man/man1/crabcc.1
+      - 'echo "test with: man crabcc"'
+
+  clean:
+    desc: Remove target/, bench/results/, and any tantivy/sqlite test fixtures
+    cmds:
+      - "{{.CARGO}} clean"
+      - rm -rf bench/results/raw.json bench/results/REPORT.md bench/results/*.png
+
+  uninstall:
+    desc: Remove crabcc binary, skill symlink, command symlink
+    cmds:
+      - rm -f {{.CRABCC}}
+      - rm -f ~/.claude/skills/crabcc/SKILL.md
+      - rm -f ~/.claude/commands/crabcc-init.md
+
+  check-deps:
+    desc: Audit dev-environment external tools (jq, yq, rg, gh, claude, …); offers install
+    summary: |
+      Walks required + recommended + optional buckets and prints status per
+      tool. On a TTY it offers to install missing ones via the right package
+      manager for the host OS (brew / apt / dnf / pacman / apk / zypper).
+      Pass MODE=strict to fail-fast in CI, MODE=json for machine output.
+    vars:
+      MODE: '{{.MODE | default ""}}'
+    cmds:
+      - 'bash scripts/check-deps.sh {{if .MODE}}--{{.MODE}}{{end}}'
+
+  doctor:
+    desc: Diagnose crabcc dev install — CLI, MCP, commands, skill, hooks; writes a debug log
+    summary: |
+      Pass MODE=check (default), MODE=install (re-link commands+skill, suggest
+      MCP entry), or MODE=upgrade (run `crabcc upgrade --apply`). Writes a
+      timestamped log under .summary/doctor-*.log for paste-into-issue use.
+    vars:
+      MODE: '{{.MODE | default "check"}}'
+    cmds:
+      - 'bash scripts/doctor.sh --{{.MODE}}'
+
+  openapi:
+    desc: Print the embedded MCP OpenAPI spec to stdout (use `task openapi > openapi.yaml` to dump)
+    summary: |
+      Routes through `crabcc openapi`, which echoes the byte-identical
+      copy of `crates/crabcc-mcp/openapi.yaml` embedded in the binary at
+      compile time via `include_str!`. The spec is hand-maintained;
+      `cargo test` enforces 1:1 sync with `tools_def()` via the
+      `openapi_spec_lists_every_tool` drift test.
+    deps: [build]
+    cmds:
+      - '{{.CRABCC}} openapi'
+
+  doc:
+    desc: Build rustdoc HTML for the workspace (no deps; opens index in browser)
+    summary: |
+      Generates rustdoc for crabcc-core, crabcc-memory, crabcc-mcp, and
+      crabcc-cli. Pass OPEN=0 to skip the browser open; pass DEPS=1 to
+      include external-crate docs (slower, much larger output).
+    vars:
+      OPEN: '{{.OPEN | default "1"}}'
+      DEPS: '{{.DEPS | default "0"}}'
+    cmds:
+      - '{{.CARGO}} doc --workspace --no-deps={{if eq .DEPS "1"}}false{{else}}true{{end}}{{if eq .OPEN "1"}} --open{{end}}'
+
+  version:
+    desc: Print the workspace version (parsed from Cargo.toml). --json for machine output.
+    summary: |
+      Single source of truth for "what version are we shipping". Reads
+      [workspace.package].version from the top-level Cargo.toml. Other tasks
+      pick up the same value via {{.CRABCC_VERSION}}.
+    cmds:
+      - 'bash scripts/version.sh{{if .JSON}} --json{{end}}'

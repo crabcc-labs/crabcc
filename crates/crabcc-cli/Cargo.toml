@@ -35,9 +35,12 @@ rusqlite      = { workspace = true }
 # Issue #107 Phase 5a — `crabcc doctor` derives Serialize/Deserialize on
 # its CheckResult / DoctorReport types directly (the surface the menubar
 # app + Chrome extension consume).
+# Issue #112 follow-up — `agent_profile` parses internal_agents/*.profile.toml
+# via serde + toml. Same dep used twice; we add it once here.
 serde         = { workspace = true }
 serde_json    = { workspace = true }
 sonic-rs      = { workspace = true }
+toml          = { workspace = true }
 tracing       = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 # Issue #90 — non-blocking writer; hot path returns in O(ns).

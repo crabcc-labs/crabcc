@@ -1,0 +1,32 @@
+name        = "crabcc-mcp"
+crate       = "crabcc-mcp"
+description = "MCP server library — stdio JSON-RPC over the crabcc query surface."
+
+model           = "claude-opus-4-7"
+max_iterations  = 25
+timeout_secs    = 1800
+
+[env]
+CRABCC_BUILD_PROFILE  = "release-native"
+CRABCC_NO_HINT        = "1"
+RUST_LOG              = "crabcc_mcp=info,warn"
+
+[tools]
+allowed = [
+    "Bash",
+    "Read",
+    "Edit",
+    "Write",
+    "Grep",
+    "Glob",
+    "mcp__crabcc__sym",
+    "mcp__crabcc__refs",
+    "mcp__crabcc__callers",
+    "mcp__crabcc__outline",
+]
+
+[gates]
+bench       = ["cargo bench -p crabcc-mcp"]   # serve_io micro-benches
+test        = ["cargo test -p crabcc-mcp --release"]
+lint        = ["cargo clippy -p crabcc-mcp --all-targets -- -D warnings"]
+fmt         = ["cargo fmt -p crabcc-mcp -- --check"]
