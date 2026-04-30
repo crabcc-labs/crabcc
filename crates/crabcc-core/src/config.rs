@@ -418,7 +418,7 @@ mod tests {
 
     #[test]
     fn apply_env_overrides_invalid_num_ctx_is_ignored() {
-        // Non-numeric OLLAMA_NUM_CTX must silently fall through.
+        // Non-numeric OLLAMA_NUM_CTX must be ignored and leave the default value intact.
         with_env(&[("OLLAMA_NUM_CTX", "not-a-number")], || {
             let mut cfg = Config::default();
             apply_env_overrides(&mut cfg);
