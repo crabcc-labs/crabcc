@@ -777,6 +777,76 @@ mod tests {
     }
 
     #[test]
+    fn memory_forget_by_drawer_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let r = call_tool(
+            dir.path(),
+            "memory.remember",
+            json!({"source": "doc:1", "body": "to drop"}),
+        );
+        let id = parse_text_content(&r)["id"].as_i64().unwrap();
+
+        let f = parse_text_content(&call_tool(
+            dir.path(),
+            "memory.forget",
+            json!({"drawer": id}),
+        ));
+        assert_eq!(f["forgotten"], 1);
+
+        // Forgetting it again is a no-op (issue #26 idempotency contract).
+        let again = parse_text_content(&call_tool(
+            dir.path(),
+            "memory.forget",
+            json!({"drawer": id}),
+        ));
+        assert_eq!(again["forgotten"], 0);
+    }
+
+    #[test]
+    fn memory_forget_rejects_invalid_arg_combos() {
+        let dir = tempfile::tempdir().unwrap();
+        // Neither selector → JSON-RPC error, not a silent fallback that
+        // wipes the store.
+        let resp = call_tool(dir.path(), "memory.forget", json!({}));
+        assert!(resp.get("error").is_some(), "no selector must error");
+
+        // Mixing selectors is also rejected.
+        let resp = call_tool(
+            dir.path(),
+            "memory.forget",
+            json!({"drawer": 1, "wing": "w", "before": "100"}),
+        );
+        assert!(resp.get("error").is_some(), "mixed selectors must error");
+
+        // Wing without before is rejected.
+        let resp = call_tool(dir.path(), "memory.forget", json!({"wing": "w"}));
+        assert!(
+            resp.get("error").is_some(),
+            "wing without before must error"
+        );
+    }
+
+    #[test]
+    fn memory_forget_accepts_rfc3339_before() {
+        // Smoke test of the MCP-side RFC3339 path — the actual cutoff
+        // logic is exercised via Palace tests; here we just confirm the
+        // tool dispatches without error and reports a forgotten count.
+        let dir = tempfile::tempdir().unwrap();
+        call_tool(
+            dir.path(),
+            "memory.remember",
+            json!({"source": "doc:1", "body": "x", "wing": "notes"}),
+        );
+        let resp = parse_text_content(&call_tool(
+            dir.path(),
+            "memory.forget",
+            // Far-future cutoff → drops the freshly-inserted row.
+            json!({"wing": "notes", "before": "2099-01-01T00:00:00Z"}),
+        ));
+        assert_eq!(resp["forgotten"], 1);
+    }
+
+    #[test]
     fn memory_dispatch_resolves_cwd_arg_to_git_root() {
         // cwd points into a nested dir under a git root; dispatch should
         // walk up to the root and write memory.db there, not under the

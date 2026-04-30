@@ -311,4 +311,32 @@ mod tests {
         let palace = Palace::open(dir.path()).unwrap();
         assert_eq!(palace.count().unwrap(), 2);
     }
+
+    // ---- forget --before parsing (issue #26) -------------------------------
+
+    #[test]
+    fn parse_before_timestamp_accepts_epoch_seconds() {
+        // Bare integer → returned verbatim. Common shape for scripts that
+        // build the cutoff via `date +%s`.
+        let n = parse_before_timestamp("1700000000").unwrap();
+        assert_eq!(n, 1_700_000_000);
+    }
+
+    #[test]
+    fn parse_before_timestamp_accepts_rfc3339_z() {
+        // 2025-01-01T00:00:00Z is epoch 1735689600.
+        let n = parse_before_timestamp("2025-01-01T00:00:00Z").unwrap();
+        assert_eq!(n, 1_735_689_600);
+    }
+
+    #[test]
+    fn parse_before_timestamp_rejects_garbage() {
+        // Anything that's not a bare integer or a recognisable RFC3339
+        // shape must surface as an error so the CLI can show a usage
+        // message rather than silently using `0` (which would forget
+        // everything).
+        assert!(parse_before_timestamp("yesterday").is_err());
+        assert!(parse_before_timestamp("").is_err());
+        assert!(parse_before_timestamp("2025/01/01").is_err());
+    }
 }
