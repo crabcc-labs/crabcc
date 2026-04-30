@@ -6,6 +6,9 @@
 // the frontend is hitting. No backend round-trip; everything here is
 // state already in the App.
 
+import { useEffect } from "react";
+import { logMount, logUnmount } from "../lifecycle";
+
 export type DebugInfo = {
   sseConnected: boolean;
   sseUrl: string;
@@ -32,6 +35,10 @@ function fmtTime(ms: number): string {
 }
 
 export function DebugPanel({ info }: { info: DebugInfo }) {
+  useEffect(() => {
+    logMount("DebugPanel");
+    return () => logUnmount("DebugPanel");
+  }, []);
   return (
     <details className="debug-panel" open={false}>
       <summary>

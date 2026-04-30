@@ -1,5 +1,11 @@
 import { memo, useEffect, useState } from "react";
 import { api, type ServiceStatus, type DiscoveryReport } from "../api";
+import {
+  logFetchErr,
+  logFetchOk,
+  logMount,
+  logUnmount,
+} from "../lifecycle";
 
 // Service-discovery panel (issue #143). Pulls /api/services every 15s.
 // Each row: service name + resolved URL + source (env-var name vs `default`)
@@ -14,6 +20,7 @@ export const ServicesPanel = memo(function ServicesPanel() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    logMount("ServicesPanel");
     let alive = true;
     const load = () => {
       api
@@ -22,14 +29,24 @@ export const ServicesPanel = memo(function ServicesPanel() {
           if (!alive) return;
           setReport(r);
           setError(null);
+          const up = r.services.filter((s) => s.reachable).length;
+          logFetchOk(
+            "/api/services",
+            `${r.services.length} entries (${up} up)`,
+          );
         })
-        .catch((e) => alive && setError(String(e)));
+        .catch((e) => {
+          if (!alive) return;
+          setError(String(e));
+          logFetchErr("/api/services", e);
+        });
     };
     load();
     const t = window.setInterval(load, 15_000);
     return () => {
       alive = false;
       window.clearInterval(t);
+      logUnmount("ServicesPanel");
     };
   }, []);
 

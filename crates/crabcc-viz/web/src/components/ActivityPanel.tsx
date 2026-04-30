@@ -1,5 +1,6 @@
-import { memo } from "react";
+import { memo, useEffect } from "react";
 import type { ActivityHit } from "../api";
+import { logMount, logUnmount } from "../lifecycle";
 
 /// Renders the most-recent N tool calls. Each row is keyed on
 /// `${ts}-${query}` so React's reconciler reuses DOM nodes when the
@@ -14,6 +15,11 @@ export const ActivityPanel = memo(function ActivityPanel({
 }: {
   items: ActivityHit[];
 }) {
+  useEffect(() => {
+    logMount("ActivityPanel");
+    return () => logUnmount("ActivityPanel");
+  }, []);
+
   if (items.length === 0) {
     return <div className="empty">Waiting for agent queries…</div>;
   }

@@ -1,12 +1,19 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api, type ReindexReport } from "../api";
+import { logMount, logUnmount, logUserAction } from "../lifecycle";
 
 export function ReindexDialog({ onClose }: { onClose: () => void }) {
   const [running, setRunning] = useState(false);
   const [report, setReport] = useState<ReindexReport | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
+  useEffect(() => {
+    logMount("ReindexDialog");
+    return () => logUnmount("ReindexDialog");
+  }, []);
+
   const run = async () => {
+    logUserAction("reindex started");
     setRunning(true);
     setErr(null);
     setReport(null);

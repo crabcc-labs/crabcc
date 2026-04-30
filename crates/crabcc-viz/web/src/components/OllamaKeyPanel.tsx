@@ -1,5 +1,11 @@
 import { memo, useEffect, useState } from "react";
 import { api } from "../api";
+import {
+  logFetchErr,
+  logFetchOk,
+  logMount,
+  logUnmount,
+} from "../lifecycle";
 
 // Ollama auth-stack key reveal/copy. Reads from /api/ollama-key
 // which tails ~/.crabcc.local.api-key (chmod 0400, auto-persisted by
@@ -21,6 +27,7 @@ export const OllamaKeyPanel = memo(function OllamaKeyPanel() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    logMount("OllamaKeyPanel");
     let alive = true;
     const load = () => {
       api
@@ -29,14 +36,23 @@ export const OllamaKeyPanel = memo(function OllamaKeyPanel() {
           if (!alive) return;
           setSnap(r);
           setError(null);
+          logFetchOk(
+            "/api/ollama-key",
+            r.present ? `present mode=${r.mode ?? "?"}` : "absent",
+          );
         })
-        .catch((e) => alive && setError(String(e)));
+        .catch((e) => {
+          if (!alive) return;
+          setError(String(e));
+          logFetchErr("/api/ollama-key", e);
+        });
     };
     load();
     const t = window.setInterval(load, 30_000);
     return () => {
       alive = false;
       window.clearInterval(t);
+      logUnmount("OllamaKeyPanel");
     };
   }, []);
 
