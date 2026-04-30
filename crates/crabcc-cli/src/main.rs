@@ -166,6 +166,13 @@ enum Cmd {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
+    /// Print build provenance (commit, branch, tag, time, target) plus a
+    /// one-line project summary. Compile-time embedded — no runtime git lookup.
+    Info {
+        /// Emit JSON instead of human-readable text.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -269,6 +276,11 @@ fn main() -> Result<()> {
         let mut cmd = <Cli as clap::CommandFactory>::command();
         clap_complete::generate(*shell, &mut cmd, "crabcc", &mut std::io::stdout());
         return Ok(());
+    }
+    // `info` prints compile-time build provenance — no store, no .crabcc, no
+    // working repo required. Run it before any filesystem touches.
+    if let Some(Cmd::Info { json }) = cli.cmd.as_ref() {
+        return run_info(*json);
     }
 
     // `compress` is a meta-operation on the index. It owns its own codec
@@ -497,6 +509,7 @@ fn main() -> Result<()> {
         Cmd::Memory { .. } => unreachable!("memory handled before store init"),
         Cmd::Upgrade { .. } => unreachable!("upgrade handled before store init"),
         Cmd::Completions { .. } => unreachable!("completions handled before store init"),
+        Cmd::Info { .. } => unreachable!("info handled before store init"),
     }
     Ok(())
 }
@@ -646,4 +659,81 @@ fn print_upgrade_human(r: &crabcc_core::upgrade::UpgradeReport, repo: &str) {
             println!("  • {rec}");
         }
     }
+}
+
+/// Compile-time build provenance — populated by `build.rs` via cargo:rustc-env.
+/// Always-present: version, target. Possibly empty: tag (only when HEAD is tagged).
+struct BuildInfo {
+    version: &'static str,
+    commit: &'static str,
+    branch: &'static str,
+    tag: &'static str,
+    time: &'static str,
+    target: &'static str,
+}
+
+const BUILD: BuildInfo = BuildInfo {
+    version: env!("CARGO_PKG_VERSION"),
+    commit: env!("CRABCC_BUILD_COMMIT"),
+    branch: env!("CRABCC_BUILD_BRANCH"),
+    tag: env!("CRABCC_BUILD_TAG"),
+    time: env!("CRABCC_BUILD_TIME"),
+    target: env!("CRABCC_BUILD_TARGET"),
+};
+
+// Compressed one-line summary: kept short enough for an LLM context tag,
+// terminal status line, and the `--version`-style banner. Hand-curated
+// rather than auto-counted so the wording stays right when langs grow.
+const PROJECT_SUMMARY: &str =
+    "Symbol index for AI coding agents. 7 langs (TS/TSX/JS/Ruby/Rust/Go/Python). \
+     11 MCP tools. SQLite + Tantivy + ast-grep. Token-shaping flags collapse \
+     16k-token results to ~3 tokens. 47–5500x faster than grep -rn on monorepos.";
+
+fn run_info(json: bool) -> Result<()> {
+    if json {
+        let v = serde_json::json!({
+            "version":  BUILD.version,
+            "commit":   BUILD.commit,
+            "branch":   BUILD.branch,
+            "tag":      if BUILD.tag.is_empty() { serde_json::Value::Null }
+                        else { serde_json::Value::String(BUILD.tag.into()) },
+            "time":     BUILD.time,
+            "target":   BUILD.target,
+            "summary":  PROJECT_SUMMARY,
+        });
+        println!("{}", serde_json::to_string_pretty(&v)?);
+        return Ok(());
+    }
+
+    // The compressed one-liner the user explicitly asked for: useful for
+    // status lines, bug reports, or paste-into-issue contexts.
+    println!(
+        "crabcc v{} ({}, {}, {}, {})",
+        BUILD.version,
+        BUILD.commit,
+        if BUILD.tag.is_empty() {
+            BUILD.branch
+        } else {
+            BUILD.tag
+        },
+        BUILD.time,
+        BUILD.target,
+    );
+    println!();
+    println!("  version:  {}", BUILD.version);
+    println!("  commit:   {}", BUILD.commit);
+    println!("  branch:   {}", BUILD.branch);
+    println!(
+        "  tag:      {}",
+        if BUILD.tag.is_empty() {
+            "—"
+        } else {
+            BUILD.tag
+        }
+    );
+    println!("  built:    {}", BUILD.time);
+    println!("  target:   {}", BUILD.target);
+    println!();
+    println!("  {}", PROJECT_SUMMARY);
+    Ok(())
 }
