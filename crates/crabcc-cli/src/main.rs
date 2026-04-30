@@ -180,6 +180,15 @@ enum Cmd {
         #[arg(long)]
         text: bool,
     },
+    /// Internal: enumerate all crabcc services + probe each for
+    /// reachability. Issue #143. Reads service URLs from env vars
+    /// (REDIS_URL, OLLAMA_HOST, OTEL_EXPORTER_OTLP_ENDPOINT, …) with
+    /// localhost fallbacks (or compose-network names when CRABCC_COMPOSE=1).
+    DebugServiceDiscovery {
+        /// Emit JSON instead of the human-readable table.
+        #[arg(long)]
+        json: bool,
+    },
     /// Symlink the crabcc skill + slash-command into `~/.claude/`, then
     /// print the `claude mcp add` invocation and hook JSON snippets to
     /// paste into `~/.claude/settings.json`. Never writes Claude config.
@@ -952,6 +961,18 @@ fn main() -> Result<()> {
         };
     }
 
+    // `debug-service-discovery` (issue #143) — enumerate + probe every
+    // known service. Read-only, no Store needed.
+    if let Some(Cmd::DebugServiceDiscovery { json }) = cli.cmd.as_ref() {
+        let report = crabcc_core::service_discovery::discover_all();
+        if *json {
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        } else {
+            print_service_discovery_text(&report);
+        }
+        return Ok(());
+    }
+
     // `compress` is a meta-operation on the index. It owns its own codec
     // lifecycle (we're MAKING the codec, not consuming one), so it bypasses
     // the global `Store::open` that would auto-load whatever is on disk.
@@ -1238,6 +1259,9 @@ fn main() -> Result<()> {
         Cmd::OllamaStack { .. } => unreachable!("ollama-stack handled before store init"),
         Cmd::Doctor { .. } => unreachable!("doctor handled before store init"),
         Cmd::Jobs(_) => unreachable!("jobs handled before store init"),
+        Cmd::DebugServiceDiscovery { .. } => {
+            unreachable!("debug-service-discovery handled before store init")
+        }
     }
     Ok(())
 }
@@ -1579,6 +1603,7 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::OllamaStack { .. } => "ollama-stack",
         Cmd::Doctor { .. } => "doctor",
         Cmd::Jobs(_) => "jobs",
+        Cmd::DebugServiceDiscovery { .. } => "debug-service-discovery",
     }
 }
 
@@ -1875,4 +1900,69 @@ fn run_info(text: bool) -> Result<()> {
     println!();
     println!("  {}", PROJECT_SUMMARY);
     Ok(())
+}
+
+/// Render a service-discovery report as a fixed-column table — one row per
+/// service, columns: name / url / source / state. Used by
+/// `crabcc debug-service-discovery` (issue #143).
+fn print_service_discovery_text(report: &crabcc_core::service_discovery::DiscoveryReport) {
+    println!(
+        "service discovery — compose_mode={} probed in {}ms",
+        report.compose_mode, report.elapsed_ms
+    );
+    println!();
+    let name_w = report
+        .services
+        .iter()
+        .map(|s| s.service.name.len())
+        .max()
+        .unwrap_or(8)
+        .max(8);
+    let url_w = report
+        .services
+        .iter()
+        .map(|s| s.service.url.len())
+        .max()
+        .unwrap_or(20)
+        .max(20);
+    println!(
+        "  {:<name_w$}  {:<url_w$}  {:<8}  state",
+        "name",
+        "url",
+        "source",
+        name_w = name_w,
+        url_w = url_w
+    );
+    println!(
+        "  {:-<name_w$}  {:-<url_w$}  {:-<8}  -----",
+        "",
+        "",
+        "",
+        name_w = name_w,
+        url_w = url_w
+    );
+    for s in &report.services {
+        let state = if s.reachable {
+            format!("● ok ({}ms)", s.latency_ms)
+        } else {
+            format!(
+                "✗ {}",
+                s.error
+                    .as_deref()
+                    .unwrap_or("down")
+                    .chars()
+                    .take(48)
+                    .collect::<String>()
+            )
+        };
+        println!(
+            "  {:<name_w$}  {:<url_w$}  {:<8}  {}",
+            s.service.name,
+            s.service.url,
+            s.service.source,
+            state,
+            name_w = name_w,
+            url_w = url_w
+        );
+    }
 }

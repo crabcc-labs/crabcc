@@ -89,6 +89,11 @@ pub fn ensure_initialized(root: &Path) -> Result<InitOutcome> {
         out.drawers = palace.count().unwrap_or(0);
     }
 
+    // Service-discovery sidecar (issue #143). Best-effort — readonly fs
+    // in a container shouldn't break serve init.
+    let report = crabcc_core::service_discovery::discover_all();
+    let _ = crabcc_core::service_discovery::write_sidecar(root, &report);
+
     Ok(out)
 }
 
@@ -255,5 +260,10 @@ mod tests {
         assert!(outcome.created_graph);
         assert!(dir.path().join(".crabcc/index.db").exists());
         assert!(dir.path().join(".crabcc/graph.json").exists());
+        // Issue #143 — services.json sidecar round-trips through the
+        // service_discovery public API.
+        let report =
+            crabcc_core::service_discovery::read_sidecar(dir.path()).expect("services.json");
+        assert!(!report.services.is_empty());
     }
 }

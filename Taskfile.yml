@@ -229,6 +229,23 @@ tasks:
       - "{{.CRABCC}} agent-ls --limit 10"
       - "{{.CRABCC}} agent-kills --limit 10"
 
+  service-discovery-check:
+    desc: Probe every known crabcc service (issue #143) — text report + non-zero exit if all are unreachable.
+    summary: |
+      Calls `crabcc debug-service-discovery` and asserts at least one
+      service is reachable. Useful as a smoke gate after a Compose
+      bring-up: `task service-discovery-check` should pass once the
+      stack is up.
+    cmds:
+      - "{{.CRABCC}} debug-service-discovery"
+      - |
+        UP=$({{.CRABCC}} debug-service-discovery --json | jq '[.services[] | select(.reachable)] | length')
+        if [ "${UP:-0}" -eq 0 ]; then
+          echo "service-discovery-check: no services reachable — bring up the stack" >&2
+          exit 1
+        fi
+        echo "service-discovery-check: $UP service(s) reachable"
+
   dmg:
     desc: Build dist/crabcc-<version>.dmg — installer .app + menubar UI + LaunchAgent (issue #107)
     summary: |
