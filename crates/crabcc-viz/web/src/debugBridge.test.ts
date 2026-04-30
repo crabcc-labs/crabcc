@@ -1,5 +1,9 @@
 import { describe, it, expect, beforeEach } from "bun:test";
-import { installDebugBridge, updateDebugBridge } from "./debugBridge";
+import {
+  installDebugBridge,
+  snapshotInteractives,
+  updateDebugBridge,
+} from "./debugBridge";
 
 declare const window: { __crabcc__?: unknown };
 
@@ -17,6 +21,17 @@ describe("debugBridge", () => {
     const bridge = installDebugBridge();
     expect(bridge.schemaVersion).toBe(1);
     expect(win.__crabcc__).toBe(bridge as unknown);
+  });
+
+  it("snapshotInteractives returns [] without DOM", () => {
+    // bun test runs without a DOM by default; the bridge falls back to []
+    // in non-document contexts so callers don't crash.
+    const orig = (globalThis as { document?: unknown }).document;
+    delete (globalThis as { document?: unknown }).document;
+    expect(snapshotInteractives()).toEqual([]);
+    if (orig !== undefined) {
+      (globalThis as { document?: unknown }).document = orig;
+    }
   });
 
   it("notifies subscribers when state updates", () => {
