@@ -417,6 +417,10 @@ fn handle(request: Request, root: &Path) -> Result<()> {
             Ok(snap) => respond_json(request, &snap),
             Err(e) => respond_status(request, 500, &format!("agent-models failed: {e}")),
         },
+        "/api/ollama-key" => match ollama_key_snapshot() {
+            Ok(snap) => respond_json(request, &snap),
+            Err(e) => respond_status(request, 500, &format!("ollama-key failed: {e}")),
+        },
         "/api/debug/dump" => match debug_dump(root) {
             Ok(snap) => respond_json(request, &snap),
             Err(e) => respond_status(request, 500, &format!("dump failed: {e}")),
@@ -1878,6 +1882,70 @@ fn agent_models_list() -> Result<AgentModelsList> {
     Ok(AgentModelsList {
         dir: dir.display().to_string(),
         models: out,
+    })
+}
+
+#[derive(Serialize)]
+struct OllamaKeySnapshot {
+    /// `present` = the file exists at `~/.crabcc.local.api-key`.
+    present: bool,
+    /// Absolute file path (always populated, even when missing).
+    path: String,
+    /// Mode-prefixed permissions string ("0400" / "0644" / …) so the
+    /// frontend can flag a misconfigured (world-readable) key file.
+    mode: Option<String>,
+    /// Approximate file mtime in unix seconds — answers "when was
+    /// this generated?" without leaking key bytes.
+    mtime_secs: Option<u64>,
+    /// File size in bytes — the key is short (one line). 0 = empty
+    /// (broken state); >200 = something that's not a key (warn).
+    size_bytes: Option<u64>,
+    /// The actual key. Populated only when present + readable. The
+    /// frontend masks it by default; the user clicks "reveal" to
+    /// show. Loopback-only deployment + the file is already chmod
+    /// 0400 in $HOME, so exposing here is no worse than `cat`.
+    key: Option<String>,
+}
+
+fn ollama_key_snapshot() -> Result<OllamaKeySnapshot> {
+    let home = runtime::home_dir()?;
+    let path = home.join(".crabcc.local.api-key");
+    let path_s = path.display().to_string();
+    if !path.exists() {
+        return Ok(OllamaKeySnapshot {
+            present: false,
+            path: path_s,
+            mode: None,
+            mtime_secs: None,
+            size_bytes: None,
+            key: None,
+        });
+    }
+    let meta = std::fs::metadata(&path).ok();
+    let size_bytes = meta.as_ref().map(|m| m.len());
+    let mtime_secs = meta.as_ref().and_then(|m| {
+        m.modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+    });
+    #[cfg(unix)]
+    let mode = meta.as_ref().map(|m| {
+        use std::os::unix::fs::PermissionsExt;
+        format!("{:04o}", m.permissions().mode() & 0o7777)
+    });
+    #[cfg(not(unix))]
+    let mode: Option<String> = None;
+    let key = std::fs::read_to_string(&path)
+        .ok()
+        .map(|s| s.trim().to_string());
+    Ok(OllamaKeySnapshot {
+        present: true,
+        path: path_s,
+        mode,
+        mtime_secs,
+        size_bytes,
+        key,
     })
 }
 

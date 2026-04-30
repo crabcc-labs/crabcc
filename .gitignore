@@ -26,3 +26,15 @@ crates/crabcc-core/fuzz/target/
 # Generated secrets for the Ollama auth stack. Real .env never committed;
 # track install/ollama-stack/.env.example instead. See issue #105.
 install/ollama-stack/.env
+# User-facing api-key file (chmod 0400). Lives in $HOME normally;
+# the rule is here as defense-in-depth in case a developer copies
+# it into the repo by accident.
+.crabcc.local.api-key
+**/.crabcc.local.api-key
+# Per-agent repomix bundles emitted by `crabcc agent` (issue #112).
+/repomix-outs/
+**/repomix-outs/
+# Per-repo backups, if they ever land inside a checkout (the canonical
+# location is $CRABCC_HOME/backups/, but defensive ignore is cheap).
+/backups/
+.repomix/

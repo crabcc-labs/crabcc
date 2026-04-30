@@ -7,18 +7,29 @@
 # `Authorization: Bearer ${LITELLM_MASTER_KEY}` on the OpenAI-compatible
 # endpoints.
 
+# Per-model tuning. v2.10.x raises:
+#   timeout      90 s default → 600 s (long codegen prompts at 32k ctx)
+#   stream_timeout 30 s → 60 s   (allow gaps between tokens on cold model)
+#   max_parallel_requests   defaults to unbounded; cap at 8 so a runaway
+#                           agent fan-out doesn't OOM ollama via overload
 model_list:
   - model_name: ollama/llama3.2
     litellm_params:
       model: ollama_chat/llama3.2
       api_base: os.environ/OLLAMA_API_BASE
       api_key: os.environ/OLLAMA_API_KEY
+      timeout: 600
+      stream_timeout: 60
+      max_parallel_requests: 8
 
   - model_name: ollama/qwen2.5-coder
     litellm_params:
       model: ollama_chat/qwen2.5-coder
       api_base: os.environ/OLLAMA_API_BASE
       api_key: os.environ/OLLAMA_API_KEY
+      timeout: 600
+      stream_timeout: 60
+      max_parallel_requests: 8
 
   - model_name: ollama/nomic-embed-text
     litellm_params:
@@ -26,11 +37,28 @@ model_list:
       api_base: os.environ/OLLAMA_API_BASE
       api_key: os.environ/OLLAMA_API_KEY
       mode: embedding
+      timeout: 60
+      max_parallel_requests: 16
 
+# Defaults for any parameters the agent doesn't pin per-call. Mirrors
+# the four flags the .info file documents for qwen2.5-coder so a fresh
+# agent run gets deterministic-leaning code edits without each caller
+# having to set them. drop_params=true means we accept upstream
+# OpenAI-style fields and quietly drop ones ollama doesn't grok.
 litellm_settings:
   drop_params: true
   set_verbose: false
   json_logs: true
+  request_timeout: 600
+  default_litellm_params:
+    temperature: 0.2
+    top_p: 0.9
+  # Cache identical prompt+model pairs in-memory for 10 min — saves a
+  # full re-prefill on repeat agent dry-runs / smoke tests.
+  cache: true
+  cache_params:
+    type: local
+    ttl: 600
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY

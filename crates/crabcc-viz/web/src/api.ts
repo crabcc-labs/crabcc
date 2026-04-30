@@ -121,6 +121,15 @@ export const api = {
     getJson<{ db: string; rows: AgentKillRow[] }>("/api/agent-kills"),
   agentModels: () =>
     getJson<{ dir: string; models: AgentModelEntry[] }>("/api/agent-models"),
+  ollamaKey: () =>
+    getJson<{
+      present: boolean;
+      path: string;
+      mode: string | null;
+      mtime_secs: number | null;
+      size_bytes: number | null;
+      key: string | null;
+    }>("/api/ollama-key"),
   reindex: () => postJson<ReindexReport>("/api/reindex"),
   randomQuery: () =>
     postJson<{ op: string; symbol: string }>("/api/random-query"),

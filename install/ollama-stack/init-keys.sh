@@ -84,6 +84,24 @@ TMP="$(mktemp "${ENV_FILE}.XXXXXX")"
 chmod 600 "$TMP"
 mv "$TMP" "$ENV_FILE"
 
+# Seamless global persistence: write the user-facing api-key file so
+# downstream callers (`crabcc agent --backend ollama`, the live
+# dashboard's reveal panel, manual `cat` for piping) all read from a
+# single canonical location. Idempotent: skip the write when the file
+# already exists AND we didn't rotate this run, so the file's mtime
+# stays meaningful for "when was this key first generated?".
+if [ "$ROTATED" -eq 1 ] || [ ! -f "$LOCAL_KEY_FILE" ]; then
+    printf '%s\n' "$LITELLM_MASTER_KEY" > "$LOCAL_KEY_FILE"
+    # 0400 = owner-read-only. The file is already in $HOME so it's
+    # never world-readable; locking permissions further is mainly to
+    # signal "do not edit this by hand" — `init-keys.sh --rotate` is
+    # the only supported mutation path.
+    chmod 0400 "$LOCAL_KEY_FILE"
+    PERSISTED=1
+else
+    PERSISTED=0
+fi
+
 if [ "$QUIET" -eq 1 ]; then
   printf '%s\n' "$LITELLM_MASTER_KEY"
   exit 0
@@ -100,10 +118,9 @@ crabcc Ollama auth stack — keys ready
   ^ This is the key your clients (and crabcc itself) send as
     Authorization: Bearer <key> on the OpenAI-compatible /v1 endpoints.
 
-Recommended: persist a copy outside this repo, owned and readable only by you:
+User-facing key file (auto-persisted):
 
-  printf '%s\\n' "${LITELLM_MASTER_KEY}" > "${LOCAL_KEY_FILE}"
-  chmod 400 "${LOCAL_KEY_FILE}"
+  ${LOCAL_KEY_FILE}  ($([ "$PERSISTED" -eq 1 ] && echo "wrote 0400 this run" || echo "already present, untouched"))
 
 Then in your shell rc:
 
