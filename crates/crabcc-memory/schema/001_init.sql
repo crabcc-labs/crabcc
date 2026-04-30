@@ -47,9 +47,17 @@ CREATE TABLE IF NOT EXISTS drawers (
 -- sqlite-vec virtual table alongside this for ANN search; M0 does brute-
 -- force cosine over this table directly. Same row layout, additive change.
 CREATE TABLE IF NOT EXISTS drawer_embeddings (
-    drawer_id INTEGER PRIMARY KEY REFERENCES drawers(id) ON DELETE CASCADE,
-    dim       INTEGER NOT NULL,
-    bytes     BLOB    NOT NULL
+    drawer_id        INTEGER PRIMARY KEY REFERENCES drawers(id) ON DELETE CASCADE,
+    dim              INTEGER NOT NULL,
+    bytes            BLOB    NOT NULL,
+    -- Embedding model identity. M0 = 'hash-m0' (deterministic placeholder);
+    -- M1 will write 'minilm-l6-v2' once fastembed-rs lands. Lets multiple
+    -- models cohabit during model-upgrade migrations without losing old
+    -- vectors.
+    embedding_model  TEXT    NOT NULL DEFAULT 'hash-m0',
+    -- Unix epoch when the embedding was computed. 0 = unknown (rows
+    -- migrated from a pre-2.5.3 db where this column did not exist).
+    embedded_at      INTEGER NOT NULL DEFAULT 0
 );
 
 -- FTS5 contentless index over drawer bodies (M1). Keyed on drawers.id via

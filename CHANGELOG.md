@@ -71,6 +71,25 @@ All notable changes to crabcc are documented here. Format follows
   test) and saves output to `.summary/local-ci.txt`. Used in PR
   descriptions when upstream CI is rate-limited.
 
+## [2.2.1] — 2026-04-30
+
+### Added — drawer_embeddings schema prep for M0.5 / M1 ([#19](https://github.com/peterlodri-sec/crabcc/issues/19))
+
+- **`embedding_model TEXT NOT NULL DEFAULT 'hash-m0'`** column on
+  `drawer_embeddings`. Tracks which embedder produced each row's vector so
+  M0 (hash placeholder) and M1 (`fastembed-rs` MiniLM-L6-v2) embeddings can
+  cohabit during model-upgrade migrations without losing old vectors.
+- **`embedded_at INTEGER NOT NULL DEFAULT 0`** column on
+  `drawer_embeddings`. Unix epoch when the vector was computed; `0` for
+  rows migrated from a pre-2.5.3 db.
+- **Idempotent ALTER ADD COLUMN** in `SqliteBackend::open` — same
+  PRAGMA-introspect-then-`ALTER` pattern already used for `body_enc`.
+  v2.0 / v2.1 / v2.2 `.crabcc/memory.db` files upgrade in place on first
+  open; the migration is a no-op on already-migrated dbs.
+- **+3 unit tests** in `crates/crabcc-memory/src/backend/sqlite.rs` —
+  pre-existing v2.0-shaped db gains both columns; idempotent on repeat
+  open; new inserts get the documented defaults.
+
 ## [2.2.0] — 2026-04-30
 
 ### Added — `crabcc info` + build labels embedded in the binary
