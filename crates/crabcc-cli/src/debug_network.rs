@@ -13,7 +13,8 @@
 //! (connectivity)` worst case. Output: text (default) or JSON (`--json`).
 //!
 //! Surfaces:
-//!   - `crabcc debug-network` — internal CLI, this module's `run()` entrypoint.
+//!   - `crabcc info network` — CLI subcommand under the `info` group
+//!     (post-#177 nesting). This module's `run()` is the entrypoint.
 //!   - `bootstrap.sh --diagnose-network` — tracked in #150, separate change.
 
 use std::process::{Command, Stdio};
@@ -82,7 +83,7 @@ pub struct NetworkReport {
     pub connectivity: Vec<CmdResult>,
 }
 
-/// Public entrypoint — what `crabcc debug-network` calls.
+/// Public entrypoint — what `crabcc info network` calls.
 pub fn run(service: Option<&str>, json: bool, max_hops: u8) -> Result<()> {
     let report = build_report(service, max_hops);
     if json {
