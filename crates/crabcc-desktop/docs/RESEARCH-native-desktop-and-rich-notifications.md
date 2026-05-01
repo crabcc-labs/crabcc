@@ -120,27 +120,52 @@ crates/crabcc-desktop/
 
 ### Resolved decisions for Track A
 
-**A.1 GPUI rev pinning — RESOLVED.** GPUI is pre-1.0 and develops in
-lockstep with Zed; tracking `main` is unstable. Pin to the **same git
-rev that `longbridge/gpui-component`'s gallery app uses** — the
-authoritative spot is `crates/story/Cargo.toml` (the upstream
-component-gallery binary). Recipe at A.1 kickoff:
+**A.1 GPUI rev pinning — RESOLVED (corrected after build).** First
+attempt: pin `gpui` + `gpui_platform` to the rev `gpui-component`'s
+gallery binary builds against (resolved from upstream's `Cargo.lock`).
+This **does not work** as a top-level pin — `gpui-component` itself
+declares `gpui = { git = "...zed" }` with no rev, so cargo treats our
+`{ git, rev = "<x>" }` and gpui-component's `{ git }` as separate
+sources. Two zed checkouts get pulled, two compiled copies of the
+`Render` / `Styled` traits exist, and the desktop crate fails to
+compile with `expected vs. found trait` errors pointing at the same
+type from different revs.
 
-```bash
-# Resolve the rev gpui-component itself currently builds against:
-gh api repos/longbridge/gpui-component/contents/crates/story/Cargo.toml \
-  --jq '.content' | base64 -d | rg '^gpui\s*=' -A 1
-```
-
-Then mirror that exact `rev = "..."` into our own `Cargo.toml`:
+Working approach: **don't pin a rev at the top level. Mirror
+gpui-component's revless source URL** so cargo unifies to a single
+zed checkout, and rely on the **binary crate's `Cargo.lock`** for
+reproducibility. The pin lives in the lockfile, which is checked in.
 
 ```toml
-gpui           = { git = "https://github.com/zed-industries/zed", rev = "<rev>" }
-gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "<rev>" }
+# crates/crabcc-desktop/Cargo.toml
+gpui           = { git = "https://github.com/zed-industries/zed" }
+gpui_platform  = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "41f51428c563597af4f04fb476141d3311a1c0c4" }
 ```
 
-Re-pin only when we deliberately bump (typically when `gpui-component`
-itself bumps) — never auto-track upstream `main`.
+Bump procedure: bump the `gpui-component` rev → `cargo update -p
+gpui-component` → review the new `Cargo.lock` zed entries → commit
+both manifest and lockfile together. Never `cargo update -p gpui`
+without bumping `gpui-component` first; the two move together.
+
+**A.1 workspace integration — RESOLVED: standalone crate, not a
+workspace member.** Two reasons surface immediately:
+
+1. `gpui-component` pulls a non-optional `tree-sitter = "0.25"` with
+   `links = "tree-sitter"` — cargo enforces a single version per such
+   native-linked crate across the resolution. Crabcc's existing
+   tree-sitter is 0.22 (with the grammar fleet at 0.21), so joining
+   the workspace would force a coordinated tree-sitter-22→25 bump
+   across six grammar crates.
+2. The desktop crate's plan is to talk to the rest of crabcc over
+   HTTP/SSE on `127.0.0.1:7878` (loopback only), so no path dep on
+   `crabcc-core` is required.
+
+The crate keeps its own `[workspace]` table (empty) so cargo treats
+it as its own root, gets its own `Cargo.lock` (checked in for
+reproducibility), and builds with `cd crates/crabcc-desktop && cargo
+run`. Re-evaluate joining the parent workspace if/when crabcc-core
+moves to tree-sitter 0.25.
 
 ### Open questions for Track A
 
