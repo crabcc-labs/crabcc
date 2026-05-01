@@ -27,6 +27,12 @@ jemalloc = ["dep:tikv-jemallocator"]
 # only flips on the trait impl + a clearer "not yet implemented" error
 # so callers can write code against the v3.0 API today.
 agent-sandbox = []
+# Dispatch agent runs through the BullMQ-backed crabcc-agents worker
+# instead of the in-process subprocess runtime. Pulls in bullmq-rs +
+# redis. Off by default — vanilla CLI users don't pay the dep cost.
+# See apps/crabcc-agents/README.md for the worker side and
+# `--transport bullmq` / `CRABCC_AGENT_TRANSPORT=bullmq` to opt in.
+agents-bullmq = ["dep:bullmq-rs", "dep:redis", "dep:futures-util", "dep:chrono"]
 
 [dependencies]
 crabcc-core   = { workspace = true, features = ["jobs"] }
@@ -54,6 +60,12 @@ tracing       = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 # Issue #90 — non-blocking writer; hot path returns in O(ns).
 tracing-appender = { workspace = true }
+
+# agents-bullmq feature — see [features].
+bullmq-rs    = { version = "1", optional = true }
+redis        = { version = "0.28", default-features = false, features = ["tokio-comp", "connection-manager", "streams"], optional = true }
+futures-util = { version = "0.3", optional = true }
+chrono       = { version = "0.4", optional = true }
 # Issue #112 follow-up — jemalloc as the global allocator on the binary
 # crate. ~5-12% on alloc-heavy paths (extract.rs, MCP serve_io). MSVC
 # targets fall back to system allocator (cfg gate in main.rs). Optional

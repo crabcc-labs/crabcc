@@ -1,0 +1,16 @@
+# Use the wild linker (https://github.com/wild-linker/wild) on Linux
+# targets — Rust-native, parallel, faster than mold/lld on our dep
+# graph. Scoped to Linux so macOS dev builds keep using Apple's ld;
+# wild is a Linux-only project.
+#
+# Build container installs `wild` via `cargo install --locked
+# wild-linker` so the binary is on PATH. `--ld-path=wild` makes clang
+# pick it up without needing an `ld.wild` symlink.
+
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=--ld-path=wild"]
+
+[target.aarch64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=--ld-path=wild"]

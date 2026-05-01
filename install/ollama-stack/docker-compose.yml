@@ -168,6 +168,18 @@ services:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}
       OLLAMA_API_BASE: http://caddy:11434
       OLLAMA_API_KEY: ${OLLAMA_API_KEY:?OLLAMA_API_KEY is required}
+      # Optional Anthropic routing — when set, the proxy serves
+      # claude-* models from litellm.config.yaml. Empty default keeps
+      # the stack runnable with Ollama only.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Redis-backed cache (optional). When unset, litellm.config.yaml
+      # falls back to its in-memory `local` cache.
+      LITELLM_CACHE_REDIS_URL: ${LITELLM_CACHE_REDIS_URL:-}
+      # Langfuse tracing (optional — `success_callback: ["langfuse"]`
+      # in litellm.config.yaml is a no-op when these are empty).
+      LANGFUSE_HOST: ${LANGFUSE_HOST:-}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
     ports:
       - "${LITELLM_PORT:-4000}:4000"
     volumes:

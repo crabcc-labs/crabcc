@@ -1,0 +1,55 @@
+# Default mini-swe-agent config baked into the agent-runner image.
+#
+# mini-swe-agent (https://mini-swe-agent.com) reads YAML config to
+# pick model, step limits, and tool surface. Per-job knobs (model,
+# step limit, prompt) are layered on top via the entrypoint's CLI
+# flags so this file stays static and read-only on the rootfs.
+#
+# Sources of truth at runtime:
+#   $CLAUDE_MODEL       → --model NAME
+#   $MINI_STEP_LIMIT    → --step-limit N (default 50)
+#   $MINI_COST_LIMIT    → --cost-limit N (USD; default 5.0)
+#   $ANTHROPIC_API_KEY  → consumed by mini's litellm provider
+#   $PROMPT             → -t "$PROMPT"
+#
+# The entrypoint passes `--yolo` unconditionally — mini-swe-agent
+# never prompts for confirmation in our containerized runs (stdin is
+# closed; tty is off). Sandbox layering happens at the Docker level
+# (read-only rootfs, network=none unless overridden, etc.).
+
+agent:
+  # Hard upper bound on iterations; per-job override via $MINI_STEP_LIMIT
+  # passed as --step-limit. Stops runaway loops without an Anthropic
+  # circuit breaker.
+  step_limit: 50
+
+  # Hard upper bound on $ spend per run; per-job override via
+  # $MINI_COST_LIMIT passed as --cost-limit. mini-swe-agent tallies
+  # token cost via litellm and aborts when this is exceeded.
+  cost_limit: 5.0
+
+  # Templates: keep mini's defaults. Per-job task description goes via
+  # `-t "$PROMPT"` on the CLI rather than embedded here, so the same
+  # image serves any prompt.
+  task_template: "{{task}}"
+
+model:
+  # Model is overridden at the CLI by --model "$CLAUDE_MODEL". Pinning
+  # a default here so a caller that forgets the env still gets a sane
+  # model rather than an undefined-key error.
+  name: claude-sonnet-4-6
+
+  # litellm-style provider routing. mini-swe-agent uses litellm under
+  # the hood; the model_kwargs map gets forwarded to the underlying
+  # provider call.
+  model_kwargs:
+    temperature: 0.0
+    max_tokens: 4096
+
+# Environment / sandbox the agent runs commands in. We let mini run
+# bash directly inside this container; the Docker layer enforces all
+# the actual sandboxing (cap-drop, read-only rootfs, tmpfs workspace,
+# network policy).
+environment:
+  type: local
+  cwd: /workspace
