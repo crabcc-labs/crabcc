@@ -10,6 +10,7 @@
 import { useEffect } from "react";
 import type { OtlpHealth, TelemetryEvent, TelemetrySource } from "../api";
 import { logMount, logUnmount } from "../lifecycle";
+import { useNow } from "../useNow";
 
 const LEVEL_DOT: Record<string, string> = {
   TRACE: "#8aa",
@@ -93,14 +94,16 @@ export function TelemetryPanel({
   source,
   otlpHealth,
   otlpPollMs,
-  now,
 }: {
   events: TelemetryEvent[];
   source: TelemetrySource | null;
   otlpHealth: OtlpHealth | null;
   otlpPollMs?: number;
-  now: number;
 }) {
+  // Subscribe to the wall-clock tick directly instead of receiving it
+  // via prop — keeps App.tsx free of the `setInterval` re-render storm
+  // (see useNow.ts for context).
+  const now = useNow();
   useEffect(() => {
     logMount("TelemetryPanel");
     return () => logUnmount("TelemetryPanel");

@@ -4,6 +4,7 @@ members = [
     "crates/crabcc-chrome",
     "crates/crabcc-cli",
     "crates/crabcc-core",
+    "crates/crabcc-fetch",
     "crates/crabcc-mcp",
     "crates/crabcc-memory",
     "crates/crabcc-memory-bench",
@@ -23,6 +24,7 @@ repository = "https://github.com/peterlodri-sec/crabcc"
 
 [workspace.dependencies]
 crabcc-core = { path = "crates/crabcc-core" }
+crabcc-fetch = { path = "crates/crabcc-fetch" }
 crabcc-mcp = { path = "crates/crabcc-mcp" }
 crabcc-memory = { path = "crates/crabcc-memory" }
 crabcc-viz = { path = "crates/crabcc-viz" }
@@ -66,7 +68,16 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"]
 redis   = { version = "0.27", default-features = false, features = ["tokio-comp", "aio"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 linkify = "0.10"
-html2md = "0.2"
+# html2md 0.2.x ships with `crate-type = ["rlib", "dylib", "staticlib"]`,
+# which forces a `panic_unwind` runtime link and is incompatible with
+# the workspace's `panic = "abort"` release profile (the only
+# per-package escape hatch — `[profile.release.package.html2md]` —
+# can't override `panic` because it's profile-wide). Upstream is also
+# GPL-3.0+, which is a license downgrade for an MIT crate. `htmd` is
+# the turndown.js-inspired Apache-2.0 replacement: rlib-only, single
+# `htmd::convert(html) -> io::Result<String>` entrypoint, actively
+# maintained on crates.io.
+htmd = "0.5"
 
 [profile.dev]
 split-debuginfo = "unpacked"

@@ -21,6 +21,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/openapi.yaml": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Echo the hand-maintained OpenAPI 3.1 spec for this server (#172).
+         * @description Returns the same `openapi.yaml` content the dashboard's drift test
+         *     validates against. Lets the planned `com.crabcc.docs.api` Scalar
+         *     container render the spec without a separate file copy — fetch
+         *     from `crabcc serve`, render, done.
+         */
+        get: operations["getOpenapiYaml"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/bootstrap": {
         parameters: {
             query?: never;
@@ -586,6 +609,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HealthResponse"];
+                };
+            };
+        };
+    };
+    getOpenapiYaml: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description OpenAPI spec, raw YAML. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/yaml": string;
                 };
             };
         };

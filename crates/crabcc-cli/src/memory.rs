@@ -96,6 +96,27 @@ pub enum MemoryCmd {
         #[command(subcommand)]
         kind: MineKind,
     },
+    /// Ingest URLs and/or freeform text into memory. Mirrors the HTTP
+    /// `POST /api/memory/ingest` surface so the CLI and dashboard agree
+    /// on drawer ids (`web:<hash>` for URLs, `text:<hash>` for text).
+    /// Pass `-` to read text from stdin.
+    Ingest {
+        /// URL to fetch + clean + store. Repeatable.
+        #[arg(long = "url", value_name = "URL")]
+        urls: Vec<String>,
+        /// Freeform text to store as one drawer. URLs found in the
+        /// text are also fetched + stored as their own drawers.
+        #[arg(long)]
+        text: Option<String>,
+        /// Read text from stdin (`-` form). Equivalent to
+        /// `--text "$(cat)"` but keeps shell quoting simple.
+        #[arg(long)]
+        stdin: bool,
+        /// Source label baked into each drawer's wing. Defaults to
+        /// `cli-ingest`; the HTTP path uses `web-ingest`.
+        #[arg(long, default_value = "cli-ingest")]
+        source: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -255,6 +276,124 @@ pub fn run(root: &Path, cmd: MemoryCmd) -> Result<()> {
         MemoryCmd::Health => {
             println!("{}", sonic_rs::to_string(&palace.health())?);
         }
+        MemoryCmd::Ingest {
+            urls,
+            text,
+            stdin,
+            source,
+        } => {
+            // Collect freeform text — explicit `--text`, then stdin if requested.
+            let mut text_buf = text.unwrap_or_default();
+            if stdin {
+                use std::io::Read;
+                let mut s = String::new();
+                std::io::stdin().read_to_string(&mut s)?;
+                if !text_buf.is_empty() && !s.is_empty() {
+                    text_buf.push('\n');
+                }
+                text_buf.push_str(&s);
+            }
+
+            // De-dup URL set: explicit + linkified-from-text.
+            let mut url_set: std::collections::BTreeSet<String> = urls.into_iter().collect();
+            if !text_buf.is_empty() {
+                for u in crabcc_fetch::extract_urls(&text_buf) {
+                    url_set.insert(u);
+                }
+            }
+            let urls: Vec<String> = url_set.into_iter().collect();
+
+            let mut ingested: Vec<serde_json::Value> = Vec::new();
+            let mut errors: Vec<serde_json::Value> = Vec::new();
+            let session = std::env::var("TERM_SESSION_ID").ok();
+
+            // URL fetch phase — async via a per-call runtime. Single-user
+            // CLI so the runtime cost is negligible.
+            if !urls.is_empty() {
+                let safe: Vec<String> = urls
+                    .iter()
+                    .filter(|u| match crabcc_fetch::is_ingest_safe_url(u) {
+                        Ok(()) => true,
+                        Err(reason) => {
+                            errors.push(serde_json::json!({"url": u, "error": reason}));
+                            false
+                        }
+                    })
+                    .cloned()
+                    .collect();
+                if !safe.is_empty() {
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()?;
+                    let results = rt.block_on(crabcc_fetch::fetch_and_clean(
+                        &safe,
+                        crabcc_fetch::FetchOpts::ingest(),
+                    ));
+                    for r in results {
+                        if r.error.is_some() || r.content_markdown.is_none() {
+                            errors.push(serde_json::json!({
+                                "url": r.url,
+                                "error": r.error.unwrap_or_else(|| "no content extracted".into()),
+                            }));
+                            continue;
+                        }
+                        let body = r.content_markdown.unwrap_or_default();
+                        let id = format!("web:{}", short_hash(r.url.as_bytes()));
+                        match palace.remember_in_session(
+                            &source,
+                            None,
+                            &id,
+                            &body,
+                            session.as_deref(),
+                        ) {
+                            Ok(drawer_id) => ingested.push(serde_json::json!({
+                                "id": id,
+                                "url": r.url,
+                                "title": r.title,
+                                "kind": "web",
+                                "bytes": body.len(),
+                                "drawer_id": drawer_id,
+                            })),
+                            Err(e) => {
+                                errors.push(serde_json::json!({"url": id, "error": format!("{e}")}))
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Standalone-text path — only if there's content beyond the URLs.
+            if !text_buf.trim().is_empty() {
+                let stripped = strip_urls(&text_buf);
+                if !stripped.trim().is_empty() {
+                    let id = format!("text:{}", short_hash(text_buf.as_bytes()));
+                    let label = format!("{source}:text");
+                    match palace.remember_in_session(
+                        &label,
+                        None,
+                        &id,
+                        &text_buf,
+                        session.as_deref(),
+                    ) {
+                        Ok(drawer_id) => ingested.push(serde_json::json!({
+                            "id": id,
+                            "kind": "text",
+                            "bytes": text_buf.len(),
+                            "drawer_id": drawer_id,
+                        })),
+                        Err(e) => {
+                            errors.push(serde_json::json!({"url": id, "error": format!("{e}")}))
+                        }
+                    }
+                }
+            }
+
+            let stats = serde_json::json!({"ok": ingested.len(), "failed": errors.len()});
+            println!(
+                "{}",
+                serde_json::json!({"ingested": ingested, "errors": errors, "stats": stats})
+            );
+        }
         MemoryCmd::Mine { kind } => {
             let session = std::env::var("TERM_SESSION_ID").ok();
             let report = match kind {
@@ -404,4 +543,44 @@ mod tests {
         assert!(parse_before_timestamp("").is_err());
         assert!(parse_before_timestamp("2025/01/01").is_err());
     }
+}
+
+/// FNV-1a 64-bit. Drawer source-ids are application-level identity
+/// keys, not a security boundary, so a cheap non-crypto hash is fine.
+/// Using `DefaultHasher` would be SipHash with a per-process seed →
+/// different `web:<hash>` for the same URL across runs, which we
+/// explicitly don't want.
+fn short_hash(b: &[u8]) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &x in b {
+        h ^= x as u64;
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    let mut s = String::with_capacity(16);
+    for i in (0..16).rev() {
+        let nibble = ((h >> (i * 4)) & 0xf) as u8;
+        s.push(if nibble < 10 {
+            (b'0' + nibble) as char
+        } else {
+            (b'a' + nibble - 10) as char
+        });
+    }
+    s
+}
+
+/// Strip URLs out of `text` so we can decide whether the freeform
+/// remainder is worth storing as its own drawer.
+fn strip_urls(text: &str) -> String {
+    let mut finder = crabcc_fetch::linkify::LinkFinder::new();
+    finder.kinds(&[crabcc_fetch::linkify::LinkKind::Url]);
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for span in finder.spans(text) {
+        if span.kind() == Some(&crabcc_fetch::linkify::LinkKind::Url) {
+            out.push_str(&text[last..span.start()]);
+            last = span.end();
+        }
+    }
+    out.push_str(&text[last..]);
+    out
 }

@@ -1,0 +1,29 @@
+[package]
+name = "crabcc-fetch"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+# Shared URL extraction + HTTP fetch + HTML→Markdown cleaning.
+# Both `crabcc-cli` (CLI fetch_cmd) and `crabcc-viz` (the
+# `/api/memory/ingest` HTTP handler) depend on this so per-domain
+# extractors / SSRF guards / size caps live in exactly one place.
+
+[dependencies]
+anyhow      = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+tokio       = { workspace = true }
+reqwest     = { workspace = true }
+linkify     = { workspace = true }
+htmd        = { workspace = true }
+tracing     = { workspace = true }
+# Used by the streamed-body cap in fetch_one. Pulled transitively via
+# reqwest, but pinned explicitly so a reqwest bump that drops the
+# re-export breaks here, not at use sites.
+bytes       = "1"
+
+[dev-dependencies]
+tempfile   = { workspace = true }

@@ -1,10 +1,7 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { Header } from "./components/Header";
 import { ActivityPanel } from "./components/ActivityPanel";
 import { AgentsPanel } from "./components/AgentsPanel";
-import { AgentProfilesPanel } from "./components/AgentProfilesPanel";
-import { AgentKillsPanel } from "./components/AgentKillsPanel";
-import { AgentModelsPanel } from "./components/AgentModelsPanel";
 import { OllamaKeyPanel } from "./components/OllamaKeyPanel";
 import { ServicesPanel } from "./components/ServicesPanel";
 import { ReindexDialog } from "./components/ReindexDialog";
@@ -29,6 +26,13 @@ import {
   type OtlpHealth,
 } from "./api";
 
+// Code-split the graph: ~150 KB of d3-force + canvas hit-testing that
+// the dashboard doesn't need on its critical path. Suspense renders the
+// existing placeholder styling while the chunk loads.
+const RelationsGraph = lazy(() =>
+  import("./components/RelationsGraph").then((m) => ({ default: m.RelationsGraph })),
+);
+
 export function App() {
   const [reindexOpen, setReindexOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -36,15 +40,15 @@ export function App() {
   const [activity, setActivity] = useState<ActivityHit[]>([]);
   const [agents, setAgents] = useState<AgentSummary[]>([]);
 
-  // Push the live-web state into window.__crabcc__ so the Chrome
-  // extension (#184) can read it via chrome.scripting.executeScript.
+  // Mirror activity / agent counts onto the debug bridge so the Chrome
+  // extension (#184) can read them via chrome.scripting.executeScript.
   useEffect(() => {
     updateDebugBridge({ activityCount: activity.length });
   }, [activity.length]);
   useEffect(() => {
     updateDebugBridge({ agentCount: agents.length });
   }, [agents.length]);
-  const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
+
   const bootstrap = usePolling(api.bootstrap, 0, [], {
     source: "/api/bootstrap",
     summarize: (b) => `repo=${b.repo} version=${b.version}`,
@@ -54,11 +58,9 @@ export function App() {
   const applySettings = useCallback((s: Settings) => {
     setSettings(s);
     saveSettings(s);
-    // Reload to re-init all usePolling instances with the new intervals.
     window.location.reload();
   }, []);
 
-  // Telemetry — issue #90. Interval from settings (default 3 s).
   const telemetry = usePolling(
     () => api.telemetry(0, settings.telMaxEvents),
     settings.telPollMs,
@@ -71,30 +73,40 @@ export function App() {
   const telEvents: TelemetryEvent[] = telemetry.data?.events ?? [];
   const telSource: TelemetrySource | null = telemetry.data?.source ?? null;
 
-  // Issue #86 — OTLP health probe. Interval from settings (default 30 s).
   const otlpHealth = usePolling(api.otlpHealth, settings.otlpPollMs, [], {
     source: "/api/otlp-health",
     summarize: (h) => (h.reachable ? "reachable" : "down"),
   });
   const otlpData: OtlpHealth | null = otlpHealth.data ?? null;
 
-  // Tick the wall clock once per second so the relative-age timestamps
-  // (`12s ago`) re-render without re-fetching.
-  useEffect(() => {
-    const id = setInterval(
-      () => setNow(Math.floor(Date.now() / 1000)),
-      1000,
-    );
-    return () => clearInterval(id);
-  }, []);
-
   // Single SSE stream replaces three polling loops. The dashboard's
-  // "live" indicator binds to the connection state — green when the
-  // EventSource is open, grey on disconnect/backoff.
+  // "live" indicator binds to the connection state.
+  //
+  // The wire protocol uses `events` / `results`, while the OpenAPI
+  // contract names them `items` / `count`. Accept either — the
+  // dashboard was silently dropping real activity for a while because
+  // of this mismatch.
   const { connected } = useEventStream("/api/events", {
     activity: (p) => {
-      const data = p as { items?: ActivityHit[] } | null;
-      const items = data?.items ?? [];
+      const data = p as
+        | {
+            items?: ActivityHit[];
+            events?: { ts: number; op: string; query: string; results?: number; count?: number; source?: string }[];
+          }
+        | null;
+      const raw = data?.items ?? data?.events ?? [];
+      const items: ActivityHit[] = raw
+        .map((e) => ({
+          ts: e.ts,
+          op: e.op,
+          query: e.query,
+          count:
+            (e as { count?: number }).count ??
+            (e as { results?: number }).results ??
+            1,
+          source: (e as { source?: string }).source,
+        }))
+        .sort((a, b) => b.ts - a.ts);
       setActivity(items);
       logFetchOk("sse:activity", `${items.length} items`);
     },
@@ -107,7 +119,6 @@ export function App() {
     },
   });
 
-  // Render counter — strictly diagnostic; surfaced in the debug pane.
   const renderCount = useRef(0);
   renderCount.current += 1;
 
@@ -135,37 +146,21 @@ export function App() {
           <ActivityPanel items={activity} />
         </section>
         <section className="col stage">
-          <div className="placeholder">
-            relations graph — phase 2 of #17
-            <small>
-              (see <code>web/DESIGN.md</code>)
-            </small>
-          </div>
+          <Suspense
+            fallback={
+              <div className="placeholder graph-placeholder">
+                <span className="graph-spinner" /> loading relations graph…
+              </div>
+            }
+          >
+            <RelationsGraph limit={20} />
+          </Suspense>
         </section>
         <section className="col">
-          <h2>
-            agents <span className="count">{agents.length}</span>
-          </h2>
           <AgentsPanel agents={agents} />
-          <h2 style={{ marginTop: "1.2em" }}>
-            agent profiles
-          </h2>
-          <AgentProfilesPanel />
-          <h2 style={{ marginTop: "1.2em" }}>
-            recent kills
-          </h2>
-          <AgentKillsPanel />
-          <h2 style={{ marginTop: "1.2em" }}>
-            models
-          </h2>
-          <AgentModelsPanel />
-          <h2 style={{ marginTop: "1.2em" }}>
-            services
-          </h2>
+          <h2 style={{ marginTop: "1.2em" }}>services</h2>
           <ServicesPanel />
-          <h2 style={{ marginTop: "1.2em" }}>
-            ollama api key
-          </h2>
+          <h2 style={{ marginTop: "1.2em" }}>ollama api key</h2>
           <OllamaKeyPanel />
           <h2 style={{ marginTop: "1.2em" }}>
             telemetry <span className="count">{telEvents.length}</span>
@@ -181,7 +176,6 @@ export function App() {
             source={telSource}
             otlpHealth={otlpData}
             otlpPollMs={settings.otlpPollMs}
-            now={now}
           />
         </section>
       </main>

@@ -946,6 +946,47 @@ tasks:
     cmds:
       - "(cd crates/crabcc-core/fuzz && {{.CARGO}} check)"
 
+  # ── Context7 docs → memory ingest pipe ────────────────────────────────────
+  # Composes the upstream `c7` CLI (npm @vedanth/context7) with the
+  # `crabcc memory ingest --stdin` we ship. Result: any library doc set
+  # is one command away from the local knowledge base.
+  #
+  # Usage:
+  #   task docs:ingest LIB=nextjs                         # whole library
+  #   task docs:ingest LIB=react Q='hooks' TOKENS=8000    # filtered
+  #
+  # Behind the scenes:
+  #   npx -y @vedanth/context7 docs <LIB> [Q] --tokens N
+  #     | crabcc memory ingest --stdin --source <LIB>-docs
+  #
+  # No global install required — `npx -y` fetches c7 on demand. Works
+  # against `crabcc` from PATH (so `task install` first if you haven't).
+  docs:check:
+    desc: Verify c7 + crabcc are on PATH; useful before docs:ingest in CI.
+    cmds:
+      - command -v crabcc || (echo "crabcc not on PATH — run task install" >&2; exit 2)
+      - command -v npx    || (echo "npx not on PATH — install Node.js"      >&2; exit 2)
+      - npx -y @vedanth/context7 --help >/dev/null
+
+  docs:ingest:
+    desc: |
+      Fetch library docs via c7 and pipe them into the local memory store.
+      LIB is required; Q optional topic filter; TOKENS optional cap.
+    vars:
+      LIB: '{{.LIB | default ""}}'
+      Q:   '{{.Q   | default ""}}'
+      TOKENS: '{{.TOKENS | default "5000"}}'
+    cmds:
+      - |
+        set -o pipefail
+        if [ -z "{{.LIB}}" ]; then
+          echo "usage: task docs:ingest LIB=react Q=hooks TOKENS=8000" >&2
+          exit 2
+        fi
+        npx -y @vedanth/context7 docs "{{.LIB}}" "{{.Q}}" --tokens "{{.TOKENS}}" \
+          | crabcc memory ingest --stdin --source "{{.LIB}}-docs" \
+          | jq '.stats'
+
   memory-smoke:
     desc: Exercise the memory CLI surface (M3-light + M1 hybrid) against a tempdir
     deps: [install]
@@ -1623,3 +1664,131 @@ tasks:
     desc: 'Fetch URLs from a prompt — example: task fetch -- "see https://example.com and https://rust-lang.org"'
     cmds:
       - '{{.CRABCC}} fetch "{{.CLI_ARGS}}"'
+
+  # ─── e2e suite ────────────────────────────────────────────────────────────
+  # Quick-run end-to-end test suite for the localhost dashboard + CLI.
+  # Suites live under scripts/tests/e2e/<suite>.sh; each exposes one or
+  # more numbered cases. The runner reuses a healthy `crabcc serve` on
+  # :7878 if one is already up; otherwise it boots one in the background
+  # and waits for /api/health. See scripts/tests/e2e/_runner.e2e.sh.
+  #
+  # Run all:           task e2e
+  # Run one suite:     task e2e:dashboard
+  # Run one case:      task e2e:dashboard:bootstrap
+  e2e:
+    desc: Run all e2e suites locally. Starts crabcc serve if none is up.
+    cmds:
+      - task: e2e:dashboard
+      - task: e2e:graph
+      - task: e2e:knowledge
+      - task: e2e:agents
+      - task: e2e:fetch
+      - task: e2e:cli
+
+  e2e:dashboard:
+    desc: 'e2e: dashboard suite (5 cases). Pass CASE=<name> to run one.'
+    deps: [build]
+    cmds: ['bash scripts/tests/e2e/dashboard.sh']
+  e2e:dashboard:loads:
+    desc: 'e2e: dashboard / loads (GET /)'
+    deps: [build]
+    cmds: ['CASE=loads bash scripts/tests/e2e/dashboard.sh']
+  e2e:dashboard:bootstrap:
+    desc: 'e2e: dashboard / bootstrap (GET /api/bootstrap)'
+    deps: [build]
+    cmds: ['CASE=bootstrap bash scripts/tests/e2e/dashboard.sh']
+  e2e:dashboard:health:
+    desc: 'e2e: dashboard / health (GET /api/health)'
+    deps: [build]
+    cmds: ['CASE=health bash scripts/tests/e2e/dashboard.sh']
+  e2e:dashboard:openapi:
+    desc: 'e2e: dashboard / openapi (GET /api/openapi.yaml)'
+    deps: [build]
+    cmds: ['CASE=openapi bash scripts/tests/e2e/dashboard.sh']
+  e2e:dashboard:static-chunks:
+    desc: 'e2e: dashboard / static-chunks (GET /static/*.js)'
+    deps: [build]
+    cmds: ['CASE=static-chunks bash scripts/tests/e2e/dashboard.sh']
+
+  e2e:graph:
+    desc: 'e2e: call-graph suite (2 cases). Pass CASE=<name> to run one.'
+    deps: [build]
+    cmds: ['bash scripts/tests/e2e/graph.sh']
+  e2e:graph:seed:
+    desc: 'e2e: graph / seed (GET /api/seed-graph)'
+    deps: [build]
+    cmds: ['CASE=seed bash scripts/tests/e2e/graph.sh']
+  e2e:graph:expand:
+    desc: 'e2e: graph / expand (GET /api/graph?root=...)'
+    deps: [build]
+    cmds: ['CASE=expand bash scripts/tests/e2e/graph.sh']
+
+  e2e:knowledge:
+    desc: 'e2e: knowledge / memory suite (4 cases). Pass CASE=<name> to run one.'
+    cmds: ['bash scripts/tests/e2e/knowledge.sh']
+  e2e:knowledge:graph-empty-or-populated:
+    desc: 'e2e: knowledge / graph-empty-or-populated'
+    cmds: ['CASE=graph-empty-or-populated bash scripts/tests/e2e/knowledge.sh']
+  e2e:knowledge:ingest-text:
+    desc: 'e2e: knowledge / ingest-text round-trip via /memory/get'
+    cmds: ['CASE=ingest-text bash scripts/tests/e2e/knowledge.sh']
+  e2e:knowledge:ingest-url:
+    desc: 'e2e: knowledge / ingest-url (network-tolerant)'
+    cmds: ['CASE=ingest-url bash scripts/tests/e2e/knowledge.sh']
+  e2e:knowledge:ssrf-rejected:
+    desc: 'e2e: knowledge / ssrf-rejected (127.0.0.1 must be refused)'
+    cmds: ['CASE=ssrf-rejected bash scripts/tests/e2e/knowledge.sh']
+
+  e2e:agents:
+    desc: 'e2e: agents suite (4 cases). Pass CASE=<name> to run one.'
+    cmds: ['bash scripts/tests/e2e/agents.sh']
+  e2e:agents:agents:
+    desc: 'e2e: agents / agents (GET /api/agents)'
+    cmds: ['CASE=agents bash scripts/tests/e2e/agents.sh']
+  e2e:agents:kills:
+    desc: 'e2e: agents / kills (GET /api/agent-kills)'
+    cmds: ['CASE=kills bash scripts/tests/e2e/agents.sh']
+  e2e:agents:models:
+    desc: 'e2e: agents / models (GET /api/agent-models)'
+    cmds: ['CASE=models bash scripts/tests/e2e/agents.sh']
+  e2e:agents:profiles:
+    desc: 'e2e: agents / profiles (GET /api/agent-profiles)'
+    cmds: ['CASE=profiles bash scripts/tests/e2e/agents.sh']
+
+  e2e:fetch:
+    desc: 'e2e: crabcc fetch CLI (1 case)'
+    deps: [build]
+    cmds: ['bash scripts/tests/e2e/fetch.sh']
+  e2e:fetch:cli-fetch-example:
+    desc: 'e2e: fetch / cli-fetch-example (https://example.com)'
+    deps: [build]
+    cmds: ['CASE=cli-fetch-example bash scripts/tests/e2e/fetch.sh']
+
+  e2e:cli:
+    desc: 'e2e: crabcc CLI smoke (5 cases)'
+    deps: [build]
+    cmds: ['bash scripts/tests/e2e/cli.sh']
+  e2e:cli:version:
+    desc: 'e2e: cli / version (--version matches Cargo.toml)'
+    deps: [build]
+    cmds: ['CASE=version bash scripts/tests/e2e/cli.sh']
+  e2e:cli:index-smoke:
+    desc: 'e2e: cli / index-smoke (lookup sym Store)'
+    deps: [build]
+    cmds: ['CASE=index-smoke bash scripts/tests/e2e/cli.sh']
+  e2e:cli:memory-ingest-text:
+    desc: 'e2e: cli / memory ingest --text → text:* drawer'
+    deps: [build]
+    cmds: ['CASE=memory-ingest-text bash scripts/tests/e2e/cli.sh']
+  e2e:cli:memory-ingest-url:
+    desc: 'e2e: cli / memory ingest --url → web:* drawer or clean error'
+    deps: [build]
+    cmds: ['CASE=memory-ingest-url bash scripts/tests/e2e/cli.sh']
+  e2e:cli:memory-ingest-stdin:
+    desc: 'e2e: cli / memory ingest --stdin → text:* drawer'
+    deps: [build]
+    cmds: ['CASE=memory-ingest-stdin bash scripts/tests/e2e/cli.sh']
+  e2e:cli:docs-ingest-pipe:
+    desc: 'e2e: cli / c7 docs <lib> | crabcc memory ingest --stdin'
+    deps: [build]
+    cmds: ['CASE=docs-ingest-pipe bash scripts/tests/e2e/cli.sh']
