@@ -1,5 +1,7 @@
 import { memo, useEffect, useState } from "react";
+import { CircleAlert, CircleCheck } from "lucide-react";
 import { api, type ServiceStatus, type DiscoveryReport } from "../api";
+import { Icon } from "./icons";
 import {
   logFetchErr,
   logFetchOk,
@@ -99,13 +101,16 @@ function ServiceRow({ svc }: { svc: ServiceStatus }) {
       <td className="service-source">{sourceLabel}</td>
       <td>
         {svc.reachable ? (
-          <span className="service-state ok">● {svc.latency_ms}ms</span>
+          <span className="service-state ok">
+            <Icon of={CircleCheck} size={12} aria-hidden="true" /> {svc.latency_ms}ms
+          </span>
         ) : (
           <span
             className="service-state down"
             title={svc.error ?? "down"}
           >
-            ✗ {(svc.error ?? "down").slice(0, 40)}
+            <Icon of={CircleAlert} size={12} aria-hidden="true" />{" "}
+            {(svc.error ?? "down").slice(0, 40)}
           </span>
         )}
       </td>

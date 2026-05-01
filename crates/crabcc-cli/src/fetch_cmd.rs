@@ -11,7 +11,11 @@
 //!   2. **Direct HTTP** (fallback). `reqwest` with a sensible User-Agent
 //!      and 20-second per-URL timeout. Battle-tested deps only.
 //!
-//! HTML → Markdown via `html2md` (html5ever-backed, mature). Title
+//! HTML → Markdown via `htmd` (turndown.js-inspired, html5ever-backed,
+//! Apache-2.0). Replaced `html2md` because that crate ships
+//! `crate-type = ["rlib", "dylib", "staticlib"]`, and the `dylib` link
+//! forces a `panic_unwind` runtime that conflicts with the workspace's
+//! `panic = "abort"` release profile. Title
 //! extraction via a minimal `<title>` scan to avoid pulling in a DOM lib
 //! for one element.
 
@@ -270,7 +274,20 @@ async fn fetch_one(client: &reqwest::Client, url: &str) -> FetchResult {
                     } else {
                         &html
                     };
-                    let markdown = html2md::parse_html(body_html);
+                    // We use `htmd` (turndown.js-inspired, Apache-2.0)
+                    // instead of `html2md` because `html2md 0.2.x` ships
+                    // `crate-type = ["rlib", "dylib", "staticlib"]`, and
+                    // the `dylib` link forces a `panic_unwind` runtime
+                    // that conflicts with the workspace's
+                    // `panic = "abort"` release profile. `.skip_tags(...)`
+                    // drops style/script/noscript content (html2md silently
+                    // dropped those; htmd serializes them as text by
+                    // default) so the output stays close to the prior shape.
+                    let markdown = htmd::HtmlToMarkdown::builder()
+                        .skip_tags(vec!["script", "style", "noscript"])
+                        .build()
+                        .convert(body_html)
+                        .unwrap_or_default();
                     FetchResult {
                         url: url.into(),
                         status,
@@ -287,7 +304,7 @@ async fn fetch_one(client: &reqwest::Client, url: &str) -> FetchResult {
 
 /// Domains where we prefer to extract `<article>` / `<main>` instead of
 /// the full HTML — strips nav/footer/ads/sidebar noise. The fallback is
-/// the original behaviour (whole-page html2md) so unknown sites still
+/// the original behaviour (whole-page HTML→Markdown via `htmd`) so unknown sites still
 /// round-trip cleanly.
 fn host_uses_article_extractor(host: &str) -> bool {
     matches!(

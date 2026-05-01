@@ -9,6 +9,9 @@ repository.workspace   = true
 [dependencies]
 crabcc-core   = { workspace = true }
 crabcc-memory = { workspace = true }
+# `crabcc-fetch` brings the async URL fetcher + html→md cleaner the
+# `/api/memory/ingest` endpoint pipes drawers through.
+crabcc-fetch  = { workspace = true }
 
 anyhow      = { workspace = true }
 rusqlite    = { workspace = true }
@@ -17,6 +20,9 @@ serde_json  = { workspace = true }
 sonic-rs    = { workspace = true }
 tracing     = { workspace = true }
 tiny_http   = { workspace = true }
+# Single-thread runtime spun up per ingest request — tiny_http itself
+# is sync, but the fetch path (`crabcc-fetch::fetch_and_clean`) is async.
+tokio       = { workspace = true, features = ["rt", "macros"] }
 
 [dev-dependencies]
 tempfile   = { workspace = true }

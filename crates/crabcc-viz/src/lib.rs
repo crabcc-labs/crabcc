@@ -162,6 +162,17 @@ fn print_banner(cfg: &Config, addr: SocketAddr, init: Option<&runtime::InitOutco
         c.dim("GET"),
         url
     ));
+    routes.push_str(&format!(
+        "  {} {}/api/memory/graph?limit=N\n",
+        c.dim("GET"),
+        url
+    ));
+    routes.push_str(&format!(
+        "  {} {}/api/memory/get?id=ID\n",
+        c.dim("GET"),
+        url
+    ));
+    routes.push_str(&format!("  {} {}/api/memory/ingest\n", c.dim("POST"), url));
     routes.push_str(&format!("  {} {}/api/bootstrap\n", c.dim("GET"), url));
     routes.push_str(&format!("  {} {}/api/health\n", c.dim("GET"), url));
 
@@ -357,6 +368,7 @@ fn handle(request: Request, root: &Path) -> Result<()> {
                 Ok(snap) => respond_json(request, &snap),
                 Err(e) => respond_status(request, 500, &format!("reindex failed: {e}")),
             },
+            "/api/memory/ingest" => memory_ingest(request, root),
             _ => respond_status(request, 405, "method not allowed"),
         };
     }
@@ -458,6 +470,14 @@ fn handle(request: Request, root: &Path) -> Result<()> {
         "/api/memory/recent" => match memory_recent(root, query) {
             Ok(snap) => respond_json(request, &snap),
             Err(e) => respond_status(request, 500, &format!("memory snapshot failed: {e}")),
+        },
+        "/api/memory/graph" => match memory_graph(root, query) {
+            Ok(snap) => respond_json(request, &snap),
+            Err(e) => respond_status(request, 500, &format!("memory graph failed: {e}")),
+        },
+        "/api/memory/get" => match memory_get(root, query) {
+            Ok(snap) => respond_json(request, &snap),
+            Err(e) => respond_status(request, 500, &format!("memory get failed: {e}")),
         },
         _ => respond_status(request, 404, "not found"),
     }
@@ -2439,6 +2459,539 @@ fn open_browser(url: &str) -> Result<()> {
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn open_browser(_url: &str) -> Result<()> {
     Ok(())
+}
+
+// ── /api/memory/graph ───────────────────────────────────────────────────
+//
+// Knowledge-graph view of the memory drawers. Nodes are drawers (keyed
+// by `source_id` since the integer PK is unstable across re-imports).
+// Edges are explicit references mined from the body — `web:<hash>`,
+// `text:<hash>`, `doc:<n>`, and Obsidian-style `[[Title]]` matched
+// against drawer titles. Embedding-similarity edges aren't shipped
+// here; the `embeddings` field in stats flips on once the
+// `memory-vec` / `memory-embed` features are wired up at the consumer.
+
+#[derive(Serialize)]
+struct KnowledgeNode {
+    id: String,
+    title: String,
+    kind: String,
+    ts: i64,
+    len: usize,
+}
+
+#[derive(Serialize)]
+struct KnowledgeEdge {
+    src: String,
+    dst: String,
+    via: &'static str,
+}
+
+#[derive(Serialize)]
+struct KnowledgeStats {
+    drawers: usize,
+    edges: usize,
+    embeddings: bool,
+}
+
+#[derive(Serialize)]
+struct KnowledgeSnapshot {
+    nodes: Vec<KnowledgeNode>,
+    edges: Vec<KnowledgeEdge>,
+    stats: KnowledgeStats,
+}
+
+fn memory_graph(root: &Path, query: &str) -> Result<KnowledgeSnapshot> {
+    let mut limit: usize = 200;
+    for pair in query.split('&').filter(|s| !s.is_empty()) {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        if k == "limit" {
+            limit = url_decode(v).parse::<usize>().unwrap_or(200).clamp(1, 2000);
+        }
+    }
+    let memory_path = root.join(".crabcc").join("memory.db");
+    if !memory_path.exists() {
+        return Ok(KnowledgeSnapshot {
+            nodes: vec![],
+            edges: vec![],
+            stats: KnowledgeStats {
+                drawers: 0,
+                edges: 0,
+                embeddings: false,
+            },
+        });
+    }
+    let conn = rusqlite::Connection::open_with_flags(
+        &memory_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    let mut stmt = conn.prepare(
+        "SELECT d.source_id, w.name, d.body, d.created_at \
+         FROM drawers d \
+         LEFT JOIN wings w ON w.id = d.wing_id \
+         WHERE d.body_enc = 0 \
+         ORDER BY d.created_at DESC \
+         LIMIT ?1",
+    )?;
+    type Row = (String, String, String, i64);
+    let rows = stmt.query_map(rusqlite::params![limit as i64], |r| {
+        Ok::<Row, rusqlite::Error>((
+            r.get(0)?,
+            r.get::<_, Option<String>>(1)?.unwrap_or_else(|| "?".into()),
+            r.get(2)?,
+            r.get(3)?,
+        ))
+    })?;
+    let materialized: Vec<Row> = rows.filter_map(|r| r.ok()).collect();
+
+    // First pass: build nodes + a title index for `[[wiki]]` resolution.
+    let mut nodes: Vec<KnowledgeNode> = Vec::with_capacity(materialized.len());
+    let mut id_set: std::collections::HashSet<String> =
+        std::collections::HashSet::with_capacity(materialized.len());
+    let mut title_index: std::collections::HashMap<String, String> =
+        std::collections::HashMap::with_capacity(materialized.len());
+    for (source_id, wing, body, created_at) in &materialized {
+        let title = first_line(body);
+        title_index.insert(title.to_lowercase(), source_id.clone());
+        id_set.insert(source_id.clone());
+        nodes.push(KnowledgeNode {
+            id: source_id.clone(),
+            title,
+            kind: wing.clone(),
+            ts: *created_at,
+            len: body.len(),
+        });
+    }
+
+    // Second pass: parse references out of each body.
+    let mut edges: Vec<KnowledgeEdge> = Vec::new();
+    let mut seen: std::collections::HashSet<(String, String, &'static str)> =
+        std::collections::HashSet::new();
+    for (source_id, _wing, body, _ts) in &materialized {
+        for cand in scan_refs(body) {
+            // Resolve candidate to a known drawer id.
+            let (dst, via) = match cand {
+                RefCand::Id(id) if id_set.contains(&id) => (id, "ref"),
+                RefCand::Wiki(name) => match title_index.get(&name.to_lowercase()) {
+                    Some(target) if target != source_id => (target.clone(), "wiki"),
+                    _ => continue,
+                },
+                _ => continue,
+            };
+            if dst == *source_id {
+                continue;
+            }
+            let key = (source_id.clone(), dst.clone(), via);
+            if seen.insert(key) {
+                edges.push(KnowledgeEdge {
+                    src: source_id.clone(),
+                    dst,
+                    via,
+                });
+            }
+        }
+    }
+
+    let drawer_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM drawers", [], |r| r.get(0))
+        .unwrap_or(0);
+
+    Ok(KnowledgeSnapshot {
+        stats: KnowledgeStats {
+            drawers: drawer_count.max(0) as usize,
+            edges: edges.len(),
+            embeddings: false,
+        },
+        nodes,
+        edges,
+    })
+}
+
+fn first_line(body: &str) -> String {
+    body.lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim_start_matches(['#', ' '])
+        .chars()
+        .take(80)
+        .collect()
+}
+
+enum RefCand {
+    Id(String),
+    Wiki(String),
+}
+
+/// Tolerant reference scanner. Matches `web:<hex>`, `text:<hex>`,
+/// `doc:<n>`, and Obsidian-style `[[Title]]`. Avoids regex (no `regex`
+/// dep here) — hand-rolled byte scan is plenty for drawer-body sizes.
+fn scan_refs(body: &str) -> Vec<RefCand> {
+    let mut out = Vec::new();
+    let bytes = body.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        // `[[...]]` wiki link.
+        if bytes[i] == b'[' && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+            let start = i + 2;
+            let mut end = start;
+            while end + 1 < bytes.len() && !(bytes[end] == b']' && bytes[end + 1] == b']') {
+                end += 1;
+            }
+            if end + 1 < bytes.len() {
+                if let Ok(name) = std::str::from_utf8(&bytes[start..end]) {
+                    let trimmed = name.trim();
+                    if !trimmed.is_empty() && trimmed.len() < 200 {
+                        out.push(RefCand::Wiki(trimmed.to_string()));
+                    }
+                }
+                i = end + 2;
+                continue;
+            }
+        }
+        // `prefix:value` IDs — anchor on the prefix to avoid stripping
+        // inline `http://` URLs.
+        for prefix in ["web:", "text:", "doc:"] {
+            if bytes[i..].starts_with(prefix.as_bytes()) {
+                let start = i;
+                let mut end = start + prefix.len();
+                while end < bytes.len() {
+                    let b = bytes[end];
+                    if b.is_ascii_alphanumeric() || b == b'-' || b == b'_' {
+                        end += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if end > start + prefix.len() {
+                    if let Ok(id) = std::str::from_utf8(&bytes[start..end]) {
+                        out.push(RefCand::Id(id.to_string()));
+                    }
+                    i = end;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+// ── /api/memory/get ─────────────────────────────────────────────────────
+//
+// Single-drawer fetch. Looks the drawer up by `source_id` (the stable
+// human-readable identifier; the SQLite PK isn't stable across imports).
+
+#[derive(Serialize)]
+struct DrawerDetail {
+    found: bool,
+    id: String,
+    wing: String,
+    room: Option<String>,
+    source_id: String,
+    body: String,
+    created_at: i64,
+}
+
+fn memory_get(root: &Path, query: &str) -> Result<DrawerDetail> {
+    let mut id = String::new();
+    for pair in query.split('&').filter(|s| !s.is_empty()) {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        if k == "id" {
+            id = url_decode(v);
+        }
+    }
+    let memory_path = root.join(".crabcc").join("memory.db");
+    if id.is_empty() || !memory_path.exists() {
+        return Ok(DrawerDetail {
+            found: false,
+            id: id.clone(),
+            wing: String::new(),
+            room: None,
+            source_id: id,
+            body: String::new(),
+            created_at: 0,
+        });
+    }
+    let conn = rusqlite::Connection::open_with_flags(
+        &memory_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+    let row = conn.query_row(
+        "SELECT d.source_id, w.name, r.name, d.body, d.created_at \
+         FROM drawers d \
+         LEFT JOIN wings w ON w.id = d.wing_id \
+         LEFT JOIN rooms r ON r.id = d.room_id \
+         WHERE d.source_id = ?1 AND d.body_enc = 0 \
+         LIMIT 1",
+        rusqlite::params![id],
+        |r| {
+            Ok::<(String, Option<String>, Option<String>, String, i64), rusqlite::Error>((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+            ))
+        },
+    );
+    Ok(match row {
+        Ok((source_id, wing, room, body, created_at)) => DrawerDetail {
+            found: true,
+            id: source_id.clone(),
+            wing: wing.unwrap_or_else(|| "?".into()),
+            room,
+            source_id,
+            body,
+            created_at,
+        },
+        Err(_) => DrawerDetail {
+            found: false,
+            id: id.clone(),
+            wing: String::new(),
+            room: None,
+            source_id: id,
+            body: String::new(),
+            created_at: 0,
+        },
+    })
+}
+
+// ── POST /api/memory/ingest ─────────────────────────────────────────────
+//
+// Pipe URLs and freeform text into the memory layer. URLs are fetched
+// through `crabcc-fetch` (SSRF-checked, html→md cleaned), then stored
+// as drawers via `crabcc-memory::Palace`. Idempotent: re-ingesting the
+// same URL produces the same `web:<hash>` source_id, and the underlying
+// `Palace::remember` path upserts on `source_id` collision.
+
+#[derive(serde::Deserialize)]
+struct IngestRequest {
+    #[serde(default)]
+    text: Option<String>,
+    #[serde(default)]
+    urls: Vec<String>,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    source: Option<String>,
+}
+
+#[derive(Serialize)]
+struct IngestItem {
+    id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<String>,
+    bytes: usize,
+    drawer_id: i64,
+}
+
+#[derive(Serialize)]
+struct IngestError {
+    url: String,
+    error: String,
+}
+
+#[derive(Serialize)]
+struct IngestStats {
+    ok: usize,
+    failed: usize,
+}
+
+#[derive(Serialize)]
+struct IngestResponse {
+    ingested: Vec<IngestItem>,
+    errors: Vec<IngestError>,
+    stats: IngestStats,
+}
+
+fn memory_ingest(mut request: Request, root: &Path) -> Result<()> {
+    // Read body up to a generous cap — the JSON envelope is small.
+    const MAX_BODY: usize = 1024 * 1024;
+    let mut body = Vec::with_capacity(8 * 1024);
+    {
+        let reader = request.as_reader();
+        let mut buf = [0u8; 8 * 1024];
+        loop {
+            let n = std::io::Read::read(reader, &mut buf).unwrap_or(0);
+            if n == 0 {
+                break;
+            }
+            body.extend_from_slice(&buf[..n]);
+            if body.len() > MAX_BODY {
+                return respond_status(request, 413, "ingest body too large");
+            }
+        }
+    }
+    let req: IngestRequest = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => return respond_status(request, 400, &format!("bad json: {e}")),
+    };
+
+    // De-dup URL set: explicit + linkified-from-text.
+    let mut url_set: std::collections::BTreeSet<String> = req.urls.into_iter().collect();
+    let raw_text = req.text.clone().unwrap_or_default();
+    if !raw_text.is_empty() {
+        for u in crabcc_fetch::extract_urls(&raw_text) {
+            url_set.insert(u);
+        }
+    }
+    let urls: Vec<String> = url_set.into_iter().collect();
+
+    let source_label = req.source.unwrap_or_else(|| "web-ingest".to_string());
+    let _ = req.tags; // tags reserved for future drawer-level metadata.
+
+    let memory_path = root.join(".crabcc").join("memory.db");
+    let palace = match crabcc_memory::Palace::open(root) {
+        Ok(p) => p,
+        Err(e) => return respond_status(request, 500, &format!("open palace: {e}")),
+    };
+
+    let mut ingested: Vec<IngestItem> = Vec::new();
+    let mut errors: Vec<IngestError> = Vec::new();
+
+    // URL fetch phase — async via a per-request runtime. Single-user
+    // localhost so the runtime cost is negligible.
+    if !urls.is_empty() {
+        let safe: Vec<String> = urls
+            .iter()
+            .filter(|u| match crabcc_fetch::is_ingest_safe_url(u) {
+                Ok(()) => true,
+                Err(reason) => {
+                    errors.push(IngestError {
+                        url: (*u).clone(),
+                        error: reason,
+                    });
+                    false
+                }
+            })
+            .cloned()
+            .collect();
+        if !safe.is_empty() {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?;
+            let results = rt.block_on(crabcc_fetch::fetch_and_clean(
+                &safe,
+                crabcc_fetch::FetchOpts::ingest(),
+            ));
+            for r in results {
+                if r.error.is_some() || r.content_markdown.is_none() {
+                    errors.push(IngestError {
+                        url: r.url.clone(),
+                        error: r.error.unwrap_or_else(|| "no content extracted".into()),
+                    });
+                    continue;
+                }
+                let body = r.content_markdown.unwrap_or_default();
+                let id = format!("web:{}", short_hash(r.url.as_bytes()));
+                match palace.remember(&source_label, None, &id, &body) {
+                    Ok(drawer_id) => {
+                        ingested.push(IngestItem {
+                            id: id.clone(),
+                            url: Some(r.url),
+                            title: r.title,
+                            kind: Some("web".into()),
+                            bytes: body.len(),
+                            drawer_id: drawer_id_as_i64(drawer_id),
+                        });
+                    }
+                    Err(e) => errors.push(IngestError {
+                        url: id,
+                        error: format!("{e}"),
+                    }),
+                }
+            }
+        }
+    }
+
+    // Standalone-text path: only if URL extraction didn't already
+    // consume the whole text (i.e. there's still content beyond URLs).
+    if !raw_text.trim().is_empty() {
+        let stripped = strip_urls(&raw_text);
+        if !stripped.trim().is_empty() {
+            let id = format!("text:{}", short_hash(raw_text.as_bytes()));
+            let label = format!("{source_label}:text");
+            match palace.remember(&label, None, &id, &raw_text) {
+                Ok(drawer_id) => {
+                    ingested.push(IngestItem {
+                        id: id.clone(),
+                        url: None,
+                        title: None,
+                        kind: Some("text".into()),
+                        bytes: raw_text.len(),
+                        drawer_id: drawer_id_as_i64(drawer_id),
+                    });
+                }
+                Err(e) => errors.push(IngestError {
+                    url: id,
+                    error: format!("{e}"),
+                }),
+            }
+        }
+    }
+
+    let _ = memory_path; // silences unused-binding when path validation moves later.
+    respond_json(
+        request,
+        &IngestResponse {
+            stats: IngestStats {
+                ok: ingested.len(),
+                failed: errors.len(),
+            },
+            ingested,
+            errors,
+        },
+    )
+}
+
+fn short_hash(b: &[u8]) -> String {
+    // Stable 64-bit FNV-style hash. Drawer source-ids are an
+    // application-level identity key, not a security boundary, so a
+    // cheap non-crypto hash is fine. Using `DefaultHasher` would be a
+    // randomized SipHash → unstable across processes.
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &x in b {
+        h ^= x as u64;
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    let mut s = String::with_capacity(16);
+    for i in (0..16).rev() {
+        let nibble = ((h >> (i * 4)) & 0xf) as u8;
+        s.push(if nibble < 10 {
+            (b'0' + nibble) as char
+        } else {
+            (b'a' + nibble - 10) as char
+        });
+    }
+    s
+}
+
+fn drawer_id_as_i64(id: crabcc_memory::DrawerId) -> i64 {
+    // `DrawerId` is a newtype around the SQLite PK. Cast via `Into`
+    // when available, else parse the Debug repr — both safe.
+    let dbg = format!("{id:?}");
+    dbg.trim_matches(|c: char| !c.is_ascii_digit())
+        .parse::<i64>()
+        .unwrap_or(0)
+}
+
+fn strip_urls(text: &str) -> String {
+    let mut finder = crabcc_fetch::linkify::LinkFinder::new();
+    finder.kinds(&[crabcc_fetch::linkify::LinkKind::Url]);
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for span in finder.spans(text) {
+        if span.kind() == Some(&crabcc_fetch::linkify::LinkKind::Url) {
+            out.push_str(&text[last..span.start()]);
+            last = span.end();
+        }
+    }
+    out.push_str(&text[last..]);
+    out
 }
 
 #[cfg(test)]

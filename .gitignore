@@ -42,3 +42,18 @@ install/ollama-stack/.env
 __pycache__/
 *.pyc
 *.pyo
+
+# Defense-in-depth: never commit `.env` files anywhere in the tree.
+# Real env lives in $HOME or in a developer-private file. Templates
+# go in `*.env.example` next to whatever consumes them.
+.env
+**/.env
+# Claude Code per-project agent state lands in `.claude/`. Local-only.
+.claude/
+**/.claude/
+# Per-run setup logs from interactive scripts (e.g. apps/crabcc-telegram/setup.sh).
+*_setup.log
+# esbuild metafile is internal to the build (used for analysis, regenerated
+# every build). Bundle output lives next to it; only the `.html`/`.js`/`.css`
+# chunks the Rust crate `include_str!`s should be tracked.
+crates/crabcc-viz/web/dist/metafile.json

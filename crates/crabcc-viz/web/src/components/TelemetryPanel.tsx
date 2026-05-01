@@ -8,8 +8,11 @@
 // Polling lives in App.tsx; this component is purely presentational.
 
 import { useEffect } from "react";
+import { Circle, Cloud, CloudOff } from "lucide-react";
 import type { OtlpHealth, TelemetryEvent, TelemetrySource } from "../api";
 import { logMount, logUnmount } from "../lifecycle";
+import { useNow } from "../useNow";
+import { Icon } from "./icons";
 
 const LEVEL_DOT: Record<string, string> = {
   TRACE: "#8aa",
@@ -41,7 +44,7 @@ function OtlpPill({ health }: { health: OtlpHealth | null }) {
   if (!health) {
     return (
       <span className="otlp-pill otlp-unknown" title="Checking OTLP…">
-        ● OTLP …
+        <Icon of={Cloud} size={12} aria-hidden="true" /> OTLP …
       </span>
     );
   }
@@ -51,7 +54,7 @@ function OtlpPill({ health }: { health: OtlpHealth | null }) {
         className="otlp-pill otlp-disabled"
         title="Set OTEL_EXPORTER_OTLP_ENDPOINT on the server to enable"
       >
-        ○ OTLP disabled
+        <Icon of={CloudOff} size={12} aria-hidden="true" /> OTLP disabled
       </span>
     );
   }
@@ -60,14 +63,14 @@ function OtlpPill({ health }: { health: OtlpHealth | null }) {
       className="otlp-pill otlp-ok"
       title={`rotel reachable at ${health.endpoint}`}
     >
-      ● OTLP {shortHost(health.endpoint)}
+      <Icon of={Cloud} size={12} aria-hidden="true" /> OTLP {shortHost(health.endpoint)}
     </span>
   ) : (
     <span
       className="otlp-pill otlp-err"
       title={`${health.error ?? "unreachable"} — ${health.endpoint}\nRun: task telemetry-rotel`}
     >
-      ● OTLP unreachable
+      <Icon of={CloudOff} size={12} aria-hidden="true" /> OTLP unreachable
     </span>
   );
 }
@@ -93,14 +96,16 @@ export function TelemetryPanel({
   source,
   otlpHealth,
   otlpPollMs,
-  now,
 }: {
   events: TelemetryEvent[];
   source: TelemetrySource | null;
   otlpHealth: OtlpHealth | null;
   otlpPollMs?: number;
-  now: number;
 }) {
+  // Subscribe to the wall-clock tick directly instead of receiving it
+  // via prop — keeps App.tsx free of the `setInterval` re-render storm
+  // (see useNow.ts for context).
+  const now = useNow();
   useEffect(() => {
     logMount("TelemetryPanel");
     return () => logUnmount("TelemetryPanel");
@@ -171,8 +176,10 @@ export function TelemetryPanel({
               <li key={`${e.ts}-${i}`} className="telemetry-row">
                 <span
                   className="telemetry-dot"
-                  style={{ background: LEVEL_DOT[e.level] ?? "#888" }}
-                />
+                  style={{ color: LEVEL_DOT[e.level] ?? "#888" }}
+                >
+                  <Icon of={Circle} size={8} fill="currentColor" aria-hidden="true" />
+                </span>
                 <span className="telemetry-age">{fmtAge(e.ts, now)}</span>
                 <span className="telemetry-target">
                   {e.target.replace(/^crabcc_/, "")}

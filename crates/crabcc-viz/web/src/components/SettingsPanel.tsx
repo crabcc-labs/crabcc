@@ -3,6 +3,8 @@
 // Expose via the settings gear icon in the header.
 
 import { useState } from "react";
+import { Settings as SettingsIcon, X } from "lucide-react";
+import { Icon } from "./icons";
 
 export type Settings = {
   /** OTLP health probe interval in ms (15 s – 3600 s). */
@@ -92,8 +94,12 @@ export function SettingsPanel({
         aria-label="Dashboard settings"
       >
         <div className="settings-header">
-          <span>⚙ Dashboard settings</span>
-          <button className="settings-close" onClick={onClose} aria-label="Close">✕</button>
+          <span>
+            <Icon of={SettingsIcon} size={14} aria-hidden="true" /> Dashboard settings
+          </span>
+          <button className="settings-close" onClick={onClose} aria-label="Close">
+            <Icon of={X} size={14} />
+          </button>
         </div>
 
         <div className="settings-body">

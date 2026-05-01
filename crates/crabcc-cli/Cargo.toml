@@ -36,6 +36,7 @@ agents-bullmq = ["dep:bullmq-rs", "dep:redis", "dep:futures-util", "dep:chrono"]
 
 [dependencies]
 crabcc-core   = { workspace = true, features = ["jobs"] }
+crabcc-fetch  = { workspace = true }
 crabcc-mcp    = { workspace = true }
 crabcc-memory = { workspace = true }
 crabcc-viz    = { workspace = true }
@@ -44,7 +45,7 @@ clap          = { workspace = true }
 tokio                    = { workspace = true }
 reqwest                  = { workspace = true }
 linkify                  = { workspace = true }
-html2md                  = { workspace = true }
+htmd                     = { workspace = true }
 clap_complete = "4"
 rusqlite      = { workspace = true }
 # Issue #107 Phase 5a — `crabcc doctor` derives Serialize/Deserialize on
