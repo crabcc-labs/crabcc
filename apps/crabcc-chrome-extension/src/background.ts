@@ -116,6 +116,11 @@ const CAPABILITY_METHODS = new Set<CapabilityMethod>([
   "debuggerNetworkList",
   "debuggerNetworkBody",
   "debuggerNetworkClear",
+  "v8CollectGarbage",
+  "v8HeapSnapshot",
+  "v8ProfileStart",
+  "v8ProfileStop",
+  "v8Metrics",
 ]);
 
 async function route(tabId: number, req: RpcRequest): Promise<RpcResponse> {
@@ -180,6 +185,21 @@ async function runCapability(tabId: number, req: RpcRequest): Promise<RpcRespons
       case "debuggerNetworkClear":
         dbg.networkClear(tabId);
         result = { cleared: true };
+        break;
+      case "v8CollectGarbage":
+        result = await dbg.v8CollectGarbage(tabId);
+        break;
+      case "v8HeapSnapshot":
+        result = await dbg.v8HeapSnapshot(tabId);
+        break;
+      case "v8ProfileStart":
+        result = await dbg.v8ProfileStart(tabId);
+        break;
+      case "v8ProfileStop":
+        result = await dbg.v8ProfileStop(tabId);
+        break;
+      case "v8Metrics":
+        result = await dbg.v8Metrics(tabId);
         break;
       default:
         return { id: req.id, ok: false, error: `unknown capability ${req.method}` };

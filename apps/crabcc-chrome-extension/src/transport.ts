@@ -91,6 +91,11 @@ const ADVERTISED_CAPS = [
   "debuggerNetworkList",
   "debuggerNetworkBody",
   "debuggerNetworkClear",
+  "v8CollectGarbage",
+  "v8HeapSnapshot",
+  "v8ProfileStart",
+  "v8ProfileStop",
+  "v8Metrics",
 ];
 
 /**

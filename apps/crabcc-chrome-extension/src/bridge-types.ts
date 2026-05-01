@@ -110,7 +110,12 @@ export type CapabilityMethod =
   | "debuggerConsoleClear"
   | "debuggerNetworkList"
   | "debuggerNetworkBody"
-  | "debuggerNetworkClear";
+  | "debuggerNetworkClear"
+  | "v8CollectGarbage"
+  | "v8HeapSnapshot"
+  | "v8ProfileStart"
+  | "v8ProfileStop"
+  | "v8Metrics";
 
 export interface DebuggerConsoleEntry {
   ts: number;
@@ -160,6 +165,42 @@ export interface DebuggerNetworkBody {
   base64Encoded: boolean;
   /** Empty when no body could be retrieved (e.g. response not yet received). */
   errorText: string;
+}
+
+// --- v8 profiling lane (Phase 1.5) --------------------------------------
+
+export interface V8HeapSnapshotResult {
+  /**
+   * Full snapshot as a single JSON string. Heap snapshots can be 50–500 MB
+   * for real pages — `sizeBytes` lets the caller decide whether to write
+   * it to disk before parsing.
+   */
+  json: string;
+  sizeBytes: number;
+  /** Count of HeapProfiler.addHeapSnapshotChunk events streamed. */
+  chunkCount: number;
+}
+
+export interface V8ProfileSummary {
+  /** Top-level summary so a caller can decide whether to ship the raw blob. */
+  nodeCount: number;
+  sampleCount: number;
+  /** Wall-clock duration in milliseconds. */
+  durationMs: number;
+  /** Raw CDP `Profile` object — save as a `.cpuprofile` file to load in DevTools. */
+  profile: unknown;
+}
+
+export interface V8MetricEntry {
+  /** e.g. "JSHeapUsedSize", "JSHeapTotalSize", "Documents", "Nodes", "JSEventListeners". */
+  name: string;
+  value: number;
+}
+
+export interface V8MetricsResult {
+  metrics: V8MetricEntry[];
+  /** Date.now() at sampling. */
+  ts: number;
 }
 
 /** Result of a successful captureVisibleTab call. */

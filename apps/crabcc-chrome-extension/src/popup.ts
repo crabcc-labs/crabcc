@@ -14,6 +14,8 @@ import type {
   RpcRequest,
   RpcResponse,
   TransportSnapshot,
+  V8HeapSnapshotResult,
+  V8ProfileSummary,
 } from "./bridge-types";
 import { DEFAULT_WS_ENDPOINT, MIN_SCHEMA } from "./bridge-types";
 
@@ -202,8 +204,69 @@ async function runMethod(button: HTMLButtonElement): Promise<void> {
     void refreshStats();
     return;
   }
+  if (method === "v8HeapSnapshot" && res.ok) {
+    const snap = res.result as V8HeapSnapshotResult;
+    showHeapSnapshot(snap);
+    showResult(
+      label,
+      `${(snap.sizeBytes / 1024 / 1024).toFixed(2)} MB · ${snap.chunkCount} chunks`,
+      true,
+    );
+    void refreshStats();
+    return;
+  }
+  if (method === "v8ProfileStop" && res.ok) {
+    const sum = res.result as V8ProfileSummary;
+    showCpuProfile(sum);
+    showResult(
+      label,
+      `${sum.sampleCount} samples · ${sum.nodeCount} nodes · ${sum.durationMs} ms`,
+      true,
+    );
+    void refreshStats();
+    return;
+  }
   showResult(label, res.ok ? res.result : res.error, res.ok);
   void refreshStats();
+}
+
+function blobDownload(
+  anchorId: string,
+  filename: string,
+  payload: string,
+  mime: string,
+): void {
+  const blob = new Blob([payload], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const dl = el<HTMLAnchorElement>(anchorId);
+  dl.href = url;
+  dl.download = filename;
+  dl.textContent = `download ${filename} (${(payload.length / 1024 / 1024).toFixed(2)} MB)`;
+  dl.hidden = false;
+}
+
+function showHeapSnapshot(snap: V8HeapSnapshotResult): void {
+  const stamp = new Date()
+    .toISOString()
+    .replace(/[:.]/g, "-")
+    .slice(0, 19);
+  blobDownload("heap-dl", `crabcc-${stamp}.heapsnapshot`, snap.json, "application/json");
+}
+
+function showCpuProfile(sum: V8ProfileSummary): void {
+  const stamp = new Date()
+    .toISOString()
+    .replace(/[:.]/g, "-")
+    .slice(0, 19);
+  // .cpuprofile files are JSON; serializing with no formatting keeps the
+  // download small. DevTools loads them via "Load profile…" in the
+  // Performance / Memory panel.
+  blobDownload(
+    "cpu-dl",
+    `crabcc-${stamp}.cpuprofile`,
+    JSON.stringify(sum.profile),
+    "application/json",
+  );
 }
 
 function showCapture(cap: CaptureResult): void {

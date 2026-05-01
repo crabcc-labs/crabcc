@@ -16,6 +16,10 @@ import type {
   DebuggerEvaluateResult,
   DebuggerNetworkBody,
   DebuggerNetworkEntry,
+  V8HeapSnapshotResult,
+  V8MetricEntry,
+  V8MetricsResult,
+  V8ProfileSummary,
 } from "./bridge-types";
 
 const PROTOCOL_VERSION = "1.3";
@@ -28,6 +32,12 @@ const attached = new Set<number>();
 const consoleBufs = new Map<number, DebuggerConsoleEntry[]>();
 /** Per-tab network entries, keyed by requestId for in-place updates. */
 const networkBufs = new Map<number, Map<string, DebuggerNetworkEntry>>();
+/** Tabs with an in-flight Profiler.start. */
+const cpuProfiling = new Set<number>();
+/** Tabs that have already enabled HeapProfiler / Profiler / Performance. */
+const heapProfilerEnabled = new Set<number>();
+const profilerEnabled = new Set<number>();
+const performanceEnabled = new Set<number>();
 
 let listenersBound = false;
 
@@ -53,6 +63,10 @@ export async function detach(tabId: number): Promise<void> {
   attached.delete(tabId);
   consoleBufs.delete(tabId);
   networkBufs.delete(tabId);
+  cpuProfiling.delete(tabId);
+  heapProfilerEnabled.delete(tabId);
+  profilerEnabled.delete(tabId);
+  performanceEnabled.delete(tabId);
 }
 
 export function isAttached(tabId: number): boolean {
@@ -181,7 +195,135 @@ function bindListenersOnce(): void {
     attached.delete(tabId);
     consoleBufs.delete(tabId);
     networkBufs.delete(tabId);
+    cpuProfiling.delete(tabId);
+    heapProfilerEnabled.delete(tabId);
+    profilerEnabled.delete(tabId);
+    performanceEnabled.delete(tabId);
   });
+}
+
+// --- v8 profiling lane ----------------------------------------------------
+//
+// All v8 capabilities sit on top of the same chrome.debugger attachment
+// the console/network lanes use — they don't take a separate session,
+// and the operator pays the same yellow-banner cost once at attach time.
+//
+// HeapProfiler, Profiler, and Performance each need to be enabled before
+// their commands run. We track per-tab "enabled" flags so a second call
+// doesn't re-enable redundantly (CDP tolerates it but it's a needless
+// round-trip).
+
+async function ensureHeapProfiler(tabId: number): Promise<void> {
+  if (heapProfilerEnabled.has(tabId)) return;
+  await chrome.debugger.sendCommand({ tabId }, "HeapProfiler.enable", {});
+  heapProfilerEnabled.add(tabId);
+}
+
+async function ensureProfiler(tabId: number): Promise<void> {
+  if (profilerEnabled.has(tabId)) return;
+  await chrome.debugger.sendCommand({ tabId }, "Profiler.enable", {});
+  profilerEnabled.add(tabId);
+}
+
+async function ensurePerformance(tabId: number): Promise<void> {
+  if (performanceEnabled.has(tabId)) return;
+  await chrome.debugger.sendCommand({ tabId }, "Performance.enable", {});
+  performanceEnabled.add(tabId);
+}
+
+export async function v8CollectGarbage(tabId: number): Promise<{ collected: true }> {
+  ensureAttached(tabId);
+  await ensureHeapProfiler(tabId);
+  await chrome.debugger.sendCommand({ tabId }, "HeapProfiler.collectGarbage", {});
+  return { collected: true };
+}
+
+/**
+ * Take a heap snapshot. The snapshot is streamed back as many small
+ * `HeapProfiler.addHeapSnapshotChunk` events while the `takeHeapSnapshot`
+ * command is in flight — we capture them with a one-shot listener and
+ * return the concatenated JSON when the command resolves.
+ */
+export async function v8HeapSnapshot(tabId: number): Promise<V8HeapSnapshotResult> {
+  ensureAttached(tabId);
+  await ensureHeapProfiler(tabId);
+  const chunks: string[] = [];
+  const onChunk = (
+    source: { tabId?: number },
+    method: string,
+    params: unknown,
+  ): void => {
+    if (source.tabId !== tabId) return;
+    if (method !== "HeapProfiler.addHeapSnapshotChunk") return;
+    const c = (params as { chunk?: string }).chunk;
+    if (typeof c === "string") chunks.push(c);
+  };
+  chrome.debugger.onEvent.addListener(onChunk);
+  try {
+    await chrome.debugger.sendCommand({ tabId }, "HeapProfiler.takeHeapSnapshot", {
+      reportProgress: false,
+    });
+  } finally {
+    chrome.debugger.onEvent.removeListener(onChunk);
+  }
+  const json = chunks.join("");
+  return { json, sizeBytes: json.length, chunkCount: chunks.length };
+}
+
+export async function v8ProfileStart(tabId: number): Promise<{ started: true }> {
+  ensureAttached(tabId);
+  if (cpuProfiling.has(tabId)) {
+    throw new Error(`v8.profile.start: profile already running on tab ${tabId}`);
+  }
+  await ensureProfiler(tabId);
+  await chrome.debugger.sendCommand({ tabId }, "Profiler.start", {});
+  cpuProfiling.add(tabId);
+  return { started: true };
+}
+
+export async function v8ProfileStop(tabId: number): Promise<V8ProfileSummary> {
+  ensureAttached(tabId);
+  if (!cpuProfiling.has(tabId)) {
+    throw new Error(`v8.profile.stop: no profile running on tab ${tabId}`);
+  }
+  const out = (await chrome.debugger.sendCommand({ tabId }, "Profiler.stop", {})) as {
+    profile?: ProfilerProfile;
+  };
+  cpuProfiling.delete(tabId);
+  const p = out.profile ?? { nodes: [], samples: [], startTime: 0, endTime: 0 };
+  return summariseProfile(p);
+}
+
+export async function v8Metrics(tabId: number): Promise<V8MetricsResult> {
+  ensureAttached(tabId);
+  await ensurePerformance(tabId);
+  const out = (await chrome.debugger.sendCommand({ tabId }, "Performance.getMetrics", {})) as {
+    metrics?: V8MetricEntry[];
+  };
+  return { metrics: out.metrics ?? [], ts: Date.now() };
+}
+
+interface ProfilerProfile {
+  nodes?: { id: number }[];
+  samples?: number[];
+  startTime?: number;
+  endTime?: number;
+}
+
+function summariseProfile(p: ProfilerProfile): V8ProfileSummary {
+  const nodes = p.nodes ?? [];
+  const samples = p.samples ?? [];
+  // CDP timestamps are in microseconds — convert to ms.
+  const durationMs =
+    p.startTime != null && p.endTime != null
+      ? Math.max(0, Math.round((p.endTime - p.startTime) / 1000))
+      : 0;
+  return {
+    nodeCount: nodes.length,
+    sampleCount: samples.length,
+    durationMs,
+    profile: p,
+  };
 }
 
 function pushConsole(tabId: number, entry: DebuggerConsoleEntry): void {

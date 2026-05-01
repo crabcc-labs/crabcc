@@ -8,6 +8,7 @@
 interface FakeListener<T extends unknown[]> {
   listeners: ((...args: T) => void)[];
   addListener: (cb: (...args: T) => void) => void;
+  removeListener: (cb: (...args: T) => void) => void;
 }
 
 function makeEvent<T extends unknown[]>(): FakeListener<T> {
@@ -16,6 +17,10 @@ function makeEvent<T extends unknown[]>(): FakeListener<T> {
     listeners,
     addListener: (cb) => {
       listeners.push(cb);
+    },
+    removeListener: (cb) => {
+      const idx = listeners.indexOf(cb);
+      if (idx >= 0) listeners.splice(idx, 1);
     },
   };
 }

@@ -133,4 +133,100 @@ describe("debugger-lane", () => {
     expect(dbg.consoleList(2)).toEqual([]);
     expect(dbg.isAttached(2)).toBe(false);
   });
+
+  // --- v8 lane ----------------------------------------------------------
+
+  it("v8.collectGarbage enables HeapProfiler then runs the gc command", async () => {
+    await dbg.attach(1);
+    await dbg.v8CollectGarbage(1);
+    const cmds = getShim().debugger.__commands.map((c) => c.method);
+    expect(cmds).toContain("HeapProfiler.enable");
+    expect(cmds).toContain("HeapProfiler.collectGarbage");
+  });
+
+  it("v8.collectGarbage skips re-enabling on the second call", async () => {
+    await dbg.attach(1);
+    await dbg.v8CollectGarbage(1);
+    getShim().debugger.__commands.length = 0;
+    await dbg.v8CollectGarbage(1);
+    const cmds = getShim().debugger.__commands.map((c) => c.method);
+    // HeapProfiler.enable should NOT appear the second time — already cached.
+    expect(cmds).toEqual(["HeapProfiler.collectGarbage"]);
+  });
+
+  it("v8.heapSnapshot streams chunks via the debugger event channel", async () => {
+    await dbg.attach(1);
+    // sendCommand for HeapProfiler.takeHeapSnapshot returns a resolved
+    // promise — fire chunk events synchronously *before* the await
+    // resolves by stubbing sendCommand to fire then resolve.
+    const shim = getShim();
+    const orig = shim.debugger.sendCommand;
+    shim.debugger.sendCommand = async (target, method, params) => {
+      if (method === "HeapProfiler.takeHeapSnapshot") {
+        fireDebuggerEvent(target.tabId, "HeapProfiler.addHeapSnapshotChunk", { chunk: '{"a":' });
+        fireDebuggerEvent(target.tabId, "HeapProfiler.addHeapSnapshotChunk", { chunk: "1}" });
+      }
+      return orig(target, method, params);
+    };
+    const res = await dbg.v8HeapSnapshot(1);
+    expect(res.json).toBe('{"a":1}');
+    expect(res.chunkCount).toBe(2);
+    expect(res.sizeBytes).toBe(7);
+  });
+
+  it("v8.profile.start then stop returns a profile summary", async () => {
+    await dbg.attach(1);
+    getShim().debugger.__nextCommand["Profiler.stop"] = {
+      profile: {
+        nodes: [{ id: 1 }, { id: 2 }, { id: 3 }],
+        samples: [1, 2, 1, 3],
+        // CDP timestamps are in microseconds — 250000 us = 250 ms.
+        startTime: 1000,
+        endTime: 251000,
+      },
+    };
+    await dbg.v8ProfileStart(1);
+    const sum = await dbg.v8ProfileStop(1);
+    expect(sum.nodeCount).toBe(3);
+    expect(sum.sampleCount).toBe(4);
+    expect(sum.durationMs).toBe(250);
+  });
+
+  it("v8.profile.start refuses a second start without stop", async () => {
+    await dbg.attach(1);
+    await dbg.v8ProfileStart(1);
+    let caught: Error | null = null;
+    try {
+      await dbg.v8ProfileStart(1);
+    } catch (err) {
+      caught = err as Error;
+    }
+    expect(caught?.message).toMatch(/already running/);
+  });
+
+  it("v8.profile.stop without start fails", async () => {
+    await dbg.attach(1);
+    let caught: Error | null = null;
+    try {
+      await dbg.v8ProfileStop(1);
+    } catch (err) {
+      caught = err as Error;
+    }
+    expect(caught?.message).toMatch(/no profile running/);
+  });
+
+  it("v8.metrics returns the Performance.getMetrics payload", async () => {
+    await dbg.attach(1);
+    getShim().debugger.__nextCommand["Performance.getMetrics"] = {
+      metrics: [
+        { name: "JSHeapUsedSize", value: 1024 * 1024 * 32 },
+        { name: "Documents", value: 1 },
+        { name: "Nodes", value: 247 },
+      ],
+    };
+    const out = await dbg.v8Metrics(1);
+    expect(out.metrics).toHaveLength(3);
+    expect(out.metrics[0]).toEqual({ name: "JSHeapUsedSize", value: 33554432 });
+    expect(typeof out.ts).toBe("number");
+  });
 });

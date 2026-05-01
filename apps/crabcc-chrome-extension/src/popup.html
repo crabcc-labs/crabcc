@@ -102,6 +102,22 @@
       </div>
     </section>
     <section class="block">
+      <h2>v8 / profiling</h2>
+      <div class="row">
+        <button data-method="v8Metrics">metrics</button>
+        <button data-method="v8CollectGarbage">gc</button>
+      </div>
+      <div class="row">
+        <button data-method="v8ProfileStart">cpu start</button>
+        <button data-method="v8ProfileStop">cpu stop</button>
+        <a id="cpu-dl" class="muted" hidden>download .cpuprofile</a>
+      </div>
+      <div class="row">
+        <button data-method="v8HeapSnapshot">heap snapshot</button>
+        <a id="heap-dl" class="muted" hidden>download .heapsnapshot</a>
+      </div>
+    </section>
+    <section class="block">
       <h2>last result</h2>
       <pre id="result">—</pre>
     </section>
