@@ -15,6 +15,9 @@ crabcc-memory = { workspace = true }
 anyhow        = { workspace = true }
 serde_json    = { workspace = true }
 tracing       = { workspace = true }
+# HTTP transport (#204 phase 1) — sync, no async runtime, same pattern
+# crabcc-viz uses for the dashboard. Single-user localhost server.
+tiny_http     = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
