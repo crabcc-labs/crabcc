@@ -395,6 +395,10 @@ fn handle(request: Request, root: &Path) -> Result<()> {
         "/graph" => respond_html(request, BUNDLED_INDEX),
         "/api/events" => sse_events(request, root.to_path_buf()),
         "/api/health" => respond_json(request, &serde_json::json!({ "status": "ok" })),
+        // #172 — surface the hand-maintained OpenAPI spec so the
+        // forthcoming docs container (com.crabcc.docs.api) can render
+        // it without a separate file copy.
+        "/api/openapi.yaml" => respond_yaml(request, OPENAPI_YAML),
         "/api/graph" => match graph_snapshot(root, query) {
             Ok(snapshot) => respond_json(request, &snapshot),
             Err(e) => respond_status(request, 400, &format!("bad request: {e}")),
@@ -2224,6 +2228,15 @@ fn list_agent_ids() -> Result<std::collections::HashSet<String>> {
     Ok(out)
 }
 
+fn respond_yaml(request: Request, body: &str) -> Result<()> {
+    let mut resp = Response::from_string(body);
+    resp.add_header(header("Content-Type", "application/yaml; charset=utf-8"));
+    resp.add_header(header("X-Content-Type-Options", "nosniff"));
+    resp.add_header(header("Cache-Control", "no-store"));
+    request.respond(resp)?;
+    Ok(())
+}
+
 fn respond_html(request: Request, body: &str) -> Result<()> {
     let mut resp = Response::from_string(body);
     resp.add_header(header("Content-Type", "text/html; charset=utf-8"));
@@ -2443,6 +2456,7 @@ mod tests {
     /// matches the YAML's `paths:` keys verbatim.
     const KNOWN_API_PATHS: &[&str] = &[
         "/api/health",
+        "/api/openapi.yaml",
         "/api/bootstrap",
         "/api/activity",
         "/api/agents",
