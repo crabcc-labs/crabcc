@@ -51,6 +51,13 @@ struct Cli {
     #[arg(long, global = true)]
     mcp: bool,
 
+    /// Run as MCP server over HTTP at ADDR (e.g. `127.0.0.1:8091`).
+    /// Mutually exclusive with `--mcp` (stdio). Auth via `MCP_AUTH_TOKEN`
+    /// env var when set; loopback-only is the recommended bind. #204
+    /// phase 1.
+    #[arg(long, global = true, value_name = "ADDR")]
+    mcp_http: Option<String>,
+
     /// MCP server only — expose the dev / diagnostic surface
     /// (`_openapi`, `_health`). Default is the slimmer agent-facing
     /// surface (issue #59). Equivalent to setting `CRABCC_MCP_DEV=1`.
@@ -946,12 +953,28 @@ fn main() -> Result<()> {
         }
     }
 
+    if cli.mcp && cli.mcp_http.is_some() {
+        anyhow::bail!("--mcp and --mcp-http are mutually exclusive; pick one transport");
+    }
+
     if cli.mcp {
         // `--dev` flag OR `CRABCC_MCP_DEV=1` env both flip the dev surface
         // on. The CLI flag wins because it's more explicit; if neither is
         // set, the slim default surface is used (issue #59).
         let dev = cli.dev || crabcc_mcp::dev_mode_from_env();
         return crabcc_mcp::serve_stdio_with(&root, dev);
+    }
+
+    if let Some(addr_str) = cli.mcp_http.as_ref() {
+        // HTTP transport (#204 phase 1). Mirrors `--mcp` semantics for the
+        // dev surface; auth via MCP_AUTH_TOKEN when set (loopback-only is
+        // the recommended bind, so unset is acceptable for dev / single-user).
+        let dev = cli.dev || crabcc_mcp::dev_mode_from_env();
+        let addr: std::net::SocketAddr = addr_str
+            .parse()
+            .map_err(|e| anyhow::anyhow!("invalid --mcp-http addr {addr_str:?}: {e}"))?;
+        let token = std::env::var("MCP_AUTH_TOKEN").ok().filter(|t| !t.is_empty());
+        return crabcc_mcp::serve_http(addr, &root, dev, token);
     }
 
     // Early-return for no-store commands. Both the new grouped paths and

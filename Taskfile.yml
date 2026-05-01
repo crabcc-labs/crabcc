@@ -379,6 +379,27 @@ tasks:
     cmds:
       - bash scripts/cloudflared-tunnel.sh status
 
+  # crabcc MCP server over HTTP (#204 phase 1). Loopback-only; the
+  # docker bot reaches it via host.docker.internal:8091. Set
+  # MCP_AUTH_TOKEN in the environment to require a Bearer header on
+  # every POST /mcp.
+
+  mcp-serve:
+    desc: Run the crabcc MCP server over HTTP on 127.0.0.1:8091 (#204)
+    summary: |
+      Foreground server. Loopback-only by default — the bot container
+      reaches it via host.docker.internal. Auth via MCP_AUTH_TOKEN env
+      var when set; unset = no auth (acceptable for single-user
+      loopback). Add `--dev` (or set CRABCC_MCP_DEV=1) for the dev
+      tool surface (_openapi/_health endpoints).
+
+      Service-discovery already advertises this endpoint via
+      `crabcc-core::service_discovery::known_services()` (#205) so
+      the viz dashboard's /api/services + the menubar Services panel
+      light up the moment the server is reachable.
+    cmds:
+      - "{{.CRABCC}} --mcp-http 127.0.0.1:8091"
+
   install:
     desc: Cargo install crabcc to ~/.cargo/bin/crabcc; auto-bootstraps shell aliases (idempotent)
     summary: |
