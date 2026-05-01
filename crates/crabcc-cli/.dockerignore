@@ -1,0 +1,59 @@
+# .dockerignore for crabcc-cli image build.
+# Build context = repo root; this file mirrors .gitignore plus
+# extra exclusions for things that are tracked but irrelevant
+# at runtime (per apps/CONTAINER-POLICY.md).
+
+# Build artifacts
+target/
+**/target/
+build/
+dist/
+.repomix/
+node_modules/
+**/node_modules/
+
+# IDE / editor
+.idea/
+.vscode/
+.DS_Store
+*.swp
+
+# Per-repo state
+.crabcc/
+.dev-tasks/
+
+# VCS
+.git/
+.gitignore
+
+# Secrets / local config
+.env
+.env.*
+*.local.*
+*.pem
+*.key
+.crabcc.local.api-key
+~/.cargo/
+
+# Rust analyzer + benchmark fixtures
+.rust-analyzer/
+bench/longmemeval/
+**/longmemeval_oracle.json
+
+# macOS app surface — not needed in the Linux container
+installer/
+apps/macos/
+apps/crabcc-iterm2/
+
+# CI / test outputs
+target-coverage/
+.coverage/
+.snyk-results/
+
+# Worktrees (per repo convention)
+crabcc-worktrees/
+
+# Binary deliverables
+*.dmg
+*.zip
+*.tar.gz
