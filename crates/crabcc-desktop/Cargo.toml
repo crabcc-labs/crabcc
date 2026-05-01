@@ -1,0 +1,42 @@
+# Phase-0 stub. Deliberately stays OUT of the parent workspace so a
+# cold `cargo build` of crabcc doesn't pull in `gpui` + `gpui-component`
+# (those add ~3 GB to a cold build and pin against a specific
+# zed-industries/zed rev). The crate joins `[workspace.members]` in
+# phase A.1 once we're ready to take that compile-time hit.
+#
+# Until then `cargo build` from inside this directory builds a
+# tiny standalone binary that just prints a banner — see src/main.rs
+# and crates/crabcc-desktop/docs/RESEARCH-native-desktop-and-rich-notifications.md
+# (Track A) for the full plan.
+
+[workspace]
+# Empty table → cargo treats this as its own root, ignoring the parent
+# workspace. Required because the crate sits inside `crates/` (cargo
+# would otherwise auto-include it from the parent's `crates/*` glob
+# if such a glob ever lands).
+
+[package]
+name = "crabcc-desktop"
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.87"
+license = "MIT"
+repository = "https://github.com/peterlodri-sec/crabcc"
+
+# crate-type = rlib + bin so we can `cargo run` the example UI and
+# also pull AppState into integration tests once they exist.
+[[bin]]
+name = "crabcc-desktop"
+path = "src/main.rs"
+
+[dependencies]
+# No deps in phase 0 — the stub binary just prints a banner. anyhow +
+# the parent crate `crabcc-core` come back as soon as the GPUI shell
+# starts consuming `Store` / `Palace` types.
+anyhow = "1"
+
+# Real deps (commented for phase 0 — see Track A in research doc):
+# gpui           = { git = "https://github.com/zed-industries/zed", rev = "<pin>" }
+# gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "<pin>" }
+# reqwest        = { workspace = true }
+# tokio          = { workspace = true }
