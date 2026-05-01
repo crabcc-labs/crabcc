@@ -83,13 +83,17 @@ function invokeBridge(method: string, args: unknown[]): unknown {
   return (fn as (...a: unknown[]) => unknown).apply(bridge, args);
 }
 
-/** Run a popup-side RPC against the active tab; returns a typed envelope. */
+/**
+ * Run a popup-side RPC against the active tab; returns a typed envelope.
+ * Caller is responsible for routing capability methods (`captureVisibleTab`
+ * etc.) before calling this — `dispatchRpc` only handles bridge methods.
+ */
 export async function dispatchRpc(
   tabId: number,
   req: RpcRequest,
 ): Promise<RpcResponse> {
   try {
-    const result = await callBridge(tabId, req.method, req.args);
+    const result = await callBridge(tabId, req.method as BridgeMethod, req.args);
     return { id: req.id, ok: true, result };
   } catch (err) {
     return {

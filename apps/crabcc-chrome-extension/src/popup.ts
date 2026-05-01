@@ -6,7 +6,14 @@
 // scripting permission for that tab as long as the popup is alive — close
 // the popup, lose the grant.
 
-import type { RpcRequest, RpcResponse, BridgeMethod, AriaNode } from "./bridge-types";
+import type {
+  AriaNode,
+  BridgeMethod,
+  CapabilityMethod,
+  CaptureResult,
+  RpcRequest,
+  RpcResponse,
+} from "./bridge-types";
 import { MIN_SCHEMA } from "./bridge-types";
 
 let nextRpcId = 1;
@@ -21,7 +28,10 @@ interface SessionStats {
   lastAt: number;
 }
 
-async function rpc<T = unknown>(method: BridgeMethod, args: unknown[]): Promise<RpcResponse<T>> {
+async function rpc<T = unknown>(
+  method: BridgeMethod | CapabilityMethod,
+  args: unknown[],
+): Promise<RpcResponse<T>> {
   if (activeTabId == null) {
     return { id: -1, ok: false, error: "no active tab" };
   }
@@ -118,7 +128,10 @@ async function refreshStats(): Promise<void> {
 }
 
 async function runMethod(button: HTMLButtonElement): Promise<void> {
-  const method = button.dataset.method as BridgeMethod | undefined;
+  const method = button.dataset.method as
+    | BridgeMethod
+    | CapabilityMethod
+    | undefined;
   if (!method) return;
   const arity = button.dataset.arity ?? "";
   let args: unknown[] = [];
@@ -161,8 +174,36 @@ async function runMethod(button: HTMLButtonElement): Promise<void> {
     const node = res.result as AriaNode;
     setText("snap-summary", summariseAria(node));
   }
+  if (method === "captureVisibleTab" && res.ok) {
+    const cap = res.result as CaptureResult;
+    showCapture(cap);
+    // Replace the result pane with a compact summary; the full data URL
+    // would balloon the pre tag past the 4 KB cap and clobber readability.
+    showResult(
+      label,
+      `${(cap.bytes / 1024).toFixed(1)} KB · ${cap.url}`,
+      true,
+    );
+    void refreshStats();
+    return;
+  }
   showResult(label, res.ok ? res.result : res.error, res.ok);
   void refreshStats();
+}
+
+function showCapture(cap: CaptureResult): void {
+  const img = el<HTMLImageElement>("thumb");
+  img.src = cap.dataUrl;
+  img.hidden = false;
+  const dl = el<HTMLAnchorElement>("dl");
+  const stamp = new Date(cap.capturedAt)
+    .toISOString()
+    .replace(/[:.]/g, "-")
+    .slice(0, 19);
+  dl.href = cap.dataUrl;
+  dl.download = `crabcc-${stamp}.png`;
+  dl.textContent = `download (${(cap.bytes / 1024).toFixed(1)} KB)`;
+  dl.hidden = false;
 }
 
 function bind(): void {

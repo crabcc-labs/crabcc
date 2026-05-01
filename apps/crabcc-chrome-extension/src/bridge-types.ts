@@ -88,11 +88,38 @@ export interface BridgeStateSnapshot {
  * Symmetric request/response shape so the same code can later carry an
  * external transport (WebSocket / native messaging) without changing the
  * popup or the worker.
+ *
+ * `BridgeMethod`s land in the page's main world via
+ * chrome.scripting.executeScript. `CapabilityMethod`s execute in the
+ * service-worker realm against Chrome APIs (tabs / scripting / storage),
+ * because the page can't reach those APIs.
  */
 export interface RpcRequest {
   id: number;
-  method: BridgeMethod;
+  method: BridgeMethod | CapabilityMethod;
   args: unknown[];
+}
+
+export type CapabilityMethod = "captureVisibleTab" | "tabInfo";
+
+/** Result of a successful captureVisibleTab call. */
+export interface CaptureResult {
+  /** PNG data URL (`data:image/png;base64,…`). */
+  dataUrl: string;
+  /** Tab URL captured. */
+  url: string;
+  /** Date.now() at capture. */
+  capturedAt: number;
+  /** Approximate byte size of the encoded image. */
+  bytes: number;
+}
+
+export interface TabInfo {
+  id: number | null;
+  url: string;
+  title: string;
+  windowId: number | null;
+  status: string;
 }
 
 export interface RpcResponse<T = unknown> {

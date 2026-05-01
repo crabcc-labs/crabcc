@@ -162,3 +162,24 @@ pre {
 .ok {
   color: var(--ok);
 }
+
+#thumb {
+  display: block;
+  margin-top: 6px;
+  max-width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+a#dl {
+  font-size: 11px;
+  text-decoration: underline;
+  cursor: pointer;
+  color: var(--accent);
+}
+a#dl[hidden] {
+  display: none;
+}
+img#thumb[hidden] {
+  display: none;
+}
