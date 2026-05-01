@@ -20,6 +20,16 @@
     <section class="block">
       <h2>transport</h2>
       <div class="row">
+        <label class="check">
+          <input type="radio" name="mode" value="websocket" id="mode-ws" checked />
+          websocket
+        </label>
+        <label class="check">
+          <input type="radio" name="mode" value="native" id="mode-native" />
+          native (crabcc-chrome)
+        </label>
+      </div>
+      <div class="row" id="ws-endpoint-row">
         <input id="ws-endpoint" type="url" placeholder="ws://localhost:7878/ws/extension" />
       </div>
       <div class="row">

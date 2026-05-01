@@ -19,13 +19,15 @@ import type {
   RpcResponse,
   TransportHello,
   TransportPing,
+  TransportMode,
   TransportPong,
   TransportSnapshot,
   TransportState,
 } from "./bridge-types";
-import { DEFAULT_WS_ENDPOINT } from "./bridge-types";
+import { DEFAULT_WS_ENDPOINT, NATIVE_HOST_NAME } from "./bridge-types";
 
 const STORAGE_KEYS = {
+  mode: "transport.mode",
   endpoint: "transport.endpoint",
   auto: "transport.auto",
   state: "transport.state",
@@ -41,6 +43,9 @@ const MAX_BACKOFF_MS = 30_000;
 type RequestHandler = (req: RpcRequest) => Promise<RpcResponse>;
 
 let socket: WebSocket | null = null;
+/** Active native-messaging port; mutually exclusive with `socket`. */
+let nativePort: chrome.runtime.Port | null = null;
+let mode: TransportMode = "websocket";
 let state: TransportState = "disconnected";
 let lastError: string | null = null;
 let endpoint: string = DEFAULT_WS_ENDPOINT;
@@ -58,7 +63,7 @@ export function setHandler(h: RequestHandler): void {
 }
 
 export function getSnapshot(): TransportSnapshot {
-  return { state, endpoint, lastError, rpcsReceived, connectedAt };
+  return { mode, state, endpoint, lastError, rpcsReceived, connectedAt };
 }
 
 /** Capabilities advertised in the hello message. Static for Phase 0.5. */
@@ -99,14 +104,16 @@ const ADVERTISED_CAPS = [
 ];
 
 /**
- * Bootstrap from chrome.storage on worker startup. Reads endpoint + auto
- * flag and (if auto) opens the connection.
+ * Bootstrap from chrome.storage on worker startup. Reads endpoint + mode
+ * + auto flag and (if auto) opens the connection.
  */
 export async function bootstrap(): Promise<void> {
   const stored = await chrome.storage.local.get([
+    STORAGE_KEYS.mode,
     STORAGE_KEYS.endpoint,
     STORAGE_KEYS.auto,
   ]);
+  mode = ((stored[STORAGE_KEYS.mode] as string | undefined) ?? "websocket") as TransportMode;
   endpoint = (stored[STORAGE_KEYS.endpoint] as string | undefined) ?? DEFAULT_WS_ENDPOINT;
   if (stored[STORAGE_KEYS.auto]) {
     connect(endpoint);
@@ -115,9 +122,15 @@ export async function bootstrap(): Promise<void> {
   }
 }
 
-export async function configure(ep: string, auto: boolean): Promise<void> {
+export async function configure(
+  ep: string,
+  auto: boolean,
+  m: TransportMode = mode,
+): Promise<void> {
   endpoint = ep;
+  mode = m;
   await chrome.storage.local.set({
+    [STORAGE_KEYS.mode]: m,
     [STORAGE_KEYS.endpoint]: ep,
     [STORAGE_KEYS.auto]: auto,
   });
@@ -127,6 +140,12 @@ export function connect(ep?: string): void {
   if (ep) endpoint = ep;
   cancelReconnect();
   suppressReconnect = false;
+  if (mode === "native") {
+    if (nativePort) return;
+    setState("connecting", null);
+    connectNativeImpl();
+    return;
+  }
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
     return;
   }
@@ -180,7 +199,60 @@ export function disconnect(): void {
     }
     socket = null;
   }
+  if (nativePort) {
+    try {
+      nativePort.disconnect();
+    } catch {
+      // ignore — disconnect on a closed port can throw
+    }
+    nativePort = null;
+  }
   setState("disconnected", null);
+}
+
+/**
+ * Open a native-messaging connection to `com.crabcc.chrome`. Chrome
+ * launches the host (per the manifest installed by `crabcc-chrome
+ * pair`); the host immediately TCP-connects to the running `serve`.
+ *
+ * Wire format on top of native messaging is the same `RpcRequest` /
+ * `RpcResponse` JSON envelope the WebSocket transport uses. A `hello`
+ * message is sent on connect; absence of pongs / disconnect events
+ * triggers backoff + auto-reconnect, mirroring the WS path.
+ */
+function connectNativeImpl(): void {
+  let port: chrome.runtime.Port;
+  try {
+    port = chrome.runtime.connectNative(NATIVE_HOST_NAME);
+  } catch (err) {
+    setState("error", err instanceof Error ? err.message : String(err));
+    scheduleReconnect();
+    return;
+  }
+  nativePort = port;
+  // No `onopen` event for ports — connectNative resolves synchronously
+  // when the host process is launched. Treat the call as "connected"
+  // unless onDisconnect fires immediately.
+  backoffMs = MIN_BACKOFF_MS;
+  missedPongs = 0;
+  connectedAt = Date.now();
+  setState("connected", null);
+  sendHello();
+  startPingLoop();
+  port.onMessage.addListener((msg: unknown) => {
+    void onMessage(typeof msg === "string" ? msg : JSON.stringify(msg));
+  });
+  port.onDisconnect.addListener(() => {
+    stopPingLoop();
+    const err = chrome.runtime.lastError?.message ?? null;
+    nativePort = null;
+    if (suppressReconnect) {
+      setState("disconnected", err);
+      return;
+    }
+    setState(err ? "error" : "disconnected", err);
+    scheduleReconnect();
+  });
 }
 
 function setState(s: TransportState, err: string | null): void {
@@ -209,6 +281,18 @@ function sendHello(): void {
 }
 
 function send(payload: unknown): void {
+  if (mode === "native") {
+    if (!nativePort) return;
+    try {
+      // Chrome's native-messaging postMessage takes a JSON-serializable
+      // object (NOT a pre-stringified blob); it frames it for us.
+      nativePort.postMessage(payload);
+    } catch {
+      // postMessage on a disconnected port throws; onDisconnect will
+      // already be scheduling a reconnect.
+    }
+    return;
+  }
   if (!socket || socket.readyState !== WebSocket.OPEN) return;
   try {
     socket.send(JSON.stringify(payload));
@@ -257,11 +341,16 @@ async function onMessage(data: unknown): Promise<void> {
 function startPingLoop(): void {
   stopPingLoop();
   pingTimer = setInterval(() => {
-    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    const live =
+      mode === "native"
+        ? nativePort != null
+        : socket != null && socket.readyState === WebSocket.OPEN;
+    if (!live) return;
     if (missedPongs >= MAX_MISSED_PONGS) {
-      // Force a close — the onclose handler will reconnect.
+      // Force a close — the onclose / onDisconnect handler will reconnect.
       try {
-        socket.close();
+        if (mode === "native") nativePort?.disconnect();
+        else socket?.close();
       } catch {
         // ignore
       }

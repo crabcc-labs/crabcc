@@ -49,7 +49,7 @@ type IncomingMessage =
   | { kind: "transport.snapshot" }
   | { kind: "transport.connect"; endpoint: string }
   | { kind: "transport.disconnect" }
-  | { kind: "transport.configure"; endpoint: string; auto: boolean };
+  | { kind: "transport.configure"; endpoint: string; auto: boolean; mode?: import("./bridge-types").TransportMode };
 
 type OutgoingMessage =
   | { kind: "rpc"; res: RpcResponse }
@@ -78,7 +78,7 @@ chrome.runtime.onMessage.addListener(
       return false;
     }
     if (msg.kind === "transport.configure") {
-      void transport.configure(msg.endpoint, msg.auto).then(() => {
+      void transport.configure(msg.endpoint, msg.auto, msg.mode).then(() => {
         sendResponse({ kind: "ack" });
       });
       return true;

@@ -223,14 +223,20 @@ export interface TabInfo {
   status: string;
 }
 
-// --- transport (Phase 0.5) ----------------------------------------------
+// --- transport (Phase 0.5+) ----------------------------------------------
 
 export const DEFAULT_WS_ENDPOINT = "ws://localhost:7878/ws/extension";
+/** Native-messaging host name; must match crabcc-chrome's `HOST_NAME`. */
+export const NATIVE_HOST_NAME = "com.crabcc.chrome";
+
+export type TransportMode = "websocket" | "native";
 
 export type TransportState = "disconnected" | "connecting" | "connected" | "error";
 
 export interface TransportSnapshot {
+  mode: TransportMode;
   state: TransportState;
+  /** WebSocket endpoint, or "native" when using connectNative. */
   endpoint: string;
   lastError: string | null;
   /** Inbound RpcRequests received since the worker started. */

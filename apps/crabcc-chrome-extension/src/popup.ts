@@ -13,6 +13,7 @@ import type {
   CaptureResult,
   RpcRequest,
   RpcResponse,
+  TransportMode,
   TransportSnapshot,
   V8HeapSnapshotResult,
   V8ProfileSummary,
@@ -303,20 +304,41 @@ function bind(): void {
       kind: "transport.configure",
       endpoint: currentEndpoint(),
       auto: el<HTMLInputElement>("ws-auto").checked,
+      mode: currentMode(),
     });
   });
+  for (const radio of ["mode-ws", "mode-native"]) {
+    el<HTMLInputElement>(radio).addEventListener("change", () => {
+      // Persist mode immediately and refresh the visible endpoint row;
+      // operator hits "connect" to actually swap transports.
+      void chrome.runtime.sendMessage({
+        kind: "transport.configure",
+        endpoint: currentEndpoint(),
+        auto: el<HTMLInputElement>("ws-auto").checked,
+        mode: currentMode(),
+      });
+      el<HTMLDivElement>("ws-endpoint-row").style.display =
+        currentMode() === "native" ? "none" : "";
+    });
+  }
 }
 
 function currentEndpoint(): string {
   return el<HTMLInputElement>("ws-endpoint").value.trim() || DEFAULT_WS_ENDPOINT;
 }
 
+function currentMode(): TransportMode {
+  return el<HTMLInputElement>("mode-native").checked ? "native" : "websocket";
+}
+
 async function onConnect(): Promise<void> {
   const ep = currentEndpoint();
+  const m = currentMode();
   await chrome.runtime.sendMessage({
     kind: "transport.configure",
     endpoint: ep,
     auto: el<HTMLInputElement>("ws-auto").checked,
+    mode: m,
   });
   await chrome.runtime.sendMessage({ kind: "transport.connect", endpoint: ep });
   void refreshTransport();
@@ -330,6 +352,7 @@ async function onDisconnect(): Promise<void> {
     kind: "transport.configure",
     endpoint: currentEndpoint(),
     auto: false,
+    mode: currentMode(),
   });
   void refreshTransport();
 }
@@ -339,9 +362,20 @@ async function refreshTransport(): Promise<void> {
   if (!snap) return;
   const epInput = el<HTMLInputElement>("ws-endpoint");
   if (!epInput.value) epInput.value = snap.endpoint;
+  if (snap.mode === "native") {
+    el<HTMLInputElement>("mode-native").checked = true;
+  } else {
+    el<HTMLInputElement>("mode-ws").checked = true;
+  }
+  // Hide the WS endpoint input when native mode is selected — the
+  // endpoint isn't user-configurable; it's the host name from the
+  // installed Chrome NativeMessagingHosts manifest.
+  el<HTMLDivElement>("ws-endpoint-row").style.display =
+    snap.mode === "native" ? "none" : "";
   const klass: "ok" | "err" | "muted" =
     snap.state === "connected" ? "ok" : snap.state === "error" ? "err" : "muted";
-  setText("ws-state", snap.lastError ? `${snap.state} · ${snap.lastError}` : snap.state, klass);
+  const label = snap.mode === "native" ? `${snap.state} (native)` : snap.state;
+  setText("ws-state", snap.lastError ? `${label} · ${snap.lastError}` : label, klass);
   setText("ws-stats", `${snap.rpcsReceived} rpcs received`, "muted");
 }
 
