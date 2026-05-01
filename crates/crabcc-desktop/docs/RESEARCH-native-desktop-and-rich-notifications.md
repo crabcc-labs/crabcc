@@ -118,6 +118,30 @@ crates/crabcc-desktop/
 - **A.6**: Native menu bar (`gpui-component::Menu`), dock badge,
   system tray.
 
+### Resolved decisions for Track A
+
+**A.1 GPUI rev pinning — RESOLVED.** GPUI is pre-1.0 and develops in
+lockstep with Zed; tracking `main` is unstable. Pin to the **same git
+rev that `longbridge/gpui-component`'s gallery app uses** — the
+authoritative spot is `crates/story/Cargo.toml` (the upstream
+component-gallery binary). Recipe at A.1 kickoff:
+
+```bash
+# Resolve the rev gpui-component itself currently builds against:
+gh api repos/longbridge/gpui-component/contents/crates/story/Cargo.toml \
+  --jq '.content' | base64 -d | rg '^gpui\s*=' -A 1
+```
+
+Then mirror that exact `rev = "..."` into our own `Cargo.toml`:
+
+```toml
+gpui           = { git = "https://github.com/zed-industries/zed", rev = "<rev>" }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "<rev>" }
+```
+
+Re-pin only when we deliberately bump (typically when `gpui-component`
+itself bumps) — never auto-track upstream `main`.
+
 ### Open questions for Track A
 
 1. **Bundling** — `cargo bundle` vs. Xcode + `cargo-xcode`. Apple
@@ -141,34 +165,50 @@ in PR #212. Instead, **adopt shadcn's design tokens, motion primitives,
 and component shapes** and migrate panels opportunistically when they
 need work anyway.
 
+### Resolved decisions for Track B
+
+**Tailwind — RESOLVED: adopt it.** Stripping Tailwind out and mapping
+shadcn's utility classes back to plain CSS variables is feasible but
+introduces a permanent translation tax on every shadcn component we
+copy in. Adopting Tailwind keeps us at parity with upstream, lets us
+paste components directly from `npx shadcn@latest add …`, and is the
+de-facto path the project documents. Tradeoff accepted: PostCSS +
+Tailwind CLI in the esbuild pipeline. Bundle cost is bounded by
+JIT-purging (only utilities the dashboard actually uses ship).
+
+Phasing reflects this:
+
 ### Phasing
 
 - **B.0 (this PR)**: install the shadcn MCP via
   `npx shadcn@latest mcp init --client claude` so future agents have
   access to it. **Done.**
-- **B.1**: tailwind-cssvars adoption — keep the existing CSS-variable
-  theme but rename to shadcn's conventions (`--background`,
+- **B.1**: wire Tailwind into the esbuild pipeline (`bun add -d
+  tailwindcss postcss autoprefixer`, `tailwind.config.ts`,
+  `postcss.config.js`, `@tailwind base; @tailwind components;
+  @tailwind utilities;` at the top of `styles.css`). Configure the
+  `content:` glob to scan `src/**/*.{ts,tsx}` so JIT purges to a tight
+  utility set.
+- **B.2**: rename CSS variables to shadcn conventions (`--background`,
   `--foreground`, `--primary`, `--muted`, `--accent`, `--destructive`,
   `--ring`). Trivial sed; preserves visual continuity.
-- **B.2**: introduce shadcn's `Button` / `Input` / `Dialog` /
+- **B.3**: introduce shadcn's `Button` / `Input` / `Dialog` /
   `DropdownMenu` / `Select` primitives in **new** components only;
   don't refactor existing ones until they need work.
-- **B.3**: motion — adopt `framer-motion` micro-animations on tile
+- **B.4**: motion — adopt `framer-motion` micro-animations on tile
   hover, route transitions, ingest-result reveal. Bundle delta budget:
   ≤ 25 KB.
-- **B.4**: full migration of `<DashTile />` and `<NodeInfo />` to
-  shadcn `Card` once B.1 lands.
+- **B.5**: full migration of `<DashTile />` and `<NodeInfo />` to
+  shadcn `Card` once B.2 lands.
 
 ### Open questions for Track B
 
-1. We're not running Tailwind today (esbuild + plain CSS). shadcn
-   officially expects Tailwind; the [shadcn/ui CSS-in-JS path] is
-   experimental. **Decision needed**: ship Tailwind into the bundle
-   (~4 KB compressed when purged) or adapt shadcn's CSS variables
-   manually.
-2. Dark theme parity — shadcn's default palette is built around
+1. **Dark theme parity** — shadcn's default palette is built around
    `slate`; our `--bg #161618` is closer to neutral. Probably fine
    to override the palette, but document it.
+2. **PostCSS + Tailwind CLI in the esbuild pipeline** — verify the
+   build script's added latency stays under 300 ms incremental
+   (otherwise reach for `tailwindcss-oxide` once stable).
 
 ## Track C — Native macOS rich notifications
 
@@ -323,11 +363,13 @@ Out of scope:
 
 1. File issues for A.1 / B.1 / C.1 — split the kickoff into
    trackable units.
-2. Register `crabcc-desktop` in `[workspace.members]` once it builds
-   on macOS without warnings.
-3. Decide Tailwind-yes-or-no for Track B (B.1 is blocked on this).
-4. Confirm Apple Developer Team ID + App Groups provisioning for
-   Track C.
+2. **A.1** — resolve the upstream `gpui` rev from
+   `longbridge/gpui-component`'s `crates/story/Cargo.toml`, pin
+   identically in `crates/crabcc-desktop/Cargo.toml`, register the
+   crate in `[workspace.members]`.
+3. **B.1** — wire Tailwind + PostCSS into the esbuild pipeline.
+4. **C.0** — confirm Apple Developer Team ID + App Groups
+   provisioning before C.3.
 
 [gpui-component]: https://github.com/longbridge/gpui-component
 [gpui-gallery]: https://longbridge.github.io/gpui-component/gallery/
