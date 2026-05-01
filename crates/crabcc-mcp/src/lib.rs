@@ -145,12 +145,7 @@ where
 ///
 /// SSE / streaming responses (e.g. `agent.run` progress events) land
 /// in #204 phase 4. Phase 1 is sync-only.
-pub fn serve_http(
-    addr: SocketAddr,
-    root: &Path,
-    dev: bool,
-    token: Option<String>,
-) -> Result<()> {
+pub fn serve_http(addr: SocketAddr, root: &Path, dev: bool, token: Option<String>) -> Result<()> {
     let server = Server::http(addr).map_err(|e| anyhow::anyhow!("bind {addr}: {e}"))?;
     let bound = server.server_addr();
     tracing::info!(
@@ -248,7 +243,9 @@ fn respond_json(req: Request, status: u16, body: Value) -> std::io::Result<()> {
 }
 
 fn content_type_json() -> Header {
-    "Content-Type: application/json".parse().expect("static header")
+    "Content-Type: application/json"
+        .parse()
+        .expect("static header")
 }
 
 pub fn handle(req: &Value, root: &Path) -> Value {

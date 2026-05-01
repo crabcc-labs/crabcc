@@ -89,7 +89,10 @@ fn http_request(
 fn health_endpoint_returns_ok() {
     let (addr, _root, _tmp) = spawn_server(None);
     let (status, body) = http_request(addr, "GET", "/health", &[], "");
-    assert_eq!(status, 200, "GET /health expected 200, got {status}: {body}");
+    assert_eq!(
+        status, 200,
+        "GET /health expected 200, got {status}: {body}"
+    );
     assert!(body.contains("\"status\":\"ok\""), "body: {body}");
     assert!(body.contains("\"transport\":\"http\""), "body: {body}");
 }
@@ -112,7 +115,10 @@ fn post_mcp_with_invalid_json_returns_parse_error() {
         "not json",
     );
     assert_eq!(status, 200, "parse-error JSON-RPC reply rides on 200");
-    assert!(body.contains("-32700"), "expected parse-error code -32700: {body}");
+    assert!(
+        body.contains("-32700"),
+        "expected parse-error code -32700: {body}"
+    );
 }
 
 #[test]
@@ -127,7 +133,10 @@ fn post_mcp_initialize_round_trips() {
         body,
     );
     assert_eq!(status, 200, "initialize expected 200, got {status}: {resp}");
-    assert!(resp.contains("\"jsonrpc\":\"2.0\""), "missing jsonrpc tag: {resp}");
+    assert!(
+        resp.contains("\"jsonrpc\":\"2.0\""),
+        "missing jsonrpc tag: {resp}"
+    );
     assert!(resp.contains("\"id\":1"), "missing id echo: {resp}");
 }
 

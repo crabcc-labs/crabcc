@@ -973,7 +973,9 @@ fn main() -> Result<()> {
         let addr: std::net::SocketAddr = addr_str
             .parse()
             .map_err(|e| anyhow::anyhow!("invalid --mcp-http addr {addr_str:?}: {e}"))?;
-        let token = std::env::var("MCP_AUTH_TOKEN").ok().filter(|t| !t.is_empty());
+        let token = std::env::var("MCP_AUTH_TOKEN")
+            .ok()
+            .filter(|t| !t.is_empty());
         return crabcc_mcp::serve_http(addr, &root, dev, token);
     }
 
