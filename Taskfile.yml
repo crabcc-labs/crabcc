@@ -346,6 +346,39 @@ tasks:
         -o spdx-json={{.SBOM_FILE}}
       - echo "SBOM written to {{.SBOM_FILE}}"
 
+  # cloudflared quick-tunnel for the Telegram Mini App / public dashboard.
+  # Spawns cloudflared in the background, tails its log until the
+  # trycloudflare.com URL appears, prints the URL + ready-to-paste
+  # CRABCC_PUBLIC_URL + BotFather Mini App URL lines.
+  # State: ~/.crabcc/cloudflared.{pid,url} + ~/Library/Logs/Crabcc/cloudflared.log
+
+  tunnel-start:
+    desc: Start cloudflared quick-tunnel for crabcc serve (port 8090) — prints public URL
+    summary: |
+      Backgrounds cloudflared via nohup, waits up to 30s for the
+      trycloudflare.com URL to appear in its log, prints the URL plus
+      the matching `CRABCC_PUBLIC_URL=…` line for the bot's .env and
+      the `…/?role=mini` URL to paste into BotFather.
+      Idempotent — re-running while the tunnel is up just re-prints
+      the URL. Pass `PORT=N` to expose a different port.
+    cmds:
+      - bash scripts/cloudflared-tunnel.sh start
+
+  tunnel-stop:
+    desc: Stop the backgrounded cloudflared tunnel
+    cmds:
+      - bash scripts/cloudflared-tunnel.sh stop
+
+  tunnel-url:
+    desc: Print the cloudflared tunnel URL (assumes tunnel-start has run)
+    cmds:
+      - bash scripts/cloudflared-tunnel.sh url
+
+  tunnel-status:
+    desc: Liveness check for the cloudflared tunnel
+    cmds:
+      - bash scripts/cloudflared-tunnel.sh status
+
   install:
     desc: Cargo install crabcc to ~/.cargo/bin/crabcc; auto-bootstraps shell aliases (idempotent)
     summary: |
