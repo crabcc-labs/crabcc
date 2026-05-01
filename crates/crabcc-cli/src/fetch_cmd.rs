@@ -238,6 +238,11 @@ async fn fetch_one(client: &reqwest::Client, url: &str) -> FetchResult {
     if let Some(repo_coord) = parse_github_repo(url) {
         return fetch_via_repomix(url, &repo_coord).await;
     }
+    if is_reddit_url(url) {
+        return fetch_reddit_json(client, url).await;
+    }
+    let host = url_host(url).unwrap_or("");
+    let prefer_main = host_uses_article_extractor(host);
     match client.get(url).send().await {
         Err(e) => FetchResult {
             url: url.into(),
@@ -260,7 +265,12 @@ async fn fetch_one(client: &reqwest::Client, url: &str) -> FetchResult {
                 },
                 Ok(html) => {
                     let title = extract_title(&html);
-                    let markdown = html2md::parse_html(&html);
+                    let body_html = if prefer_main {
+                        extract_main_content(&html).unwrap_or(&html)
+                    } else {
+                        &html
+                    };
+                    let markdown = html2md::parse_html(body_html);
                     FetchResult {
                         url: url.into(),
                         status,
@@ -273,6 +283,199 @@ async fn fetch_one(client: &reqwest::Client, url: &str) -> FetchResult {
             }
         }
     }
+}
+
+/// Domains where we prefer to extract `<article>` / `<main>` instead of
+/// the full HTML — strips nav/footer/ads/sidebar noise. The fallback is
+/// the original behaviour (whole-page html2md) so unknown sites still
+/// round-trip cleanly.
+fn host_uses_article_extractor(host: &str) -> bool {
+    matches!(
+        host,
+        "medium.com"
+            | "www.medium.com"
+            | "bbc.com"
+            | "www.bbc.com"
+            | "bbc.co.uk"
+            | "www.bbc.co.uk"
+            | "telex.hu"
+            | "www.telex.hu"
+    ) || host.ends_with(".medium.com")
+}
+
+/// Find the first `<article>` element; fall back to the first `<main>`;
+/// fall back to None (caller uses the full HTML). Lowercase-tag matching;
+/// nested same-tag elements are handled by counting depth.
+fn extract_main_content(html: &str) -> Option<&str> {
+    for tag in ["article", "main"] {
+        if let Some(slice) = first_element(html, tag) {
+            return Some(slice);
+        }
+    }
+    None
+}
+
+fn first_element<'a>(html: &'a str, tag: &str) -> Option<&'a str> {
+    let lower = html.to_lowercase();
+    let open = format!("<{tag}");
+    let close = format!("</{tag}>");
+    let start = lower.find(&open)?;
+    // Skip past the opening tag's `>`.
+    let after_open = html[start..].find('>')? + start + 1;
+    // Walk forward respecting nested same-tag opens.
+    let mut depth = 1usize;
+    let mut cursor = after_open;
+    while depth > 0 {
+        let rest_lower = &lower[cursor..];
+        let next_open = rest_lower.find(&open).map(|i| i + cursor);
+        let next_close = rest_lower.find(&close).map(|i| i + cursor);
+        match (next_open, next_close) {
+            (Some(o), Some(c)) if o < c => {
+                depth += 1;
+                cursor = o + open.len();
+            }
+            (_, Some(c)) => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(html[after_open..c].trim());
+                }
+                cursor = c + close.len();
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn is_reddit_url(url: &str) -> bool {
+    matches!(
+        url_host(url),
+        Some("reddit.com" | "www.reddit.com" | "old.reddit.com" | "new.reddit.com")
+    )
+}
+
+/// Fetch a Reddit URL via its `.json` API surface — orders-of-magnitude
+/// less noise than scraping the HTML page, no JS required, gives us
+/// title + body + author + comment count cleanly.
+async fn fetch_reddit_json(client: &reqwest::Client, url: &str) -> FetchResult {
+    let mut json_url = url.trim_end_matches('/').to_string();
+    if let Some(q) = json_url.find('?') {
+        json_url.truncate(q);
+    }
+    json_url.push_str(".json");
+
+    match client.get(&json_url).send().await {
+        Err(e) => FetchResult {
+            url: url.into(),
+            status: 0,
+            title: None,
+            content_markdown: None,
+            via: Transport::Direct,
+            error: Some(format!("reddit fetch: {e}")),
+        },
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            match resp.text().await {
+                Err(e) => FetchResult {
+                    url: url.into(),
+                    status,
+                    title: None,
+                    content_markdown: None,
+                    via: Transport::Direct,
+                    error: Some(format!("reddit body: {e}")),
+                },
+                Ok(body) => match render_reddit_json(&body) {
+                    Some((title, md)) => FetchResult {
+                        url: url.into(),
+                        status,
+                        title: Some(title),
+                        content_markdown: Some(md),
+                        via: Transport::Direct,
+                        error: None,
+                    },
+                    None => FetchResult {
+                        url: url.into(),
+                        status,
+                        title: None,
+                        content_markdown: None,
+                        via: Transport::Direct,
+                        error: Some("reddit json had no recognisable post".into()),
+                    },
+                },
+            }
+        }
+    }
+}
+
+/// Pull `(title, markdown)` out of a Reddit `.json` response. Reddit's
+/// JSON shape is a 2-element array: `[listing_with_post, listing_with_comments]`.
+/// We grab the post's `title` + `selftext`/`url` and the top N comment
+/// bodies. Fail-soft — returns None on any shape surprise so the caller
+/// can surface a clear error.
+fn render_reddit_json(body: &str) -> Option<(String, String)> {
+    let v: serde_json::Value = serde_json::from_str(body).ok()?;
+    let post = v
+        .as_array()?
+        .first()?
+        .get("data")?
+        .get("children")?
+        .as_array()?
+        .first()?
+        .get("data")?;
+    let title = post.get("title")?.as_str()?.to_string();
+    let author = post.get("author").and_then(|a| a.as_str()).unwrap_or("?");
+    let subreddit = post
+        .get("subreddit")
+        .and_then(|s| s.as_str())
+        .unwrap_or("?");
+    let selftext = post
+        .get("selftext")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .trim();
+    let post_url = post.get("url").and_then(|u| u.as_str()).unwrap_or("");
+    let score = post.get("score").and_then(|s| s.as_i64()).unwrap_or(0);
+
+    let mut md = String::new();
+    md.push_str(&format!(
+        "**r/{subreddit}**  \\| u/{author} \\| score {score}\n\n"
+    ));
+    if !selftext.is_empty() {
+        md.push_str(selftext);
+        md.push_str("\n\n");
+    } else if !post_url.is_empty() {
+        md.push_str(&format!("link: {post_url}\n\n"));
+    }
+
+    // Comments — top 5 first-level only, no recursion (tight token budget).
+    if let Some(comments) = v
+        .as_array()
+        .and_then(|a| a.get(1))
+        .and_then(|c| c.get("data"))
+        .and_then(|d| d.get("children"))
+        .and_then(|c| c.as_array())
+    {
+        md.push_str("---\n\n## Top comments\n\n");
+        for c in comments.iter().take(5) {
+            let data = match c.get("data") {
+                Some(d) => d,
+                None => continue,
+            };
+            let cauthor = data.get("author").and_then(|a| a.as_str()).unwrap_or("?");
+            let cscore = data.get("score").and_then(|s| s.as_i64()).unwrap_or(0);
+            let cbody = data
+                .get("body")
+                .and_then(|b| b.as_str())
+                .unwrap_or("")
+                .trim();
+            if cbody.is_empty() {
+                continue;
+            }
+            md.push_str(&format!("**u/{cauthor}** ({cscore}):\n{cbody}\n\n"));
+        }
+    }
+
+    Some((title, md))
 }
 
 fn extract_title(html: &str) -> Option<String> {
@@ -494,5 +697,97 @@ mod tests {
         assert_eq!(url_host("https://example.com"), Some("example.com"));
         assert_eq!(url_host("http://localhost:7878/x"), Some("localhost:7878"));
         assert_eq!(url_host("not-a-url"), None);
+    }
+
+    #[test]
+    fn host_uses_article_extractor_picks_known_sites() {
+        for h in [
+            "medium.com",
+            "www.medium.com",
+            "uxdesign.cc.medium.com",
+            "bbc.com",
+            "www.bbc.co.uk",
+            "telex.hu",
+            "www.telex.hu",
+        ] {
+            assert!(
+                host_uses_article_extractor(h),
+                "expected article-extractor host: {h}"
+            );
+        }
+        for h in ["example.com", "rust-lang.org", "github.com"] {
+            assert!(
+                !host_uses_article_extractor(h),
+                "did not expect article-extractor host: {h}"
+            );
+        }
+    }
+
+    #[test]
+    fn extract_main_content_picks_article() {
+        let html = "<html><body><nav>x</nav><article><p>hello</p></article><footer>z</footer></body></html>";
+        assert_eq!(extract_main_content(html), Some("<p>hello</p>"));
+    }
+
+    #[test]
+    fn extract_main_content_falls_back_to_main() {
+        let html = "<html><body><main>body content</main></body></html>";
+        assert_eq!(extract_main_content(html), Some("body content"));
+    }
+
+    #[test]
+    fn extract_main_content_returns_none_when_neither_present() {
+        let html = "<html><body><div>just a div</div></body></html>";
+        assert_eq!(extract_main_content(html), None);
+    }
+
+    #[test]
+    fn extract_main_content_handles_nested_articles() {
+        let html = "<article>outer <article>nested</article> outer-tail</article>";
+        assert_eq!(
+            extract_main_content(html),
+            Some("outer <article>nested</article> outer-tail")
+        );
+    }
+
+    #[test]
+    fn is_reddit_url_recognises_known_hosts() {
+        assert!(is_reddit_url("https://reddit.com/r/rust/comments/abc/foo"));
+        assert!(is_reddit_url("https://www.reddit.com/r/rust"));
+        assert!(is_reddit_url("https://old.reddit.com/r/rust"));
+        assert!(!is_reddit_url("https://reddit-clone.example.com/foo"));
+    }
+
+    #[test]
+    fn render_reddit_json_extracts_title_and_body() {
+        let body = serde_json::json!([
+            {"data": {"children": [{"data": {
+                "title": "Hello world",
+                "author": "alice",
+                "subreddit": "rust",
+                "selftext": "Body of post",
+                "url": "https://reddit.com/r/rust/comments/abc/hello_world",
+                "score": 42,
+            }}]}},
+            {"data": {"children": [
+                {"data": {"author": "bob", "score": 7, "body": "first comment"}},
+                {"data": {"author": "carol", "score": 3, "body": "second"}},
+            ]}}
+        ])
+        .to_string();
+        let (title, md) = render_reddit_json(&body).expect("should render");
+        assert_eq!(title, "Hello world");
+        assert!(md.contains("**r/rust**"));
+        assert!(md.contains("u/alice"));
+        assert!(md.contains("Body of post"));
+        assert!(md.contains("u/bob"));
+        assert!(md.contains("first comment"));
+    }
+
+    #[test]
+    fn render_reddit_json_returns_none_on_garbage() {
+        assert!(render_reddit_json("not json").is_none());
+        assert!(render_reddit_json("{}").is_none());
+        assert!(render_reddit_json("[]").is_none());
     }
 }
