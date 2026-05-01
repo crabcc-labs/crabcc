@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "crabcc bridge",
+  "short_name": "crabcc",
+  "version": "0.1.0",
+  "description": "Drive any tab via window.__crabcc__ — Phase-0 of issue #184.",
+  "minimum_chrome_version": "116",
+  "permissions": ["scripting", "activeTab", "storage"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "crabcc bridge"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  }
+}
