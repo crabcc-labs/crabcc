@@ -15,6 +15,21 @@
       <div><span class="label">tab</span> <span id="tab-url">—</span></div>
       <div><span class="label">calls</span> <span id="stats">0 / 0</span></div>
       <div><span class="label">last</span> <span id="last">—</span></div>
+      <div><span class="label">ws</span> <span id="ws-state">disconnected</span></div>
+    </section>
+    <section class="block">
+      <h2>transport</h2>
+      <div class="row">
+        <input id="ws-endpoint" type="url" placeholder="ws://localhost:7878/ws/extension" />
+      </div>
+      <div class="row">
+        <button id="ws-connect">connect</button>
+        <button id="ws-disconnect">disconnect</button>
+        <label class="check"><input id="ws-auto" type="checkbox" /> auto on startup</label>
+      </div>
+      <div class="row">
+        <span id="ws-stats" class="muted">0 rpcs</span>
+      </div>
     </section>
     <section class="block">
       <h2>navigation</h2>

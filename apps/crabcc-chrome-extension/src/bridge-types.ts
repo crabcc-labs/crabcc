@@ -122,6 +122,41 @@ export interface TabInfo {
   status: string;
 }
 
+// --- transport (Phase 0.5) ----------------------------------------------
+
+export const DEFAULT_WS_ENDPOINT = "ws://localhost:7878/ws/extension";
+
+export type TransportState = "disconnected" | "connecting" | "connected" | "error";
+
+export interface TransportSnapshot {
+  state: TransportState;
+  endpoint: string;
+  lastError: string | null;
+  /** Inbound RpcRequests received since the worker started. */
+  rpcsReceived: number;
+  /** Date.now() the connection last reached "connected", or 0 if never. */
+  connectedAt: number;
+}
+
+/** Server → extension hello-style messages (also sent in the reverse). */
+export interface TransportHello {
+  kind: "hello";
+  schema: number;
+  version: string;
+  /** Method names the extension can dispatch. */
+  capabilities: string[];
+}
+
+/** App-level keepalive — browser WebSocket can't expose ping/pong frames. */
+export interface TransportPing {
+  kind: "ping";
+  ts: number;
+}
+export interface TransportPong {
+  kind: "pong";
+  ts: number;
+}
+
 export interface RpcResponse<T = unknown> {
   id: number;
   ok: boolean;

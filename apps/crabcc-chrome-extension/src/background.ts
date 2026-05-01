@@ -10,12 +10,14 @@
 // `RpcResponse`).
 
 import { dispatchRpc } from "./bridge-rpc";
+import * as transport from "./transport";
 import type {
   CaptureResult,
   CapabilityMethod,
   RpcRequest,
   RpcResponse,
   TabInfo,
+  TransportSnapshot,
 } from "./bridge-types";
 
 interface SessionStats {
@@ -38,17 +40,43 @@ const stats: SessionStats = {
 
 type IncomingMessage =
   | { kind: "rpc"; tabId: number; req: RpcRequest }
-  | { kind: "stats" };
+  | { kind: "stats" }
+  | { kind: "transport.snapshot" }
+  | { kind: "transport.connect"; endpoint: string }
+  | { kind: "transport.disconnect" }
+  | { kind: "transport.configure"; endpoint: string; auto: boolean };
 
 type OutgoingMessage =
   | { kind: "rpc"; res: RpcResponse }
-  | { kind: "stats"; stats: SessionStats };
+  | { kind: "stats"; stats: SessionStats }
+  | { kind: "transport.snapshot"; snap: TransportSnapshot }
+  | { kind: "ack" };
 
 chrome.runtime.onMessage.addListener(
   (msg: IncomingMessage, _sender, sendResponse: (m: OutgoingMessage) => void) => {
     if (msg.kind === "stats") {
       sendResponse({ kind: "stats", stats });
       return false;
+    }
+    if (msg.kind === "transport.snapshot") {
+      sendResponse({ kind: "transport.snapshot", snap: transport.getSnapshot() });
+      return false;
+    }
+    if (msg.kind === "transport.connect") {
+      transport.connect(msg.endpoint);
+      sendResponse({ kind: "ack" });
+      return false;
+    }
+    if (msg.kind === "transport.disconnect") {
+      transport.disconnect();
+      sendResponse({ kind: "ack" });
+      return false;
+    }
+    if (msg.kind === "transport.configure") {
+      void transport.configure(msg.endpoint, msg.auto).then(() => {
+        sendResponse({ kind: "ack" });
+      });
+      return true;
     }
     if (msg.kind === "rpc") {
       // Async path — we MUST return `true` synchronously so Chrome keeps
@@ -135,3 +163,35 @@ chrome.runtime.onInstalled.addListener(() => {
   // eslint-disable-next-line no-console
   console.log("[crabcc bridge] installed — open the popup on a tab running the crabcc dashboard.");
 });
+
+// Bind the transport's request handler to the same router the popup uses.
+// `route()` is closed-over from this file, so external (WS) and internal
+// (popup) callers go through identical dispatching, including stats.
+transport.setHandler(async (req) => {
+  // External RPCs target the active tab in the focused window. A future
+  // protocol revision will let the caller pin a specific tab id, but
+  // Phase 0.5 keeps the surface narrow.
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (!tab?.id) {
+    return { id: req.id, ok: false, error: "no active tab" };
+  }
+  const res = await route(tab.id, req);
+  // Bookkeep transport-driven calls in the same `stats` block so the
+  // popup's counter reflects all activity, not just popup-driven RPCs.
+  stats.callsTotal += 1;
+  stats.lastMethod = req.method;
+  stats.lastAt = Date.now();
+  if (res.ok) {
+    stats.callsOk += 1;
+    stats.lastError = null;
+  } else {
+    stats.callsErr += 1;
+    stats.lastError = res.error ?? "unknown error";
+  }
+  return res;
+});
+
+// Bootstrap on every worker startup (install, browser start, or service-
+// worker wake). Auto-connects only when `transport.auto` was previously
+// set true via the popup.
+void transport.bootstrap();

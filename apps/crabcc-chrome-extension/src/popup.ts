@@ -13,8 +13,9 @@ import type {
   CaptureResult,
   RpcRequest,
   RpcResponse,
+  TransportSnapshot,
 } from "./bridge-types";
-import { MIN_SCHEMA } from "./bridge-types";
+import { DEFAULT_WS_ENDPOINT, MIN_SCHEMA } from "./bridge-types";
 
 let nextRpcId = 1;
 let activeTabId: number | null = null;
@@ -48,6 +49,13 @@ async function fetchStats(): Promise<SessionStats | null> {
     | { kind: "stats"; stats: SessionStats }
     | undefined;
   return reply?.stats ?? null;
+}
+
+async function fetchTransport(): Promise<TransportSnapshot | null> {
+  const reply = (await chrome.runtime.sendMessage({ kind: "transport.snapshot" })) as
+    | { kind: "transport.snapshot"; snap: TransportSnapshot }
+    | undefined;
+  return reply?.snap ?? null;
 }
 
 function el<T extends HTMLElement>(id: string): T {
@@ -212,10 +220,77 @@ function bind(): void {
       void runMethod(btn);
     });
   }
+  el<HTMLButtonElement>("ws-connect").addEventListener("click", () => {
+    void onConnect();
+  });
+  el<HTMLButtonElement>("ws-disconnect").addEventListener("click", () => {
+    void onDisconnect();
+  });
+  el<HTMLInputElement>("ws-auto").addEventListener("change", () => {
+    // Save the auto-flag along with the current endpoint so they're
+    // applied as a unit on the next worker bootstrap.
+    void chrome.runtime.sendMessage({
+      kind: "transport.configure",
+      endpoint: currentEndpoint(),
+      auto: el<HTMLInputElement>("ws-auto").checked,
+    });
+  });
+}
+
+function currentEndpoint(): string {
+  return el<HTMLInputElement>("ws-endpoint").value.trim() || DEFAULT_WS_ENDPOINT;
+}
+
+async function onConnect(): Promise<void> {
+  const ep = currentEndpoint();
+  await chrome.runtime.sendMessage({
+    kind: "transport.configure",
+    endpoint: ep,
+    auto: el<HTMLInputElement>("ws-auto").checked,
+  });
+  await chrome.runtime.sendMessage({ kind: "transport.connect", endpoint: ep });
+  void refreshTransport();
+}
+
+async function onDisconnect(): Promise<void> {
+  await chrome.runtime.sendMessage({ kind: "transport.disconnect" });
+  // Also clear the auto-flag — the operator just told us to stop.
+  el<HTMLInputElement>("ws-auto").checked = false;
+  await chrome.runtime.sendMessage({
+    kind: "transport.configure",
+    endpoint: currentEndpoint(),
+    auto: false,
+  });
+  void refreshTransport();
+}
+
+async function refreshTransport(): Promise<void> {
+  const snap = await fetchTransport();
+  if (!snap) return;
+  const epInput = el<HTMLInputElement>("ws-endpoint");
+  if (!epInput.value) epInput.value = snap.endpoint;
+  const klass: "ok" | "err" | "muted" =
+    snap.state === "connected" ? "ok" : snap.state === "error" ? "err" : "muted";
+  setText("ws-state", snap.lastError ? `${snap.state} · ${snap.lastError}` : snap.state, klass);
+  setText("ws-stats", `${snap.rpcsReceived} rpcs received`, "muted");
 }
 
 document.addEventListener("DOMContentLoaded", () => {
   bind();
   void refreshTab();
   void refreshStats();
+  void refreshTransport();
+  // Storage-as-broadcast: the worker writes transport state into
+  // chrome.storage on every transition, so the popup gets live updates
+  // without polling. Limit refreshes to relevant keys to avoid noise.
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area !== "local") return;
+    if (
+      "transport.state" in changes ||
+      "transport.lastError" in changes ||
+      "transport.endpoint" in changes
+    ) {
+      void refreshTransport();
+    }
+  });
 });
