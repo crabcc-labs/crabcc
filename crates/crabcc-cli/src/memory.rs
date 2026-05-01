@@ -467,6 +467,46 @@ pub fn env_auto_capture_enabled() -> bool {
     std::env::var("CRABCC_AUTO_MEMORY").ok().as_deref() == Some("1")
 }
 
+/// FNV-1a 64-bit. Drawer source-ids are application-level identity
+/// keys, not a security boundary, so a cheap non-crypto hash is fine.
+/// Using `DefaultHasher` would be SipHash with a per-process seed →
+/// different `web:<hash>` for the same URL across runs, which we
+/// explicitly don't want.
+fn short_hash(b: &[u8]) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for &x in b {
+        h ^= x as u64;
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    let mut s = String::with_capacity(16);
+    for i in (0..16).rev() {
+        let nibble = ((h >> (i * 4)) & 0xf) as u8;
+        s.push(if nibble < 10 {
+            (b'0' + nibble) as char
+        } else {
+            (b'a' + nibble - 10) as char
+        });
+    }
+    s
+}
+
+/// Strip URLs out of `text` so we can decide whether the freeform
+/// remainder is worth storing as its own drawer.
+fn strip_urls(text: &str) -> String {
+    let mut finder = crabcc_fetch::linkify::LinkFinder::new();
+    finder.kinds(&[crabcc_fetch::linkify::LinkKind::Url]);
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for span in finder.spans(text) {
+        if span.kind() == Some(&crabcc_fetch::linkify::LinkKind::Url) {
+            out.push_str(&text[last..span.start()]);
+            last = span.end();
+        }
+    }
+    out.push_str(&text[last..]);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -543,44 +583,4 @@ mod tests {
         assert!(parse_before_timestamp("").is_err());
         assert!(parse_before_timestamp("2025/01/01").is_err());
     }
-}
-
-/// FNV-1a 64-bit. Drawer source-ids are application-level identity
-/// keys, not a security boundary, so a cheap non-crypto hash is fine.
-/// Using `DefaultHasher` would be SipHash with a per-process seed →
-/// different `web:<hash>` for the same URL across runs, which we
-/// explicitly don't want.
-fn short_hash(b: &[u8]) -> String {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for &x in b {
-        h ^= x as u64;
-        h = h.wrapping_mul(0x100_0000_01b3);
-    }
-    let mut s = String::with_capacity(16);
-    for i in (0..16).rev() {
-        let nibble = ((h >> (i * 4)) & 0xf) as u8;
-        s.push(if nibble < 10 {
-            (b'0' + nibble) as char
-        } else {
-            (b'a' + nibble - 10) as char
-        });
-    }
-    s
-}
-
-/// Strip URLs out of `text` so we can decide whether the freeform
-/// remainder is worth storing as its own drawer.
-fn strip_urls(text: &str) -> String {
-    let mut finder = crabcc_fetch::linkify::LinkFinder::new();
-    finder.kinds(&[crabcc_fetch::linkify::LinkKind::Url]);
-    let mut out = String::with_capacity(text.len());
-    let mut last = 0;
-    for span in finder.spans(text) {
-        if span.kind() == Some(&crabcc_fetch::linkify::LinkKind::Url) {
-            out.push_str(&text[last..span.start()]);
-            last = span.end();
-        }
-    }
-    out.push_str(&text[last..]);
-    out
 }
