@@ -665,6 +665,58 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/MineReport"}
 
+  /tools/cli.run:
+    post:
+      tags: [cli]
+      operationId: cli_run
+      summary: |
+        Run an allowlisted `crabcc` subcommand server-side and return
+        its output. Used by the Telegram bot (and other containerized
+        clients) to dispatch CLI work that needs host filesystem
+        access without mounting it into the client container.
+
+        Allowlist (first arg of `cmd`): agent / agent-ls / agent-kill /
+        agent-guard / doctor / index / memory.
+
+        Sync mode (default) returns {stdout, stderr, exit_code,
+        duration_ms, timed_out}. Detached mode (`detached: true`)
+        spawns + returns immediately as {spawned: true, pid,
+        detached: true} — used for long-running tools like
+        `agent --run`. #204 phase 2.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [cmd]
+              properties:
+                cmd:
+                  type: array
+                  items: {type: string}
+                  description: argv tail — first element is the subcommand.
+                detached:
+                  type: boolean
+                  default: false
+                  description: |
+                    If true, spawn and return immediately (for long-
+                    running tools). Returns {spawned: true, pid}.
+                timeout_secs:
+                  type: integer
+                  default: 60
+                  description: |
+                    Hard timeout for sync (non-detached) calls. Server
+                    kills the subprocess + returns {timed_out: true}.
+      responses:
+        "200":
+          description: CliRunResult.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - {$ref: "#/components/schemas/CliRunSync"}
+                  - {$ref: "#/components/schemas/CliRunDetached"}
+                  - {$ref: "#/components/schemas/CliRunTimedOut"}
+
 components:
   schemas:
     CwdRequest:
@@ -852,3 +904,31 @@ components:
         inserted:   {type: integer, description: Fresh rows written.}
         deduped:    {type: integer, description: Idempotent (source_id, sha256) hits.}
         skipped:    {type: integer, description: Binary / oversize / unparseable inputs.}
+
+    CliRunSync:
+      type: object
+      required: [stdout, stderr, exit_code, duration_ms, timed_out]
+      properties:
+        stdout:      {type: string,  description: Captured stdout from the subprocess.}
+        stderr:      {type: string,  description: Captured stderr from the subprocess.}
+        exit_code:   {type: integer, description: Subprocess exit status (-1 if signal-killed).}
+        duration_ms: {type: integer, description: Wall-clock duration of the subprocess.}
+        timed_out:   {type: boolean, description: Always false in this variant.}
+
+    CliRunDetached:
+      type: object
+      required: [spawned, pid, detached]
+      properties:
+        spawned:  {type: boolean, description: Always true.}
+        pid:      {type: integer, description: PID of the spawned subprocess.}
+        detached: {type: boolean, description: Always true; output goes to the agent's own log.}
+
+    CliRunTimedOut:
+      type: object
+      required: [timed_out, timeout_secs, stdout, stderr, exit_code]
+      properties:
+        timed_out:    {type: boolean, description: Always true.}
+        timeout_secs: {type: integer, description: The configured deadline that fired.}
+        stdout:       {type: string,  description: Empty.}
+        stderr:       {type: string,  description: '"subprocess exceeded Ns" message.'}
+        exit_code:    {type: integer, description: Always -1.}

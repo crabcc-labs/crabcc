@@ -23,16 +23,16 @@
 //! # Mobile-network resilience
 //! Backend HTTP calls (bot → `crabcc serve`) go through a shared reqwest
 //! client with explicit `connect_timeout` + `timeout`, plus a 3-attempt
-//! exponential-backoff retry on connect/timeout/5xx. Subprocess invocations
-//! of the `crabcc` CLI are bounded by `SUBPROCESS_TIMEOUT`. Telegram-side
-//! reconnects (long-poll) are handled by teloxide's dispatcher.
+//! exponential-backoff retry on connect/timeout/5xx. CLI dispatch (bot →
+//! `crabcc-mcp` HTTP, #204 phase 2) carries its own per-request 120 s
+//! timeout via the MCP client. Telegram-side reconnects (long-poll) are
+//! handled by teloxide's dispatcher.
 //!
 //! # Run
 //!   TELEGRAM_BOT_TOKEN=<token> cargo run -p crabcc-telegram
 //!   # or via Taskfile:
 //!   task telegram-bot
 
-use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -43,7 +43,10 @@ use teloxide::{
     types::{InlineKeyboardButton, InlineKeyboardMarkup, ParseMode, WebAppInfo},
     utils::command::BotCommands,
 };
-use tokio::process::Command as TokioCommand;
+// MCP-over-HTTP dispatch (#204 phase 2) — replaces the old
+// TokioCommand::new("crabcc") subprocess shape.
+mod mcp_client;
+use mcp_client::McpConfig;
 
 // ── owner lockdown ────────────────────────────────────────────────────────────
 
@@ -55,7 +58,8 @@ const OWNER_TELEGRAM_USER_ID: u64 = 5_875_395_828;
 
 /// Hard ceiling on any `crabcc` subprocess invocation. Prevents a stuck
 /// child from wedging the bot's command handler indefinitely.
-const SUBPROCESS_TIMEOUT: Duration = Duration::from_secs(120);
+// `SUBPROCESS_TIMEOUT` removed in #204 phase 2 — dispatch is now via
+// MCP HTTP (mcp_client.rs), per-request timeout lives in `McpConfig`.
 
 /// HTTP client config — keeps a single backend hang from killing UX.
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -81,6 +85,10 @@ struct Config {
     /// Shared HTTP client built once with `connect_timeout` + `timeout`.
     /// Cloning is cheap (`Arc` internally). Mobile-network resilience knob.
     http: reqwest::Client,
+    /// MCP HTTP endpoint config — bot dispatches `crabcc <subcommand>`
+    /// invocations through this instead of a local subprocess. #204
+    /// phase 2.
+    mcp: McpConfig,
 }
 
 impl Config {
@@ -101,20 +109,21 @@ impl Config {
             Err(_) => default_serve.clone(),
         };
 
-        let public_url = std::env::var("CRABCC_PUBLIC_URL")
-            .ok()
-            .and_then(|raw| match Url::parse(&raw) {
-                Ok(u) => Some(u),
-                Err(e) => {
-                    tracing::warn!(
-                        env = "CRABCC_PUBLIC_URL",
-                        value = %raw,
-                        error = %e,
-                        "invalid public URL, ignoring"
-                    );
-                    None
-                }
-            });
+        let public_url =
+            std::env::var("CRABCC_PUBLIC_URL")
+                .ok()
+                .and_then(|raw| match Url::parse(&raw) {
+                    Ok(u) => Some(u),
+                    Err(e) => {
+                        tracing::warn!(
+                            env = "CRABCC_PUBLIC_URL",
+                            value = %raw,
+                            error = %e,
+                            "invalid public URL, ignoring"
+                        );
+                        None
+                    }
+                });
 
         // join() resolves "live" / "api/agents" against the base URL using
         // proper URL semantics (handles trailing slash). Cannot fail for an
@@ -137,6 +146,8 @@ impl Config {
             .build()
             .context("build reqwest client")?;
 
+        let mcp = McpConfig::from_env().context("read MCP config from env")?;
+
         Ok(Self {
             serve_url,
             public_url,
@@ -144,6 +155,7 @@ impl Config {
             public_live_url,
             agents_api_url,
             http,
+            mcp,
         })
     }
 }
@@ -173,49 +185,16 @@ enum Cmd {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-async fn crabcc(args: &[&str]) -> Result<String> {
-    let mut cmd = TokioCommand::new("crabcc");
-    cmd.args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        // Detach the child from the bot's controlling terminal so a Ctrl+C
-        // on the bot doesn't propagate. Important for the menubar+launchd
-        // run path where there's no controlling tty anyway.
-        .kill_on_drop(true);
-    let child = cmd.spawn().context("spawn crabcc")?;
-
-    // Hard timeout — prevents a stuck child (e.g. `crabcc index` on a
-    // very large repo, or a network-blocked subcommand) from wedging
-    // the bot's command handler indefinitely.
-    let out = match tokio::time::timeout(SUBPROCESS_TIMEOUT, child.wait_with_output()).await {
-        Ok(r) => r.context("wait")?,
-        Err(_) => {
-            tracing::warn!(
-                ?args,
-                timeout_secs = SUBPROCESS_TIMEOUT.as_secs(),
-                "crabcc subprocess timeout"
-            );
-            return Ok(format!(
-                "⌛ subprocess timed out after {}s — try a narrower request or check `crabcc doctor`",
-                SUBPROCESS_TIMEOUT.as_secs()
-            ));
-        }
-    };
-
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-    if out.status.success() {
-        Ok(if stdout.is_empty() {
-            "Done.".into()
-        } else {
-            stdout
-        })
-    } else {
-        Ok(format!(
-            "error:\n{}",
-            if stderr.is_empty() { stdout } else { stderr }
-        ))
-    }
+/// Run an allowlisted `crabcc <args…>` invocation via the host-side
+/// MCP server's `cli.run` tool (#204 phase 2). Replaces the old
+/// `TokioCommand::new("crabcc")` subprocess shape — lets the bot
+/// run inside a distroless container without a host-mounted binary.
+///
+/// Sync vs detached is auto-routed: `agent --run …` invocations go
+/// detached (server spawns + returns; bot doesn't block); everything
+/// else is request/response.
+async fn crabcc(cfg: &Config, args: &[&str]) -> Result<String> {
+    mcp_client::run(&cfg.http, &cfg.mcp, args).await
 }
 
 /// Fetch JSON with retry + exponential backoff. Mobile-network resilience:
@@ -274,12 +253,7 @@ fn truncate(s: &str, max: usize) -> &str {
 
 // ── command handlers ──────────────────────────────────────────────────────────
 
-async fn handle(
-    bot: Bot,
-    msg: Message,
-    cmd: Cmd,
-    cfg: Arc<Config>,
-) -> ResponseResult<()> {
+async fn handle(bot: Bot, msg: Message, cmd: Cmd, cfg: Arc<Config>) -> ResponseResult<()> {
     let user_id = msg.from().map(|u| u.id.0).unwrap_or(0);
     if !is_owner(user_id) {
         tracing::warn!(user_id, "rejected non-owner message");
@@ -304,21 +278,35 @@ async fn handle(
                 .parse_mode(ParseMode::MarkdownV2)
                 .await?;
             // Spawn agent non-blocking (fire and forget) so Telegram doesn't time out.
+            // mcp_client::run auto-detects `agent --run` and dispatches with
+            // `detached: true`, so the MCP server returns ~immediately —
+            // the tokio::spawn'd task here is just for safety in case the
+            // MCP HTTP request itself hangs.
             let task_clone = task.clone();
+            let cfg_clone = cfg.clone();
             tokio::spawn(async move {
-                let _ = crabcc(&["agent", "--run", &task_clone, "--backend", "ollama"]).await;
+                let _ = crabcc(
+                    &cfg_clone,
+                    &["agent", "--run", &task_clone, "--backend", "ollama"],
+                )
+                .await;
             });
             bot.edit_message_text(
                 msg.chat.id,
                 status.id,
-                format!("🦀 Agent launched: `{}`\nUse /status to check progress\\.", truncate(&task, 60)),
+                format!(
+                    "🦀 Agent launched: `{}`\nUse /status to check progress\\.",
+                    truncate(&task, 60)
+                ),
             )
             .parse_mode(ParseMode::MarkdownV2)
             .await?;
         }
 
         Cmd::Status => {
-            let raw = crabcc(&["agent-ls", "--limit", "5"]).await.unwrap_or_default();
+            let raw = crabcc(&cfg, &["agent-ls", "--limit", "5"])
+                .await
+                .unwrap_or_default();
             let text = format!("*Recent agents*\n```\n{}\n```", truncate(&raw, 3000));
             bot.send_message(msg.chat.id, text)
                 .parse_mode(ParseMode::MarkdownV2)
@@ -326,7 +314,7 @@ async fn handle(
         }
 
         Cmd::Doctor => {
-            let raw = crabcc(&["doctor"]).await.unwrap_or_default();
+            let raw = crabcc(&cfg, &["doctor"]).await.unwrap_or_default();
             let text = format!("*Doctor report*\n```\n{}\n```", truncate(&raw, 3000));
             bot.send_message(msg.chat.id, text)
                 .parse_mode(ParseMode::MarkdownV2)
@@ -335,13 +323,18 @@ async fn handle(
 
         Cmd::Search(query) => {
             if query.trim().is_empty() {
-                bot.send_message(msg.chat.id, "Usage: /search <query>").await?;
+                bot.send_message(msg.chat.id, "Usage: /search <query>")
+                    .await?;
                 return Ok(());
             }
-            let raw = crabcc(&["memory", "search", &query, "--limit", "5"])
+            let raw = crabcc(&cfg, &["memory", "search", &query, "--limit", "5"])
                 .await
                 .unwrap_or_default();
-            let text = format!("*Memory search:* `{}`\n```\n{}\n```", query, truncate(&raw, 3000));
+            let text = format!(
+                "*Memory search:* `{}`\n```\n{}\n```",
+                query,
+                truncate(&raw, 3000)
+            );
             bot.send_message(msg.chat.id, text)
                 .parse_mode(ParseMode::MarkdownV2)
                 .await?;
@@ -403,17 +396,23 @@ async fn handle(
 
         Cmd::Kill(id) => {
             if id.trim().is_empty() {
-                bot.send_message(msg.chat.id, "Usage: /kill <agent-id>").await?;
+                bot.send_message(msg.chat.id, "Usage: /kill <agent-id>")
+                    .await?;
                 return Ok(());
             }
-            let raw = crabcc(&["agent-kill", id.trim()]).await.unwrap_or_default();
-            bot.send_message(msg.chat.id, format!("Kill result:\n{}", truncate(&raw, 500)))
-                .await?;
+            let raw = crabcc(&cfg, &["agent-kill", id.trim()])
+                .await
+                .unwrap_or_default();
+            bot.send_message(
+                msg.chat.id,
+                format!("Kill result:\n{}", truncate(&raw, 500)),
+            )
+            .await?;
         }
 
         Cmd::Index => {
             bot.send_message(msg.chat.id, "⚙️ Indexing…").await?;
-            let raw = crabcc(&["index"]).await.unwrap_or_default();
+            let raw = crabcc(&cfg, &["index"]).await.unwrap_or_default();
             bot.send_message(msg.chat.id, format!("✓ Done:\n{}", truncate(&raw, 500)))
                 .await?;
         }
@@ -470,9 +469,7 @@ async fn main() -> Result<()> {
 
     let handler = Update::filter_message()
         .filter_command::<Cmd>()
-        .endpoint(move |bot: Bot, msg: Message, cmd: Cmd| {
-            handle(bot, msg, cmd, Arc::clone(&cfg))
-        });
+        .endpoint(move |bot: Bot, msg: Message, cmd: Cmd| handle(bot, msg, cmd, Arc::clone(&cfg)));
 
     Dispatcher::builder(bot, handler)
         .enable_ctrlc_handler()
@@ -528,7 +525,8 @@ mod service {
             exe = exe.display(),
             logs = logs_dir.display(),
         );
-        std::fs::write(&plist_path, plist).with_context(|| format!("write {}", plist_path.display()))?;
+        std::fs::write(&plist_path, plist)
+            .with_context(|| format!("write {}", plist_path.display()))?;
 
         // bootout existing first so an updated plist is honored.
         let uid = unsafe { libc_getuid() };
@@ -536,7 +534,11 @@ mod service {
             .args(["bootout", &format!("gui/{uid}/{LABEL}")])
             .status();
         let st = std::process::Command::new("/bin/launchctl")
-            .args(["bootstrap", &format!("gui/{uid}"), plist_path.to_str().unwrap()])
+            .args([
+                "bootstrap",
+                &format!("gui/{uid}"),
+                plist_path.to_str().unwrap(),
+            ])
             .status()
             .context("launchctl bootstrap")?;
         if !st.success() {
@@ -549,7 +551,10 @@ mod service {
             .args(["kickstart", "-k", &format!("gui/{uid}/{LABEL}")])
             .status();
         println!("✓ installed + started: {}", plist_path.display());
-        println!("  logs: {}/telegram-bot.{{out,err}}.log", logs_dir.display());
+        println!(
+            "  logs: {}/telegram-bot.{{out,err}}.log",
+            logs_dir.display()
+        );
         println!("  status: crabcc-telegram status-service");
         Ok(())
     }
@@ -622,7 +627,9 @@ mod service {
     }
 
     fn la_path() -> Result<PathBuf> {
-        Ok(home()?.join("Library/LaunchAgents").join(format!("{LABEL}.plist")))
+        Ok(home()?
+            .join("Library/LaunchAgents")
+            .join(format!("{LABEL}.plist")))
     }
 
     // tiny libc shim — avoids pulling the full `libc` crate just for getuid.

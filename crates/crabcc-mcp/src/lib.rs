@@ -310,11 +310,68 @@ pub fn tools_def() -> Vec<Value> {
 pub fn tools_def_for(dev: bool) -> Vec<Value> {
     let mut all = tools_def_symbol();
     all.extend(memory::tools_def());
+    all.extend(tools_def_cli());
     if dev {
         all.extend(tools_def_meta());
     }
     all
 }
+
+/// CLI dispatch tool surface (#204 phase 2). One tool — `cli.run` —
+/// runs a hard-allowlisted `crabcc` subcommand on the server side and
+/// returns its stdout/stderr/exit. The bot uses this to keep its
+/// existing command shape (`crabcc agent --run …`, `crabcc index`,
+/// etc.) without needing a host-mounted binary inside its container.
+///
+/// Allowlist: ALLOWED_CLI_SUBCOMMANDS. Any other first arg returns
+/// an error — keeps the surface tight even when the HTTP transport
+/// is reachable on a wider scope than loopback.
+fn tools_def_cli() -> Vec<Value> {
+    vec![tool_schema(
+        "cli.run",
+        "Run an allowlisted `crabcc` subcommand server-side and return its output. \
+         Used by the Telegram bot (and other containerized clients) to dispatch \
+         CLI work that needs host filesystem access without mounting it into \
+         the client container. First arg of `cmd` must be in the allowlist \
+         (agent / agent-ls / agent-kill / agent-guard / doctor / index / memory).",
+        json!({
+            "cmd": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "argv tail — first element is the subcommand"
+            },
+            "detached": {
+                "type": "boolean",
+                "default": false,
+                "description": "If true, spawn and return immediately (for long-running tools like `agent --run`). \
+                                Returns {spawned: true, pid}; client polls log files for progress until phase 4 \
+                                wires SSE streaming."
+            },
+            "timeout_secs": {
+                "type": "integer",
+                "default": 60,
+                "description": "Hard timeout for sync (non-detached) calls. Server kills the subprocess + \
+                                returns {timed_out: true}."
+            }
+        }),
+        &["cmd"],
+    )]
+}
+
+/// Allowlist of `crabcc` subcommands the bot can invoke via `cli.run`.
+/// Tight by design — anything that wasn't in the bot's existing
+/// subprocess shape (apps/crabcc-telegram/src/main.rs) doesn't belong
+/// here. Adding a new one is an explicit decision; document the bot
+/// command that needs it in a comment.
+const ALLOWED_CLI_SUBCOMMANDS: &[&str] = &[
+    "agent",       // /agent <task>     → `agent --run <task> --backend ollama`
+    "agent-ls",    // /status           → `agent-ls --limit 5`
+    "agent-kill",  // /kill <id>        → `agent-kill <id>`
+    "agent-guard", // future: /guard
+    "doctor",      // /doctor           → `doctor`
+    "index",       // /index            → `index`
+    "memory",      // /search <q>       → `memory search <q> --limit 5`
+];
 
 /// Meta tools — describe the server itself rather than the underlying
 /// repo. Underscored prefix keeps them visually distinct from
@@ -560,6 +617,117 @@ fn dispatch_meta(tool: &str, _args: &Value) -> Result<Option<String>> {
     }
 }
 
+/// Dispatch the `cli.run` tool (#204 phase 2).
+///
+/// Validates `cmd[0]` against [`ALLOWED_CLI_SUBCOMMANDS`] and runs the
+/// subprocess in either sync (default — wait + return output) or
+/// detached (spawn + return PID immediately) mode. Server-side
+/// equivalent of the bot's old `TokioCommand::new("crabcc")` shape.
+fn dispatch_cli_run(args: &Value) -> Result<String> {
+    let cmd = args
+        .get("cmd")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| anyhow::anyhow!("cli.run: missing or non-array `cmd`"))?;
+    if cmd.is_empty() {
+        return Err(anyhow::anyhow!("cli.run: empty `cmd`"));
+    }
+    let argv: Vec<String> = cmd
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .map(|s| s.to_string())
+                .ok_or_else(|| anyhow::anyhow!("cli.run: non-string element in `cmd`"))
+        })
+        .collect::<Result<_>>()?;
+    let subcommand = argv[0].as_str();
+    if !ALLOWED_CLI_SUBCOMMANDS.contains(&subcommand) {
+        return Err(anyhow::anyhow!(
+            "cli.run: subcommand {subcommand:?} not in allowlist \
+             (allowed: {ALLOWED_CLI_SUBCOMMANDS:?})"
+        ));
+    }
+
+    let detached = args
+        .get("detached")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let timeout_secs = args
+        .get("timeout_secs")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(60);
+
+    use std::process::{Command, Stdio};
+    let crabcc_bin = std::env::var("CRABCC_BIN").unwrap_or_else(|_| "crabcc".to_string());
+
+    if detached {
+        // Spawn + drop. Output goes to /dev/null — for `agent --run`
+        // the agent itself logs to ~/.crabcc/agents/<id>/log so the
+        // operator can tail there. Phase 4 wires SSE for live streams.
+        let child = Command::new(&crabcc_bin)
+            .args(&argv)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .stdin(Stdio::null())
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("cli.run spawn failed: {e}"))?;
+        let pid = child.id();
+        std::mem::forget(child); // detach from parent's process group
+        return Ok(json!({"spawned": true, "pid": pid, "detached": true}).to_string());
+    }
+
+    // Sync mode — capture stdout/stderr, enforce timeout. We use a
+    // tiny bounded loop on `try_wait` instead of pulling in tokio
+    // here (the MCP server is sync; mixing runtimes would force an
+    // async refactor of the whole dispatch chain).
+    let started = std::time::Instant::now();
+    let deadline = std::time::Duration::from_secs(timeout_secs);
+    let mut child = Command::new(&crabcc_bin)
+        .args(&argv)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(Stdio::null())
+        .spawn()
+        .map_err(|e| anyhow::anyhow!("cli.run spawn failed: {e}"))?;
+
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {
+                if started.elapsed() >= deadline {
+                    let _ = child.kill();
+                    return Ok(json!({
+                        "timed_out": true,
+                        "timeout_secs": timeout_secs,
+                        "stdout": "",
+                        "stderr": format!("subprocess exceeded {timeout_secs}s"),
+                        "exit_code": -1,
+                    })
+                    .to_string());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            Err(e) => return Err(anyhow::anyhow!("cli.run wait failed: {e}")),
+        }
+    }
+
+    let output = child
+        .wait_with_output()
+        .map_err(|e| anyhow::anyhow!("cli.run output collect failed: {e}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let exit_code = output.status.code().unwrap_or(-1);
+    let duration_ms = started.elapsed().as_millis() as u64;
+
+    Ok(json!({
+        "stdout": stdout,
+        "stderr": stderr,
+        "exit_code": exit_code,
+        "duration_ms": duration_ms,
+        "timed_out": false,
+    })
+    .to_string())
+}
+
 fn dispatch_tool_with(params: Option<&Value>, root: &Path, dev: bool) -> Result<String> {
     let started = std::time::Instant::now();
     let p = params.ok_or_else(|| anyhow::anyhow!("missing params"))?;
@@ -601,6 +769,13 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
     // memory-only call.
     if tool.starts_with("memory.") {
         return memory::dispatch(tool, &args, root);
+    }
+
+    // CLI dispatch tool (#204 phase 2). Bot uses this to invoke
+    // allowlisted `crabcc` subcommands server-side without needing a
+    // host-mounted binary in its container.
+    if tool == "cli.run" {
+        return dispatch_cli_run(&args);
     }
 
     let db = root.join(".crabcc").join("index.db");
