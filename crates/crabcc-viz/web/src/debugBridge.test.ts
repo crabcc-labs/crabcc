@@ -15,12 +15,50 @@ describe("debugBridge", () => {
     }
   });
 
-  it("installs window.__crabcc__ with schema v1", () => {
+  it("installs window.__crabcc__ with schema v2", () => {
     const win: { __crabcc__?: unknown } = {};
     (globalThis as unknown as { window: typeof win }).window = win;
     const bridge = installDebugBridge();
-    expect(bridge.schemaVersion).toBe(1);
+    expect(bridge.schemaVersion).toBe(2);
     expect(win.__crabcc__).toBe(bridge as unknown);
+  });
+
+  it("exposes browser-automation primitives on the bridge", () => {
+    const win: { __crabcc__?: unknown } = {};
+    (globalThis as unknown as { window: typeof win }).window = win;
+    const bridge = installDebugBridge();
+    for (const name of [
+      "navigate",
+      "goBack",
+      "goForward",
+      "pressKey",
+      "hover",
+      "type",
+      "selectOption",
+      "drag",
+      "ariaSnapshot",
+      "clickByRef",
+      "hoverByRef",
+      "typeByRef",
+    ] as const) {
+      expect(typeof (bridge as unknown as Record<string, unknown>)[name]).toBe(
+        "function",
+      );
+    }
+  });
+
+  it("ariaSnapshot returns an empty document when DOM is absent", () => {
+    const orig = (globalThis as { document?: unknown }).document;
+    delete (globalThis as { document?: unknown }).document;
+    const win: { __crabcc__?: unknown } = {};
+    (globalThis as unknown as { window: typeof win }).window = win;
+    const bridge = installDebugBridge();
+    const snap = bridge.ariaSnapshot();
+    expect(snap.role).toBe("document");
+    expect(snap.children).toEqual([]);
+    if (orig !== undefined) {
+      (globalThis as { document?: unknown }).document = orig;
+    }
   });
 
   it("snapshotInteractives returns [] without DOM", () => {

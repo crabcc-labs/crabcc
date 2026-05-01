@@ -852,6 +852,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "crabcc-chrome"
+version = "2.11.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "crabcc-cli"
 version = "2.11.0"
 dependencies = [
@@ -926,6 +941,7 @@ dependencies = [
  "criterion",
  "serde_json",
  "tempfile",
+ "tiny_http",
  "tracing",
 ]
 

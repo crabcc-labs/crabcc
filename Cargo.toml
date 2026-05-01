@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/crabcc-chrome",
     "crates/crabcc-cli",
     "crates/crabcc-core",
     "crates/crabcc-mcp",

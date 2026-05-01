@@ -1,0 +1,23 @@
+[package]
+name = "crabcc-chrome"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Native-messaging host + stdio MCP bridge for the crabcc Chrome extension."
+
+[[bin]]
+name = "crabcc-chrome"
+path = "src/main.rs"
+
+[dependencies]
+anyhow      = { workspace = true }
+clap        = { workspace = true }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+toml        = { workspace = true }
+tracing     = { workspace = true }
+tracing-subscriber = { workspace = true }
+sha2        = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

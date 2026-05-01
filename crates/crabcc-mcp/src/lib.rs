@@ -128,11 +128,10 @@ where
 /// Exposes the same JSON-RPC dispatch as [`serve_io`] / [`serve_stdio`]
 /// behind two endpoints:
 ///   - `POST /mcp`   — sync request → response. Body is a single
-///                     JSON-RPC 2.0 request; response is the JSON-RPC
-///                     reply (200) or `204 No Content` for
-///                     notifications.
+///     JSON-RPC 2.0 request; response is the JSON-RPC reply (200) or
+///     `204 No Content` for notifications.
 ///   - `GET  /health` — liveness probe; returns
-///                     `{"status":"ok","transport":"http",...}`.
+///     `{"status":"ok","transport":"http",...}`.
 ///
 /// Auth: when `token` is `Some(t)`, every `POST /mcp` must carry
 /// `Authorization: Bearer <t>`. When `None`, no auth (loopback / dev
