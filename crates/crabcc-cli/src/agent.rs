@@ -89,6 +89,55 @@ impl Backend {
     }
 }
 
+/// Where the agent process actually runs. Orthogonal to [`Backend`] —
+/// transport is the WHERE, backend is the WHAT-LLM. Default is
+/// `Subprocess` (host-side spawn, current behaviour). `Bullmq` enqueues
+/// the run on the crabcc-agents BullMQ queue and tails the per-job
+/// Redis Stream back into this run's log file; behind the
+/// `agents-bullmq` Cargo feature.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentTransport {
+    Subprocess,
+    #[cfg(feature = "agents-bullmq")]
+    Bullmq,
+}
+
+impl AgentTransport {
+    /// String form mirrors `Backend::as_str` — public for telemetry /
+    /// log lines / future `--transport` clap arg.
+    #[allow(dead_code)] // mirrors Backend::as_str; consumed by future CLI plumbing.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AgentTransport::Subprocess => "subprocess",
+            #[cfg(feature = "agents-bullmq")]
+            AgentTransport::Bullmq => "bullmq",
+        }
+    }
+    pub fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "subprocess" | "host" | "local" => Ok(AgentTransport::Subprocess),
+            "bullmq" | "queue" | "agents" => {
+                #[cfg(not(feature = "agents-bullmq"))]
+                {
+                    Err(anyhow!(
+                        "transport `bullmq` requires this binary to be built with the \
+                         `agents-bullmq` Cargo feature. \
+                         Rebuild with `cargo install --path crates/crabcc-cli \
+                         --features agents-bullmq`."
+                    ))
+                }
+                #[cfg(feature = "agents-bullmq")]
+                {
+                    Ok(AgentTransport::Bullmq)
+                }
+            }
+            other => Err(anyhow!(
+                "unknown agent transport `{other}`; supported: subprocess (default), bullmq"
+            )),
+        }
+    }
+}
+
 pub struct AgentRequest<'a> {
     pub prompt: &'a str,
     pub root: &'a Path,
@@ -96,6 +145,7 @@ pub struct AgentRequest<'a> {
     pub model: Option<String>,
     pub no_refresh: bool,
     pub backend: Backend,
+    pub transport: AgentTransport,
 }
 
 pub trait AgentRuntime {
@@ -647,8 +697,11 @@ pub fn run(req: AgentRequest<'_>) -> Result<()> {
         );
     }
 
-    let runtime = SubprocessRuntime;
-    let result = runtime.run(&req, &run_dir);
+    let result = match req.transport {
+        AgentTransport::Subprocess => SubprocessRuntime.run(&req, &run_dir),
+        #[cfg(feature = "agents-bullmq")]
+        AgentTransport::Bullmq => crate::agent_bullmq::BullmqRuntime.run(&req, &run_dir),
+    };
     run_dir.finalize();
 
     // Record completion in the singleton runs DB. Use -1 as the exit
@@ -743,6 +796,7 @@ mod tests {
             model: Some("claude-sonnet-4-6".into()),
             no_refresh: true,
             backend: Backend::Claude,
+            transport: AgentTransport::Subprocess,
         };
         run.write_meta(&req, "subprocess (host)").unwrap();
         let body = std::fs::read_to_string(&run.meta_path).unwrap();

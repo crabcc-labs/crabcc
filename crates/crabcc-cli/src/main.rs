@@ -24,6 +24,8 @@ use std::path::{Path, PathBuf};
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 mod agent;
+#[cfg(feature = "agents-bullmq")]
+mod agent_bullmq;
 mod agent_guard;
 mod agent_profile;
 mod agent_runs_db;
@@ -2177,6 +2179,13 @@ fn run_agent_run(
     root: &Path,
 ) -> Result<()> {
     let backend = agent::Backend::from_str(backend)?;
+    // Transport: opt-in via env (Phase 1). A `--transport` CLI flag is
+    // intentionally deferred — wiring through clap's deeply-nested
+    // command tree is a separate cleanup.
+    let transport = match std::env::var("CRABCC_AGENT_TRANSPORT").ok().as_deref() {
+        None | Some("") => agent::AgentTransport::Subprocess,
+        Some(t) => agent::AgentTransport::from_str(t)?,
+    };
     let loaded_profile = match profile.as_deref() {
         None => None,
         Some(p) => {
@@ -2197,6 +2206,7 @@ fn run_agent_run(
             model: model_override,
             no_refresh,
             backend,
+            transport,
         },
         loaded_profile,
     )

@@ -61,6 +61,61 @@ model_list:
       timeout: 60
       max_parallel_requests: 16
 
+  # ── Anthropic — used by crabcc-agents (mini-swe-agent + Claude Code
+  # mini-swe-agent variant) when ANTHROPIC_API_KEY is set in LiteLLM's
+  # environment. Routing through the proxy gives us centralized cost
+  # tracking, response caching, fallbacks, and a single egress
+  # surface to lock down per-network. Key is consumed by litellm
+  # itself; nothing leaks into agent containers.
+  #
+  # Per-model `rpm` / `tpm` are conservative — bumps require the
+  # actual Anthropic plan ceilings.
+  - model_name: claude-sonnet-4-6
+    litellm_params:
+      model: anthropic/claude-sonnet-4-6
+      api_key: os.environ/ANTHROPIC_API_KEY
+      timeout: 600
+      stream_timeout: 60
+      max_parallel_requests: 8
+      rpm: 50
+      tpm: 100000
+
+  - model_name: claude-haiku-4-5
+    litellm_params:
+      model: anthropic/claude-haiku-4-5-20251001
+      api_key: os.environ/ANTHROPIC_API_KEY
+      timeout: 300
+      stream_timeout: 60
+      max_parallel_requests: 16
+      rpm: 100
+      tpm: 200000
+
+  - model_name: claude-opus-4-7
+    litellm_params:
+      model: anthropic/claude-opus-4-7
+      api_key: os.environ/ANTHROPIC_API_KEY
+      timeout: 900
+      stream_timeout: 90
+      max_parallel_requests: 4
+      rpm: 25
+      tpm: 50000
+
+# Fallback chains — fire on rate-limit / timeout / overload errors.
+# Sonnet → Haiku keeps agents productive when the primary model is
+# saturated; Opus → Sonnet is a degrade-rather-than-fail story for
+# heavyweight prompts. Each chain entry is a literal model_name.
+router_settings:
+  fallbacks:
+    - claude-sonnet-4-6: ["claude-haiku-4-5"]
+    - claude-opus-4-7: ["claude-sonnet-4-6", "claude-haiku-4-5"]
+  num_retries: 2
+  retry_after: 5
+  # Round-robin across replicas of the same model_name (when defined).
+  routing_strategy: usage-based-routing-v2
+  # Cool-down period after a model returns a rate-limit error before
+  # routing back to it.
+  cooldown_time: 30
+
 # Defaults for any parameters the agent doesn't pin per-call. Mirrors
 # the four flags the .info file documents for qwen2.5-coder so a fresh
 # agent run gets deterministic-leaning code edits without each caller
@@ -71,6 +126,49 @@ litellm_settings:
   set_verbose: false
   json_logs: true
   request_timeout: 600
+
+  # Forward correlation headers (x-request-id, x-trace-id) from the
+  # client through to the upstream provider — lets us tie an agent
+  # job's BullMQ id to the eventual Anthropic call in logs.
+  forward_client_headers_to_llm_api: true
+
+  # Global retry default — per-model `rpm`/`tpm` already cap us; this
+  # handles transient 5xx and connection errors. Router-level retries
+  # take precedence (see `router_settings.num_retries`).
+  num_retries: 2
+
+  # Track per-model spend in the proxy's logs — cheap, useful for
+  # weekly review. Detailed per-key budgets need a Postgres backing
+  # store (see `general_settings.database_url`).
+  #
+  # `compression_interception` is the server-side prompt-cache loop
+  # described at https://docs.litellm.ai/docs/tutorials/prompt_caching.
+  # On every Anthropic /v1/messages call, LiteLLM:
+  #   1. compresses inbound messages before the first provider call,
+  #   2. injects the `litellm_content_retrieve` tool,
+  #   3. detects retrieval `tool_use` blocks in the model response,
+  #   4. resolves retrieval keys from the compression cache,
+  #   5. reruns the model via agentic loop and returns the final answer.
+  # SWE-bench Lite (5 problems, Opus, trigger=10k):
+  #   • prompt tokens   30,828 → 6,890 (-77.7%)
+  #   • cost / problem  $0.488 → $0.136 (-72.0%)
+  #   • file overlap    1.000 (preserved)
+  #   • content sim     0.367 → 0.373 (preserved)
+  #   • hunk overlap    0.582 → 0.361 (modest -0.221 — model targets
+  #     right files, may pick slightly different line ranges with
+  #     less surrounding context).
+  # Trigger / target are tunable per workload — defaults are the
+  # benchmark values that produced the numbers above.
+  callbacks: ["compression_interception"]
+  compression_interception_params:
+    enabled: true
+    compression_trigger: 10000
+    compression_target: 7000
+
+  success_callback: ["langfuse"]   # no-op when LANGFUSE_* env unset
+  failure_callback: []
+  redact_user_api_key_info: true
+
   default_litellm_params:
     temperature: 0.2
     top_p: 0.9
@@ -79,12 +177,18 @@ litellm_settings:
     # the /no_think token in the stop list AND the system message prefix.
     # Clients that want thinking can override per-request.
     stop: ["</think>"]
-  # Cache identical prompt+model pairs in-memory for 10 min — saves a
-  # full re-prefill on repeat agent dry-runs / smoke tests.
+
+  # Cache identical prompt+model pairs. `local` (in-memory) keeps the
+  # ollama-stack runnable standalone (no Redis dep). When LiteLLM is
+  # co-deployed with the crabcc-agents stack, set
+  # `LITELLM_CACHE_REDIS_URL=redis://redis:6379` and switch
+  # `cache_params.type` to `redis` for cross-restart cache survival.
+  # TTL bumped 600 → 1800 — agent prompts hit the same context many
+  # times during a multi-step plan; longer TTL pays off.
   cache: true
   cache_params:
     type: local
-    ttl: 600
+    ttl: 1800
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "axint": {
+      "command": "axint",
+      "args": ["mcp"],
+      "env": {
+        "AXINT_TELEMETRY": "0"
+      }
+    }
+  }
+}
