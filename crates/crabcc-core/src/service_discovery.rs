@@ -32,6 +32,11 @@ pub enum ServiceKind {
     OtlpGrpc,
     OtlpHttp,
     Ollama,
+    /// crabcc MCP server reachable over HTTP/SSE — `crabcc --mcp-http :PORT`.
+    /// Phase 0 of #204; transport implementation lands in a follow-up PR.
+    /// Distinct kind (vs HttpJsonApi) so consumers (bot, viz dashboard,
+    /// menubar Services panel) can render MCP-specific affordances.
+    Mcp,
     Generic,
 }
 
@@ -123,6 +128,12 @@ pub fn known_services() -> Vec<Service> {
             &format!("http://{}:8090", h!("crabcc-serve", "127.0.0.1")),
         ),
         resolve_service(
+            "crabcc-mcp",
+            ServiceKind::Mcp,
+            "CRABCC_MCP_URL",
+            &format!("http://{}:8091/mcp", h!("crabcc-mcp", "127.0.0.1")),
+        ),
+        resolve_service(
             "telegram-bot-web",
             ServiceKind::HttpJsonApi,
             "TELEGRAM_BOT_WEB_URL",
@@ -158,6 +169,9 @@ fn default_port_for(kind: &ServiceKind) -> u16 {
         ServiceKind::OtlpGrpc => 4317,
         ServiceKind::OtlpHttp => 4318,
         ServiceKind::HttpJsonApi => 80,
+        // crabcc MCP HTTP — distinct port so it doesn't collide with
+        // crabcc-serve (8090) or telegram-bot-web (8092). #204.
+        ServiceKind::Mcp => 8091,
         ServiceKind::Generic => 80,
     }
 }
@@ -345,6 +359,7 @@ mod tests {
         assert_eq!(default_port_for(&ServiceKind::Ollama), 11434);
         assert_eq!(default_port_for(&ServiceKind::OtlpGrpc), 4317);
         assert_eq!(default_port_for(&ServiceKind::OtlpHttp), 4318);
+        assert_eq!(default_port_for(&ServiceKind::Mcp), 8091);
     }
 
     #[test]
@@ -386,7 +401,14 @@ mod tests {
     fn known_services_contains_core_set() {
         let services = known_services();
         let names: Vec<&str> = services.iter().map(|s| s.name.as_str()).collect();
-        for required in ["redis", "litellm", "ollama", "rotel-grpc", "crabcc-serve"] {
+        for required in [
+            "redis",
+            "litellm",
+            "ollama",
+            "rotel-grpc",
+            "crabcc-serve",
+            "crabcc-mcp",
+        ] {
             assert!(
                 names.contains(&required),
                 "expected '{}' in known_services, got {:?}",
@@ -394,6 +416,31 @@ mod tests {
                 names
             );
         }
+    }
+
+    #[test]
+    fn crabcc_mcp_default_url_uses_loopback_outside_compose() {
+        // Sanity: outside compose mode the MCP entry resolves to
+        // 127.0.0.1:8091 with the /mcp path. Bot reaches this via
+        // `host.docker.internal` from inside its container.
+        // Note: this asserts the default — env override (CRABCC_MCP_URL)
+        // is intentionally not tested here to avoid env-var pollution
+        // across parallel test runs.
+        let services = known_services();
+        let mcp = services
+            .iter()
+            .find(|s| s.name == "crabcc-mcp")
+            .expect("crabcc-mcp entry");
+        assert_eq!(mcp.kind, ServiceKind::Mcp);
+        assert_eq!(mcp.port, 8091);
+        // Host depends on CRABCC_COMPOSE — assert the loopback or
+        // compose-network value, accepting either since CI may set
+        // CRABCC_COMPOSE for some test profiles.
+        assert!(
+            mcp.host == "127.0.0.1" || mcp.host == "crabcc-mcp",
+            "unexpected host: {}",
+            mcp.host
+        );
     }
 
     #[test]
