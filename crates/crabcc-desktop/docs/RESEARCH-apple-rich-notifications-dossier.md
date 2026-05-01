@@ -527,6 +527,15 @@ recursive, deep-signing shell command post-compilation:
 codesign --force --deep -s - /path/to/program.app
 ```
 
+> **Dev shortcut (low priority).** When iterating purely on the host
+> app's UI and the Notification Extension isn't on the critical path
+> for the current session, temporarily remove the `.appex` from the
+> Xcode target's **Embed App Extensions** build phase. The main `.app`
+> then signs cleanly without the nested-`.appex` requirement, the
+> codesign error disappears, and you regain a fast UI dev loop. Re-add
+> the build-phase entry whenever you need to exercise the extension
+> path again — don't ship without it.
+
 For production distribution, particularly for applications distributed
 outside of the heavily guarded Mac App Store, the entire `.app` bundle
 — inclusive of the main Rust/JavaScript binary and all nested
