@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
+import { RefreshCw, X } from "lucide-react";
 import { api, type ReindexReport } from "../api";
+import { Icon } from "./icons";
 import { logMount, logUnmount, logUserAction } from "../lifecycle";
 
 export function ReindexDialog({ onClose }: { onClose: () => void }) {
@@ -31,8 +33,12 @@ export function ReindexDialog({ onClose }: { onClose: () => void }) {
     <div className="modal" onClick={onClose}>
       <div className="modal-body" onClick={(e) => e.stopPropagation()}>
         <header>
-          <strong>↻ Re-index PWD</strong>
-          <button onClick={onClose}>✕</button>
+          <strong>
+            <Icon of={RefreshCw} size={14} aria-hidden="true" /> Re-index PWD
+          </strong>
+          <button onClick={onClose} aria-label="Close">
+            <Icon of={X} size={14} />
+          </button>
         </header>
         <div className="modal-content">
           <p>

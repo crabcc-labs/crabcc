@@ -37,12 +37,12 @@ header {
 header .brand { font-weight: 700; color: var(--accent); letter-spacing: .04em; }
 header .crumb { color: var(--muted); font-size: 12px; flex: 1; }
 header .crumb b { color: var(--fg); font-weight: 600; }
-header .live { display: inline-flex; gap: 6px; align-items: center; }
-header .live .dot {
-  width: 7px; height: 7px; border-radius: 50%;
-  background: var(--live-off);
-}
-header .live.on .dot { background: var(--live-ok); }
+header .live { display: inline-flex; gap: 6px; align-items: center; color: var(--live-off); }
+/* Lucide Circle inherits currentColor for both stroke + fill (when fill="currentColor").
+   Setting color on the parent flips both at once. */
+header .live.on { color: var(--live-ok); }
+header .live .dot { display: block; }
+header .nav-strip .nav-link-ico { opacity: .8; vertical-align: -2px; margin-right: 4px; }
 header .actions { display: flex; gap: 6px; }
 header .actions button, header .actions a {
   background: var(--panel); color: var(--fg);
@@ -232,7 +232,7 @@ main.layout-main {
 }
 .telemetry-row:hover { background: rgba(255,255,255,0.03); }
 .telemetry-dot {
-  width: 6px; height: 6px; border-radius: 50%;
+  display: inline-flex; align-items: center;
   margin-top: 5px; align-self: start;
 }
 .telemetry-age {
@@ -550,6 +550,7 @@ main.layout-main {
   color: #ffb547;
   font-family: ui-monospace, monospace;
 }
+.service-state { display: inline-flex; align-items: center; gap: 4px; }
 .service-state.ok   { color: #6df0ff; }
 .service-state.down { color: #ff8c2a; font-weight: 600; }
 
@@ -827,7 +828,9 @@ header .icon-btn:focus-visible {
   font-size: 11px; font-weight: 600; text-transform: uppercase;
   color: var(--muted); letter-spacing: .06em;
   margin: 0; flex: 1;
+  display: inline-flex; align-items: center; gap: 6px;
 }
+.dash-tile-ico { opacity: .85; }
 .dash-tile-meta { color: var(--muted); }
 .dash-tile-open {
   font-size: 11px; color: var(--accent);
@@ -861,12 +864,12 @@ header .icon-btn:focus-visible {
   display: flex; align-items: center; gap: 8px;
 }
 .dash-kpi-dot {
-  width: 9px; height: 9px; border-radius: 50%;
-  background: var(--live-off);
+  display: inline-flex; align-items: center; justify-content: center;
+  color: var(--live-off);
   flex-shrink: 0;
 }
 .dash-kpi-dot.on {
-  background: var(--live-ok);
+  color: var(--live-ok);
   box-shadow: 0 0 8px rgba(46, 204, 113, .5);
 }
 .dash-kpi-big {
@@ -1127,12 +1130,17 @@ header .icon-btn:focus-visible {
 .logs-row.expanded { display: block; }
 .logs-row:hover { background: var(--bg); }
 .logs-row.selected { background: var(--bg); border-left: 2px solid var(--accent); padding-left: 10px; }
-.logs-level-dot { width: 8px; height: 8px; border-radius: 50%; align-self: center; }
-.logs-level-dot.logs-level-TRACE { background: #8aa; }
-.logs-level-dot.logs-level-DEBUG { background: #6cf; }
-.logs-level-dot.logs-level-INFO { background: #5dd; }
-.logs-level-dot.logs-level-WARN { background: #fb5; }
-.logs-level-dot.logs-level-ERROR { background: #f55; }
+.logs-level-dot {
+  display: inline-flex; align-items: center; justify-content: center;
+  align-self: center;
+}
+/* The level colour now drives the inner Lucide Circle's currentColor. */
+.logs-level-dot.logs-level-TRACE { color: #8aa; }
+.logs-level-dot.logs-level-DEBUG { color: #6cf; }
+.logs-level-dot.logs-level-INFO { color: #5dd; }
+.logs-level-dot.logs-level-WARN { color: #fb5; }
+.logs-level-dot.logs-level-ERROR { color: #f55; }
+.logs-filter-ico { color: var(--muted); }
 .logs-age { color: var(--muted); font-size: 11px; }
 .logs-target { color: var(--accent); font-weight: 600; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; }
@@ -1175,7 +1183,10 @@ header .icon-btn:focus-visible {
   font-size: 11px; font-weight: 600; text-transform: uppercase;
   color: var(--muted); letter-spacing: .06em;
   margin: 0 0 8px 0;
+  display: inline-flex; align-items: center; gap: 6px;
 }
+.system-card-ico { opacity: .85; }
+.system-link { display: inline-flex; align-items: center; gap: 4px; }
 .system-dl {
   display: grid;
   grid-template-columns: 130px 1fr;
@@ -1200,6 +1211,5 @@ header .icon-btn:focus-visible {
 }
 .system-debug td { padding: 4px 0; word-break: break-all; }
 .system-dot {
-  display: inline-block; width: 8px; height: 8px;
-  border-radius: 50%; vertical-align: middle;
+  display: inline-flex; align-items: center; vertical-align: middle;
 }

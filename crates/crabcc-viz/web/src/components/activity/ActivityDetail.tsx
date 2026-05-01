@@ -3,6 +3,8 @@
 // duration), plus copy + pin actions.
 
 import { memo, useCallback } from "react";
+import { X } from "lucide-react";
+import { Icon } from "../icons";
 import type { ActivityHit } from "./types";
 
 interface Props {
@@ -47,8 +49,14 @@ export const ActivityDetail = memo(function ActivityDetail({
         <button type="button" className="activity-copy" onClick={onCopy} title="Copy query">
           copy
         </button>
-        <button type="button" className="activity-close" onClick={onClose} title="Close detail">
-          ×
+        <button
+          type="button"
+          className="activity-close"
+          onClick={onClose}
+          title="Close detail"
+          aria-label="Close detail"
+        >
+          <Icon of={X} size={12} />
         </button>
       </div>
       <div className="activity-detail-body">

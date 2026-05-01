@@ -15,6 +15,8 @@ import {
   useRef,
   useState,
 } from "react";
+import { Search } from "lucide-react";
+import { Icon } from "../icons";
 import { ParentSize } from "../graph/ParentSize";
 import {
   GraphCanvas,
@@ -225,15 +227,18 @@ function Inner({ width, height, layout, titles, stats, selectId, onClearSelect }
           controlRef={ctlRef}
         />
         <div className="knowledge-overlay">
-          <input
-            type="text"
-            className="knowledge-search"
-            placeholder="search drawer title or id…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            spellCheck={false}
-            aria-label="Search knowledge graph"
-          />
+          <span className="knowledge-search-wrap">
+            <Icon of={Search} size={12} className="knowledge-search-ico" aria-hidden="true" />
+            <input
+              type="text"
+              className="knowledge-search"
+              placeholder="search drawer title or id…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              spellCheck={false}
+              aria-label="Search knowledge graph"
+            />
+          </span>
           <span className="knowledge-meta">
             {settled.nodes.length} drawers · {settled.links.length} refs
             {stats.embeddings ? " · embeddings" : ""}

@@ -7,7 +7,9 @@
 // affordance is discoverable but honest about its current state.
 
 import { memo } from "react";
+import { X } from "lucide-react";
 import { logUserAction } from "../../lifecycle";
+import { Icon } from "../icons";
 import type { AgentSummary } from "./types";
 import { uptimeLabel } from "./store";
 import { useAgentLog } from "./useAgentLog";
@@ -59,7 +61,7 @@ export const AgentDetail = memo(function AgentDetail({
           title="Collapse (Esc)"
           aria-label="Collapse"
         >
-          ×
+          <Icon of={X} size={12} />
         </button>
       </div>
       <dl className="agents-detail-grid">

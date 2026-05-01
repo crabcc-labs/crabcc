@@ -8,6 +8,8 @@
 // through to the backend default (`web-ingest`) when blank.
 
 import { useCallback, useState } from "react";
+import { Inbox, Send, X } from "lucide-react";
+import { Icon } from "../icons";
 import { useIngest, type IngestItem } from "./useIngest";
 
 interface Props {
@@ -64,6 +66,10 @@ export function IngestBox({ onIngested, onSelect }: Props) {
 
   return (
     <section className="knowledge-ingest" aria-label="Ingest URLs or text">
+      <div className="knowledge-ingest-label">
+        <Icon of={Inbox} size={14} aria-hidden="true" />
+        <span>paste URLs or freeform text</span>
+      </div>
       <textarea
         className="knowledge-ingest-textarea"
         placeholder="paste URLs or freeform text — one URL per line works, or mix them in prose"
@@ -104,7 +110,7 @@ export function IngestBox({ onIngested, onSelect }: Props) {
               data-testid="ingest-read"
               aria-label="Read and ingest"
             >
-              read
+              <Icon of={Send} size={12} aria-hidden="true" /> read
             </button>
           )}
           {ingesting && (
@@ -162,7 +168,7 @@ function IngestResults({ result, onSelect, onDismiss }: ResultsProps) {
           onClick={onDismiss}
           aria-label="Dismiss results"
         >
-          ×
+          <Icon of={X} size={12} />
         </button>
       </header>
       {result.ingested.length > 0 && (

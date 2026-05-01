@@ -4,6 +4,8 @@
 // wrap keeps URLs / code snippets readable without horizontal scroll.
 
 import { useEffect, useState } from "react";
+import { X } from "lucide-react";
+import { Icon } from "../icons";
 import { fetchDrawer } from "./useKnowledgeData";
 import type { DrawerDetail } from "./types";
 
@@ -52,7 +54,7 @@ export function DrawerPanel({ id, onClose }: Props) {
           onClick={onClose}
           aria-label="Close panel"
           title="Close (Esc)"
-        >×</button>
+        ><Icon of={X} size={12} /></button>
       </header>
       {loading && <p className="knowledge-panel-meta">loading…</p>}
       {err && <p className="knowledge-panel-meta error">{err}</p>}

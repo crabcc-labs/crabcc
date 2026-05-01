@@ -19,9 +19,11 @@ import {
   useRef,
   useState,
 } from "react";
+import { Circle, Filter } from "lucide-react";
 import type { TelemetryEvent } from "../../api";
 import { logMount, logUnmount } from "../../lifecycle";
 import { useNow } from "../../useNow";
+import { Icon } from "../icons";
 import {
   fmtAge,
   levelBreakdown,
@@ -173,6 +175,7 @@ export const LogsView = memo(function LogsView({ events, source }: Props) {
 
       {/* ── filter bar ──────────────────────────────────────────── */}
       <div className="logs-filters">
+        <Icon of={Filter} size={14} className="logs-filter-ico" aria-hidden="true" />
         <input
           ref={searchRef}
           type="text"
@@ -237,7 +240,9 @@ export const LogsView = memo(function LogsView({ events, source }: Props) {
                   setExpanded((cur) => (cur === i ? null : i));
                 }}
               >
-                <span className={`logs-level-dot logs-level-${e.level}`} />
+                <span className={`logs-level-dot logs-level-${e.level}`}>
+                  <Icon of={Circle} size={8} fill="currentColor" />
+                </span>
                 <span className="logs-age" title={new Date(e.ts * 1000).toISOString()}>
                   {fmtAge(now - e.ts)}
                 </span>

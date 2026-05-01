@@ -3,6 +3,8 @@
 // change.
 
 import { memo } from "react";
+import { Circle } from "lucide-react";
+import { Icon } from "../icons";
 import { uptimeLabel } from "./store";
 import type { AgentSummary } from "./types";
 
@@ -29,7 +31,13 @@ export const AgentRow = memo(function AgentRow({
   return (
     <button type="button" className={cls} onClick={onPick}>
       <span className={`agents-pill agents-pill-${agent.status}`}>
-        {agent.status === "running" ? "●" : "○"} {agent.status}
+        <Icon
+          of={Circle}
+          size={9}
+          fill={agent.status === "running" ? "currentColor" : "none"}
+          aria-hidden="true"
+        />{" "}
+        {agent.status}
       </span>
       <span className="agents-id" title={agent.id}>
         {agent.id.slice(0, 8)}

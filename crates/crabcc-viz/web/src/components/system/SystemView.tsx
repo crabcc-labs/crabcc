@@ -9,10 +9,19 @@
 //   - OpenAPI spec link
 
 import { memo, useEffect, useState } from "react";
+import {
+  Bug,
+  Circle,
+  ExternalLink,
+  Key,
+  Server,
+  Workflow,
+} from "lucide-react";
 import type { AgentSummary } from "../../api";
 import { logMount, logUnmount } from "../../lifecycle";
 import { useNow } from "../../useNow";
 import { AgentsPanel } from "../AgentsPanel";
+import { Icon } from "../icons";
 import { OllamaKeyPanel } from "../OllamaKeyPanel";
 import { ServicesPanel } from "../ServicesPanel";
 import { fmtAge } from "../dashboard/selectors";
@@ -49,7 +58,10 @@ export const SystemView = memo(function SystemView({ agents, bootstrap, debug }:
     <main className="system-view">
       {/* ── overview card ───────────────────────────────────────── */}
       <section className="system-card">
-        <h3 className="system-card-title">overview</h3>
+        <h3 className="system-card-title">
+          <Icon of={Server} size={14} className="system-card-ico" aria-hidden="true" />
+          overview
+        </h3>
         <dl className="system-dl">
           <dt>repo</dt>
           <dd><code>{bootstrap?.repo ?? "?"}</code></dd>
@@ -61,8 +73,8 @@ export const SystemView = memo(function SystemView({ agents, bootstrap, debug }:
           <dd>{fmtAge(now - mountedAt)}</dd>
           <dt>OpenAPI</dt>
           <dd>
-            <a href="/api/openapi.yaml" target="_blank" rel="noreferrer">
-              openapi.yaml
+            <a href="/api/openapi.yaml" target="_blank" rel="noreferrer" className="system-link">
+              openapi.yaml <Icon of={ExternalLink} size={11} aria-hidden="true" />
             </a>
           </dd>
         </dl>
@@ -70,25 +82,37 @@ export const SystemView = memo(function SystemView({ agents, bootstrap, debug }:
 
       {/* ── services ────────────────────────────────────────────── */}
       <section className="system-card system-card-wide">
-        <h3 className="system-card-title">services</h3>
+        <h3 className="system-card-title">
+          <Icon of={Server} size={14} className="system-card-ico" aria-hidden="true" />
+          services
+        </h3>
         <ServicesPanel />
       </section>
 
       {/* ── agents (4 tabs) ─────────────────────────────────────── */}
       <section className="system-card system-card-wide">
-        <h3 className="system-card-title">agents</h3>
+        <h3 className="system-card-title">
+          <Icon of={Workflow} size={14} className="system-card-ico" aria-hidden="true" />
+          agents
+        </h3>
         <AgentsPanel agents={agents} />
       </section>
 
       {/* ── ollama key ──────────────────────────────────────────── */}
       <section className="system-card">
-        <h3 className="system-card-title">ollama api key</h3>
+        <h3 className="system-card-title">
+          <Icon of={Key} size={14} className="system-card-ico" aria-hidden="true" />
+          ollama api key
+        </h3>
         <OllamaKeyPanel />
       </section>
 
       {/* ── debug pane (non-floating) ───────────────────────────── */}
       <section className="system-card system-card-wide">
-        <h3 className="system-card-title">debug</h3>
+        <h3 className="system-card-title">
+          <Icon of={Bug} size={14} className="system-card-ico" aria-hidden="true" />
+          debug
+        </h3>
         <table className="system-debug">
           <tbody>
             <tr>
@@ -96,8 +120,10 @@ export const SystemView = memo(function SystemView({ agents, bootstrap, debug }:
               <td>
                 <span
                   className="system-dot"
-                  style={{ background: debug.sseConnected ? "#4d7" : "#888" }}
-                />{" "}
+                  style={{ color: debug.sseConnected ? "#4d7" : "#888" }}
+                >
+                  <Icon of={Circle} size={9} fill="currentColor" aria-hidden="true" />
+                </span>{" "}
                 {debug.sseConnected ? "connected" : "disconnected"} ·{" "}
                 <code>{debug.sseUrl}</code>
               </td>

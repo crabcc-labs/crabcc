@@ -5,6 +5,8 @@
 // (id, dir) pair so the button can disable + show a spinner without
 // us needing a global request-state map.
 
+import { X } from "lucide-react";
+import { Icon } from "../icons";
 import type { SimNode } from "./types";
 import { colorFor } from "./GraphCanvas";
 
@@ -28,7 +30,7 @@ export function NodeInfo({ node, inDeg, outDeg, expanding, onClose, onExpand }: 
           onClick={onClose}
           aria-label="Close panel"
           title="Close (Esc)"
-        >×</button>
+        ><Icon of={X} size={12} /></button>
       </div>
       <dl className="graph-info-grid">
         <dt>depth</dt><dd>{node.depth}</dd>

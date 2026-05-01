@@ -13,9 +13,19 @@
 //   - this file is a slim orchestrator
 
 import { Suspense, lazy, memo, useEffect } from "react";
+import {
+  Activity,
+  Circle,
+  Database,
+  Server,
+  Share2,
+  Sparkle,
+  Workflow,
+} from "lucide-react";
 import type { ActivityHit, AgentSummary, OtlpHealth, TelemetryEvent } from "../../api";
 import { logMount, logUnmount } from "../../lifecycle";
 import { useNow } from "../../useNow";
+import { Icon } from "../icons";
 import { DashTile } from "./DashTile";
 import { Sparkline } from "./Sparkline";
 import {
@@ -80,9 +90,13 @@ export const DashboardHome = memo(function DashboardHome({
   return (
     <div className="dash-grid">
       {/* ── KPI strip ───────────────────────────────────────────── */}
-      <DashTile title="live" compact area="kpi-live">
+      <DashTile title="live" icon={Sparkle} compact area="kpi-live">
         <div className="dash-kpi">
-          <span className={`dash-kpi-dot${connected ? " on" : ""}`} aria-hidden="true" />
+          {/* Crisp Lucide circle replaces the CSS-only dot — colour
+              still flows from the .dash-kpi-dot{,.on} CSS rules. */}
+          <span className={`dash-kpi-dot${connected ? " on" : ""}`} aria-hidden="true">
+            <Icon of={Circle} size={12} fill="currentColor" />
+          </span>
           <span className="dash-kpi-big">{connected ? "online" : "offline"}</span>
           <span className="dash-kpi-sub">
             {connected
@@ -96,6 +110,7 @@ export const DashboardHome = memo(function DashboardHome({
 
       <DashTile
         title="agents"
+        icon={Workflow}
         compact
         area="kpi-agents"
         meta={
@@ -122,6 +137,7 @@ export const DashboardHome = memo(function DashboardHome({
 
       <DashTile
         title="activity"
+        icon={Activity}
         compact
         area="kpi-activity"
         openHref="#/logs"
@@ -134,6 +150,7 @@ export const DashboardHome = memo(function DashboardHome({
 
       <DashTile
         title="services"
+        icon={Server}
         compact
         area="kpi-services"
         openHref="#/system"
@@ -158,7 +175,7 @@ export const DashboardHome = memo(function DashboardHome({
       </DashTile>
 
       {/* ── relations graph (large) ─────────────────────────────── */}
-      <DashTile title="relations graph" area="graph" openHref="/graph" openLabel="interactive">
+      <DashTile title="relations graph" icon={Share2} area="graph" openHref="/graph" openLabel="interactive">
         <div className="dash-graph-host">
           <Suspense
             fallback={
@@ -251,6 +268,7 @@ export const DashboardHome = memo(function DashboardHome({
       {/* ── memory drawers (last 5) ─────────────────────────────── */}
       <DashTile
         title="memory drawers"
+        icon={Database}
         area="memory"
         openHref="#/knowledge"
         openLabel="knowledge graph"

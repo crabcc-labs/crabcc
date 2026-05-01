@@ -3,6 +3,8 @@
 // anywhere on the page.
 
 import { forwardRef, memo, type ReactNode } from "react";
+import { RefreshCw } from "lucide-react";
+import { Icon } from "../icons";
 
 interface Props {
   value: string;
@@ -47,7 +49,7 @@ export const AgentSearch = memo(
             title="Refresh (r)"
             aria-label="Refresh"
           >
-            ↻
+            <Icon of={RefreshCw} size={12} />
           </button>
         ) : null}
       </div>

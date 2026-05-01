@@ -4,6 +4,8 @@
 // the parent to filter or fetch a fresh `/api/graph?root=…` snapshot.
 
 import { useEffect, useId, useRef, useState } from "react";
+import { X } from "lucide-react";
+import { Icon } from "../icons";
 
 const LIMITS = [5, 10, 20, 40, 80];
 
@@ -60,7 +62,7 @@ export function Controls({
             }}
             aria-label="Clear search"
             title="Clear"
-          >×</button>
+          ><Icon of={X} size={12} /></button>
         )}
       </form>
       <label className="graph-slider" htmlFor={limitId}>
