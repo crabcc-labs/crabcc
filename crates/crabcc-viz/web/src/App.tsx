@@ -1,39 +1,63 @@
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+// AppShell — the dashboard's top-level orchestrator. Owns:
+//   - bootstrap polling (bumps on first load, cheap thereafter)
+//   - the SSE connection (single source of truth for activity + agents)
+//   - telemetry polling + OTLP health pings
+//   - settings panel state + reindex modal
+//
+// Each route (`<DashboardHome />`, `<LogsView />`, `<SystemView />`,
+// `<KnowledgeView />`) is a code-split chunk that consumes the data
+// owned here. The shell also renders the header (with the new nav
+// strip) and the modal dialogs.
+
+import {
+  Suspense,
+  lazy,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { Header } from "./components/Header";
-import { ActivityPanel } from "./components/ActivityPanel";
-import { AgentsPanel } from "./components/AgentsPanel";
-import { OllamaKeyPanel } from "./components/OllamaKeyPanel";
-import { ServicesPanel } from "./components/ServicesPanel";
 import { ReindexDialog } from "./components/ReindexDialog";
-import { TelemetryPanel } from "./components/TelemetryPanel";
-import { DebugPanel } from "./components/DebugPanel";
 import {
   SettingsPanel,
   loadSettings,
   saveSettings,
   type Settings,
 } from "./components/SettingsPanel";
-import { usePolling } from "./usePolling";
 import { useEventStream } from "./useEventStream";
+import { usePolling } from "./usePolling";
 import { updateDebugBridge } from "./debugBridge";
 import { logFetchOk, logUserAction } from "./lifecycle";
+import { useRoute } from "./router";
 import {
   api,
   type ActivityHit,
   type AgentSummary,
+  type OtlpHealth,
   type TelemetryEvent,
   type TelemetrySource,
-  type OtlpHealth,
 } from "./api";
 
-// Code-split the graph: ~150 KB of d3-force + canvas hit-testing that
-// the dashboard doesn't need on its critical path. Suspense renders the
-// existing placeholder styling while the chunk loads.
-const RelationsGraph = lazy(() =>
-  import("./components/RelationsGraph").then((m) => ({ default: m.RelationsGraph })),
+// Each route is a lazy chunk so the dashboard's first paint doesn't
+// pull in the logs / system / knowledge bundles. esbuild's `splitting`
+// is wired in `esbuild.config.mjs` — even when it's off (current
+// `format: iife`), `lazy()` still defers component construction.
+const DashboardHome = lazy(() =>
+  import("./components/dashboard").then((m) => ({ default: m.DashboardHome })),
+);
+const LogsView = lazy(() =>
+  import("./components/logs").then((m) => ({ default: m.LogsView })),
+);
+const SystemView = lazy(() =>
+  import("./components/system").then((m) => ({ default: m.SystemView })),
+);
+const KnowledgeView = lazy(() =>
+  import("./components/knowledge").then((m) => ({ default: m.KnowledgeView })),
 );
 
 export function App() {
+  const route = useRoute();
   const [reindexOpen, setReindexOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settings, setSettings] = useState<Settings>(loadSettings);
@@ -41,7 +65,7 @@ export function App() {
   const [agents, setAgents] = useState<AgentSummary[]>([]);
 
   // Mirror activity / agent counts onto the debug bridge so the Chrome
-  // extension (#184) can read them via chrome.scripting.executeScript.
+  // extension can read them via chrome.scripting.executeScript.
   useEffect(() => {
     updateDebugBridge({ activityCount: activity.length });
   }, [activity.length]);
@@ -79,13 +103,14 @@ export function App() {
   });
   const otlpData: OtlpHealth | null = otlpHealth.data ?? null;
 
+  // Track the last SSE connect-flip so the dashboard's "live" KPI tile
+  // can show "connected for Xs". Without this, the dashboard would just
+  // show "online" with no temporal anchor.
+  const [liveSince, setLiveSince] = useState(0);
+  const prevConnected = useRef(false);
+
   // Single SSE stream replaces three polling loops. The dashboard's
   // "live" indicator binds to the connection state.
-  //
-  // The wire protocol uses `events` / `results`, while the OpenAPI
-  // contract names them `items` / `count`. Accept either — the
-  // dashboard was silently dropping real activity for a while because
-  // of this mismatch.
   const { connected } = useEventStream("/api/events", {
     activity: (p) => {
       const data = p as
@@ -119,16 +144,29 @@ export function App() {
     },
   });
 
-  const renderCount = useRef(0);
-  renderCount.current += 1;
+  useEffect(() => {
+    if (connected && !prevConnected.current) {
+      setLiveSince(Date.now());
+    }
+    prevConnected.current = connected;
+  }, [connected]);
+
+  const bs = bootstrap.data
+    ? {
+        repo: bootstrap.data.repo,
+        root: bootstrap.data.root,
+        version: bootstrap.data.version,
+      }
+    : null;
 
   return (
     <div className="layout">
       <Header
-        repo={bootstrap.data?.repo ?? "?"}
-        root={bootstrap.data?.root ?? "?"}
-        version={bootstrap.data?.version ?? "?"}
+        repo={bs?.repo ?? "?"}
+        root={bs?.root ?? "?"}
+        version={bs?.version ?? "?"}
         live={connected}
+        route={route}
         onReindex={() => {
           logUserAction("reindex requested");
           setReindexOpen(true);
@@ -137,65 +175,40 @@ export function App() {
           logUserAction("random-query requested");
           return api.randomQuery().catch(() => {});
         }}
+        onSettings={() => setSettingsOpen(true)}
       />
-      <main>
-        <section className="col">
-          <h2>
-            tool calls <span className="count">{activity.length}</span>
-          </h2>
-          <ActivityPanel items={activity} />
-        </section>
-        <section className="col stage">
-          <Suspense
-            fallback={
-              <div className="placeholder graph-placeholder">
-                <span className="graph-spinner" /> loading relations graph…
-              </div>
-            }
-          >
-            <RelationsGraph limit={20} />
-          </Suspense>
-        </section>
-        <section className="col">
-          <AgentsPanel agents={agents} />
-          <h2 style={{ marginTop: "1.2em" }}>services</h2>
-          <ServicesPanel />
-          <h2 style={{ marginTop: "1.2em" }}>ollama api key</h2>
-          <OllamaKeyPanel />
-          <h2 style={{ marginTop: "1.2em" }}>
-            telemetry <span className="count">{telEvents.length}</span>
-            <button
-              className="settings-gear"
-              onClick={() => setSettingsOpen(true)}
-              title="Dashboard settings"
-              aria-label="Open settings"
-            >⚙</button>
-          </h2>
-          <TelemetryPanel
-            events={telEvents}
-            source={telSource}
-            otlpHealth={otlpData}
-            otlpPollMs={settings.otlpPollMs}
+      <Suspense fallback={<div className="placeholder">loading view…</div>}>
+        {route === "knowledge" ? (
+          <KnowledgeView />
+        ) : route === "logs" ? (
+          <LogsView events={telEvents} source={telSource} />
+        ) : route === "system" ? (
+          <SystemView
+            agents={agents}
+            bootstrap={bs}
+            debug={{
+              sseConnected: connected,
+              sseUrl: "/api/events",
+              activityCount: activity.length,
+              agentCount: agents.length,
+              telemetryCount: telEvents.length,
+              telemetryCursor: telemetry.data?.cursor ?? 0,
+              telemetryPath: telSource?.path ?? "",
+              telemetryExists: telSource?.exists ?? false,
+            }}
           />
-        </section>
-      </main>
-      <DebugPanel
-        info={{
-          sseConnected: connected,
-          sseUrl: "/api/events",
-          activityCount: activity.length,
-          agentCount: agents.length,
-          telemetryCount: telEvents.length,
-          telemetryCursor: telemetry.data?.cursor ?? 0,
-          telemetryPath: telSource?.path ?? "",
-          telemetryExists: telSource?.exists ?? false,
-          lastTelemetryPollMs: telemetry.data ? Date.now() : 0,
-          bootstrapRoot: bootstrap.data?.root ?? "?",
-          bootstrapRepo: bootstrap.data?.repo ?? "?",
-          bootstrapVersion: bootstrap.data?.version ?? "?",
-          rendersSinceMount: renderCount.current,
-        }}
-      />
+        ) : (
+          <DashboardHome
+            connected={connected}
+            liveSince={liveSince}
+            activity={activity}
+            agents={agents}
+            telEvents={telEvents}
+            otlp={otlpData}
+            bootstrap={bs}
+          />
+        )}
+      </Suspense>
       {reindexOpen && <ReindexDialog onClose={() => setReindexOpen(false)} />}
       {settingsOpen && (
         <SettingsPanel

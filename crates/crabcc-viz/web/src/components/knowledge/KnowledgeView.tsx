@@ -23,7 +23,6 @@ import {
 import { useForceLayout } from "../graph/useForceLayout";
 import { useKeyboardControls } from "../graph/useKeyboardControls";
 import type { Layout, SimNode } from "../graph/types";
-import { Header } from "../Header";
 import { useKnowledgeGraph } from "./useKnowledgeData";
 import {
   fromSnapshot,
@@ -35,19 +34,13 @@ import {
 import { DrawerPanel } from "./DrawerPanel";
 import { EmptyState } from "./EmptyState";
 import { IngestBox } from "./IngestBox";
-import { api } from "../../api";
-import { logUserAction, logFetchOk } from "../../lifecycle";
-import { usePolling } from "../../usePolling";
+import { logFetchOk } from "../../lifecycle";
 
 const DEFAULT_LIMIT = 200;
 
 export function KnowledgeView() {
   const [limit] = useState(DEFAULT_LIMIT);
   const snap = useKnowledgeGraph(limit);
-  const bootstrap = usePolling(api.bootstrap, 0, [], {
-    source: "/api/bootstrap",
-    summarize: (b) => `repo=${b.repo}`,
-  });
 
   // Lifted up so the IngestBox can drive selection from outside the
   // graph stage. `selectId` survives a refetch — the side panel
@@ -82,89 +75,55 @@ export function KnowledgeView() {
     snap.refetch();
   }, [snap]);
 
+  // The shell (App.tsx) renders the global Header + layout chrome — this
+  // view just produces the `<main>` content. That keeps a single source
+  // of truth for the nav strip + active-route highlight.
+
   if (snap.err) {
     return (
-      <div className="layout">
-        <KnowledgeHeader bootstrap={bootstrap.data} />
-        <main className="knowledge-main">
-          <IngestBox onIngested={onIngested} onSelect={setSelectId} />
-          <div className="placeholder">
-            <strong>memory graph error</strong>
-            <small>{snap.err}</small>
-          </div>
-        </main>
-      </div>
+      <main className="knowledge-main">
+        <IngestBox onIngested={onIngested} onSelect={setSelectId} />
+        <div className="placeholder">
+          <strong>memory graph error</strong>
+          <small>{snap.err}</small>
+        </div>
+      </main>
     );
   }
 
   if (snap.loading && !layout) {
     return (
-      <div className="layout">
-        <KnowledgeHeader bootstrap={bootstrap.data} />
-        <main className="knowledge-main">
-          <IngestBox onIngested={onIngested} onSelect={setSelectId} />
-          <div className="placeholder">
-            <span className="graph-spinner" /> loading knowledge graph…
-          </div>
-        </main>
-      </div>
+      <main className="knowledge-main">
+        <IngestBox onIngested={onIngested} onSelect={setSelectId} />
+        <div className="placeholder">
+          <span className="graph-spinner" /> loading knowledge graph…
+        </div>
+      </main>
     );
   }
 
   if (!snap.data || snap.data.stats.drawers === 0) {
     return (
-      <div className="layout">
-        <KnowledgeHeader bootstrap={bootstrap.data} />
-        <main className="knowledge-main">
-          <IngestBox onIngested={onIngested} onSelect={setSelectId} />
-          <EmptyState />
-        </main>
-      </div>
+      <main className="knowledge-main">
+        <IngestBox onIngested={onIngested} onSelect={setSelectId} />
+        <EmptyState />
+      </main>
     );
   }
 
   if (!layout) return null;
 
   return (
-    <div className="layout">
-      <KnowledgeHeader bootstrap={bootstrap.data} />
-      <main className="knowledge-main">
-        <IngestBox onIngested={onIngested} onSelect={setSelectId} />
-        <KnowledgeStage
-          layout={layout}
-          titles={titles}
-          stats={snap.data.stats}
-          selectId={selectId}
-          onClearSelect={() => setSelectId(null)}
-        />
-      </main>
-    </div>
-  );
-}
-
-interface HeaderProps {
-  bootstrap: { repo?: string; root?: string; version?: string } | null | undefined;
-}
-
-/// Wraps the existing `<Header>` so the knowledge view's chrome
-/// matches the dashboard exactly, including the live-link buttons.
-/// Reindex/random-query are still meaningful from this view.
-function KnowledgeHeader({ bootstrap }: HeaderProps) {
-  return (
-    <Header
-      repo={bootstrap?.repo ?? "?"}
-      root={bootstrap?.root ?? "?"}
-      version={bootstrap?.version ?? "?"}
-      live={true}
-      onReindex={() => {
-        logUserAction("reindex requested (knowledge view)");
-        return api.reindex().catch(() => {});
-      }}
-      onRandomQuery={() => {
-        logUserAction("random-query requested (knowledge view)");
-        return api.randomQuery().catch(() => {});
-      }}
-    />
+    <main className="knowledge-main">
+      <IngestBox onIngested={onIngested} onSelect={setSelectId} />
+      <KnowledgeStage
+        layout={layout}
+        titles={titles}
+        stats={snap.data.stats}
+        selectId={selectId}
+        onClearSelect={() => setSelectId(null)}
+      />
+    </main>
   );
 }
 

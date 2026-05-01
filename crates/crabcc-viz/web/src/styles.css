@@ -54,6 +54,15 @@ header .actions button:hover, header .actions a:hover {
   background: var(--bg); border-color: var(--accent);
 }
 main {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column;
+  overflow: auto;
+}
+/* Legacy 3-col grid retained as fallback for any view that still uses
+   <main className="layout-main"> — currently none after the dashboard
+   redesign, but keeping the rule means a future panel doesn't have to
+   re-discover the look. */
+main.layout-main {
   display: grid;
   grid-template-columns: 280px 1fr 280px;
   gap: 12px; padding: 12px;
@@ -694,3 +703,503 @@ main {
 /* Reload indicator shown inside the "Apply & reload" button */
 .settings-reload-icon { margin-right: 5px; display: inline-block; animation: spin 0.8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ========================================================================
+   Header nav strip (replaces the loose actions row).
+   ======================================================================== */
+header .nav-strip {
+  display: flex; gap: 2px; align-items: center;
+  margin-left: 4px;
+}
+header .nav-link {
+  padding: 4px 10px; border-radius: 4px;
+  text-decoration: none; color: var(--muted);
+  font-size: 12px; font-weight: 600;
+  letter-spacing: .03em;
+  border: 1px solid transparent;
+}
+header .nav-link:hover {
+  color: var(--fg);
+  background: var(--bg);
+  border-color: var(--border);
+}
+header .nav-link.active {
+  color: var(--accent);
+  background: var(--bg);
+  border-color: var(--border);
+}
+header .nav-link:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+header .icon-btn {
+  background: var(--panel); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 3px 8px; font: inherit; cursor: pointer;
+  text-decoration: none; line-height: 1.1;
+  display: inline-flex; align-items: center;
+}
+header .icon-btn:hover {
+  background: var(--bg); border-color: var(--accent);
+  color: var(--accent);
+}
+header .icon-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* On narrow viewports, the crumb gets squeezed first — let the nav and
+   actions stay legible. */
+@media (max-width: 1100px) {
+  header .crumb { font-size: 11px; max-width: 200px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
+@media (max-width: 800px) {
+  header .crumb { display: none; }
+  header .nav-link { padding: 4px 7px; font-size: 11px; }
+}
+
+/* ========================================================================
+   Dashboard home — info-dense tile grid.
+   ======================================================================== */
+.dash-grid {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  flex: 1;
+  min-height: 0;
+  grid-template-columns: repeat(4, 1fr);
+  grid-template-rows: 92px minmax(280px, 1fr) minmax(220px, auto) auto;
+  grid-template-areas:
+    "kpi-live kpi-agents kpi-activity kpi-services"
+    "graph    graph      events       events"
+    "activity activity   system       system"
+    "memory   memory     health       health";
+}
+@media (max-width: 1280px) {
+  .dash-grid {
+    grid-template-columns: repeat(2, 1fr);
+    grid-template-rows: repeat(2, 92px) minmax(280px, 1fr) auto auto auto auto;
+    grid-template-areas:
+      "kpi-live      kpi-agents"
+      "kpi-activity  kpi-services"
+      "graph         graph"
+      "events        events"
+      "activity      system"
+      "memory        health";
+  }
+}
+@media (max-width: 720px) {
+  .dash-grid {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto;
+    grid-template-areas:
+      "kpi-live"
+      "kpi-agents"
+      "kpi-activity"
+      "kpi-services"
+      "graph"
+      "events"
+      "activity"
+      "system"
+      "memory"
+      "health";
+  }
+}
+
+.dash-tile {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: flex; flex-direction: column;
+  min-height: 0;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  overflow: hidden;
+}
+.dash-tile:hover { box-shadow: 0 2px 6px rgba(0,0,0,0.08); }
+.dash-tile-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+}
+.dash-tile-title {
+  font-size: 11px; font-weight: 600; text-transform: uppercase;
+  color: var(--muted); letter-spacing: .06em;
+  margin: 0; flex: 1;
+}
+.dash-tile-meta { color: var(--muted); }
+.dash-tile-open {
+  font-size: 11px; color: var(--accent);
+  text-decoration: none; padding: 0 4px;
+  border-radius: 3px;
+}
+.dash-tile-open:hover { background: var(--bg); }
+.dash-tile-open:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+.dash-tile-body {
+  flex: 1; min-height: 0;
+  overflow: auto;
+  padding: 8px 12px;
+  font-size: 12px;
+}
+.dash-tile-compact .dash-tile-body { padding: 6px 12px; }
+
+.dash-pill {
+  display: inline-block;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0 8px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: .04em;
+}
+
+/* ── KPI tile contents ─────────────────────────────────────────────── */
+.dash-kpi {
+  display: flex; align-items: center; gap: 8px;
+}
+.dash-kpi-dot {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: var(--live-off);
+  flex-shrink: 0;
+}
+.dash-kpi-dot.on {
+  background: var(--live-ok);
+  box-shadow: 0 0 8px rgba(46, 204, 113, .5);
+}
+.dash-kpi-big {
+  font-size: 16px; font-weight: 700;
+  color: var(--fg);
+  letter-spacing: .02em;
+}
+.dash-kpi-sub { font-size: 11px; color: var(--muted); }
+.dash-kpi-list { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.dash-kpi-chip {
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+.dash-kpi-pills { display: flex; flex-wrap: wrap; gap: 3px; }
+
+.dash-svc-pill {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font-weight: 600;
+  text-transform: lowercase;
+  letter-spacing: .03em;
+}
+.dash-svc-pill.ok {
+  background: rgba(46, 204, 113, .12);
+  color: var(--live-ok);
+  border: 1px solid rgba(46, 204, 113, .3);
+}
+.dash-svc-pill.down {
+  background: rgba(255, 100, 100, .08);
+  color: #cc6666;
+  border: 1px solid rgba(255, 100, 100, .3);
+}
+@media (prefers-color-scheme: dark) {
+  .dash-svc-pill.down { color: #ff7e7e; }
+}
+
+/* ── Sparkline ─────────────────────────────────────────────────────── */
+.dash-spark {
+  display: flex; align-items: flex-end; gap: 1px;
+  width: 100%;
+  margin: 4px 0 2px 0;
+}
+.dash-spark-bar {
+  flex: 1;
+  min-height: 2px;
+  background: var(--border);
+  border-radius: 1px 1px 0 0;
+}
+.dash-spark-bar.has-events {
+  background: var(--accent);
+  opacity: 0.85;
+}
+
+/* ── Graph host (the homepage embeds the relations graph at smaller
+   size — it needs an explicit min-height or it collapses to 0) ────── */
+.dash-graph-host {
+  position: relative;
+  min-height: 240px;
+  height: 100%;
+  display: flex; flex-direction: column;
+}
+.dash-graph-host > * { flex: 1; min-height: 0; }
+
+/* ── Tile lists (events / activity / memory) ───────────────────────── */
+.dash-empty {
+  text-align: center;
+  color: var(--muted);
+  padding: 18px 8px;
+  font-size: 11px;
+  font-style: italic;
+}
+
+.dash-event-list, .dash-activity-list, .dash-memory-list {
+  list-style: none; margin: 0; padding: 0;
+}
+.dash-event-row, .dash-activity-row, .dash-memory-row {
+  display: grid;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 0;
+  font-size: 11.5px;
+  border-bottom: 1px solid rgba(127,127,127,0.05);
+}
+.dash-event-row { grid-template-columns: 14px 80px 1fr 32px; }
+.dash-activity-row { grid-template-columns: 50px 1fr 28px 36px; }
+.dash-memory-row { grid-template-columns: 70px 1fr 36px; }
+
+.dash-level {
+  width: 14px; height: 14px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 9px; font-weight: 700;
+  border-radius: 2px;
+  color: white;
+}
+.dash-level-TRACE { background: #8aa; }
+.dash-level-DEBUG { background: #6cf; }
+.dash-level-INFO  { background: #5dd; color: #032; }
+.dash-level-WARN  { background: #fb5; color: #321; }
+.dash-level-ERROR { background: #f55; }
+
+.dash-event-target {
+  color: var(--accent);
+  font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.dash-event-msg, .dash-activity-q {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--fg);
+}
+.dash-event-age, .dash-activity-age, .dash-memory-age {
+  color: var(--muted); font-size: 10px; text-align: right;
+}
+
+.dash-activity-op { color: var(--accent); font-weight: 600; }
+.dash-activity-c { color: var(--muted); font-size: 10px; text-align: right; }
+
+.dash-memory-wing {
+  color: var(--accent); font-size: 10px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.dash-memory-source {
+  color: var(--fg); font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ── Compact services grid for the system-status tile ─────────────── */
+.dash-svc-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+  gap: 4px;
+}
+.dash-svc-cell {
+  display: flex; align-items: center; gap: 5px;
+  padding: 3px 6px;
+  font-size: 11px;
+  border-radius: 3px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+}
+.dash-svc-cell.ok { color: var(--fg); }
+.dash-svc-cell.down { color: var(--muted); opacity: 0.85; }
+.dash-svc-dot {
+  width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+  background: var(--live-off);
+}
+.dash-svc-cell.ok .dash-svc-dot { background: var(--live-ok); }
+.dash-svc-cell.down .dash-svc-dot { background: #cc6666; }
+.dash-svc-name { flex: 1; font-weight: 600; }
+.dash-svc-lat { color: var(--muted); font-size: 10px; }
+
+/* ── Health tile ───────────────────────────────────────────────────── */
+.dash-health {
+  display: grid;
+  grid-template-columns: 80px 1fr;
+  gap: 4px 10px;
+  margin: 0; font-size: 12px;
+}
+.dash-health dt {
+  color: var(--muted); font-size: 11px; text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.dash-health dd { margin: 0; color: var(--fg); }
+.dash-health dd.ok { color: var(--live-ok); }
+.dash-health dd.warn { color: #cc8844; }
+.dash-health dd.muted { color: var(--muted); }
+
+/* ========================================================================
+   Logs view (#/logs).
+   ======================================================================== */
+.logs-view {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column;
+  padding: 10px 14px;
+  gap: 8px;
+}
+.logs-summary {
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 12px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.logs-total { display: flex; align-items: baseline; gap: 8px; flex: 1; }
+.logs-total-n { font-size: 22px; font-weight: 700; color: var(--accent); }
+.logs-total-l { font-size: 11px; text-transform: uppercase;
+  color: var(--muted); letter-spacing: .06em; }
+.logs-source { color: var(--muted); font-size: 11px; margin-left: 14px; }
+.logs-pills { display: flex; gap: 4px; }
+.logs-level-pill {
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 4px; padding: 4px 8px;
+  font-size: 11px; font-weight: 600;
+  color: var(--fg); cursor: pointer; font-family: inherit;
+  display: inline-flex; align-items: center; gap: 5px;
+}
+.logs-level-pill.off { opacity: 0.4; }
+.logs-level-pill:hover { border-color: var(--accent); }
+.logs-level-pill:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.logs-level-pill .logs-pill-count {
+  background: var(--panel); border-radius: 10px;
+  padding: 0 6px; font-size: 10px; color: var(--muted);
+}
+.logs-level-pill.logs-level-TRACE { color: #8aa; }
+.logs-level-pill.logs-level-DEBUG { color: #6cf; }
+.logs-level-pill.logs-level-INFO { color: #2dc; }
+.logs-level-pill.logs-level-WARN { color: #fb5; }
+.logs-level-pill.logs-level-ERROR { color: #f55; }
+
+.logs-filters { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.logs-search {
+  flex: 1; min-width: 220px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 4px; padding: 6px 10px;
+  font: inherit; color: var(--fg);
+}
+.logs-search:focus { border-color: var(--accent); outline: none; }
+.logs-target {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 4px; padding: 6px 8px;
+  font: inherit; color: var(--fg);
+}
+.logs-range { display: flex; gap: 1px; }
+.logs-range-btn {
+  background: var(--panel); border: 1px solid var(--border);
+  padding: 6px 10px; font: inherit; cursor: pointer;
+  color: var(--muted);
+}
+.logs-range-btn:first-child { border-radius: 4px 0 0 4px; }
+.logs-range-btn:last-child { border-radius: 0 4px 4px 0; }
+.logs-range-btn.active {
+  background: var(--bg); color: var(--accent);
+  border-color: var(--accent);
+}
+
+.logs-list-meta { color: var(--muted); font-size: 11px; padding: 0 4px; }
+.logs-list {
+  flex: 1; min-height: 0; overflow: auto;
+  list-style: none; margin: 0; padding: 0;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.logs-row {
+  display: grid;
+  grid-template-columns: 12px 60px 220px 1fr;
+  gap: 8px;
+  padding: 5px 12px;
+  font-size: 12px;
+  align-items: baseline;
+  border-bottom: 1px solid rgba(127,127,127,0.05);
+  cursor: pointer;
+}
+.logs-row.expanded { display: block; }
+.logs-row:hover { background: var(--bg); }
+.logs-row.selected { background: var(--bg); border-left: 2px solid var(--accent); padding-left: 10px; }
+.logs-level-dot { width: 8px; height: 8px; border-radius: 50%; align-self: center; }
+.logs-level-dot.logs-level-TRACE { background: #8aa; }
+.logs-level-dot.logs-level-DEBUG { background: #6cf; }
+.logs-level-dot.logs-level-INFO { background: #5dd; }
+.logs-level-dot.logs-level-WARN { background: #fb5; }
+.logs-level-dot.logs-level-ERROR { background: #f55; }
+.logs-age { color: var(--muted); font-size: 11px; }
+.logs-target { color: var(--accent); font-weight: 600; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.logs-msg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.logs-fields {
+  margin: 8px 0 4px 0; padding: 8px 10px;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 4px; position: relative;
+  font: 11px/1.4 ui-monospace, Menlo, Consolas, monospace;
+  white-space: pre-wrap; word-break: break-word;
+}
+.logs-copy {
+  position: absolute; top: 4px; right: 4px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 3px; padding: 2px 6px;
+  font: inherit; font-size: 10px; cursor: pointer;
+  color: var(--muted);
+}
+.logs-copy:hover { color: var(--accent); border-color: var(--accent); }
+.logs-empty { padding: 40px 8px; }
+
+/* ========================================================================
+   System view (#/system).
+   ======================================================================== */
+.system-view {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+  grid-template-columns: repeat(2, 1fr);
+}
+@media (max-width: 900px) { .system-view { grid-template-columns: 1fr; } }
+.system-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 14px;
+}
+.system-card-wide { grid-column: 1 / -1; }
+.system-card-title {
+  font-size: 11px; font-weight: 600; text-transform: uppercase;
+  color: var(--muted); letter-spacing: .06em;
+  margin: 0 0 8px 0;
+}
+.system-dl {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  gap: 4px 10px;
+  margin: 0; font-size: 12px;
+}
+.system-dl dt {
+  color: var(--muted); font-size: 11px; text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.system-dl dd { margin: 0; }
+.system-dl a { color: var(--accent); }
+
+.system-debug {
+  width: 100%; border-collapse: collapse; font-size: 12px;
+}
+.system-debug th {
+  text-align: left; font-weight: 600; color: var(--muted);
+  padding: 4px 12px 4px 0; vertical-align: top;
+  font-size: 11px; text-transform: lowercase;
+  white-space: nowrap; width: 110px;
+}
+.system-debug td { padding: 4px 0; word-break: break-all; }
+.system-dot {
+  display: inline-block; width: 8px; height: 8px;
+  border-radius: 50%; vertical-align: middle;
+}
