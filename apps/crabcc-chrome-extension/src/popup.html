@@ -83,6 +83,25 @@
       <img id="thumb" alt="" hidden />
     </section>
     <section class="block">
+      <h2>devtools (chrome.debugger)</h2>
+      <div class="row">
+        <button data-method="debuggerAttach">attach</button>
+        <button data-method="debuggerDetach">detach</button>
+      </div>
+      <div class="row">
+        <input id="eval-expr" type="text" placeholder="document.title" />
+        <button data-method="debuggerEvaluate" data-arity="eval">eval</button>
+      </div>
+      <div class="row">
+        <button data-method="debuggerConsoleList">console</button>
+        <button data-method="debuggerConsoleClear">clear console</button>
+      </div>
+      <div class="row">
+        <button data-method="debuggerNetworkList">network</button>
+        <button data-method="debuggerNetworkClear">clear network</button>
+      </div>
+    </section>
+    <section class="block">
       <h2>last result</h2>
       <pre id="result">—</pre>
     </section>

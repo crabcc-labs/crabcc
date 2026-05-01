@@ -175,6 +175,13 @@ async function runMethod(button: HTMLButtonElement): Promise<void> {
     }
   } else if (method === "ariaSnapshot") {
     args = [{ visibleOnly: false }];
+  } else if (method === "debuggerEvaluate") {
+    const expr = el<HTMLInputElement>("eval-expr").value;
+    if (!expr) return showResult(method, "expression is empty", false);
+    args = [expr, { awaitPromise: true }];
+    label = `eval ${expr}`;
+  } else if (method === "debuggerConsoleList" || method === "debuggerNetworkList") {
+    args = [{ limit: 50 }];
   }
 
   const res = await rpc(method, args);

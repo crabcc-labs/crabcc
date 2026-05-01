@@ -10,10 +10,15 @@
 // `RpcResponse`).
 
 import { dispatchRpc } from "./bridge-rpc";
+import * as dbg from "./debugger-lane";
 import * as transport from "./transport";
 import type {
   CaptureResult,
   CapabilityMethod,
+  DebuggerConsoleEntry,
+  DebuggerEvaluateResult,
+  DebuggerNetworkBody,
+  DebuggerNetworkEntry,
   RpcRequest,
   RpcResponse,
   TabInfo,
@@ -100,7 +105,18 @@ chrome.runtime.onMessage.addListener(
   },
 );
 
-const CAPABILITY_METHODS = new Set<CapabilityMethod>(["captureVisibleTab", "tabInfo"]);
+const CAPABILITY_METHODS = new Set<CapabilityMethod>([
+  "captureVisibleTab",
+  "tabInfo",
+  "debuggerAttach",
+  "debuggerDetach",
+  "debuggerEvaluate",
+  "debuggerConsoleList",
+  "debuggerConsoleClear",
+  "debuggerNetworkList",
+  "debuggerNetworkBody",
+  "debuggerNetworkClear",
+]);
 
 async function route(tabId: number, req: RpcRequest): Promise<RpcResponse> {
   if (CAPABILITY_METHODS.has(req.method as CapabilityMethod)) {
@@ -111,15 +127,64 @@ async function route(tabId: number, req: RpcRequest): Promise<RpcResponse> {
 
 async function runCapability(tabId: number, req: RpcRequest): Promise<RpcResponse> {
   try {
-    if (req.method === "captureVisibleTab") {
-      const result = await captureVisibleTab(tabId);
-      return { id: req.id, ok: true, result };
+    let result: unknown;
+    switch (req.method as CapabilityMethod) {
+      case "captureVisibleTab":
+        result = (await captureVisibleTab(tabId)) satisfies CaptureResult;
+        break;
+      case "tabInfo":
+        result = (await readTabInfo(tabId)) satisfies TabInfo;
+        break;
+      case "debuggerAttach":
+        await dbg.attach(tabId);
+        result = { attached: true };
+        break;
+      case "debuggerDetach":
+        await dbg.detach(tabId);
+        result = { attached: false };
+        break;
+      case "debuggerEvaluate": {
+        const [expression, opts] = req.args as [string, { awaitPromise?: boolean } | undefined];
+        if (typeof expression !== "string") {
+          return { id: req.id, ok: false, error: "debuggerEvaluate: expression must be a string" };
+        }
+        result = (await dbg.evaluate(
+          tabId,
+          expression,
+          opts?.awaitPromise ?? false,
+        )) satisfies DebuggerEvaluateResult;
+        break;
+      }
+      case "debuggerConsoleList": {
+        const [opts] = req.args as [{ limit?: number } | undefined];
+        result = dbg.consoleList(tabId, opts?.limit) satisfies DebuggerConsoleEntry[];
+        break;
+      }
+      case "debuggerConsoleClear":
+        dbg.consoleClear(tabId);
+        result = { cleared: true };
+        break;
+      case "debuggerNetworkList": {
+        const [opts] = req.args as [{ limit?: number } | undefined];
+        result = dbg.networkList(tabId, opts?.limit) satisfies DebuggerNetworkEntry[];
+        break;
+      }
+      case "debuggerNetworkBody": {
+        const [requestId] = req.args as [string];
+        if (typeof requestId !== "string") {
+          return { id: req.id, ok: false, error: "debuggerNetworkBody: requestId must be a string" };
+        }
+        result = (await dbg.networkBody(tabId, requestId)) satisfies DebuggerNetworkBody;
+        break;
+      }
+      case "debuggerNetworkClear":
+        dbg.networkClear(tabId);
+        result = { cleared: true };
+        break;
+      default:
+        return { id: req.id, ok: false, error: `unknown capability ${req.method}` };
     }
-    if (req.method === "tabInfo") {
-      const result = await readTabInfo(tabId);
-      return { id: req.id, ok: true, result };
-    }
-    return { id: req.id, ok: false, error: `unknown capability ${req.method}` };
+    return { id: req.id, ok: true, result };
   } catch (err) {
     return {
       id: req.id,

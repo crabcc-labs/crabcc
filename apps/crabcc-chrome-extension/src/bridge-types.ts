@@ -100,7 +100,67 @@ export interface RpcRequest {
   args: unknown[];
 }
 
-export type CapabilityMethod = "captureVisibleTab" | "tabInfo";
+export type CapabilityMethod =
+  | "captureVisibleTab"
+  | "tabInfo"
+  | "debuggerAttach"
+  | "debuggerDetach"
+  | "debuggerEvaluate"
+  | "debuggerConsoleList"
+  | "debuggerConsoleClear"
+  | "debuggerNetworkList"
+  | "debuggerNetworkBody"
+  | "debuggerNetworkClear";
+
+export interface DebuggerConsoleEntry {
+  ts: number;
+  /** "log" | "warn" | "error" | "info" | "debug" | "exception" */
+  level: string;
+  /** Joined argument values, truncated to 4 KB. */
+  text: string;
+  /** Originating URL, may be empty for inline scripts. */
+  source: string;
+  line: number;
+  column: number;
+}
+
+export interface DebuggerNetworkEntry {
+  /** When the request fired (Date.now() at requestWillBeSent). */
+  ts: number;
+  /** CDP request id; pass to `debuggerNetworkBody`. */
+  requestId: string;
+  url: string;
+  method: string;
+  /** CDP resource type (Document / XHR / Fetch / Image / …). */
+  type: string;
+  /** Final HTTP status, or null until response. */
+  status: number | null;
+  statusText: string;
+  mimeType: string | null;
+  /** Encoded body size in bytes, null until loadingFinished. */
+  size: number | null;
+  /** Duration ms, null until loadingFinished. */
+  duration: number | null;
+  /** True iff the request errored (DNS, abort, blocked, etc.). */
+  failed: boolean;
+  errorText: string;
+}
+
+export interface DebuggerEvaluateResult {
+  /** JSON-serialized return value (CDP's RemoteObject.value or .description). */
+  value: unknown;
+  /** Same shape Chrome returns — "string" / "number" / "object" / etc. */
+  type: string;
+  /** Iff the expression threw. */
+  exception: string | null;
+}
+
+export interface DebuggerNetworkBody {
+  body: string;
+  base64Encoded: boolean;
+  /** Empty when no body could be retrieved (e.g. response not yet received). */
+  errorText: string;
+}
 
 /** Result of a successful captureVisibleTab call. */
 export interface CaptureResult {

@@ -83,6 +83,14 @@ const ADVERTISED_CAPS = [
   "typeByRef",
   "captureVisibleTab",
   "tabInfo",
+  "debuggerAttach",
+  "debuggerDetach",
+  "debuggerEvaluate",
+  "debuggerConsoleList",
+  "debuggerConsoleClear",
+  "debuggerNetworkList",
+  "debuggerNetworkBody",
+  "debuggerNetworkClear",
 ];
 
 /**
