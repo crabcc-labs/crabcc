@@ -283,6 +283,34 @@ pub struct RandomQueryResponse {
     pub symbol: String,
 }
 
+// ── /api/memory/recent ────────────────────────────────────────────────
+// Memory-drawer feed for the Knowledge route. Wire shape captured from
+// a live `crabcc serve`; openapi.yaml lists `/api/memory/recent` with
+// an opaque schema, so this is the source of truth on the Rust side.
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MemoryDrawer {
+    pub id: i64,
+    pub wing: String,
+    pub room: Option<String>,
+    pub source_id: String,
+    /// Server-side trims to ~200 chars and adds an ellipsis.
+    pub body_preview: String,
+    /// Unix-seconds; same convention as activity / telemetry.
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MemoryRecentResponse {
+    /// `false` if the memory backend isn't bootstrapped (no `.crabcc/memory.db`).
+    pub present: bool,
+    /// `id` of the highest drawer seen so far. Used by callers that
+    /// want incremental fetches; we currently always GET fresh.
+    #[serde(default)]
+    pub cursor: i64,
+    pub drawers: Vec<MemoryDrawer>,
+}
+
 // ── /api/seed-graph (relations graph) ──────────────────────────────────
 // Legacy endpoint per `openapi.yaml`'s tag — the server emits free-form
 // JSON, but the React `Graph.tsx` consumer locks the shape to the

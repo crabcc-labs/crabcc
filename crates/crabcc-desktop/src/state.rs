@@ -22,8 +22,8 @@ use std::time::Duration;
 use gpui::{App, Context, Entity};
 
 use crate::api::types::{
-    Bootstrap, DiscoveryReport, GraphSnapshot, SseActivityEvent, SseAgent, TelemetryEvent,
-    TelemetrySnapshot,
+    Bootstrap, DiscoveryReport, GraphSnapshot, MemoryRecentResponse, SseActivityEvent, SseAgent,
+    TelemetryEvent, TelemetrySnapshot,
 };
 use crate::api::Client;
 use crate::sse::{self, SseEvent};
@@ -54,6 +54,7 @@ pub enum AppEvent {
         bootstrap: anyhow::Result<Bootstrap>,
         services: anyhow::Result<DiscoveryReport>,
         graph: anyhow::Result<GraphSnapshot>,
+        memory_recent: anyhow::Result<MemoryRecentResponse>,
     },
     /// Periodic telemetry poll. Carries new events since the last cursor
     /// plus the new cursor; `Err` skips this tick without resetting the
@@ -95,6 +96,10 @@ pub struct AppState {
     /// the seed graph is static across a serve session, so no SSE
     /// channel for it. Re-fetch on demand once we add a refresh action.
     pub graph: Option<GraphSnapshot>,
+    /// Recent memory drawers from `/api/memory/recent`. Fetched once at
+    /// prefetch time. Future revs add a periodic refresh / on-demand
+    /// re-fetch button.
+    pub memory_recent: Option<MemoryRecentResponse>,
     pub agents: Vec<SseAgent>,
     pub recent_activity: VecDeque<SseActivityEvent>,
     /// Tail of recent telemetry events (capped at `TELEMETRY_BUFFER`).
@@ -131,6 +136,7 @@ impl AppState {
                 bootstrap,
                 services,
                 graph,
+                memory_recent,
             } => {
                 match bootstrap {
                     Ok(b) => self.bootstrap = Some(b),
@@ -143,6 +149,10 @@ impl AppState {
                 match graph {
                     Ok(g) => self.graph = Some(g),
                     Err(e) => self.last_error = Some(format!("graph: {e}")),
+                }
+                match memory_recent {
+                    Ok(m) => self.memory_recent = Some(m),
+                    Err(e) => self.last_error = Some(format!("memory_recent: {e}")),
                 }
             }
             AppEvent::Sse(SseEvent::Activity(frame)) => {
@@ -237,11 +247,13 @@ pub fn spawn_workers(base_url: &str) -> flume::Receiver<AppEvent> {
                 let bootstrap = client.bootstrap();
                 let services = client.services();
                 let graph = client.seed_graph();
+                let memory_recent = client.memory_recent();
                 // Receiver disconnect is fine — app shutdown raced us.
                 let _ = tx.send(AppEvent::Initial {
                     bootstrap,
                     services,
                     graph,
+                    memory_recent,
                 });
             })
             .expect("prefetch thread spawn");
