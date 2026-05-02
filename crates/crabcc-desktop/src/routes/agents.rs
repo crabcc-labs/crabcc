@@ -1,4 +1,5 @@
-//! Agents route — full-detail live agents list with substring filter.
+//! Agents route — full-detail live agents list with substring filter +
+//! click-to-tail log.
 //!
 //! The Home dashboard renders a compact 8-row tile with agent id /
 //! runtime — fine at a glance, but it loses the model, pid, prompt
@@ -11,10 +12,15 @@
 //! filter lives on the route entity, not `AppState` — the filter is a
 //! UI affordance that doesn't need to survive nav switches today.
 //!
-//! Read-only by design. Per-agent actions (kill, log tail, profile
-//! lookup) live elsewhere in the kickoff initiative.
+//! Clicking an agent card selects it and dispatches a one-shot
+//! `GET /api/agents/{id}/log?since=0` via `AppState::submit_agent_log`.
+//! The expanded card shows the last ~4 KiB of the body. A "Refresh"
+//! affordance re-fires the same fetch; clicking the same card again
+//! collapses the panel.
 
-use gpui::{div, prelude::*, px, Context, Entity, IntoElement, Render, SharedString, Window};
+use gpui::{
+    div, prelude::*, px, Context, Entity, IntoElement, MouseButton, Render, SharedString, Window,
+};
 use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -24,6 +30,12 @@ use gpui_component::{
 use crate::api::types::{AgentStatus, SseAgent};
 use crate::state::AppState;
 
+/// How many trailing bytes of the agent log to render. The server
+/// caps the body at its own window already; this is a *display* cap
+/// so the expanded panel doesn't grow unbounded if the user picks a
+/// chatty agent.
+const LOG_TAIL_BYTES: usize = 4096;
+
 pub struct AgentsRoute {
     state: Entity<AppState>,
     /// gpui-component InputState — owns text + focus for the filter.
@@ -32,6 +44,10 @@ pub struct AgentsRoute {
     /// `InputEvent::Change`. Avoids re-lowercasing the query for
     /// every match check on every render.
     query_lower: String,
+    /// Currently selected agent id; `None` means no card is expanded.
+    /// Click on the same id collapses; click on a new id selects +
+    /// fires a fresh log fetch.
+    selected_id: Option<String>,
 }
 
 impl AgentsRoute {
@@ -50,6 +66,7 @@ impl AgentsRoute {
             state,
             query_input,
             query_lower: String::new(),
+            selected_id: None,
         }
     }
 
@@ -72,6 +89,28 @@ impl AgentsRoute {
             }
         }
         a.prompt_preview.to_lowercase().contains(q)
+    }
+
+    /// Click handler — toggles selection and fires a fresh log fetch
+    /// on a new selection. Re-fetch on the same id is a separate path
+    /// (the "Refresh" affordance), so this stays single-shot per
+    /// click.
+    fn select_agent(&mut self, id: String, cx: &mut Context<Self>) {
+        if self.selected_id.as_deref() == Some(id.as_str()) {
+            // Toggle off.
+            self.selected_id = None;
+            return;
+        }
+        self.selected_id = Some(id.clone());
+        self.state.read(cx).submit_agent_log(id, 0);
+    }
+
+    /// Re-fetch the log for the current selection.
+    fn refresh_log(&self, cx: &mut Context<Self>) {
+        let Some(id) = self.selected_id.clone() else {
+            return;
+        };
+        self.state.read(cx).submit_agent_log(id, 0);
     }
 }
 
@@ -156,11 +195,17 @@ impl Render for AgentsRoute {
                 )))
                 .into_any_element()
         } else {
+            let selected_id = self.selected_id.clone();
+            let agent_log = state.agent_log.as_ref();
+            let entity_for_click = cx.entity();
+            let entity_for_refresh = cx.entity();
+
             v_flex()
                 .px_5()
                 .py_2()
                 .gap_2()
                 .children(visible.into_iter().map(|a| {
+                    let is_selected = selected_id.as_deref() == Some(a.id.as_str());
                     let dot = match a.status {
                         AgentStatus::Running => "●",
                         AgentStatus::Exited => "○",
@@ -226,16 +271,96 @@ impl Render for AgentsRoute {
                             .into_any_element()
                     };
 
+                    // Expanded log-tail panel — only rendered when this
+                    // card is the selection. Reads from `state.agent_log`
+                    // and filters by id (defends against late results
+                    // for a previous selection).
+                    let log_panel: gpui::AnyElement = if is_selected {
+                        let tail = agent_log.filter(|l| l.id == a.id).map(|l| match &l.result {
+                            Ok(body) => log_tail(&body.body),
+                            Err(e) => Err(format!("fetch failed: {e}")),
+                        });
+                        let entity_refresh = entity_for_refresh.clone();
+                        let id_for_refresh = a.id.clone();
+                        let refresh_btn = div()
+                            .id(SharedString::from(format!("agent-log-refresh-{}", a.id)))
+                            .px_2()
+                            .py_0p5()
+                            .border_1()
+                            .border_color(border)
+                            .rounded_md()
+                            .text_color(primary)
+                            .child(SharedString::new_static("Refresh"))
+                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                // Stop the click from bubbling to the
+                                // outer card click handler (which would
+                                // collapse the panel).
+                                cx.stop_propagation();
+                                let _ = id_for_refresh;
+                                entity_refresh.update(cx, |this, cx| this.refresh_log(cx));
+                            });
+                        let header_row = h_flex()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .text_color(muted)
+                                    .child(SharedString::new_static("log tail")),
+                            )
+                            .child(refresh_btn);
+                        let body_block: gpui::AnyElement = match tail {
+                            None => div()
+                                .text_color(muted)
+                                .child(SharedString::new_static("fetching log…"))
+                                .into_any_element(),
+                            Some(Err(msg)) => div()
+                                .text_color(cx.theme().danger)
+                                .child(SharedString::from(msg))
+                                .into_any_element(),
+                            Some(Ok(body)) if body.is_empty() => div()
+                                .text_color(muted)
+                                .child(SharedString::new_static("(empty)"))
+                                .into_any_element(),
+                            Some(Ok(body)) => div()
+                                .text_xs()
+                                .text_color(foreground)
+                                .child(SharedString::from(body))
+                                .into_any_element(),
+                        };
+                        v_flex()
+                            .mt_1()
+                            .gap_1()
+                            .px_2()
+                            .py_2()
+                            .border_1()
+                            .border_color(border)
+                            .rounded_md()
+                            .bg(cx.theme().background)
+                            .child(header_row)
+                            .child(body_block)
+                            .into_any_element()
+                    } else {
+                        div().into_any_element()
+                    };
+
+                    let card_border = if is_selected { primary } else { border };
+                    let entity_click = entity_for_click.clone();
+                    let id_for_click = a.id.clone();
                     v_flex()
+                        .id(SharedString::from(format!("agent-card-{}", a.id)))
                         .gap_1()
                         .px_3()
                         .py_2()
                         .border_1()
-                        .border_color(border)
+                        .border_color(card_border)
                         .rounded_md()
                         .child(head_row)
                         .child(meta_row)
                         .child(prompt_row)
+                        .child(log_panel)
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            let id = id_for_click.clone();
+                            entity_click.update(cx, |this, cx| this.select_agent(id, cx));
+                        })
                         .into_any_element()
                 }))
                 .into_any_element()
@@ -270,4 +395,22 @@ fn relative_age(started_ts: i64, now_ts: Option<i64>) -> String {
     } else {
         format!("{}d ago", secs / 86_400)
     }
+}
+
+/// Trim the log body to the last `LOG_TAIL_BYTES`, preserving UTF-8
+/// boundaries by truncating to the next char boundary forward from the
+/// raw cut point. Returns `Ok(String)` on the happy path; never fails
+/// today but typed as Result to mirror the call site's error arm.
+fn log_tail(body: &str) -> Result<String, String> {
+    if body.len() <= LOG_TAIL_BYTES {
+        return Ok(body.to_string());
+    }
+    let raw_cut = body.len() - LOG_TAIL_BYTES;
+    // Walk forward from the raw cut to the next UTF-8 char boundary so
+    // we never split a multibyte sequence.
+    let mut cut = raw_cut;
+    while !body.is_char_boundary(cut) {
+        cut += 1;
+    }
+    Ok(format!("…{}", &body[cut..]))
 }
