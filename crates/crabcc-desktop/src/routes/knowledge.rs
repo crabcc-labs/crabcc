@@ -1,31 +1,78 @@
-//! Knowledge route — memory drawer browser.
+//! Knowledge route — memory drawer browser + ingest form.
 //!
-//! Reads from `AppState::memory_recent`, populated once by the prefetch
-//! worker (no SSE topic for memory yet). Renders newest-first with the
-//! drawer's wing/room badge, creation timestamp, and body preview.
-//!
-//! Out of scope this round: ingest box, drawer-detail view, knowledge
-//! graph. The CLI (`crabcc memory ingest`) and the React `IngestBox`
-//! remain the canonical entry points until those land.
+//! Reads from `AppState::memory_recent` (refreshed every 10s by the
+//! memory poller). The form at the top POSTs to `/api/memory/ingest`
+//! and pushes a follow-up `MemoryRefresh` so the new drawer appears
+//! immediately rather than waiting up to 10s for the next poll.
 
 use gpui::{
-    div, prelude::*, px, Context, Entity, Hsla, IntoElement, Render, SharedString, Window,
+    div, prelude::*, px, Context, Entity, Hsla, IntoElement, MouseButton, Render, SharedString,
+    Window,
 };
-use gpui_component::{h_flex, v_flex, ActiveTheme};
+use gpui_component::{
+    h_flex,
+    input::{Input, InputEvent, InputState},
+    v_flex, ActiveTheme,
+};
 
-use crate::api::types::MemoryDrawer;
+use crate::api::types::{MemoryDrawer, MemoryIngestRequest};
 use crate::state::AppState;
 
 const VISIBLE_DRAWERS: usize = 50;
+const INGEST_SOURCE: &str = "desktop:ingest";
 
 pub struct KnowledgeRoute {
     state: Entity<AppState>,
+    ingest_input: Entity<InputState>,
+    /// Live mirror of the input's text — read on submit so the click
+    /// handler doesn't need to crack open the entity again.
+    pending_text: String,
 }
 
 impl KnowledgeRoute {
-    pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
+    pub fn new(state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         cx.observe(&state, |_, _, cx| cx.notify()).detach();
-        Self { state }
+        let ingest_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Ingest a note (text)…"));
+        cx.subscribe_in(&ingest_input, window, |this, state, event, _, cx| {
+            match event {
+                InputEvent::Change => {
+                    this.pending_text = state.read(cx).value().to_string();
+                    cx.notify();
+                }
+                InputEvent::PressEnter { .. } => {
+                    this.submit(cx);
+                }
+                _ => {}
+            }
+        })
+        .detach();
+        Self {
+            state,
+            ingest_input,
+            pending_text: String::new(),
+        }
+    }
+
+    fn submit(&mut self, cx: &mut Context<Self>) {
+        let text = self.pending_text.trim();
+        if text.is_empty() {
+            return;
+        }
+        let req = MemoryIngestRequest {
+            text: Some(text.to_string()),
+            source: Some(INGEST_SOURCE.to_string()),
+            ..Default::default()
+        };
+        // Fire-and-forget — `submit_ingest` spawns its own thread; the
+        // result lands back through the worker channel as
+        // `AppEvent::MemoryIngestResult` (+ a follow-up
+        // `MemoryRefresh` on success). Input text is intentionally
+        // NOT cleared here — `InputState::set_value` needs a Window
+        // reference we don't have inside the click handler. The user
+        // can backspace if they want a fresh slate.
+        self.state.read(cx).submit_ingest(req);
+        cx.notify();
     }
 }
 
@@ -35,12 +82,66 @@ impl Render for KnowledgeRoute {
         let muted = cx.theme().muted_foreground;
         let border = cx.theme().border;
         let secondary = cx.theme().secondary;
+        let primary = cx.theme().primary;
+        let success = cx.theme().success;
+        let danger = cx.theme().danger;
 
-        let header = h_flex().gap_3().child(
-            div()
-                .text_lg()
-                .child(SharedString::new_static("Knowledge")),
-        );
+        let status_line: gpui::AnyElement = match state.last_ingest.as_ref() {
+            None => div().into_any_element(),
+            Some(Ok(msg)) => div()
+                .text_color(success)
+                .child(SharedString::from(msg.clone()))
+                .into_any_element(),
+            Some(Err(msg)) => div()
+                .text_color(danger)
+                .child(SharedString::from(msg.clone()))
+                .into_any_element(),
+        };
+
+        let submit_disabled = self.pending_text.trim().is_empty();
+        let submit_color = if submit_disabled { muted } else { primary };
+        // Capture an entity handle for the click handler to read +
+        // call `submit_ingest` through. Cloning is cheap.
+        let route_entity = cx.entity();
+        let submit_btn = div()
+            .id("memory-ingest-submit")
+            .px_3()
+            .py_1()
+            .border_1()
+            .border_color(submit_color)
+            .rounded_md()
+            .text_color(submit_color)
+            .child(SharedString::new_static("Ingest"))
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                route_entity.update(cx, |this, cx| this.submit(cx));
+            });
+
+        let form = h_flex()
+            .gap_2()
+            .child(
+                div()
+                    .flex_1()
+                    .border_1()
+                    .border_color(border)
+                    .rounded_md()
+                    .px_2()
+                    .py_1()
+                    .child(Input::new(&self.ingest_input).appearance(false)),
+            )
+            .child(submit_btn);
+
+        let header = v_flex()
+            .gap_2()
+            .child(
+                h_flex()
+                    .gap_3()
+                    .child(div().text_lg().child(SharedString::new_static("Knowledge")))
+                    .child(div().text_color(muted).child(SharedString::new_static(
+                        "Drawers refresh every 10s · Enter or click Ingest to submit.",
+                    ))),
+            )
+            .child(form)
+            .child(status_line);
 
         let body: gpui::AnyElement = match state.memory_recent.as_ref() {
             None => div()
