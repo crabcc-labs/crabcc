@@ -1,42 +1,63 @@
-# Phase-0 stub. Deliberately stays OUT of the parent workspace so a
-# cold `cargo build` of crabcc doesn't pull in `gpui` + `gpui-component`
-# (those add ~3 GB to a cold build and pin against a specific
-# zed-industries/zed rev). The crate joins `[workspace.members]` in
-# phase A.1 once we're ready to take that compile-time hit.
+# Phase A.1 — gpui shell, standalone crate.
 #
-# Until then `cargo build` from inside this directory builds a
-# tiny standalone binary that just prints a banner — see src/main.rs
-# and crates/crabcc-desktop/docs/RESEARCH-native-desktop-and-rich-notifications.md
-# (Track A) for the full plan.
+# `crates/crabcc-desktop` deliberately stays OUT of the parent workspace.
+# Two reasons:
+#
+#   1. gpui-component pulls a hard, non-optional dep on `tree-sitter =
+#      "0.25"` (with `links = "tree-sitter"` so cargo enforces a single
+#      version per resolution). The rest of crabcc is on tree-sitter
+#      0.22 with its grammar fleet at 0.21. Joining the parent workspace
+#      would force a coordinated tree-sitter-22→25 bump across six
+#      grammar crates — out of scope here.
+#
+#   2. gpui pins specific zed-industries/zed revs and adds ~3 GB of
+#      cold-build deps. Keeping it standalone means the rest of the
+#      crabcc build stays warm and unaffected.
+#
+# Wire to the rest of crabcc over HTTP/SSE on `http://127.0.0.1:7878`,
+# never via path deps. See
+# `docs/RESEARCH-native-desktop-and-rich-notifications.md` (Track A).
 
 [workspace]
 # Empty table → cargo treats this as its own root, ignoring the parent
-# workspace. Required because the crate sits inside `crates/` (cargo
-# would otherwise auto-include it from the parent's `crates/*` glob
-# if such a glob ever lands).
+# workspace.
 
 [package]
 name = "crabcc-desktop"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2021"
 rust-version = "1.87"
 license = "MIT"
 repository = "https://github.com/peterlodri-sec/crabcc"
 
-# crate-type = rlib + bin so we can `cargo run` the example UI and
-# also pull AppState into integration tests once they exist.
 [[bin]]
 name = "crabcc-desktop"
 path = "src/main.rs"
 
 [dependencies]
-# No deps in phase 0 — the stub binary just prints a banner. anyhow +
-# the parent crate `crabcc-core` come back as soon as the GPUI shell
-# starts consuming `Store` / `Palace` types.
 anyhow = "1"
 
-# Real deps (commented for phase 0 — see Track A in research doc):
-# gpui           = { git = "https://github.com/zed-industries/zed", rev = "<pin>" }
-# gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "<pin>" }
-# reqwest        = { workspace = true }
-# tokio          = { workspace = true }
+# GPUI deps — track gpui-component's own source URLs so cargo unifies
+# the gpui crate to a SINGLE compiled copy. Pinning a `rev =` here
+# splits the resolution from gpui-component's revless `git = "...zed"`
+# entries, which produces two zed checkouts and a `Render` trait
+# collision at compile time. Reproducibility for this (binary) crate
+# comes from `Cargo.lock` instead. Bump recipe + rationale in
+# `docs/RESEARCH-native-desktop-and-rich-notifications.md`.
+#
+# gpui-component is pinned by rev because IT is published from one place
+# and we want a deterministic upstream surface; its transitive zed dep
+# is left to cargo to resolve.
+gpui           = { git = "https://github.com/zed-industries/zed" }
+gpui_platform  = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "41f51428c563597af4f04fb476141d3311a1c0c4" }
+
+# GPUI ships its own GPU-rendering hot path; opt-level=1 makes window
+# rendering feel laggy in dev. Mirror upstream's per-package overrides
+# so only the GPUI crates pay opt-level=3 in dev builds.
+[profile.dev.package.gpui]
+opt-level = 3
+[profile.dev.package.gpui_platform]
+opt-level = 3
+[profile.dev.package.gpui_macros]
+opt-level = 3
