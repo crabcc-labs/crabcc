@@ -13,8 +13,9 @@ use serde::de::DeserializeOwned;
 
 use super::types::{
     ActivityResponse, AgentKillsResponse, AgentLog, AgentModelsResponse, AgentProfilesResponse,
-    AgentsResponse, Bootstrap, DiscoveryReport, GraphSnapshot, HealthResponse, OllamaKey,
-    OtlpHealth, RandomQueryResponse, ReindexReport, TelemetrySnapshot,
+    AgentsResponse, Bootstrap, DiscoveryReport, GraphSnapshot, HealthResponse,
+    MemoryRecentResponse, OllamaKey, OtlpHealth, RandomQueryResponse, ReindexReport,
+    TelemetrySnapshot,
 };
 
 /// Default loopback origin for `crabcc serve`. Override via
@@ -156,5 +157,11 @@ impl Client {
     /// for the wire shape contract until the call-graph viewer migrates.
     pub fn seed_graph(&self) -> Result<GraphSnapshot> {
         self.get_json("/api/seed-graph")
+    }
+
+    /// Recent memory drawers (most-recently-created first). Backs the
+    /// Knowledge route. Server caps the body preview to ~200 chars.
+    pub fn memory_recent(&self) -> Result<MemoryRecentResponse> {
+        self.get_json("/api/memory/recent?limit=50")
     }
 }

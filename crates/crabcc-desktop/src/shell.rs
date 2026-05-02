@@ -35,7 +35,7 @@ impl Shell {
         let home = cx.new(|cx| DashboardHome::new(state.clone(), cx));
         let logs = cx.new(|cx| LogsRoute::new(state.clone(), cx));
         let system = cx.new(|cx| SystemRoute::new(state.clone(), cx));
-        let knowledge = cx.new(|_| KnowledgeRoute::new());
+        let knowledge = cx.new(|cx| KnowledgeRoute::new(state.clone(), cx));
         Self {
             state,
             home,
