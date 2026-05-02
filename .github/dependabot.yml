@@ -1,0 +1,76 @@
+version: 2
+updates:
+  # Rust workspace — single registry, single ecosystem.
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "07:00"
+      timezone: Europe/Paris
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - lang:rust
+    commit-message:
+      prefix: "deps(cargo): "
+    groups:
+      tree-sitter:
+        patterns:
+          - "tree-sitter*"
+      serde:
+        patterns:
+          - "serde"
+          - "serde_*"
+      tracing:
+        patterns:
+          - "tracing"
+          - "tracing-*"
+      tonic-prost:
+        patterns:
+          - "tonic*"
+          - "prost*"
+      patch-only:
+        update-types:
+          - patch
+
+  # crabcc-viz frontend (esbuild-built React dashboard).
+  - package-ecosystem: npm
+    directory: /crates/crabcc-viz/web
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+    commit-message:
+      prefix: "deps(viz): "
+    groups:
+      react:
+        patterns:
+          - "react"
+          - "react-*"
+          - "@types/react*"
+
+  # apps/jobs-worker (BullMQ Node worker).
+  - package-ecosystem: npm
+    directory: /apps/jobs-worker
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+    commit-message:
+      prefix: "deps(jobs): "
+
+  # GitHub Actions versions.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+    labels:
+      - dependencies
+      - ci
+    commit-message:
+      prefix: "deps(actions): "
