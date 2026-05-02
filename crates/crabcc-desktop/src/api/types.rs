@@ -46,6 +46,55 @@ pub struct ActivityResponse {
     pub items: Vec<ActivityHit>,
 }
 
+// ── SSE-specific frames ────────────────────────────────────────────────
+// `/api/events` (the SSE stream) carries a slightly different schema
+// than the polled `/api/activity` and `/api/agents` GETs above:
+//   - activity frames wrap `events` (not `items`), have `repo` +
+//     `cursor`, and the per-row count field is `results` (not `count`).
+//   - agents frames carry extra fields (`runtime`, `log_bytes`, `root`)
+//     that the polled HTTP shape doesn't.
+// `openapi.yaml` declares the SSE response as a bare `string`, so this
+// is the source of truth on the Rust side. Caught at A.3 implementation
+// time by sampling live frames.
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SseActivityEvent {
+    pub ts: i64,
+    pub op: String,
+    pub query: String,
+    /// Wire field is `results`, not `count` — this is the SSE-side
+    /// shape, not the `/api/activity` HTTP shape.
+    pub results: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SseActivityFrame {
+    pub repo: String,
+    pub cursor: i64,
+    pub events: Vec<SseActivityEvent>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SseAgent {
+    pub id: String,
+    pub status: AgentStatus,
+    #[serde(default)]
+    pub started_ts: i64,
+    pub pid: Option<u64>,
+    pub runtime: Option<String>,
+    pub model: Option<String>,
+    #[serde(default)]
+    pub prompt_preview: String,
+    #[serde(default)]
+    pub log_bytes: u64,
+    pub root: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct SseAgentsFrame {
+    pub agents: Vec<SseAgent>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentStatus {
