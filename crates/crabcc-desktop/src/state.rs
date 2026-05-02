@@ -43,6 +43,31 @@ pub enum AppEvent {
     Sse(SseEvent),
 }
 
+/// Active dashboard route. Plain enum on `AppState` rather than a hash
+/// router (the gpui process is single-window today; deep-linking from
+/// the OS would warrant something more elaborate).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Route {
+    #[default]
+    Home,
+    Logs,
+    System,
+    Knowledge,
+}
+
+impl Route {
+    pub fn label(self) -> &'static str {
+        match self {
+            Route::Home => "Home",
+            Route::Logs => "Logs",
+            Route::System => "System",
+            Route::Knowledge => "Knowledge",
+        }
+    }
+
+    pub const ALL: [Route; 4] = [Route::Home, Route::Logs, Route::System, Route::Knowledge];
+}
+
 #[derive(Default, Debug)]
 pub struct AppState {
     pub bootstrap: Option<Bootstrap>,
@@ -61,6 +86,10 @@ pub struct AppState {
     pub last_event_ts: Option<i64>,
     /// Most recent error from either worker (string-ified for display).
     pub last_error: Option<String>,
+    /// Currently selected route — driven by the header nav clicks. The
+    /// shell view re-renders on `cx.notify` and dispatches body content
+    /// based on this value.
+    pub route: Route,
 }
 
 impl AppState {
@@ -109,6 +138,10 @@ impl AppState {
                 // Silent ignore — `crate::sse` already prints to stderr.
             }
         }
+    }
+
+    pub fn set_route(&mut self, route: Route) {
+        self.route = route;
     }
 
     pub fn agents_running(&self) -> u32 {
