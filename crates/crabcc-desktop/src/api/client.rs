@@ -9,13 +9,13 @@
 // A.3.
 
 use anyhow::{Context, Result};
-use serde::de::DeserializeOwned;
+use serde::{de::DeserializeOwned, Serialize};
 
 use super::types::{
     ActivityResponse, AgentKillsResponse, AgentLog, AgentModelsResponse, AgentProfilesResponse,
     AgentsResponse, Bootstrap, DiscoveryReport, GraphSnapshot, HealthResponse,
-    MemoryRecentResponse, OllamaKey, OtlpHealth, RandomQueryResponse, ReindexReport,
-    TelemetrySnapshot,
+    MemoryIngestRequest, MemoryIngestResponse, MemoryRecentResponse, OllamaKey, OtlpHealth,
+    RandomQueryResponse, ReindexReport, TelemetrySnapshot,
 };
 
 /// Default loopback origin for `crabcc serve`. Override via
@@ -81,6 +81,23 @@ impl Client {
         let resp = self
             .http
             .post(&url)
+            .send()
+            .with_context(|| format!("POST {url}"))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.text().unwrap_or_default();
+            anyhow::bail!("POST {url} → {status}: {body}");
+        }
+        resp.json::<T>()
+            .with_context(|| format!("decode JSON from {url}"))
+    }
+
+    fn post_json_body<B: Serialize, T: DeserializeOwned>(&self, path: &str, body: &B) -> Result<T> {
+        let url = self.url(path);
+        let resp = self
+            .http
+            .post(&url)
+            .json(body)
             .send()
             .with_context(|| format!("POST {url}"))?;
         let status = resp.status();
@@ -163,5 +180,13 @@ impl Client {
     /// Knowledge route. Server caps the body preview to ~200 chars.
     pub fn memory_recent(&self) -> Result<MemoryRecentResponse> {
         self.get_json("/api/memory/recent?limit=50")
+    }
+
+    /// Submit a memory drawer (free-text and/or URLs). Returns the
+    /// per-input ingest record + aggregate stats. The Knowledge route
+    /// surfaces the new drawer immediately by re-fetching `memory_recent`
+    /// without waiting for the periodic poll.
+    pub fn memory_ingest(&self, req: &MemoryIngestRequest) -> Result<MemoryIngestResponse> {
+        self.post_json_body("/api/memory/ingest", req)
     }
 }

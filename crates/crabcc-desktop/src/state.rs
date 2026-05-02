@@ -27,8 +27,8 @@ use gpui::{App, Context, Entity};
 
 use crate::api::types::{
     AgentKillsResponse, AgentModelsResponse, AgentProfilesResponse, Bootstrap, DiscoveryReport,
-    GraphSnapshot, MemoryRecentResponse, OllamaKey, OtlpHealth, SseActivityEvent, SseAgent,
-    TelemetryEvent, TelemetrySnapshot,
+    GraphSnapshot, MemoryIngestRequest, MemoryIngestResponse, MemoryRecentResponse, OllamaKey,
+    OtlpHealth, SseActivityEvent, SseAgent, TelemetryEvent, TelemetrySnapshot,
 };
 use crate::api::Client;
 use crate::sse::{self, SseEvent};
@@ -88,6 +88,11 @@ pub enum AppEvent {
     /// `Ok`; routes `Err` through `last_error` and keeps the previous
     /// snapshot intact.
     MemoryRefresh(anyhow::Result<MemoryRecentResponse>),
+    /// Result of a user-initiated `POST /api/memory/ingest` from the
+    /// Knowledge-route form. The view stashes a short status line in
+    /// `last_ingest`; the worker also fires a follow-up `MemoryRefresh`
+    /// on success so the new drawer surfaces immediately.
+    MemoryIngestResult(anyhow::Result<MemoryIngestResponse>),
     Sse(SseEvent),
 }
 
@@ -164,10 +169,25 @@ pub struct AppState {
     pub last_event_ts: Option<i64>,
     /// Most recent error from either worker (string-ified for display).
     pub last_error: Option<String>,
+    /// One-line status from the most recent in-window ingest submit.
+    /// `Ok` carries a "ingested 1 row · drawer #N" string; `Err`
+    /// carries the failure message. Cleared lazily when the user types
+    /// in the input again.
+    pub last_ingest: Option<Result<String, String>>,
     /// Currently selected route — driven by the header nav clicks. The
     /// shell view re-renders on `cx.notify` and dispatches body content
     /// based on this value.
     pub route: Route,
+    /// Channel back into the worker pump. Set by `state::build`.
+    /// Routes that fire one-shot HTTP work (e.g. memory-ingest from
+    /// the Knowledge form) `clone()` it and feed an `AppEvent` from a
+    /// detached `std::thread`. Optional only because `Default` can't
+    /// fabricate a real channel — the unwrap in `submit_ingest` is
+    /// guaranteed safe in practice.
+    ingest_tx: Option<flume::Sender<AppEvent>>,
+    /// Base URL for any `Client` instances spawned from
+    /// `submit_ingest`. Mirrors the value passed to `state::build`.
+    base_url: Option<String>,
 }
 
 impl AppState {
@@ -254,7 +274,44 @@ impl AppState {
             AppEvent::MemoryRefresh(Err(e)) => {
                 self.last_error = Some(format!("memory_refresh: {e}"));
             }
+            AppEvent::MemoryIngestResult(Ok(resp)) => {
+                let n = resp.stats.ok;
+                let drawer = resp
+                    .ingested
+                    .first()
+                    .map(|e| format!(" · drawer #{}", e.drawer_id))
+                    .unwrap_or_default();
+                self.last_ingest = Some(Ok(format!("ingested {n} row{}{drawer}", if n == 1 { "" } else { "s" })));
+            }
+            AppEvent::MemoryIngestResult(Err(e)) => {
+                self.last_ingest = Some(Err(format!("ingest failed: {e}")));
+            }
         }
+    }
+
+    /// Fire a memory ingest request from a detached thread. Sends an
+    /// `AppEvent::MemoryIngestResult` back through the worker channel,
+    /// then — on success — fires a follow-up `MemoryRefresh` so the
+    /// new drawer appears in the Knowledge list without waiting for
+    /// the periodic poller.
+    pub fn submit_ingest(&self, req: MemoryIngestRequest) {
+        let Some(tx) = self.ingest_tx.clone() else { return };
+        let Some(base) = self.base_url.clone() else { return };
+        std::thread::Builder::new()
+            .name("crabcc-ingest".into())
+            .spawn(move || {
+                let client = Client::with_base_url(base);
+                let result = client.memory_ingest(&req);
+                let success = result.is_ok();
+                if tx.send(AppEvent::MemoryIngestResult(result)).is_err() {
+                    return;
+                }
+                if success {
+                    let refresh = client.memory_recent();
+                    let _ = tx.send(AppEvent::MemoryRefresh(refresh));
+                }
+            })
+            .expect("ingest thread spawn");
     }
 
     pub fn set_route(&mut self, route: Route) {
@@ -293,13 +350,16 @@ impl AppState {
     }
 }
 
-/// Spawn the four background workers and return the receiving end
-/// of the merged channel. Callers feed it into [`AppState::pump_events`].
+/// Spawn the four background workers and return both the receiver
+/// (drained by the gpui pump via [`AppState::pump_events`]) and a
+/// cloned sender — the latter is stashed on `AppState::ingest_tx` so
+/// one-shot UI-driven work (memory ingest, future agent spawn) can
+/// post events back into the same channel from a detached thread.
 ///
 /// Workers run on their own OS threads — no async runtime needed, and
 /// [`flume::Receiver::recv_async`] works inside gpui's smol-flavored
 /// `cx.spawn`.
-pub fn spawn_workers(base_url: &str) -> flume::Receiver<AppEvent> {
+pub fn spawn_workers(base_url: &str) -> (flume::Sender<AppEvent>, flume::Receiver<AppEvent>) {
     let (tx, rx) = flume::unbounded::<AppEvent>();
 
     // One-shot prefetch — bootstrap + services + seed-graph all on the
@@ -405,17 +465,20 @@ pub fn spawn_workers(base_url: &str) -> flume::Receiver<AppEvent> {
             .expect("memory-poll thread spawn");
     }
 
-    drop(tx);
-    rx
+    (tx, rx)
 }
 
 /// Returns the AppState entity wired up with workers. Call from inside
 /// a gpui context (e.g. `cx.new(|cx| build(cx, base))`).
 pub fn build(cx: &mut Context<AppState>, base_url: &str) -> AppState {
-    let rx = spawn_workers(base_url);
+    let (tx, rx) = spawn_workers(base_url);
     let entity = cx.entity();
     AppState::pump_events(&entity, rx, cx);
-    AppState::new()
+    AppState {
+        ingest_tx: Some(tx),
+        base_url: Some(base_url.to_string()),
+        ..AppState::new()
+    }
 }
 
 // Suppress dead-code lint for the unused `_app` arg until A.5 needs it.
