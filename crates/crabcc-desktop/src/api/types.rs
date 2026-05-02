@@ -282,3 +282,36 @@ pub struct RandomQueryResponse {
     pub op: String,
     pub symbol: String,
 }
+
+// ── /api/seed-graph (relations graph) ──────────────────────────────────
+// Legacy endpoint per `openapi.yaml`'s tag — the server emits free-form
+// JSON, but the React `Graph.tsx` consumer locks the shape to the
+// fields below. Mirroring that on the Rust side until the call-graph
+// viewer is migrated fully (server-side TODO).
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GraphNode {
+    pub id: String,
+    /// BFS depth from the seed set. The web Graph.tsx ignores this
+    /// today, but the layout in `routes::graph` colours deeper nodes
+    /// dimmer so the entry points pop.
+    #[serde(default)]
+    pub depth: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GraphEdge {
+    pub src: String,
+    pub dst: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GraphSnapshot {
+    pub nodes: Vec<GraphNode>,
+    pub edges: Vec<GraphEdge>,
+    /// Seed identifiers — the BFS roots. Surfaced by the server so the
+    /// viewer can mark them visually; we currently ignore the field
+    /// but accept it so decode doesn't fail.
+    #[serde(default)]
+    pub seeds: Vec<String>,
+}

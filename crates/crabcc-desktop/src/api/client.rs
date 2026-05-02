@@ -13,8 +13,8 @@ use serde::de::DeserializeOwned;
 
 use super::types::{
     ActivityResponse, AgentKillsResponse, AgentLog, AgentModelsResponse, AgentProfilesResponse,
-    AgentsResponse, Bootstrap, DiscoveryReport, HealthResponse, OllamaKey, OtlpHealth,
-    RandomQueryResponse, ReindexReport, TelemetrySnapshot,
+    AgentsResponse, Bootstrap, DiscoveryReport, GraphSnapshot, HealthResponse, OllamaKey,
+    OtlpHealth, RandomQueryResponse, ReindexReport, TelemetrySnapshot,
 };
 
 /// Default loopback origin for `crabcc serve`. Override via
@@ -150,5 +150,11 @@ impl Client {
 
     pub fn random_query(&self) -> Result<RandomQueryResponse> {
         self.post_json("/api/random-query")
+    }
+
+    /// Legacy seed-graph endpoint — see `crates/crabcc-viz/web/src/components/Graph.tsx`
+    /// for the wire shape contract until the call-graph viewer migrates.
+    pub fn seed_graph(&self) -> Result<GraphSnapshot> {
+        self.get_json("/api/seed-graph")
     }
 }
