@@ -17,14 +17,15 @@ use gpui::{
 use gpui_component::{h_flex, v_flex, ActiveTheme};
 
 use crate::routes::{
-    commands::CommandsRoute, dashboard::DashboardHome, knowledge::KnowledgeRoute, logs::LogsRoute,
-    system::SystemRoute,
+    agents::AgentsRoute, commands::CommandsRoute, dashboard::DashboardHome,
+    knowledge::KnowledgeRoute, logs::LogsRoute, system::SystemRoute,
 };
 use crate::state::{AppState, Route};
 
 pub struct Shell {
     state: Entity<AppState>,
     home: Entity<DashboardHome>,
+    agents: Entity<AgentsRoute>,
     logs: Entity<LogsRoute>,
     system: Entity<SystemRoute>,
     knowledge: Entity<KnowledgeRoute>,
@@ -36,6 +37,7 @@ impl Shell {
         cx.observe(&state, |_, _, cx| cx.notify()).detach();
         // Home owns the agent-spawn TextInput, so it needs window.
         let home = cx.new(|cx| DashboardHome::new(state.clone(), window, cx));
+        let agents = cx.new(|cx| AgentsRoute::new(state.clone(), cx));
         let logs = cx.new(|cx| LogsRoute::new(state.clone(), cx));
         let system = cx.new(|cx| SystemRoute::new(state.clone(), cx));
         // Knowledge owns the memory-ingest TextInput, so it needs window.
@@ -46,6 +48,7 @@ impl Shell {
         Self {
             state,
             home,
+            agents,
             logs,
             system,
             knowledge,
@@ -119,6 +122,7 @@ impl Render for Shell {
 
         let body: AnyElement = match active {
             Route::Home => self.home.clone().into_any_element(),
+            Route::Agents => self.agents.clone().into_any_element(),
             Route::Logs => self.logs.clone().into_any_element(),
             Route::System => self.system.clone().into_any_element(),
             Route::Knowledge => self.knowledge.clone().into_any_element(),
