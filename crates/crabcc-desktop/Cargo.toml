@@ -30,12 +30,23 @@ rust-version = "1.87"
 license = "MIT"
 repository = "https://github.com/peterlodri-sec/crabcc"
 
+[lib]
+# rlib so integration tests + `main.rs` consume the same `api::Client`.
+name = "crabcc_desktop"
+path = "src/lib.rs"
+
 [[bin]]
 name = "crabcc-desktop"
 path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Blocking client is enough through A.2: fetches happen off the UI thread
+# inside `cx.background_executor().spawn(...)`. Streaming/SSE moves to
+# `reqwest` async + a smol-friendly bridge in A.3.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 
 # GPUI deps — track gpui-component's own source URLs so cargo unifies
 # the gpui crate to a SINGLE compiled copy. Pinning a `rev =` here
