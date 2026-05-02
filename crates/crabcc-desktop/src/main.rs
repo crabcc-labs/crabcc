@@ -1,16 +1,12 @@
-// Phase A.4 — DashboardHome route mounted in the gpui window.
+// Phase A.6 — multi-route shell mounted in the gpui window.
 //
-// `main` is now intentionally thin: open a 1280×800 window, build the
-// shared `AppState` entity (which spawns the prefetch + SSE workers),
-// and mount `routes::dashboard::DashboardHome` as the root view.
-// State, rendering, and worker plumbing all live in their own modules
-// — see `state.rs` and `routes/dashboard.rs`.
-//
-// Until the multi-route header lands in A.6, the window only ever
-// shows the home route. A.5 will swap in a `Stack`-based router.
+// `main` opens a 1280×800 window, builds the shared `AppState` entity
+// (prefetch + SSE workers), and mounts `crabcc_desktop::shell::Shell`
+// as the root view. Shell owns the header + nav strip and dispatches
+// the body slot based on `AppState::route`.
 
 use crabcc_desktop::api::DEFAULT_BASE_URL;
-use crabcc_desktop::routes::dashboard::DashboardHome;
+use crabcc_desktop::shell::Shell;
 use crabcc_desktop::state;
 use gpui::{prelude::*, px, size, App, Bounds, TitlebarOptions, WindowBounds, WindowOptions};
 use gpui_component::Root;
@@ -35,8 +31,8 @@ fn main() {
         cx.spawn(async move |cx| {
             cx.open_window(options, |window, cx| {
                 let app_state = cx.new(|cx| state::build(cx, DEFAULT_BASE_URL));
-                let dashboard = cx.new(|cx| DashboardHome::new(app_state, cx));
-                cx.new(|cx| Root::new(dashboard, window, cx))
+                let shell = cx.new(|cx| Shell::new(app_state, cx));
+                cx.new(|cx| Root::new(shell, window, cx))
             })
             .expect("failed to open window");
         })
