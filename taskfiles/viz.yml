@@ -132,3 +132,75 @@ tasks:
         --output "{{if .OUT}}{{.OUT}}{{else}}.repomix/{{.CRATE}}.xml{{end}}"
         {{if .COPY}}--copy{{end}}
       - 'wc -c "{{if .OUT}}{{.OUT}}{{else}}.repomix/{{.CRATE}}.xml{{end}}" | awk ''{ printf "size: %.1f KiB\n", $1/1024 }'''
+
+  repomix-context:
+    desc: Generate optimized repo context (compressed XML + crabcc index/graph) → clipboard
+    vars:
+      OUT: '{{.OUT | default ".repomix/crabcc.xml"}}'
+    cmds:
+      - task: repomix
+        vars:
+          COMPRESS: "1"
+          OUT: "{{.OUT}}"
+      - test -f .crabcc/index.db || crabcc index >/dev/null
+      - crabcc refresh >/dev/null 2>&1 || true
+      - crabcc graph build >/dev/null 2>&1 || true
+      - cmd: |
+          {
+            cat "{{.OUT}}"
+            printf '\n<crabcc-index format="jsonl-per-symbol">\n'
+            crabcc files | jq -r '.[]' | while read -r f; do
+              crabcc outline "$f" 2>/dev/null | jq -c '.[]?'
+            done
+            printf '</crabcc-index>\n<crabcc-graph format="jsonl-per-edge">\n'
+            jq -c '.callers | to_entries[] | .key as $callee | .value[] | {caller: ., callee: $callee}' .crabcc/graph.json
+            printf '</crabcc-graph>\n'
+          } > "{{.OUT}}.tmp" && mv "{{.OUT}}.tmp" "{{.OUT}}"
+      - cmd: |
+          case "$(uname -s)" in
+            Darwin) pbcopy < "{{.OUT}}" ;;
+            Linux)
+              if   command -v wl-copy >/dev/null 2>&1; then wl-copy < "{{.OUT}}"
+              elif command -v xclip   >/dev/null 2>&1; then xclip -selection clipboard < "{{.OUT}}"
+              else echo "warn: no clipboard tool found (install wl-copy or xclip)"; fi ;;
+            *) cat "{{.OUT}}" | clip ;;
+          esac
+      - 'wc -c "{{.OUT}}" | awk ''{ printf "size: %.1f KiB (compressed XML + index + graph)\n", $1/1024 }'''
+
+  openapi-codegen-viz:
+    desc: Regenerate the /live frontend's TS types from crates/crabcc-viz/openapi.yaml (issue #170 phase 0)
+    summary: |
+      Runs `openapi-typescript` against `crates/crabcc-viz/openapi.yaml`
+      and writes the generated types into
+      `crates/crabcc-viz/web/src/api.gen.ts`. This is the same step that
+      `bun run build` runs automatically — the standalone task is
+      useful when you've edited the YAML and want to refresh types
+      without a full bundle build.
+    cmds:
+      - 'cd crates/crabcc-viz/web && bun install --silent && bun run codegen'
+
+  docs:check:
+    desc: Verify c7 + crabcc are on PATH; useful before docs:ingest in CI.
+    cmds:
+      - command -v crabcc || (echo "crabcc not on PATH — run task install" >&2; exit 2)
+      - command -v npx    || (echo "npx not on PATH — install Node.js"      >&2; exit 2)
+      - npx -y @vedanth/context7 --help >/dev/null
+
+  docs:ingest:
+    desc: |
+      Fetch library docs via c7 and pipe them into the local memory store.
+      LIB is required; Q optional topic filter; TOKENS optional cap.
+    vars:
+      LIB: '{{.LIB | default ""}}'
+      Q:   '{{.Q   | default ""}}'
+      TOKENS: '{{.TOKENS | default "5000"}}'
+    cmds:
+      - |
+        set -o pipefail
+        if [ -z "{{.LIB}}" ]; then
+          echo "usage: task docs:ingest LIB=react Q=hooks TOKENS=8000" >&2
+          exit 2
+        fi
+        npx -y @vedanth/context7 docs "{{.LIB}}" "{{.Q}}" --tokens "{{.TOKENS}}" \
+          | crabcc memory ingest --stdin --source "{{.LIB}}-docs" \
+          | jq '.stats'
