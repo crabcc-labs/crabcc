@@ -26,9 +26,10 @@ use std::time::Duration;
 use gpui::{App, Context, Entity};
 
 use crate::api::types::{
-    AgentKillsResponse, AgentModelsResponse, AgentProfilesResponse, Bootstrap, DiscoveryReport,
-    GraphSnapshot, MemoryIngestRequest, MemoryIngestResponse, MemoryRecentResponse, OllamaKey,
-    OtlpHealth, SseActivityEvent, SseAgent, TelemetryEvent, TelemetrySnapshot,
+    AgentKillsResponse, AgentLaunchRequest, AgentLaunchResponse, AgentModelsResponse,
+    AgentProfilesResponse, Bootstrap, DiscoveryReport, GraphSnapshot, MemoryIngestRequest,
+    MemoryIngestResponse, MemoryRecentResponse, OllamaKey, OtlpHealth, SseActivityEvent, SseAgent,
+    TelemetryEvent, TelemetrySnapshot,
 };
 use crate::api::Client;
 use crate::sse::{self, SseEvent};
@@ -93,6 +94,11 @@ pub enum AppEvent {
     /// `last_ingest`; the worker also fires a follow-up `MemoryRefresh`
     /// on success so the new drawer surfaces immediately.
     MemoryIngestResult(anyhow::Result<MemoryIngestResponse>),
+    /// Result of a user-initiated `POST /api/agents/launch` from the
+    /// Home-route spawn form. Status flows into `last_launch`; the
+    /// agent's output lands in the existing telemetry feed, so no
+    /// special streaming needed.
+    AgentLaunchResult(anyhow::Result<AgentLaunchResponse>),
     Sse(SseEvent),
 }
 
@@ -174,6 +180,8 @@ pub struct AppState {
     /// carries the failure message. Cleared lazily when the user types
     /// in the input again.
     pub last_ingest: Option<Result<String, String>>,
+    /// Mirror of `last_ingest` for the Home spawn-agent form.
+    pub last_launch: Option<Result<String, String>>,
     /// Currently selected route — driven by the header nav clicks. The
     /// shell view re-renders on `cx.notify` and dispatches body content
     /// based on this value.
@@ -286,6 +294,20 @@ impl AppState {
             AppEvent::MemoryIngestResult(Err(e)) => {
                 self.last_ingest = Some(Err(format!("ingest failed: {e}")));
             }
+            AppEvent::AgentLaunchResult(Ok(resp)) => {
+                let pid = resp
+                    .pid
+                    .map(|p| format!(" pid {p}"))
+                    .unwrap_or_default();
+                let chars = resp.prompt_chars;
+                self.last_launch = Some(Ok(format!(
+                    "spawned agent{pid} · {chars} chars · timeout {}s",
+                    resp.timeout_secs
+                )));
+            }
+            AppEvent::AgentLaunchResult(Err(e)) => {
+                self.last_launch = Some(Err(format!("launch failed: {e}")));
+            }
         }
     }
 
@@ -312,6 +334,24 @@ impl AppState {
                 }
             })
             .expect("ingest thread spawn");
+    }
+
+    /// Fire an agent-launch request from a detached thread. The
+    /// agent's stdout is already plumbed into the telemetry feed by
+    /// `crabcc serve`, so we don't need a streaming reply — the SSE
+    /// pump + telemetry poll surface progress on their own. Result
+    /// of the launch (pid + timeout) lands in `last_launch` for the
+    /// Home-route status line.
+    pub fn submit_launch(&self, req: AgentLaunchRequest) {
+        let Some(tx) = self.ingest_tx.clone() else { return };
+        let Some(base) = self.base_url.clone() else { return };
+        std::thread::Builder::new()
+            .name("crabcc-launch".into())
+            .spawn(move || {
+                let client = Client::with_base_url(base);
+                let _ = tx.send(AppEvent::AgentLaunchResult(client.agent_launch(&req)));
+            })
+            .expect("launch thread spawn");
     }
 
     pub fn set_route(&mut self, route: Route) {

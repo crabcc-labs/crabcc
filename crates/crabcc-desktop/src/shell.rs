@@ -34,7 +34,8 @@ pub struct Shell {
 impl Shell {
     pub fn new(state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         cx.observe(&state, |_, _, cx| cx.notify()).detach();
-        let home = cx.new(|cx| DashboardHome::new(state.clone(), cx));
+        // Home owns the agent-spawn TextInput, so it needs window.
+        let home = cx.new(|cx| DashboardHome::new(state.clone(), window, cx));
         let logs = cx.new(|cx| LogsRoute::new(state.clone(), cx));
         let system = cx.new(|cx| SystemRoute::new(state.clone(), cx));
         // Knowledge owns the memory-ingest TextInput, so it needs window.
