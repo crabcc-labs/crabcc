@@ -295,6 +295,26 @@ where
     out
 }
 
+/// Map an op family to a theme colour. Mirrors the rough cost/value
+/// hierarchy of crabcc operations: structural lookups (sym/refs/
+/// callers) get bright primary/info/warning; outline (cheap, often
+/// fired in bulk) stays muted; success-coloured ops are
+/// non-destructive discovery (fuzzy / prefix / random-query); ingest
+/// gets the primary highlight because it writes state.
+fn op_color(op: &str, theme: &gpui_component::Theme) -> Hsla {
+    match op {
+        "sym" => theme.primary,
+        "refs" => theme.info,
+        "callers" => theme.warning,
+        "fuzzy" | "prefix" | "random-query" => theme.success,
+        "ingest" | "memory.ingest" => theme.primary,
+        // Default for `outline`, `track`, and anything new we haven't
+        // categorised yet — these dominate row volume and shouldn't
+        // pull the eye.
+        _ => theme.muted_foreground,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,25 +369,5 @@ mod tests {
     fn grouping_handles_empty_input() {
         let groups: Vec<ActivityGroup> = group_activity(&[] as &[SseActivityEvent], 8);
         assert!(groups.is_empty());
-    }
-}
-
-/// Map an op family to a theme colour. Mirrors the rough cost/value
-/// hierarchy of crabcc operations: structural lookups (sym/refs/
-/// callers) get bright primary/info/warning; outline (cheap, often
-/// fired in bulk) stays muted; success-coloured ops are
-/// non-destructive discovery (fuzzy / prefix / random-query); ingest
-/// gets the primary highlight because it writes state.
-fn op_color(op: &str, theme: &gpui_component::Theme) -> Hsla {
-    match op {
-        "sym" => theme.primary,
-        "refs" => theme.info,
-        "callers" => theme.warning,
-        "fuzzy" | "prefix" | "random-query" => theme.success,
-        "ingest" | "memory.ingest" => theme.primary,
-        // Default for `outline`, `track`, and anything new we haven't
-        // categorised yet — these dominate row volume and shouldn't
-        // pull the eye.
-        _ => theme.muted_foreground,
     }
 }
