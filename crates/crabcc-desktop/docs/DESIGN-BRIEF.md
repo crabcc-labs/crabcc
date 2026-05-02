@@ -56,6 +56,48 @@ Avoid:
 Personal, **dark by default**, **dense by default**, with motion
 on the things that are actually moving.
 
+## Top inspiration — Longbridge desktop
+
+[Longbridge desktop](https://longbridge.com/desktop/) is the visual
+benchmark. It's built on the same `gpui-component` stack we're using,
+so the layouts you see there are *literally achievable* with our
+toolkit (no "but the framework can't do that" caveat). Snapshots
+below for offline reference — captured 2026-05-02.
+
+| Section | File |
+|---|---|
+| Hero (above the fold) | [`design-refs/longbridge-01-hero-viewport.png`](design-refs/longbridge-01-hero-viewport.png) |
+| Trade panel section | [`design-refs/longbridge-03-section-trade.png`](design-refs/longbridge-03-section-trade.png) |
+| Charts section | [`design-refs/longbridge-04-section-charts.png`](design-refs/longbridge-04-section-charts.png) |
+| Watchlist / lists | [`design-refs/longbridge-05-section-watchlist.png`](design-refs/longbridge-05-section-watchlist.png) |
+| Footer / extras | [`design-refs/longbridge-06-section-bottom.png`](design-refs/longbridge-06-section-bottom.png) |
+| Full page (everything stitched) | [`design-refs/longbridge-02-fullpage.png`](design-refs/longbridge-02-fullpage.png) |
+
+What to take from it (and what NOT to):
+
+**Take:**
+- **Information density** with breathing room — every cell carries data,
+  but spacing keeps it scannable.
+- **Tight number formatting** — green/red P&L deltas, mono-spaced
+  decimals, percent change with trend arrow inline.
+- **Live tickers and sparklines integrated into rows**, not pulled out
+  as separate "chart pages".
+- **Multi-pane workspaces** — three or more concurrent surfaces visible
+  at once (watchlist + chart + order ticket). We can mirror that with
+  the existing graph + tiles + activity feed.
+- **Compact icons** with consistent stroke width and corner radius.
+
+**Don't take:**
+- **Trading-app palette** (that bright cyan/orange + green/red P&L
+  scheme). Our context is code/agents, not markets — palette should
+  feel like Zed or VS Code's themes, not a Bloomberg terminal.
+- **The marketing-page chrome** in these screenshots (hero copy, CTAs,
+  testimonials). We're capturing the *app screenshots inside the
+  marketing page*, not the page layout itself.
+- **The localized ticker symbols / order ticket forms** — the
+  inspiration is the *layout density* and *liveness*, not the
+  domain-specific widgets.
+
 ## What's already live (existing surfaces, ready to redesign)
 
 The app today has 4 routes selected from a header nav strip. Every
