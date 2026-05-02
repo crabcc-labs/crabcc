@@ -21,7 +21,8 @@
 //! sharing. Click reads the bounds, converts the window-relative
 //! event position to unit coords, and walks the position list once.
 //!
-//! Zoom + pan land in A.5.2.
+//! Mouse-wheel zoom around the canvas centre lands here in A.5.2.
+//! Pan (click + drag) is the next slice.
 
 use std::sync::{Arc, Mutex};
 
@@ -42,6 +43,13 @@ const NODE_RADIUS: f32 = 4.0;
 const HIT_PADDING_PX: f32 = 4.0;
 const EDGE_WIDTH: f32 = 1.0;
 
+const MIN_ZOOM: f32 = 0.5;
+const MAX_ZOOM: f32 = 4.0;
+/// Sensitivity in `zoom_factor = exp(SCROLL_K * dy_px)`. 0.005 means
+/// a 100-pixel scroll roughly halves or doubles the zoom — feels
+/// natural on Apple Magic Mouse / trackpad without overshooting.
+const SCROLL_K: f32 = 0.005;
+
 pub struct GraphView {
     state: Entity<AppState>,
     layout: Option<Layout>,
@@ -54,6 +62,12 @@ pub struct GraphView {
     /// is just a type-system convenience for sharing across the two
     /// closures gpui takes ownership of.
     last_bounds: Arc<Mutex<Option<Bounds<Pixels>>>>,
+    /// Linear zoom factor around the canvas centre. 1.0 is the
+    /// identity transform; values above 1 spread nodes out (zoom in),
+    /// below 1 pack them tighter. Node visual radius stays constant —
+    /// only positions transform, matching the d3 / scatter-plot
+    /// convention.
+    zoom: f32,
 }
 
 impl GraphView {
@@ -65,7 +79,16 @@ impl GraphView {
             layout_fingerprint: 0,
             selected: None,
             last_bounds: Arc::new(Mutex::new(None)),
+            zoom: 1.0,
         }
+    }
+
+    fn adjust_zoom(&mut self, dy_px: f32) {
+        // Exponential mapping — natural for zoom (a single scroll click
+        // multiplies / divides instead of adding). Negative dy = scroll
+        // down = zoom out (matches macOS/Linux convention).
+        let factor = (SCROLL_K * dy_px).exp();
+        self.zoom = (self.zoom * factor).clamp(MIN_ZOOM, MAX_ZOOM);
     }
 
     fn ensure_layout(&mut self, snapshot: &GraphSnapshot) -> &Layout {
@@ -80,7 +103,8 @@ impl GraphView {
     }
 
     /// Convert a window-relative click position into the unit-coord
-    /// position the laid-out node table uses.
+    /// position the laid-out node table uses, inverting the zoom
+    /// transform along the way.
     fn hit_test(&self, win_pos: gpui::Point<Pixels>) -> Option<usize> {
         let bounds = self.last_bounds.lock().ok()?.as_ref().copied()?;
         let layout = self.layout.as_ref()?;
@@ -91,24 +115,26 @@ impl GraphView {
         if w <= 0.0 || h <= 0.0 {
             return None;
         }
-        let u_x = local_x / w;
-        let u_y = local_y / h;
-        // Pixel-space radius for the hit test — convert NODE_RADIUS +
-        // padding back to unit coords using the live canvas size, so
-        // the click target stays NODE_RADIUS-px in pixels regardless
-        // of zoom level (and once zoom lands).
+        // Invert the visible→unit transform applied in paint:
+        //   visible = 0.5 + (orig - 0.5) * zoom
+        // ⇒ orig = 0.5 + (visible - 0.5) / zoom.
+        let visible_x = local_x / w;
+        let visible_y = local_y / h;
+        let u_x = 0.5 + (visible_x - 0.5) / self.zoom;
+        let u_y = 0.5 + (visible_y - 0.5) / self.zoom;
+        // Hit radius is fixed in pixels (node markers don't scale with
+        // zoom), but in *unit* space — which is what we compare in —
+        // it shrinks by `zoom` because the inverse transform divides
+        // by zoom along each axis.
         let r_px = NODE_RADIUS + HIT_PADDING_PX;
-        let rx_u = r_px / w;
-        let ry_u = r_px / h;
+        let rx_u = r_px / (w * self.zoom);
+        let ry_u = r_px / (h * self.zoom);
         let rx2 = rx_u * rx_u;
         let ry2 = ry_u * ry_u;
-        // Find the closest hit node within the ellipsoid radius. The
-        // canvas may be non-square so x and y radii differ.
         let mut best: Option<(usize, f32)> = None;
         for (i, &(px_u, py_u)) in layout.positions.iter().enumerate() {
             let dx = px_u - u_x;
             let dy = py_u - u_y;
-            // Normalised distance in unit coords; <1 means inside.
             let nd = dx * dx / rx2 + dy * dy / ry2;
             if nd <= 1.0 && best.map(|(_, b)| nd < b).unwrap_or(true) {
                 best = Some((i, nd));
@@ -166,6 +192,7 @@ impl Render for GraphView {
                 let edge_color = with_alpha(muted, 0.45);
                 let highlight_color = cx.theme().success;
                 let selected_idx = self.selected;
+                let zoom = self.zoom;
                 let bounds_share = self.last_bounds.clone();
 
                 let canvas_el = canvas(
@@ -184,6 +211,7 @@ impl Render for GraphView {
                             node_color,
                             highlight_color,
                             selected_idx,
+                            zoom,
                             window,
                         );
                     },
@@ -260,6 +288,7 @@ impl Render for GraphView {
                 // the click. `relative()` positions the absolute
                 // overlay against this container's bounds.
                 let entity_for_click = cx.entity();
+                let entity_for_scroll = cx.entity();
                 div()
                     .id("relations-graph")
                     .relative()
@@ -272,6 +301,19 @@ impl Render for GraphView {
                             this.handle_click(pos);
                             cx.notify();
                         });
+                    })
+                    .on_scroll_wheel(move |event, _, cx| {
+                        // 16 px is a reasonable line-height proxy. macOS
+                        // trackpad scroll deltas are already pixel-precise
+                        // and ignore the proxy; legacy mouse wheels (line-
+                        // based) get scaled by it.
+                        let dy = f32::from(event.delta.pixel_delta(px(16.0)).y);
+                        if dy != 0.0 {
+                            entity_for_scroll.update(cx, |this, cx| {
+                                this.adjust_zoom(dy);
+                                cx.notify();
+                            });
+                        }
                     })
                     .into_any_element()
             }
@@ -294,6 +336,12 @@ impl Render for GraphView {
                             .text_sm()
                             .child(SharedString::new_static("Relations graph")),
                     )
+                    .children(((self.zoom - 1.0).abs() > f32::EPSILON).then(|| {
+                        div().text_color(muted).child(SharedString::from(format!(
+                            "· {:.0}% zoom",
+                            self.zoom * 100.0
+                        )))
+                    }))
                     .children(self.selected.map(|_| {
                         div()
                             .text_color(muted)
@@ -304,6 +352,7 @@ impl Render for GraphView {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn paint_graph(
     bounds: Bounds<Pixels>,
     layout: &Layout,
@@ -311,6 +360,7 @@ fn paint_graph(
     node_color: Hsla,
     highlight_color: Hsla,
     selected: Option<usize>,
+    zoom: f32,
     window: &mut Window,
 ) {
     let ox = f32::from(bounds.origin.x);
@@ -318,7 +368,15 @@ fn paint_graph(
     let w = f32::from(bounds.size.width);
     let h = f32::from(bounds.size.height);
 
-    let to_px = |(ux, uy): (f32, f32)| point(px(ox + ux * w), px(oy + uy * h));
+    // Zoom transform: visible = 0.5 + (orig - 0.5) * zoom. Inverse
+    // lives in `hit_test`. Nodes that fall outside [0, 1] visible
+    // range simply paint outside the canvas and get clipped — gpui
+    // doesn't error on out-of-bounds paint calls.
+    let to_px = |(ux, uy): (f32, f32)| {
+        let evx = 0.5 + (ux - 0.5) * zoom;
+        let evy = 0.5 + (uy - 0.5) * zoom;
+        point(px(ox + evx * w), px(oy + evy * h))
+    };
 
     // Edges first. Edges incident to the selected node use the
     // highlight colour at higher alpha — gives the selection a halo
