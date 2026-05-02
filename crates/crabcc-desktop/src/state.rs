@@ -1,15 +1,19 @@
 //! `AppState` — the shared model the dashboard view observes.
 //!
 //! Holds the latest snapshot of bootstrap, agents, services, telemetry,
-//! and ring buffers for recent activity + telemetry events. Three
+//! and ring buffers for recent activity + telemetry events. Four
 //! background workers feed it through a single `flume` channel:
 //!
-//! - `prefetch_worker` — one-shot at startup, GETs `/api/bootstrap`
-//!   + `/api/services` + `/api/seed-graph` so the UI has something to
-//!     draw before the first SSE frame arrives.
+//! - `prefetch_worker` — one-shot at startup, GETs the eight surfaces
+//!   in `Prefetch` so the UI has something to draw before the first
+//!   SSE frame arrives.
 //! - `sse::spawn_worker` — long-lived, see `crate::sse`.
 //! - `telemetry_worker` — periodic poll of `/api/telemetry?since=cursor`
 //!   on a 3-second tick. Feeds the Logs route.
+//! - `memory_worker` — periodic poll of `/api/memory/recent` on a
+//!   10-second tick. Replaces `memory_recent` on each successful
+//!   frame so the Knowledge route picks up new drawers without a
+//!   manual reload.
 //!
 //! The gpui side calls [`AppState::pump_events`] inside
 //! `cx.spawn(async ...)` to drain the channel and update self via the
@@ -43,6 +47,9 @@ const TELEMETRY_BUFFER: usize = 256;
 /// cadence on the React side; tuned to surface logs near-real-time
 /// without hammering the server when nothing's happening.
 const TELEMETRY_POLL: Duration = Duration::from_secs(3);
+/// Memory drawer refresh cadence. Drawers churn slower than telemetry
+/// — the typical write rate is "human ingest from CLI", so 10s is fine.
+const MEMORY_POLL: Duration = Duration::from_secs(10);
 
 /// Bundle of one-shot prefetch results, all fired on the same OS
 /// thread at startup. Each field carries its own `Result` so a dead
@@ -77,6 +84,10 @@ pub enum AppEvent {
     /// plus the new cursor; `Err` skips this tick without resetting the
     /// cursor.
     Telemetry(anyhow::Result<TelemetrySnapshot>),
+    /// Periodic memory-drawer refresh. Replaces the cached snapshot on
+    /// `Ok`; routes `Err` through `last_error` and keeps the previous
+    /// snapshot intact.
+    MemoryRefresh(anyhow::Result<MemoryRecentResponse>),
     Sse(SseEvent),
 }
 
@@ -229,6 +240,12 @@ impl AppState {
             AppEvent::Telemetry(Err(e)) => {
                 self.last_error = Some(format!("telemetry: {e}"));
             }
+            AppEvent::MemoryRefresh(Ok(snapshot)) => {
+                self.memory_recent = Some(snapshot);
+            }
+            AppEvent::MemoryRefresh(Err(e)) => {
+                self.last_error = Some(format!("memory_refresh: {e}"));
+            }
         }
     }
 
@@ -268,7 +285,7 @@ impl AppState {
     }
 }
 
-/// Spawn the three background workers and return the receiving end
+/// Spawn the four background workers and return the receiving end
 /// of the merged channel. Callers feed it into [`AppState::pump_events`].
 ///
 /// Workers run on their own OS threads — no async runtime needed, and
@@ -350,6 +367,34 @@ pub fn spawn_workers(base_url: &str) -> flume::Receiver<AppEvent> {
                 }
             })
             .expect("telemetry thread spawn");
+    }
+
+    // Long-lived memory-drawer poller. Slower cadence than telemetry —
+    // drawer creation is a human-driven event from `crabcc memory
+    // ingest`, so 10s is plenty. Mirrors the telemetry pattern: GET,
+    // send, sleep, repeat.
+    {
+        let tx = tx.clone();
+        let base = base_url.to_string();
+        std::thread::Builder::new()
+            .name("crabcc-memory-poll".into())
+            .spawn(move || {
+                let client = Client::with_base_url(base);
+                loop {
+                    if tx.is_disconnected() {
+                        return;
+                    }
+                    // First tick fires immediately after `MEMORY_POLL`
+                    // — the prefetch worker already covered the cold
+                    // path, so we can sleep before the first GET to
+                    // skip a redundant fetch at startup.
+                    std::thread::sleep(MEMORY_POLL);
+                    if tx.send(AppEvent::MemoryRefresh(client.memory_recent())).is_err() {
+                        return;
+                    }
+                }
+            })
+            .expect("memory-poll thread spawn");
     }
 
     drop(tx);
