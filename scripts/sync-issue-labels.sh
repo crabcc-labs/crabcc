@@ -16,28 +16,27 @@ set -euo pipefail
 REPO="${REPO:-peterlodri-sec/crabcc}"
 DRY="${1:-}"
 
-run() {
-  if [[ "$DRY" == "--dry-run" ]]; then
-    echo "DRY: $*"
-  else
-    eval "$@"
-  fi
-}
+is_dry() { [[ "$DRY" == "--dry-run" ]]; }
 
 # ---- 1. Ensure the label vocabulary exists -----------------------------------
 
 ensure_label() {
   local name="$1" color="$2" desc="$3"
   if gh label list --repo "$REPO" --limit 200 --json name --jq '.[].name' | grep -Fxq "$name"; then
+    echo "  label $name already exists, skip"
     return 0
   fi
-  run gh label create "'$name'" --color "'$color'" --description "'$desc'" --repo "'$REPO'"
+  if is_dry; then
+    echo "DRY: gh label create $name --color $color --description \"$desc\""
+  else
+    gh label create "$name" --color "$color" --description "$desc" --repo "$REPO"
+  fi
 }
 
 ensure_label "rfc"      "8b00ff" "Design proposal needing discussion before code"
 ensure_label "refactor" "c5def5" "Code shape change with no behavior change"
 ensure_label "test"     "0e8a16" "Test infra or new tests"
-ensure_label "chore"    "ededed" "Maintenance work that doesn't fit other categories"
+ensure_label "chore"    "ededed" "Maintenance work that does not fit other categories"
 
 # ---- 2. Backfill labels on under-labeled open issues -------------------------
 
@@ -67,8 +66,12 @@ PLAN=(
 for entry in "${PLAN[@]}"; do
   num="${entry%%:*}"
   labels="${entry#*:}"
-  echo "→ #$num  +[$labels]"
-  run gh issue edit "$num" --repo "$REPO" --add-label "'$labels'"
+  echo "-> #$num  +[$labels]"
+  if is_dry; then
+    echo "DRY: gh issue edit $num --add-label $labels"
+  else
+    gh issue edit "$num" --repo "$REPO" --add-label "$labels"
+  fi
 done
 
 # ---- 3. Re-print the under-labeled list for visual diff ----------------------
