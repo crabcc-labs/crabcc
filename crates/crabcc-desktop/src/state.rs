@@ -18,7 +18,7 @@ use std::collections::VecDeque;
 
 use gpui::{App, Context, Entity};
 
-use crate::api::types::{Bootstrap, DiscoveryReport, SseActivityEvent, SseAgent};
+use crate::api::types::{Bootstrap, DiscoveryReport, GraphSnapshot, SseActivityEvent, SseAgent};
 use crate::api::Client;
 use crate::sse::{self, SseEvent};
 
@@ -38,6 +38,7 @@ pub enum AppEvent {
     Initial {
         bootstrap: anyhow::Result<Bootstrap>,
         services: anyhow::Result<DiscoveryReport>,
+        graph: anyhow::Result<GraphSnapshot>,
     },
     Sse(SseEvent),
 }
@@ -46,6 +47,10 @@ pub enum AppEvent {
 pub struct AppState {
     pub bootstrap: Option<Bootstrap>,
     pub services: Option<DiscoveryReport>,
+    /// Snapshot from `/api/seed-graph`. Fetched once at prefetch time;
+    /// the seed graph is static across a serve session, so no SSE
+    /// channel for it. Re-fetch on demand once we add a refresh action.
+    pub graph: Option<GraphSnapshot>,
     pub agents: Vec<SseAgent>,
     pub recent_activity: VecDeque<SseActivityEvent>,
     /// Cumulative number of activity events seen since startup —
@@ -70,6 +75,7 @@ impl AppState {
             AppEvent::Initial {
                 bootstrap,
                 services,
+                graph,
             } => {
                 match bootstrap {
                     Ok(b) => self.bootstrap = Some(b),
@@ -78,6 +84,10 @@ impl AppState {
                 match services {
                     Ok(s) => self.services = Some(s),
                     Err(e) => self.last_error = Some(format!("services: {e}")),
+                }
+                match graph {
+                    Ok(g) => self.graph = Some(g),
+                    Err(e) => self.last_error = Some(format!("graph: {e}")),
                 }
             }
             AppEvent::Sse(SseEvent::Activity(frame)) => {
@@ -142,7 +152,10 @@ impl AppState {
 pub fn spawn_workers(base_url: &str) -> flume::Receiver<AppEvent> {
     let (tx, rx) = flume::unbounded::<AppEvent>();
 
-    // One-shot prefetch.
+    // One-shot prefetch — bootstrap + services + seed-graph all on the
+    // same thread. The seed-graph response is ~20 KB / 96 nodes today
+    // so an extra HTTP round-trip at startup is fine; promote to a
+    // background-on-demand fetch if the graph grows large.
     {
         let tx = tx.clone();
         let base = base_url.to_string();
@@ -152,10 +165,12 @@ pub fn spawn_workers(base_url: &str) -> flume::Receiver<AppEvent> {
                 let client = Client::with_base_url(base);
                 let bootstrap = client.bootstrap();
                 let services = client.services();
+                let graph = client.seed_graph();
                 // Receiver disconnect is fine — app shutdown raced us.
                 let _ = tx.send(AppEvent::Initial {
                     bootstrap,
                     services,
+                    graph,
                 });
             })
             .expect("prefetch thread spawn");

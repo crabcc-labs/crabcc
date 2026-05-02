@@ -1,4 +1,4 @@
-//! DashboardHome — Milestone 1.
+//! DashboardHome — Milestone 1 + relations graph (A.5).
 //!
 //! Visual layout:
 //!
@@ -6,6 +6,8 @@
 //!   │  KPI strip: [Index] [Activity] [Agents] [Services]       │
 //!   ├──────────────────────────────────────────────────────────┤
 //!   │  Tile row: [Recent activity] [Agents] [Services]         │
+//!   ├──────────────────────────────────────────────────────────┤
+//!   │  Relations graph (canvas, ≥360px tall)                   │
 //!   └──────────────────────────────────────────────────────────┘
 //!
 //! Reads from the shared `AppState` entity. `Render` runs on every
@@ -17,10 +19,12 @@ use gpui::{
 use gpui_component::{h_flex, v_flex, ActiveTheme};
 
 use crate::api::types::AgentStatus;
+use crate::routes::graph::GraphView;
 use crate::state::AppState;
 
 pub struct DashboardHome {
     state: Entity<AppState>,
+    graph_view: Entity<GraphView>,
 }
 
 impl DashboardHome {
@@ -29,7 +33,8 @@ impl DashboardHome {
         // gpui doesn't propagate the source entity's notifications
         // automatically — we observe explicitly.
         cx.observe(&state, |_, _, cx| cx.notify()).detach();
-        Self { state }
+        let graph_view = cx.new(|cx| GraphView::new(state.clone(), cx));
+        Self { state, graph_view }
     }
 }
 
@@ -198,12 +203,15 @@ impl Render for DashboardHome {
             .child(agents_tile)
             .child(services_tile);
 
+        let graph_row = div().px_5().py_2().child(self.graph_view.clone());
+
         v_flex()
             .size_full()
             .bg(bg)
             .child(header)
             .child(kpi_strip)
             .child(tile_row)
+            .child(graph_row)
     }
 }
 
