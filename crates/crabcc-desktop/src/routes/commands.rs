@@ -1,32 +1,59 @@
-//! Commands launchpad — static catalog of the crabcc CLI surface.
+//! Commands launchpad — searchable catalog of the crabcc CLI surface.
 //!
 //! Greenfield route per the design brief. Renders the CLI command
-//! inventory grouped by family so the user can see, at a glance,
-//! "what can I do with this thing". No dispatch yet — clicking a row
-//! is a follow-up that needs a small "spawn this command" sheet.
+//! inventory grouped by family with a top-of-route TextInput that
+//! filters live as the user types. Sections whose commands all
+//! filter out are hidden, so an empty result reads cleanly.
+//!
+//! No dispatch yet — clicking a row is a follow-up that needs an
+//! argument-input sheet for non-trivial commands.
 //!
 //! The catalog is hand-maintained for now. A follow-up could fetch
-//! `--help` output from the server (or parse a `commands.json`
-//! shipped with the build) so the desktop view can never drift from
-//! the actual binary's surface; today the cost of that machinery
-//! outweighs the maintenance burden of the table below.
+//! `--help` output from the server to keep it canonically in sync;
+//! today the cost of that machinery outweighs the maintenance cost
+//! of the table at the bottom of this file.
 
 use gpui::{
-    div, prelude::*, px, Context, Hsla, IntoElement, Render, SharedString, Window,
+    div, prelude::*, px, Context, Entity, Hsla, IntoElement, Render, SharedString, Window,
 };
-use gpui_component::{h_flex, v_flex, ActiveTheme};
+use gpui_component::{
+    h_flex,
+    input::{Input, InputEvent, InputState},
+    v_flex, ActiveTheme,
+};
 
-pub struct CommandsRoute;
-
-impl CommandsRoute {
-    pub fn new() -> Self {
-        Self
-    }
+pub struct CommandsRoute {
+    /// gpui-component InputState — owns text + focus state.
+    query_input: Entity<InputState>,
+    /// Lower-cased mirror of the input's value, kept in sync via
+    /// `InputEvent::Change`. Avoids re-lowercasing the query for
+    /// every match check on every render.
+    query_lower: String,
 }
 
-impl Default for CommandsRoute {
-    fn default() -> Self {
-        Self::new()
+impl CommandsRoute {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let query_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Filter commands…"));
+        cx.subscribe_in(&query_input, window, |this, state, event, _, cx| {
+            if let InputEvent::Change = event {
+                this.query_lower = state.read(cx).value().to_string().to_lowercase();
+                cx.notify();
+            }
+        })
+        .detach();
+        Self {
+            query_input,
+            query_lower: String::new(),
+        }
+    }
+
+    fn cmd_matches(&self, cmd: &Command) -> bool {
+        if self.query_lower.is_empty() {
+            return true;
+        }
+        cmd.invocation.to_lowercase().contains(&self.query_lower)
+            || cmd.summary.to_lowercase().contains(&self.query_lower)
     }
 }
 
@@ -37,6 +64,19 @@ impl Render for CommandsRoute {
         let card = cx.theme().secondary;
         let primary = cx.theme().primary;
 
+        // Filter the static catalog; track totals so the header line
+        // can show "5 of 31" without doing the work twice.
+        let total: usize = CATALOG.iter().map(|c| c.commands.len()).sum();
+        let visible: Vec<(&Category, Vec<&Command>)> = CATALOG
+            .iter()
+            .map(|cat| {
+                let cmds: Vec<&Command> = cat.commands.iter().filter(|c| self.cmd_matches(c)).collect();
+                (cat, cmds)
+            })
+            .filter(|(_, cmds)| !cmds.is_empty())
+            .collect();
+        let visible_count: usize = visible.iter().map(|(_, c)| c.len()).sum();
+
         let header = h_flex()
             .gap_3()
             .child(
@@ -44,13 +84,27 @@ impl Render for CommandsRoute {
                     .text_lg()
                     .child(SharedString::new_static("Commands")),
             )
-            .child(div().text_color(muted).child(SharedString::new_static(
-                "Static catalog of the crabcc CLI. Click-to-run lands in a follow-up.",
-            )));
+            .child(
+                div()
+                    .text_color(muted)
+                    .child(SharedString::from(if self.query_lower.is_empty() {
+                        format!("{total} commands")
+                    } else {
+                        format!("{visible_count} of {total} commands match")
+                    })),
+            );
 
-        let sections = CATALOG
-            .iter()
-            .map(|cat| section(cat, muted, border, card, primary))
+        let search_field = div()
+            .border_1()
+            .border_color(border)
+            .rounded_md()
+            .px_2()
+            .py_1()
+            .child(Input::new(&self.query_input).appearance(false));
+
+        let sections = visible
+            .into_iter()
+            .map(|(cat, cmds)| section(cat, &cmds, muted, border, card, primary))
             .collect::<Vec<_>>();
 
         v_flex()
@@ -59,6 +113,7 @@ impl Render for CommandsRoute {
             .py_4()
             .gap_4()
             .child(header)
+            .child(search_field)
             .child(v_flex().gap_4().children(sections))
     }
 }
@@ -77,6 +132,7 @@ struct Command {
 
 fn section(
     cat: &Category,
+    visible_cmds: &[&Command],
     muted: Hsla,
     border: Hsla,
     card: Hsla,
@@ -99,7 +155,7 @@ fn section(
         )
         .child(
             v_flex().gap_1().children(
-                cat.commands
+                visible_cmds
                     .iter()
                     .map(|cmd| command_row(cmd, muted, card))
                     .collect::<Vec<_>>(),
@@ -112,9 +168,6 @@ fn command_row(cmd: &Command, muted: Hsla, card: Hsla) -> gpui::Div {
         .gap_3()
         .py_1()
         .child(
-            // `crabcc <invocation>` pill — fixed-width column for
-            // visual alignment across rows. Mono-feel even though we
-            // don't enforce the font here.
             div()
                 .min_w(px(280.0))
                 .px_2()
