@@ -101,6 +101,7 @@ pub enum Route {
     Logs,
     System,
     Knowledge,
+    Commands,
 }
 
 impl Route {
@@ -110,10 +111,17 @@ impl Route {
             Route::Logs => "Logs",
             Route::System => "System",
             Route::Knowledge => "Knowledge",
+            Route::Commands => "Commands",
         }
     }
 
-    pub const ALL: [Route; 4] = [Route::Home, Route::Logs, Route::System, Route::Knowledge];
+    pub const ALL: [Route; 5] = [
+        Route::Home,
+        Route::Logs,
+        Route::System,
+        Route::Knowledge,
+        Route::Commands,
+    ];
 }
 
 #[derive(Default, Debug)]
