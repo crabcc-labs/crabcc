@@ -100,22 +100,31 @@ crates/crabcc-desktop/
 
 ### Phasing
 
-- **A.0 (kickoff PR)**: scaffold crate, depend on `gpui` + `gpui-component`,
-  open a 1280×800 window with the brand "crabcc · live" and a static
-  panel showing `repo / version`. **Just proves the toolchain.**
-- **A.1**: API client port — generate Rust types from `openapi.yaml`
-  via `oapi-gen` or hand-write to mirror `web/src/api.ts`.
-- **A.2**: SSE consumer + AppState reactive layer — gpui's
+- **A.0 (kickoff PR #214)**: research + crate scaffolding + Apple-notification
+  dossier. Banner-printing stub binary, no GPUI runtime. **Done.**
+- **A.1 (PR #215)**: depend on `gpui` + `gpui-component`, open a
+  1280×800 window titled "crabcc · live" with a static panel showing
+  `repo / version`. **Toolchain proof.** **Done.**
+- **A.2 (this PR)**: typed API client mirroring
+  `crates/crabcc-viz/web/src/api.ts` — `reqwest::blocking`,
+  hand-written types per `openapi.yaml`, integration smoke test
+  against a running `crabcc serve`. No UI changes yet — the window
+  shell from A.1 is unchanged; the client lives in `src/api/` and
+  gets consumed in A.4.
+- **A.3**: SSE consumer + AppState reactive layer — gpui's
   `Entity` + `cx.notify()` model lets us push activity / agents
-  updates the same way React's SSE handler does today.
-- **A.3**: Port the **DashboardHome** route (KPI strip + tiles) using
+  updates the same way React's SSE handler does today. Bridges
+  `/api/events` (or `/sse`) into a typed `Event` enum and feeds
+  per-pane state.
+- **A.4**: Port the **DashboardHome** route (KPI strip + tiles) using
   `gpui-component`'s `Card`, `Stack`, `Spark`, `Pill` — visual parity
-  with `#/` on the web. **Milestone 1: dashboard demo.**
-- **A.4**: Port relations graph using `gpui-component`'s `Graph`/`Chart`
-  + d3-force-rs (or a port of the existing canvas hit-testing).
+  with `#/` on the web, consuming the A.2 client + A.3 SSE bridge.
+  **Milestone 1: dashboard demo.**
+- **A.5**: Port relations graph using `gpui-component`'s `Graph`/`Chart`
+  + a port of the existing canvas hit-testing.
   **Milestone 2: graph perf benchmark vs. web.**
-- **A.5**: Logs / system / knowledge routes.
-- **A.6**: Native menu bar (`gpui-component::Menu`), dock badge,
+- **A.6**: Logs / system / knowledge routes.
+- **A.7**: Native menu bar (`gpui-component::Menu`), dock badge,
   system tray.
 
 ### Resolved decisions for Track A
