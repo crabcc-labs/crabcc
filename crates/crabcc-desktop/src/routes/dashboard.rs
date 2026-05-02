@@ -10,11 +10,11 @@
 //! `cx.notify()` triggered by the SSE pump in `state.rs`.
 
 use gpui::{
-    div, prelude::*, px, Context, Entity, IntoElement, Render, SharedString, Window,
+    div, prelude::*, px, Context, Entity, Hsla, IntoElement, Render, SharedString, Window,
 };
 use gpui_component::{h_flex, v_flex, ActiveTheme};
 
-use crate::api::types::AgentStatus;
+use crate::api::types::{AgentStatus, SseActivityEvent};
 use crate::routes::graph::GraphView;
 use crate::state::AppState;
 
@@ -76,30 +76,40 @@ impl Render for DashboardHome {
             .child(kpi_card("SERVICES", services_kpi, card, border, muted));
 
         // ── Tile row ──────────────────────────────────────────────
+        // Groups consecutive same-op rows into a single visual line so
+        // a burst of the same query (common during a startup outline
+        // sweep) doesn't drown out the variety. Op badge is colour-coded
+        // per family — see `op_color`.
+        let theme = cx.theme();
+        let activity_groups = group_activity(&state.recent_activity, 8);
         let activity_tile = tile(
             "Recent activity",
             card,
             border,
             v_flex().gap_1().children(
-                state
-                    .recent_activity
-                    .iter()
-                    .rev()
-                    .take(8)
-                    .map(|hit| {
+                activity_groups
+                    .into_iter()
+                    .map(|g| {
+                        let op_color = op_color(&g.op, theme);
                         h_flex()
                             .gap_2()
+                            // Op badge — fixed-width column so the
+                            // query text aligns across rows.
                             .child(
                                 div()
                                     .w(px(80.0))
-                                    .text_color(muted)
-                                    .child(SharedString::from(hit.op.clone())),
+                                    .text_color(op_color)
+                                    .child(SharedString::from(g.op.clone())),
                             )
-                            .child(SharedString::from(truncate(&hit.query, 60)))
+                            .child(SharedString::from(truncate(&g.latest_query, 60)))
                             .child(
                                 div()
                                     .text_color(muted)
-                                    .child(SharedString::from(format!("({})", hit.results))),
+                                    .child(SharedString::from(if g.count == 1 {
+                                        format!("({})", g.latest_results)
+                                    } else {
+                                        format!("(×{} · {})", g.count, g.latest_results)
+                                    })),
                             )
                             .into_any_element()
                     })
@@ -240,5 +250,124 @@ fn truncate(s: &str, max: usize) -> String {
         let mut out: String = s.chars().take(max - 1).collect();
         out.push('…');
         out
+    }
+}
+
+/// One visible row in the Recent Activity tile after consecutive
+/// same-op events have been collapsed.
+struct ActivityGroup {
+    op: String,
+    latest_query: String,
+    latest_results: u64,
+    count: usize,
+}
+
+/// Walk the buffer newest-first, collapsing runs of the same `op`
+/// into a single group whose `count` carries the run length and
+/// whose `latest_*` fields show the most-recent event in the run.
+/// Returns up to `cap` groups.
+fn group_activity<'a, I>(events: I, cap: usize) -> Vec<ActivityGroup>
+where
+    I: IntoIterator<Item = &'a SseActivityEvent>,
+    I::IntoIter: DoubleEndedIterator,
+{
+    let mut out: Vec<ActivityGroup> = Vec::with_capacity(cap);
+    for evt in events.into_iter().rev() {
+        if let Some(last) = out.last_mut() {
+            if last.op == evt.op {
+                // Same op as the previous-newest group — extend it.
+                // We already stored the *latest* (newest) event of the
+                // run in `latest_*` since that came first in our walk.
+                last.count += 1;
+                continue;
+            }
+        }
+        if out.len() == cap {
+            break;
+        }
+        out.push(ActivityGroup {
+            op: evt.op.clone(),
+            latest_query: evt.query.clone(),
+            latest_results: evt.results,
+            count: 1,
+        });
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn evt(op: &str, q: &str, results: u64) -> SseActivityEvent {
+        SseActivityEvent {
+            ts: 0,
+            op: op.into(),
+            query: q.into(),
+            results,
+        }
+    }
+
+    #[test]
+    fn grouping_collapses_consecutive_runs() {
+        // Buffer is oldest→newest; group_activity walks newest-first.
+        let events = vec![
+            evt("outline", "a", 1),
+            evt("outline", "b", 2),
+            evt("outline", "c", 3),
+            evt("sym", "Store", 1),
+            evt("refs", "Store", 2),
+            evt("refs", "Index", 3),
+        ];
+        let groups = group_activity(&events, 8);
+        // Expected (newest first): refs ×2 (latest=Index), sym ×1, outline ×3 (latest=c)
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0].op, "refs");
+        assert_eq!(groups[0].count, 2);
+        assert_eq!(groups[0].latest_query, "Index");
+        assert_eq!(groups[1].op, "sym");
+        assert_eq!(groups[1].count, 1);
+        assert_eq!(groups[2].op, "outline");
+        assert_eq!(groups[2].count, 3);
+        assert_eq!(groups[2].latest_query, "c");
+    }
+
+    #[test]
+    fn grouping_caps_at_visible_count() {
+        let events: Vec<SseActivityEvent> = (0..20)
+            .map(|i| evt(&format!("op-{i}"), "q", i as u64))
+            .collect();
+        let groups = group_activity(&events, 5);
+        // Each event has a unique op, so groups equal events. We expect
+        // exactly 5 (the cap) — the *newest* 5.
+        assert_eq!(groups.len(), 5);
+        assert_eq!(groups[0].op, "op-19");
+        assert_eq!(groups[4].op, "op-15");
+    }
+
+    #[test]
+    fn grouping_handles_empty_input() {
+        let groups: Vec<ActivityGroup> = group_activity(&[] as &[SseActivityEvent], 8);
+        assert!(groups.is_empty());
+    }
+}
+
+/// Map an op family to a theme colour. Mirrors the rough cost/value
+/// hierarchy of crabcc operations: structural lookups (sym/refs/
+/// callers) get bright primary/info/warning; outline (cheap, often
+/// fired in bulk) stays muted; success-coloured ops are
+/// non-destructive discovery (fuzzy / prefix / random-query); ingest
+/// gets the primary highlight because it writes state.
+fn op_color(op: &str, theme: &gpui_component::Theme) -> Hsla {
+    match op {
+        "sym" => theme.primary,
+        "refs" => theme.info,
+        "callers" => theme.warning,
+        "fuzzy" | "prefix" | "random-query" => theme.success,
+        "ingest" | "memory.ingest" => theme.primary,
+        // Default for `outline`, `track`, and anything new we haven't
+        // categorised yet — these dominate row volume and shouldn't
+        // pull the eye.
+        _ => theme.muted_foreground,
     }
 }
