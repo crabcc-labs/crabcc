@@ -12,11 +12,11 @@ use anyhow::{Context, Result};
 use serde::{de::DeserializeOwned, Serialize};
 
 use super::types::{
-    ActivityResponse, AgentKillsResponse, AgentLaunchRequest, AgentLaunchResponse, AgentLog,
-    AgentModelsResponse, AgentProfilesResponse, AgentsResponse, Bootstrap, DiscoveryReport,
-    GraphSnapshot, HealthResponse, MemoryIngestRequest, MemoryIngestResponse,
-    MemoryRecentResponse, OllamaKey, OtlpHealth, RandomQueryResponse, ReindexReport,
-    TelemetrySnapshot,
+    ActivityResponse, AgentKillResponse, AgentKillsResponse, AgentLaunchRequest,
+    AgentLaunchResponse, AgentLog, AgentModelsResponse, AgentProfilesResponse, AgentsResponse,
+    Bootstrap, DiscoveryReport, GraphSnapshot, HealthResponse, MemoryIngestRequest,
+    MemoryIngestResponse, MemoryRecentResponse, OllamaKey, OtlpHealth, RandomQueryResponse,
+    ReindexReport, TelemetrySnapshot,
 };
 
 /// Default loopback origin for `crabcc serve`. Override via
@@ -198,5 +198,15 @@ impl Client {
     /// progress.
     pub fn agent_launch(&self, req: &AgentLaunchRequest) -> Result<AgentLaunchResponse> {
         self.post_json_body("/api/agents/launch", req)
+    }
+
+    /// SIGKILL a running agent. `signaled = true` means the signal was
+    /// delivered; `signaled = false` + `note: "process already exited"`
+    /// is a benign idempotent outcome (the row is exited regardless).
+    /// Returns 400 from the server on an unknown agent id.
+    pub fn agent_kill(&self, id: &str) -> Result<AgentKillResponse> {
+        // Server allows arbitrary id strings; the path encoder doesn't
+        // need to escape `[a-z0-9-]+` ids in practice.
+        self.post_json(&format!("/api/agents/{id}/kill"))
     }
 }

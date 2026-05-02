@@ -26,10 +26,10 @@ use std::time::Duration;
 use gpui::{App, Context, Entity};
 
 use crate::api::types::{
-    AgentKillsResponse, AgentLaunchRequest, AgentLaunchResponse, AgentModelsResponse,
-    AgentProfilesResponse, Bootstrap, DiscoveryReport, GraphSnapshot, MemoryIngestRequest,
-    MemoryIngestResponse, MemoryRecentResponse, OllamaKey, OtlpHealth, SseActivityEvent, SseAgent,
-    TelemetryEvent, TelemetrySnapshot,
+    AgentKillResponse, AgentKillsResponse, AgentLaunchRequest, AgentLaunchResponse,
+    AgentModelsResponse, AgentProfilesResponse, Bootstrap, DiscoveryReport, GraphSnapshot,
+    MemoryIngestRequest, MemoryIngestResponse, MemoryRecentResponse, OllamaKey, OtlpHealth,
+    SseActivityEvent, SseAgent, TelemetryEvent, TelemetrySnapshot,
 };
 use crate::api::Client;
 use crate::sse::{self, SseEvent};
@@ -99,6 +99,11 @@ pub enum AppEvent {
     /// agent's output lands in the existing telemetry feed, so no
     /// special streaming needed.
     AgentLaunchResult(anyhow::Result<AgentLaunchResponse>),
+    /// Result of a user-initiated `POST /api/agents/{id}/kill`. The
+    /// agents-list refresh comes from the existing SSE pump (the
+    /// server emits an `agents` frame on each kill), so we don't fire
+    /// a follow-up GET here.
+    AgentKillResult(anyhow::Result<AgentKillResponse>),
     Sse(SseEvent),
 }
 
@@ -182,6 +187,8 @@ pub struct AppState {
     pub last_ingest: Option<Result<String, String>>,
     /// Mirror of `last_ingest` for the Home spawn-agent form.
     pub last_launch: Option<Result<String, String>>,
+    /// Mirror of `last_ingest` for the per-agent kill button.
+    pub last_kill: Option<Result<String, String>>,
     /// Currently selected route — driven by the header nav clicks. The
     /// shell view re-renders on `cx.notify` and dispatches body content
     /// based on this value.
@@ -308,6 +315,22 @@ impl AppState {
             AppEvent::AgentLaunchResult(Err(e)) => {
                 self.last_launch = Some(Err(format!("launch failed: {e}")));
             }
+            AppEvent::AgentKillResult(Ok(resp)) => {
+                let pid = resp
+                    .pid
+                    .map(|p| format!(" pid {p}"))
+                    .unwrap_or_default();
+                let note = resp
+                    .note
+                    .as_ref()
+                    .map(|n| format!(" · {n}"))
+                    .unwrap_or_default();
+                let signal = if resp.signaled { "SIGKILL sent" } else { "no signal" };
+                self.last_kill = Some(Ok(format!("kill {} →{pid} · {signal}{note}", resp.id)));
+            }
+            AppEvent::AgentKillResult(Err(e)) => {
+                self.last_kill = Some(Err(format!("kill failed: {e}")));
+            }
         }
     }
 
@@ -352,6 +375,21 @@ impl AppState {
                 let _ = tx.send(AppEvent::AgentLaunchResult(client.agent_launch(&req)));
             })
             .expect("launch thread spawn");
+    }
+
+    /// SIGKILL a running agent by id. The server emits an `agents`
+    /// SSE frame on each kill, so the running-agents list refreshes
+    /// itself — no follow-up fetch needed here.
+    pub fn submit_kill(&self, id: String) {
+        let Some(tx) = self.ingest_tx.clone() else { return };
+        let Some(base) = self.base_url.clone() else { return };
+        std::thread::Builder::new()
+            .name("crabcc-kill".into())
+            .spawn(move || {
+                let client = Client::with_base_url(base);
+                let _ = tx.send(AppEvent::AgentKillResult(client.agent_kill(&id)));
+            })
+            .expect("kill thread spawn");
     }
 
     pub fn set_route(&mut self, route: Route) {
