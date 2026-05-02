@@ -22,7 +22,8 @@ use std::time::Duration;
 use gpui::{App, Context, Entity};
 
 use crate::api::types::{
-    Bootstrap, DiscoveryReport, GraphSnapshot, MemoryRecentResponse, SseActivityEvent, SseAgent,
+    AgentKillsResponse, AgentModelsResponse, AgentProfilesResponse, Bootstrap, DiscoveryReport,
+    GraphSnapshot, MemoryRecentResponse, OllamaKey, OtlpHealth, SseActivityEvent, SseAgent,
     TelemetryEvent, TelemetrySnapshot,
 };
 use crate::api::Client;
@@ -43,19 +44,35 @@ const TELEMETRY_BUFFER: usize = 256;
 /// without hammering the server when nothing's happening.
 const TELEMETRY_POLL: Duration = Duration::from_secs(3);
 
+/// Bundle of one-shot prefetch results, all fired on the same OS
+/// thread at startup. Each field carries its own `Result` so a dead
+/// endpoint doesn't withhold the others — partial state is preferable
+/// to a blocked UI.
+///
+/// Adding a field: extend the struct, the prefetch worker, and the
+/// matching `apply` arm; the type-checker keeps the three in sync.
+#[derive(Debug)]
+pub struct Prefetch {
+    pub bootstrap: anyhow::Result<Bootstrap>,
+    pub services: anyhow::Result<DiscoveryReport>,
+    pub graph: anyhow::Result<GraphSnapshot>,
+    pub memory_recent: anyhow::Result<MemoryRecentResponse>,
+    pub otlp_health: anyhow::Result<OtlpHealth>,
+    pub agent_profiles: anyhow::Result<AgentProfilesResponse>,
+    pub agent_kills: anyhow::Result<AgentKillsResponse>,
+    pub agent_models: anyhow::Result<AgentModelsResponse>,
+    pub ollama_key: anyhow::Result<OllamaKey>,
+}
+
 /// One end-to-end app event. The workers ([`spawn_workers`]) multiplex
 /// through this single channel so the gpui pump only needs one drain
 /// loop.
 #[derive(Debug)]
 pub enum AppEvent {
-    /// One-shot prefetch result. Either field may be `Err` independently
-    /// — a dead service-discovery probe shouldn't withhold the bootstrap.
-    Initial {
-        bootstrap: anyhow::Result<Bootstrap>,
-        services: anyhow::Result<DiscoveryReport>,
-        graph: anyhow::Result<GraphSnapshot>,
-        memory_recent: anyhow::Result<MemoryRecentResponse>,
-    },
+    /// One-shot prefetch — see [`Prefetch`]. Boxed because the variant
+    /// is ~1.6 KB on stack vs. the next-largest variant's ~64 B; the
+    /// indirection keeps the channel cheap (clippy::large_enum_variant).
+    Initial(Box<Prefetch>),
     /// Periodic telemetry poll. Carries new events since the last cursor
     /// plus the new cursor; `Err` skips this tick without resetting the
     /// cursor.
@@ -100,6 +117,17 @@ pub struct AppState {
     /// prefetch time. Future revs add a periodic refresh / on-demand
     /// re-fetch button.
     pub memory_recent: Option<MemoryRecentResponse>,
+    /// One-shot OTLP collector health probe. Surfaces on the System
+    /// route as a green/red pill.
+    pub otlp_health: Option<OtlpHealth>,
+    /// Agent profile registry — directory of declared agent personas.
+    pub agent_profiles: Option<AgentProfilesResponse>,
+    /// Recent agent kill rows (subprocess SIGKILLs / panics).
+    pub agent_kills: Option<AgentKillsResponse>,
+    /// Agent model registry — provider × model catalogue.
+    pub agent_models: Option<AgentModelsResponse>,
+    /// Local Ollama API key state — presence + path metadata, no body.
+    pub ollama_key: Option<OllamaKey>,
     pub agents: Vec<SseAgent>,
     pub recent_activity: VecDeque<SseActivityEvent>,
     /// Tail of recent telemetry events (capped at `TELEMETRY_BUFFER`).
@@ -132,27 +160,43 @@ impl AppState {
     /// `entity.update(cx, |this, cx| { this.apply(evt); cx.notify(); })`.
     pub fn apply(&mut self, evt: AppEvent) {
         match evt {
-            AppEvent::Initial {
-                bootstrap,
-                services,
-                graph,
-                memory_recent,
-            } => {
-                match bootstrap {
+            AppEvent::Initial(boxed) => {
+                let p = *boxed;
+                match p.bootstrap {
                     Ok(b) => self.bootstrap = Some(b),
                     Err(e) => self.last_error = Some(format!("bootstrap: {e}")),
                 }
-                match services {
+                match p.services {
                     Ok(s) => self.services = Some(s),
                     Err(e) => self.last_error = Some(format!("services: {e}")),
                 }
-                match graph {
+                match p.graph {
                     Ok(g) => self.graph = Some(g),
                     Err(e) => self.last_error = Some(format!("graph: {e}")),
                 }
-                match memory_recent {
+                match p.memory_recent {
                     Ok(m) => self.memory_recent = Some(m),
                     Err(e) => self.last_error = Some(format!("memory_recent: {e}")),
+                }
+                match p.otlp_health {
+                    Ok(o) => self.otlp_health = Some(o),
+                    Err(e) => self.last_error = Some(format!("otlp_health: {e}")),
+                }
+                match p.agent_profiles {
+                    Ok(a) => self.agent_profiles = Some(a),
+                    Err(e) => self.last_error = Some(format!("agent_profiles: {e}")),
+                }
+                match p.agent_kills {
+                    Ok(a) => self.agent_kills = Some(a),
+                    Err(e) => self.last_error = Some(format!("agent_kills: {e}")),
+                }
+                match p.agent_models {
+                    Ok(a) => self.agent_models = Some(a),
+                    Err(e) => self.last_error = Some(format!("agent_models: {e}")),
+                }
+                match p.ollama_key {
+                    Ok(k) => self.ollama_key = Some(k),
+                    Err(e) => self.last_error = Some(format!("ollama_key: {e}")),
                 }
             }
             AppEvent::Sse(SseEvent::Activity(frame)) => {
@@ -244,17 +288,19 @@ pub fn spawn_workers(base_url: &str) -> flume::Receiver<AppEvent> {
             .name("crabcc-prefetch".into())
             .spawn(move || {
                 let client = Client::with_base_url(base);
-                let bootstrap = client.bootstrap();
-                let services = client.services();
-                let graph = client.seed_graph();
-                let memory_recent = client.memory_recent();
+                let prefetch = Prefetch {
+                    bootstrap: client.bootstrap(),
+                    services: client.services(),
+                    graph: client.seed_graph(),
+                    memory_recent: client.memory_recent(),
+                    otlp_health: client.otlp_health(),
+                    agent_profiles: client.agent_profiles(),
+                    agent_kills: client.agent_kills(),
+                    agent_models: client.agent_models(),
+                    ollama_key: client.ollama_key(),
+                };
                 // Receiver disconnect is fine — app shutdown raced us.
-                let _ = tx.send(AppEvent::Initial {
-                    bootstrap,
-                    services,
-                    graph,
-                    memory_recent,
-                });
+                let _ = tx.send(AppEvent::Initial(Box::new(prefetch)));
             })
             .expect("prefetch thread spawn");
     }
