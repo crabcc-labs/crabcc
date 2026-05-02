@@ -17,7 +17,8 @@ use gpui::{
 use gpui_component::{h_flex, v_flex, ActiveTheme};
 
 use crate::routes::{
-    dashboard::DashboardHome, knowledge::KnowledgeRoute, logs::LogsRoute, system::SystemRoute,
+    commands::CommandsRoute, dashboard::DashboardHome, knowledge::KnowledgeRoute, logs::LogsRoute,
+    system::SystemRoute,
 };
 use crate::state::{AppState, Route};
 
@@ -27,6 +28,7 @@ pub struct Shell {
     logs: Entity<LogsRoute>,
     system: Entity<SystemRoute>,
     knowledge: Entity<KnowledgeRoute>,
+    commands: Entity<CommandsRoute>,
 }
 
 impl Shell {
@@ -36,12 +38,14 @@ impl Shell {
         let logs = cx.new(|cx| LogsRoute::new(state.clone(), cx));
         let system = cx.new(|cx| SystemRoute::new(state.clone(), cx));
         let knowledge = cx.new(|cx| KnowledgeRoute::new(state.clone(), cx));
+        let commands = cx.new(|_| CommandsRoute::new());
         Self {
             state,
             home,
             logs,
             system,
             knowledge,
+            commands,
         }
     }
 }
@@ -114,6 +118,7 @@ impl Render for Shell {
             Route::Logs => self.logs.clone().into_any_element(),
             Route::System => self.system.clone().into_any_element(),
             Route::Knowledge => self.knowledge.clone().into_any_element(),
+            Route::Commands => self.commands.clone().into_any_element(),
         };
 
         v_flex()
