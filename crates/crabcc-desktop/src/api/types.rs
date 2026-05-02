@@ -349,6 +349,34 @@ pub struct MemoryIngestResponse {
     pub stats: MemoryIngestStats,
 }
 
+/// `POST /api/agents/launch` body.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct AgentLaunchRequest {
+    pub prompt: String,
+    /// Optional override; server uses its configured default when None.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+/// Live response shape (verified via direct probes) — slightly wider
+/// than the openapi `AgentLaunchResponse` schema, which only declares
+/// `id` + `pid`. Server actually emits `ok`, `prompt_chars`,
+/// `timeout_secs` too. All fields kept `Option<…>` so future server
+/// drift in nullability doesn't crash decode.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AgentLaunchResponse {
+    pub id: Option<String>,
+    #[serde(default)]
+    pub ok: bool,
+    pub pid: Option<u64>,
+    #[serde(default)]
+    pub prompt_chars: u64,
+    #[serde(default)]
+    pub timeout_secs: u64,
+}
+
 // ── /api/seed-graph (relations graph) ──────────────────────────────────
 // Legacy endpoint per `openapi.yaml`'s tag — the server emits free-form
 // JSON, but the React `Graph.tsx` consumer locks the shape to the

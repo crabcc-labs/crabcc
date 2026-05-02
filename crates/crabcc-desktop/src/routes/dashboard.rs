@@ -1,36 +1,76 @@
 //! DashboardHome — body content for the Home route.
 //!
-//! Layout (header + nav now owned by `crate::shell`):
+//! Layout (header + nav owned by `crate::shell`):
 //!
-//!   KPI strip  [Index] [Activity] [Agents] [Services]
-//!   Tile row   [Recent activity] [Agents] [Services]
-//!   Graph row  Relations graph (canvas, ≥360px tall)
+//!   KPI strip   [Index] [Activity] [Agents] [Services]
+//!   Tile row    [Recent activity] [Agents] [Services]
+//!   Spawn row   Launch agent — prompt input + button + status
+//!   Graph row   Relations graph (canvas, ≥360px tall)
 //!
 //! Reads from the shared `AppState` entity. `Render` runs on every
 //! `cx.notify()` triggered by the SSE pump in `state.rs`.
 
 use gpui::{
-    div, prelude::*, px, Context, Entity, Hsla, IntoElement, Render, SharedString, Window,
+    div, prelude::*, px, Context, Entity, Hsla, IntoElement, MouseButton, Render, SharedString,
+    Window,
 };
-use gpui_component::{h_flex, v_flex, ActiveTheme};
+use gpui_component::{
+    h_flex,
+    input::{Input, InputEvent, InputState},
+    v_flex, ActiveTheme,
+};
 
-use crate::api::types::{AgentStatus, SseActivityEvent};
+use crate::api::types::{AgentLaunchRequest, AgentStatus, SseActivityEvent};
 use crate::routes::graph::GraphView;
 use crate::state::AppState;
 
 pub struct DashboardHome {
     state: Entity<AppState>,
     graph_view: Entity<GraphView>,
+    /// Agent-spawn form input — placed between the tile row and the
+    /// graph so it stays visible without scrolling.
+    spawn_input: Entity<InputState>,
+    /// Live mirror of the spawn input's text — read on submit.
+    spawn_text: String,
 }
 
 impl DashboardHome {
-    pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
-        // Re-render this view whenever AppState publishes a notify.
-        // gpui doesn't propagate the source entity's notifications
-        // automatically — we observe explicitly.
+    pub fn new(state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         cx.observe(&state, |_, _, cx| cx.notify()).detach();
         let graph_view = cx.new(|cx| GraphView::new(state.clone(), cx));
-        Self { state, graph_view }
+        let spawn_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Spawn agent: prompt…")
+        });
+        cx.subscribe_in(&spawn_input, window, |this, state, event, _, cx| {
+            match event {
+                InputEvent::Change => {
+                    this.spawn_text = state.read(cx).value().to_string();
+                    cx.notify();
+                }
+                InputEvent::PressEnter { .. } => this.submit_launch(cx),
+                _ => {}
+            }
+        })
+        .detach();
+        Self {
+            state,
+            graph_view,
+            spawn_input,
+            spawn_text: String::new(),
+        }
+    }
+
+    fn submit_launch(&mut self, cx: &mut Context<Self>) {
+        let prompt = self.spawn_text.trim();
+        if prompt.is_empty() {
+            return;
+        }
+        let req = AgentLaunchRequest {
+            prompt: prompt.to_string(),
+            ..Default::default()
+        };
+        self.state.read(cx).submit_launch(req);
+        cx.notify();
     }
 }
 
@@ -186,12 +226,64 @@ impl Render for DashboardHome {
             .child(agents_tile)
             .child(services_tile);
 
+        // ── Spawn-agent row ────────────────────────────────────────
+        let primary = cx.theme().primary;
+        let success = cx.theme().success;
+        let danger = cx.theme().danger;
+        let submit_disabled = self.spawn_text.trim().is_empty();
+        let submit_color = if submit_disabled { muted } else { primary };
+        let view_entity = cx.entity();
+        let launch_btn = div()
+            .id("agent-launch-submit")
+            .px_3()
+            .py_1()
+            .border_1()
+            .border_color(submit_color)
+            .rounded_md()
+            .text_color(submit_color)
+            .child(SharedString::new_static("Launch"))
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                view_entity.update(cx, |this, cx| this.submit_launch(cx));
+            });
+        let status_line: gpui::AnyElement = match state.last_launch.as_ref() {
+            None => div().into_any_element(),
+            Some(Ok(msg)) => div()
+                .text_color(success)
+                .child(SharedString::from(msg.clone()))
+                .into_any_element(),
+            Some(Err(msg)) => div()
+                .text_color(danger)
+                .child(SharedString::from(msg.clone()))
+                .into_any_element(),
+        };
+        let spawn_row = v_flex()
+            .px_5()
+            .py_2()
+            .gap_1()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .flex_1()
+                            .border_1()
+                            .border_color(border)
+                            .rounded_md()
+                            .px_2()
+                            .py_1()
+                            .child(Input::new(&self.spawn_input).appearance(false)),
+                    )
+                    .child(launch_btn),
+            )
+            .child(status_line);
+
         let graph_row = div().px_5().py_2().child(self.graph_view.clone());
 
         v_flex()
             .size_full()
             .child(kpi_strip)
             .child(tile_row)
+            .child(spawn_row)
             .child(graph_row)
     }
 }
