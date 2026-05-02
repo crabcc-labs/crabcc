@@ -109,6 +109,7 @@ pub enum AppEvent {
 pub enum Route {
     #[default]
     Home,
+    Agents,
     Logs,
     System,
     Knowledge,
@@ -119,6 +120,7 @@ impl Route {
     pub fn label(self) -> &'static str {
         match self {
             Route::Home => "Home",
+            Route::Agents => "Agents",
             Route::Logs => "Logs",
             Route::System => "System",
             Route::Knowledge => "Knowledge",
@@ -126,8 +128,9 @@ impl Route {
         }
     }
 
-    pub const ALL: [Route; 5] = [
+    pub const ALL: [Route; 6] = [
         Route::Home,
+        Route::Agents,
         Route::Logs,
         Route::System,
         Route::Knowledge,
