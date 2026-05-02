@@ -33,7 +33,7 @@ impl Shell {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         cx.observe(&state, |_, _, cx| cx.notify()).detach();
         let home = cx.new(|cx| DashboardHome::new(state.clone(), cx));
-        let logs = cx.new(|_| LogsRoute::new());
+        let logs = cx.new(|cx| LogsRoute::new(state.clone(), cx));
         let system = cx.new(|cx| SystemRoute::new(state.clone(), cx));
         let knowledge = cx.new(|_| KnowledgeRoute::new());
         Self {
