@@ -157,6 +157,13 @@ impl Render for DashboardHome {
             ),
         );
 
+        // Agents tile gets a per-row Kill button for *running* agents.
+        // Exited rows just show the dot + id + runtime; clicking nothing
+        // useful would be misleading. Each Kill button captures the
+        // agent id by clone and dispatches `submit_kill` through the
+        // shared `AppState` entity.
+        let danger = cx.theme().danger;
+        let agents_state = self.state.clone();
         let agents_tile = tile(
             "Agents",
             card,
@@ -171,6 +178,31 @@ impl Render for DashboardHome {
                             AgentStatus::Running => "●",
                             AgentStatus::Exited => "○",
                         };
+                        let kill_btn: gpui::AnyElement = if matches!(a.status, AgentStatus::Running)
+                        {
+                            let id_for_click = a.id.clone();
+                            let state_for_click = agents_state.clone();
+                            // Each clickable div needs a unique gpui ElementId
+                            // — derive from the agent id so re-renders don't
+                            // collide.
+                            let element_id: gpui::ElementId =
+                                SharedString::from(format!("kill-{}", a.id)).into();
+                            div()
+                                .id(element_id)
+                                .px_2()
+                                .py_0p5()
+                                .border_1()
+                                .border_color(danger)
+                                .rounded_md()
+                                .text_color(danger)
+                                .child(SharedString::new_static("Kill"))
+                                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                    state_for_click.read(cx).submit_kill(id_for_click.clone());
+                                })
+                                .into_any_element()
+                        } else {
+                            div().into_any_element()
+                        };
                         h_flex()
                             .gap_2()
                             .child(SharedString::from(dot.to_string()))
@@ -182,6 +214,8 @@ impl Render for DashboardHome {
                                         .unwrap_or_else(|| "—".to_string()),
                                 )),
                             )
+                            .child(div().flex_1())
+                            .child(kill_btn)
                             .into_any_element()
                     })
                     .collect::<Vec<_>>(),

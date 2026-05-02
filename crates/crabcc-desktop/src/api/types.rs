@@ -377,6 +377,19 @@ pub struct AgentLaunchResponse {
     pub timeout_secs: u64,
 }
 
+/// `POST /api/agents/{id}/kill` response. `signaled = false` means
+/// the process was already gone (server-side note: "process already
+/// exited"); `signaled = true` means SIGKILL was actually delivered.
+#[derive(Debug, Clone, Deserialize)]
+pub struct AgentKillResponse {
+    pub id: String,
+    pub pid: Option<u64>,
+    #[serde(default)]
+    pub signaled: bool,
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
 // ── /api/seed-graph (relations graph) ──────────────────────────────────
 // Legacy endpoint per `openapi.yaml`'s tag — the server emits free-form
 // JSON, but the React `Graph.tsx` consumer locks the shape to the
