@@ -1,13 +1,21 @@
-//! Relations graph viewer — A.5 (Milestone 2) + A.5.1 click-to-select.
+//! Relations graph viewer — A.5 (Milestone 2) + A.5.1 click-to-select +
+//! A.5.2 wheel zoom + A.5.3 drag-to-pan and reset-view.
 //!
 //! A `gpui::canvas` view that paints the seed-graph from
 //! `/api/seed-graph`:
 //!
 //!   * Edges are stroked thin lines (PathBuilder::stroke).
 //!   * Nodes are filled quads with full corner_radii (≈ circles).
-//!   * Clicking near a node selects it; an absolute-positioned overlay
-//!     in the top-right shows the node's id, degree, and a few
-//!     connected neighbours.
+//!   * Click selects the nearest node within a fixed-pixel hit
+//!     radius; an absolute-positioned overlay in the top-right
+//!     shows the selection's id, degree, and a few neighbours.
+//!   * Wheel zooms around the canvas centre (linear factor in
+//!     [MIN_ZOOM, MAX_ZOOM]).
+//!   * Press-and-drag pans the visible plane in unit coords. A
+//!     mouse-up that hasn't crossed the drag threshold falls
+//!     through to click-selection; a drag swallows the click.
+//!   * The header has a "Reset view" affordance whenever the view
+//!     is not at the identity (zoom == 1, pan == 0, 0).
 //!
 //! Layout runs once per `GraphSnapshot` identity (size of the node
 //! set used as a cheap fingerprint). Resizing the window doesn't
@@ -15,14 +23,10 @@
 //! the live canvas bounds at paint time.
 //!
 //! Hit-test trick: paint stashes the latest canvas `Bounds<Pixels>`
-//! on a `Mutex<Option<Bounds>>` shared with the click handler. Both
-//! run on gpui's main thread sequentially, so contention is nil; the
-//! mutex just gets the type-checker out of the way of cross-closure
-//! sharing. Click reads the bounds, converts the window-relative
-//! event position to unit coords, and walks the position list once.
-//!
-//! Mouse-wheel zoom around the canvas centre lands here in A.5.2.
-//! Pan (click + drag) is the next slice.
+//! on a `Mutex<Option<Bounds>>` shared with the click / drag
+//! handlers. Both run on gpui's main thread sequentially, so
+//! contention is nil; the mutex just gets the type-checker out of
+//! the way of cross-closure sharing.
 
 use std::sync::{Arc, Mutex};
 
@@ -50,6 +54,25 @@ const MAX_ZOOM: f32 = 4.0;
 /// natural on Apple Magic Mouse / trackpad without overshooting.
 const SCROLL_K: f32 = 0.005;
 
+/// Movement threshold (Manhattan, in pixels) below which a press-and-
+/// release is treated as a click rather than a pan. 4px tolerates
+/// jitter on Apple trackpads while staying tight enough that an
+/// intentional pan registers immediately.
+const DRAG_THRESHOLD_PX: f32 = 4.0;
+
+#[derive(Clone, Copy)]
+struct DragState {
+    /// Window-coord cursor position when the press started.
+    start_win: gpui::Point<Pixels>,
+    /// View pan at the moment the press started — drag updates pan
+    /// relative to this so the drag adds to the pre-drag offset.
+    start_pan: (f32, f32),
+    /// True once movement has crossed `DRAG_THRESHOLD_PX`. Once set
+    /// the press is committed to drag-pan and the mouse-up does not
+    /// trigger click-selection.
+    moved: bool,
+}
+
 pub struct GraphView {
     state: Entity<AppState>,
     layout: Option<Layout>,
@@ -68,6 +91,15 @@ pub struct GraphView {
     /// only positions transform, matching the d3 / scatter-plot
     /// convention.
     zoom: f32,
+    /// Pan offset in unit (post-zoom) coords. Added to the visible
+    /// position after the zoom transform; (0, 0) is the identity. The
+    /// units are the same as the laid-out positions — so a pan of
+    /// (0.1, 0) shifts everything 10% of the canvas to the right
+    /// regardless of zoom level.
+    pan: (f32, f32),
+    /// `Some(_)` while the left button is held inside the canvas;
+    /// `None` otherwise.
+    drag: Option<DragState>,
 }
 
 impl GraphView {
@@ -80,6 +112,8 @@ impl GraphView {
             selected: None,
             last_bounds: Arc::new(Mutex::new(None)),
             zoom: 1.0,
+            pan: (0.0, 0.0),
+            drag: None,
         }
     }
 
@@ -89,6 +123,17 @@ impl GraphView {
         // down = zoom out (matches macOS/Linux convention).
         let factor = (SCROLL_K * dy_px).exp();
         self.zoom = (self.zoom * factor).clamp(MIN_ZOOM, MAX_ZOOM);
+    }
+
+    fn reset_view(&mut self) {
+        self.zoom = 1.0;
+        self.pan = (0.0, 0.0);
+    }
+
+    fn at_identity(&self) -> bool {
+        (self.zoom - 1.0).abs() <= f32::EPSILON
+            && self.pan.0.abs() <= f32::EPSILON
+            && self.pan.1.abs() <= f32::EPSILON
     }
 
     fn ensure_layout(&mut self, snapshot: &GraphSnapshot) -> &Layout {
@@ -103,8 +148,8 @@ impl GraphView {
     }
 
     /// Convert a window-relative click position into the unit-coord
-    /// position the laid-out node table uses, inverting the zoom
-    /// transform along the way.
+    /// position the laid-out node table uses, inverting the zoom +
+    /// pan transform along the way.
     fn hit_test(&self, win_pos: gpui::Point<Pixels>) -> Option<usize> {
         let bounds = self.last_bounds.lock().ok()?.as_ref().copied()?;
         let layout = self.layout.as_ref()?;
@@ -115,17 +160,17 @@ impl GraphView {
         if w <= 0.0 || h <= 0.0 {
             return None;
         }
-        // Invert the visible→unit transform applied in paint:
-        //   visible = 0.5 + (orig - 0.5) * zoom
-        // ⇒ orig = 0.5 + (visible - 0.5) / zoom.
+        // Invert paint's visible→unit transform:
+        //   visible = 0.5 + (orig - 0.5) * zoom + pan
+        // ⇒ orig = 0.5 + (visible - pan - 0.5) / zoom.
         let visible_x = local_x / w;
         let visible_y = local_y / h;
-        let u_x = 0.5 + (visible_x - 0.5) / self.zoom;
-        let u_y = 0.5 + (visible_y - 0.5) / self.zoom;
+        let u_x = 0.5 + (visible_x - self.pan.0 - 0.5) / self.zoom;
+        let u_y = 0.5 + (visible_y - self.pan.1 - 0.5) / self.zoom;
         // Hit radius is fixed in pixels (node markers don't scale with
-        // zoom), but in *unit* space — which is what we compare in —
-        // it shrinks by `zoom` because the inverse transform divides
-        // by zoom along each axis.
+        // zoom), but in unit space — which is what we compare in — it
+        // shrinks by `zoom` because the inverse transform divides by
+        // zoom along each axis.
         let r_px = NODE_RADIUS + HIT_PADDING_PX;
         let rx_u = r_px / (w * self.zoom);
         let ry_u = r_px / (h * self.zoom);
@@ -147,6 +192,64 @@ impl GraphView {
         match self.hit_test(win_pos) {
             Some(i) => self.selected = Some(i),
             None => self.selected = None,
+        }
+    }
+
+    /// Press start: record drag origin. `moved` stays false until
+    /// movement crosses the threshold, at which point selection-on-
+    /// release is suppressed for this gesture.
+    fn drag_start(&mut self, win_pos: gpui::Point<Pixels>) {
+        self.drag = Some(DragState {
+            start_win: win_pos,
+            start_pan: self.pan,
+            moved: false,
+        });
+    }
+
+    /// Active drag tick. Returns `true` if pan was updated (the
+    /// caller uses this to decide whether to `cx.notify()`).
+    fn drag_update(&mut self, win_pos: gpui::Point<Pixels>) -> bool {
+        let Some(drag) = self.drag else {
+            return false;
+        };
+        let bounds = match self.last_bounds.lock().ok().and_then(|g| *g) {
+            Some(b) => b,
+            None => return false,
+        };
+        let w = f32::from(bounds.size.width);
+        let h = f32::from(bounds.size.height);
+        if w <= 0.0 || h <= 0.0 {
+            return false;
+        }
+        let dx_px = f32::from(win_pos.x - drag.start_win.x);
+        let dy_px = f32::from(win_pos.y - drag.start_win.y);
+        // Below the threshold, treat the gesture as still possibly a
+        // click — don't move pan, don't commit `moved`.
+        if !drag.moved && dx_px.abs() + dy_px.abs() < DRAG_THRESHOLD_PX {
+            return false;
+        }
+        // Convert pixel delta to unit (canvas-relative) delta. Pan is
+        // applied after the zoom transform, so the same drag distance
+        // in pixels always shifts the view the same number of pixels
+        // at any zoom level — feels right under the hand.
+        let new_pan = (drag.start_pan.0 + dx_px / w, drag.start_pan.1 + dy_px / h);
+        self.drag = Some(DragState {
+            moved: true,
+            ..drag
+        });
+        self.pan = new_pan;
+        true
+    }
+
+    /// Press release. Returns `Some(win_pos)` if this should be
+    /// treated as a click (drag never crossed the threshold). Returns
+    /// `None` for drags or if no press was tracked.
+    fn drag_end(&mut self, win_pos: gpui::Point<Pixels>) -> Option<gpui::Point<Pixels>> {
+        let drag = self.drag.take()?;
+        if drag.moved {
+            None
+        } else {
+            Some(win_pos)
         }
     }
 
@@ -193,14 +296,15 @@ impl Render for GraphView {
                 let highlight_color = cx.theme().success;
                 let selected_idx = self.selected;
                 let zoom = self.zoom;
+                let pan = self.pan;
                 let bounds_share = self.last_bounds.clone();
 
                 let canvas_el = canvas(
                     move |_bounds, _, _| (),
                     move |bounds: Bounds<Pixels>, _, window, _| {
-                        // Stash bounds for the click handler. The lock
-                        // is contention-free in practice — only the
-                        // gpui main thread touches it.
+                        // Stash bounds for the click / drag handlers.
+                        // The lock is contention-free in practice —
+                        // only the gpui main thread touches it.
                         if let Ok(mut guard) = bounds_share.lock() {
                             *guard = Some(bounds);
                         }
@@ -212,6 +316,7 @@ impl Render for GraphView {
                             highlight_color,
                             selected_idx,
                             zoom,
+                            pan,
                             window,
                         );
                     },
@@ -268,12 +373,10 @@ impl Render for GraphView {
                                     .text_color(foreground)
                                     .child(SharedString::from(label)),
                             )
-                            .child(
-                                div().text_color(muted).child(SharedString::from(format!(
-                                    "{degree} edge{}",
-                                    if degree == 1 { "" } else { "s" }
-                                ))),
-                            )
+                            .child(div().text_color(muted).child(SharedString::from(format!(
+                                "{degree} edge{}",
+                                if degree == 1 { "" } else { "s" }
+                            ))))
                             .children(neighbours.into_iter().map(|n| {
                                 div()
                                     .text_color(muted)
@@ -285,9 +388,13 @@ impl Render for GraphView {
                 };
 
                 // Wrap canvas in an interactive container that owns
-                // the click. `relative()` positions the absolute
-                // overlay against this container's bounds.
-                let entity_for_click = cx.entity();
+                // the press / move / release set + scroll wheel.
+                // `relative()` positions the absolute overlay against
+                // this container's bounds.
+                let entity_for_down = cx.entity();
+                let entity_for_move = cx.entity();
+                let entity_for_up = cx.entity();
+                let entity_for_up_out = cx.entity();
                 let entity_for_scroll = cx.entity();
                 div()
                     .id("relations-graph")
@@ -297,8 +404,39 @@ impl Render for GraphView {
                     .child(info_panel)
                     .on_mouse_down(MouseButton::Left, move |event, _, cx| {
                         let pos = event.position;
-                        entity_for_click.update(cx, |this, cx| {
-                            this.handle_click(pos);
+                        entity_for_down.update(cx, |this, cx| {
+                            this.drag_start(pos);
+                            cx.notify();
+                        });
+                    })
+                    .on_mouse_move(move |event, _, cx| {
+                        // Only relevant while the left button is held.
+                        // Other moves (hover) would force needless
+                        // notifies.
+                        if event.pressed_button != Some(MouseButton::Left) {
+                            return;
+                        }
+                        let pos = event.position;
+                        entity_for_move.update(cx, |this, cx| {
+                            if this.drag_update(pos) {
+                                cx.notify();
+                            }
+                        });
+                    })
+                    .on_mouse_up(MouseButton::Left, move |event, _, cx| {
+                        let pos = event.position;
+                        entity_for_up.update(cx, |this, cx| {
+                            if let Some(click_pos) = this.drag_end(pos) {
+                                this.handle_click(click_pos);
+                            }
+                            cx.notify();
+                        });
+                    })
+                    .on_mouse_up_out(MouseButton::Left, move |_, _, cx| {
+                        // Mouse released outside the canvas — drop
+                        // the gesture without firing a click.
+                        entity_for_up_out.update(cx, |this, cx| {
+                            this.drag = None;
                             cx.notify();
                         });
                     })
@@ -319,6 +457,47 @@ impl Render for GraphView {
             }
         };
 
+        // ── Header ─────────────────────────────────────────────────
+        let mut header = h_flex().gap_3().child(
+            div()
+                .text_sm()
+                .child(SharedString::new_static("Relations graph")),
+        );
+        if (self.zoom - 1.0).abs() > f32::EPSILON {
+            header = header.child(div().text_color(muted).child(SharedString::from(format!(
+                "· {:.0}% zoom",
+                self.zoom * 100.0
+            ))));
+        }
+        if !self.at_identity() {
+            let entity_for_reset = cx.entity();
+            header = header.child(
+                div()
+                    .id("graph-reset-view")
+                    .ml_2()
+                    .px_2()
+                    .py_0p5()
+                    .border_1()
+                    .border_color(border)
+                    .rounded_md()
+                    .text_color(primary)
+                    .child(SharedString::new_static("Reset view"))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        entity_for_reset.update(cx, |this, cx| {
+                            this.reset_view();
+                            cx.notify();
+                        });
+                    }),
+            );
+        }
+        if self.selected.is_some() {
+            header = header.child(
+                div()
+                    .text_color(muted)
+                    .child(SharedString::new_static("· click outside to clear")),
+            );
+        }
+
         v_flex()
             .size_full()
             .min_h(px(360.0))
@@ -328,26 +507,7 @@ impl Render for GraphView {
             .border_color(border)
             .rounded_md()
             .bg(cx.theme().secondary)
-            .child(
-                h_flex()
-                    .gap_3()
-                    .child(
-                        div()
-                            .text_sm()
-                            .child(SharedString::new_static("Relations graph")),
-                    )
-                    .children(((self.zoom - 1.0).abs() > f32::EPSILON).then(|| {
-                        div().text_color(muted).child(SharedString::from(format!(
-                            "· {:.0}% zoom",
-                            self.zoom * 100.0
-                        )))
-                    }))
-                    .children(self.selected.map(|_| {
-                        div()
-                            .text_color(muted)
-                            .child(SharedString::new_static("· click outside to clear"))
-                    })),
-            )
+            .child(header)
             .child(body)
     }
 }
@@ -361,6 +521,7 @@ fn paint_graph(
     highlight_color: Hsla,
     selected: Option<usize>,
     zoom: f32,
+    pan: (f32, f32),
     window: &mut Window,
 ) {
     let ox = f32::from(bounds.origin.x);
@@ -368,13 +529,13 @@ fn paint_graph(
     let w = f32::from(bounds.size.width);
     let h = f32::from(bounds.size.height);
 
-    // Zoom transform: visible = 0.5 + (orig - 0.5) * zoom. Inverse
-    // lives in `hit_test`. Nodes that fall outside [0, 1] visible
-    // range simply paint outside the canvas and get clipped — gpui
-    // doesn't error on out-of-bounds paint calls.
+    // Zoom + pan transform: visible = 0.5 + (orig - 0.5) * zoom + pan.
+    // Inverse lives in `hit_test`. Nodes that fall outside [0, 1]
+    // visible range simply paint outside the canvas and get clipped —
+    // gpui doesn't error on out-of-bounds paint calls.
     let to_px = |(ux, uy): (f32, f32)| {
-        let evx = 0.5 + (ux - 0.5) * zoom;
-        let evy = 0.5 + (uy - 0.5) * zoom;
+        let evx = 0.5 + (ux - 0.5) * zoom + pan.0;
+        let evy = 0.5 + (uy - 0.5) * zoom + pan.1;
         point(px(ox + evx * w), px(oy + evy * h))
     };
 
@@ -404,7 +565,11 @@ fn paint_graph(
     for (i, pos) in layout.positions.iter().enumerate() {
         let is_selected = selected == Some(i);
         let radius = if is_selected { r_sel } else { r };
-        let color = if is_selected { highlight_color } else { node_color };
+        let color = if is_selected {
+            highlight_color
+        } else {
+            node_color
+        };
         let centre = to_px(*pos);
         let node_bounds = Bounds {
             origin: point(centre.x - px(radius), centre.y - px(radius)),
