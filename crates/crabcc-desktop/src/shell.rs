@@ -37,7 +37,8 @@ impl Shell {
         cx.observe(&state, |_, _, cx| cx.notify()).detach();
         // Home owns the agent-spawn TextInput, so it needs window.
         let home = cx.new(|cx| DashboardHome::new(state.clone(), window, cx));
-        let agents = cx.new(|cx| AgentsRoute::new(state.clone(), cx));
+        // AgentsRoute owns the filter TextInput, so it needs window.
+        let agents = cx.new(|cx| AgentsRoute::new(state.clone(), window, cx));
         let logs = cx.new(|cx| LogsRoute::new(state.clone(), cx));
         let system = cx.new(|cx| SystemRoute::new(state.clone(), cx));
         // Knowledge owns the memory-ingest TextInput, so it needs window.
