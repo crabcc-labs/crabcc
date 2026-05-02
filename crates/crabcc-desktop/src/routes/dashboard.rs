@@ -1,14 +1,10 @@
-//! DashboardHome — Milestone 1 + relations graph (A.5).
+//! DashboardHome — body content for the Home route.
 //!
-//! Visual layout:
+//! Layout (header + nav now owned by `crate::shell`):
 //!
-//!   ┌─ titlebar (set by gpui at window-open time) ─────────────┐
-//!   │  KPI strip: [Index] [Activity] [Agents] [Services]       │
-//!   ├──────────────────────────────────────────────────────────┤
-//!   │  Tile row: [Recent activity] [Agents] [Services]         │
-//!   ├──────────────────────────────────────────────────────────┤
-//!   │  Relations graph (canvas, ≥360px tall)                   │
-//!   └──────────────────────────────────────────────────────────┘
+//!   KPI strip  [Index] [Activity] [Agents] [Services]
+//!   Tile row   [Recent activity] [Agents] [Services]
+//!   Graph row  Relations graph (canvas, ≥360px tall)
 //!
 //! Reads from the shared `AppState` entity. `Render` runs on every
 //! `cx.notify()` triggered by the SSE pump in `state.rs`.
@@ -42,35 +38,12 @@ impl Render for DashboardHome {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.state.read(cx);
 
-        let bg = cx.theme().background;
         // gpui-component uses `secondary` for elevated panels — there's
         // no shadcn-style `card` token in this theme. Re-evaluate when
         // we adopt a `Card` component (track A.5+).
         let card = cx.theme().secondary;
         let muted = cx.theme().muted_foreground;
         let border = cx.theme().border;
-
-        let header = h_flex()
-            .gap_3()
-            .px_5()
-            .py_3()
-            .border_b_1()
-            .border_color(border)
-            .child(
-                div()
-                    .text_lg()
-                    .text_color(cx.theme().foreground)
-                    .child(SharedString::new_static("crabcc · live")),
-            )
-            .child(
-                div().text_color(muted).child(SharedString::from(
-                    state
-                        .bootstrap
-                        .as_ref()
-                        .map(|b| format!("v{}  {}", b.version, b.repo))
-                        .unwrap_or_else(|| "loading…".into()),
-                )),
-            );
 
         // ── KPI strip ─────────────────────────────────────────────
         let index_kpi = match state.bootstrap.as_ref().and_then(|b| b.index.as_ref()) {
@@ -207,8 +180,6 @@ impl Render for DashboardHome {
 
         v_flex()
             .size_full()
-            .bg(bg)
-            .child(header)
             .child(kpi_strip)
             .child(tile_row)
             .child(graph_row)
