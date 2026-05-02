@@ -56,6 +56,46 @@ Avoid:
 Personal, **dark by default**, **dense by default**, with motion
 on the things that are actually moving.
 
+## Generated concepts (Stitch)
+
+A first set of generated mockups + written specs from a Google Stitch
+project (`12050815927186652856`, fetched 2026-05-02). **These are
+working drafts, not the brief** — they explore one direction
+("liquid glass synth"), and are kept here so the conversation can
+react to something concrete instead of starting from a blank
+canvas.
+
+Visuals:
+
+| Screen | File |
+|---|---|
+| Brand mark — minimalist crab + circuit "C" | [`stitch-refs/01-logo.jpg`](stitch-refs/01-logo.jpg) |
+| Pixel-art loading sprite | [`stitch-refs/02-pixel-loading.png`](stitch-refs/02-pixel-loading.png) |
+| Knowledge Graph (glass) | [`stitch-refs/04-knowledge-graph-glass.png`](stitch-refs/04-knowledge-graph-glass.png) |
+| Dashboard (glass) | [`stitch-refs/05-dashboard-glass.png`](stitch-refs/05-dashboard-glass.png) |
+
+Specs (read these alongside this brief — they're terser):
+
+- [`stitch-refs/03-asset-spec.md`](stitch-refs/03-asset-spec.md) —
+  brand identity + iconography + pixel-art rendering rules.
+- [`stitch-refs/06-DESIGN-md.md`](stitch-refs/06-DESIGN-md.md) —
+  short visual-identity manifesto ("Liquid Glass Synth"). Color
+  palette, typography, panel materiality.
+- [`stitch-refs/07-knowledge-graph-anim-spec.md`](stitch-refs/07-knowledge-graph-anim-spec.md)
+  — animation logic for the knowledge graph view (pulse, ingest
+  packets, node selection, refraction transitions).
+
+Browseable HTML mockups (open in any browser):
+
+- [`stitch-refs/04-knowledge-graph-glass.html`](stitch-refs/04-knowledge-graph-glass.html)
+- [`stitch-refs/05-dashboard-glass.html`](stitch-refs/05-dashboard-glass.html)
+
+These are **not committed direction**. The "Top inspiration —
+Longbridge desktop" section below is the more grounded reference
+(same UI toolkit we're actually building with). The Stitch concepts
+push further toward "liquid glass" — the designer is free to mix
+or reject either direction.
+
 ## Top inspiration — Longbridge desktop
 
 [Longbridge desktop](https://longbridge.com/desktop/) is the visual
