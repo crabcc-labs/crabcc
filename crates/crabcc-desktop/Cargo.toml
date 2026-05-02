@@ -43,10 +43,16 @@ path = "src/main.rs"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Blocking client is enough through A.2: fetches happen off the UI thread
-# inside `cx.background_executor().spawn(...)`. Streaming/SSE moves to
-# `reqwest` async + a smol-friendly bridge in A.3.
+# Blocking client is enough today: GET fetches happen off the UI thread
+# in `cx.background_executor().spawn(...)`, and the SSE worker
+# (`src/sse.rs`) holds the response as a `std::io::Read` from its own
+# `std::thread`. No async runtime needed in this crate.
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+# Runtime-agnostic mpsc — the SSE worker thread sends typed events,
+# the gpui-side `cx.spawn` consumes them via `recv_async()`. flume's
+# async receiver works on any executor (smol-flavored gpui included),
+# which is the whole reason it's here vs. tokio's mpsc.
+flume = { version = "0.11", default-features = false, features = ["async"] }
 
 # GPUI deps — track gpui-component's own source URLs so cargo unifies
 # the gpui crate to a SINGLE compiled copy. Pinning a `rev =` here
