@@ -32,13 +32,15 @@ pub struct Shell {
 }
 
 impl Shell {
-    pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
+    pub fn new(state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         cx.observe(&state, |_, _, cx| cx.notify()).detach();
         let home = cx.new(|cx| DashboardHome::new(state.clone(), cx));
         let logs = cx.new(|cx| LogsRoute::new(state.clone(), cx));
         let system = cx.new(|cx| SystemRoute::new(state.clone(), cx));
         let knowledge = cx.new(|cx| KnowledgeRoute::new(state.clone(), cx));
-        let commands = cx.new(|_| CommandsRoute::new());
+        // CommandsRoute owns a TextInput (focusable widget) so it
+        // needs `&mut Window` to register the focus handle.
+        let commands = cx.new(|cx| CommandsRoute::new(window, cx));
         Self {
             state,
             home,

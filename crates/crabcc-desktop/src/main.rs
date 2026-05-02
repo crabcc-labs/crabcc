@@ -31,7 +31,7 @@ fn main() {
         cx.spawn(async move |cx| {
             cx.open_window(options, |window, cx| {
                 let app_state = cx.new(|cx| state::build(cx, DEFAULT_BASE_URL));
-                let shell = cx.new(|cx| Shell::new(app_state, cx));
+                let shell = cx.new(|cx| Shell::new(app_state, window, cx));
                 cx.new(|cx| Root::new(shell, window, cx))
             })
             .expect("failed to open window");
