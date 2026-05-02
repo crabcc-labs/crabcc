@@ -26,7 +26,7 @@ use std::time::Duration;
 use gpui::{App, Context, Entity};
 
 use crate::api::types::{
-    AgentKillResponse, AgentKillsResponse, AgentLaunchRequest, AgentLaunchResponse,
+    AgentKillResponse, AgentKillsResponse, AgentLaunchRequest, AgentLaunchResponse, AgentLog,
     AgentModelsResponse, AgentProfilesResponse, Bootstrap, DiscoveryReport, GraphSnapshot,
     MemoryIngestRequest, MemoryIngestResponse, MemoryRecentResponse, OllamaKey, OtlpHealth,
     SseActivityEvent, SseAgent, TelemetryEvent, TelemetrySnapshot,
@@ -104,7 +104,25 @@ pub enum AppEvent {
     /// server emits an `agents` frame on each kill), so we don't fire
     /// a follow-up GET here.
     AgentKillResult(anyhow::Result<AgentKillResponse>),
+    /// Result of a one-shot `GET /api/agents/{id}/log?since=0`, dispatched
+    /// from the Agents route when the user clicks an agent card. The
+    /// String carries the agent id so the route can ignore late results
+    /// for an agent the user already deselected (cheap stale-check).
+    AgentLogResult {
+        id: String,
+        result: anyhow::Result<AgentLog>,
+    },
     Sse(SseEvent),
+}
+
+/// One-slot result of the most recent `agent_log` fetch. Carries the
+/// agent id alongside the body so a stale fetch (user already
+/// deselected) can be filtered out at render time without racing the
+/// dispatch path.
+#[derive(Debug)]
+pub struct AgentLogState {
+    pub id: String,
+    pub result: anyhow::Result<AgentLog>,
 }
 
 /// Active dashboard route. Plain enum on `AppState` rather than a hash
@@ -192,6 +210,11 @@ pub struct AppState {
     pub last_launch: Option<Result<String, String>>,
     /// Mirror of `last_ingest` for the per-agent kill button.
     pub last_kill: Option<Result<String, String>>,
+    /// Most recent per-agent log fetch (Agents route). Holds both the
+    /// selected agent id and the result body so the view can render a
+    /// "stale" warning if the id no longer matches the active selection.
+    /// Cleared explicitly when the user deselects.
+    pub agent_log: Option<AgentLogState>,
     /// Currently selected route — driven by the header nav clicks. The
     /// shell view re-renders on `cx.notify` and dispatches body content
     /// based on this value.
@@ -257,7 +280,9 @@ impl AppState {
                 }
             }
             AppEvent::Sse(SseEvent::Activity(frame)) => {
-                self.activity_total = self.activity_total.saturating_add(frame.events.len() as u64);
+                self.activity_total = self
+                    .activity_total
+                    .saturating_add(frame.events.len() as u64);
                 if let Some(last) = frame.events.last() {
                     self.last_event_ts = Some(last.ts);
                 }
@@ -299,16 +324,16 @@ impl AppState {
                     .first()
                     .map(|e| format!(" · drawer #{}", e.drawer_id))
                     .unwrap_or_default();
-                self.last_ingest = Some(Ok(format!("ingested {n} row{}{drawer}", if n == 1 { "" } else { "s" })));
+                self.last_ingest = Some(Ok(format!(
+                    "ingested {n} row{}{drawer}",
+                    if n == 1 { "" } else { "s" }
+                )));
             }
             AppEvent::MemoryIngestResult(Err(e)) => {
                 self.last_ingest = Some(Err(format!("ingest failed: {e}")));
             }
             AppEvent::AgentLaunchResult(Ok(resp)) => {
-                let pid = resp
-                    .pid
-                    .map(|p| format!(" pid {p}"))
-                    .unwrap_or_default();
+                let pid = resp.pid.map(|p| format!(" pid {p}")).unwrap_or_default();
                 let chars = resp.prompt_chars;
                 self.last_launch = Some(Ok(format!(
                     "spawned agent{pid} · {chars} chars · timeout {}s",
@@ -319,20 +344,24 @@ impl AppState {
                 self.last_launch = Some(Err(format!("launch failed: {e}")));
             }
             AppEvent::AgentKillResult(Ok(resp)) => {
-                let pid = resp
-                    .pid
-                    .map(|p| format!(" pid {p}"))
-                    .unwrap_or_default();
+                let pid = resp.pid.map(|p| format!(" pid {p}")).unwrap_or_default();
                 let note = resp
                     .note
                     .as_ref()
                     .map(|n| format!(" · {n}"))
                     .unwrap_or_default();
-                let signal = if resp.signaled { "SIGKILL sent" } else { "no signal" };
+                let signal = if resp.signaled {
+                    "SIGKILL sent"
+                } else {
+                    "no signal"
+                };
                 self.last_kill = Some(Ok(format!("kill {} →{pid} · {signal}{note}", resp.id)));
             }
             AppEvent::AgentKillResult(Err(e)) => {
                 self.last_kill = Some(Err(format!("kill failed: {e}")));
+            }
+            AppEvent::AgentLogResult { id, result } => {
+                self.agent_log = Some(AgentLogState { id, result });
             }
         }
     }
@@ -343,8 +372,12 @@ impl AppState {
     /// new drawer appears in the Knowledge list without waiting for
     /// the periodic poller.
     pub fn submit_ingest(&self, req: MemoryIngestRequest) {
-        let Some(tx) = self.ingest_tx.clone() else { return };
-        let Some(base) = self.base_url.clone() else { return };
+        let Some(tx) = self.ingest_tx.clone() else {
+            return;
+        };
+        let Some(base) = self.base_url.clone() else {
+            return;
+        };
         std::thread::Builder::new()
             .name("crabcc-ingest".into())
             .spawn(move || {
@@ -369,8 +402,12 @@ impl AppState {
     /// of the launch (pid + timeout) lands in `last_launch` for the
     /// Home-route status line.
     pub fn submit_launch(&self, req: AgentLaunchRequest) {
-        let Some(tx) = self.ingest_tx.clone() else { return };
-        let Some(base) = self.base_url.clone() else { return };
+        let Some(tx) = self.ingest_tx.clone() else {
+            return;
+        };
+        let Some(base) = self.base_url.clone() else {
+            return;
+        };
         std::thread::Builder::new()
             .name("crabcc-launch".into())
             .spawn(move || {
@@ -384,8 +421,12 @@ impl AppState {
     /// SSE frame on each kill, so the running-agents list refreshes
     /// itself — no follow-up fetch needed here.
     pub fn submit_kill(&self, id: String) {
-        let Some(tx) = self.ingest_tx.clone() else { return };
-        let Some(base) = self.base_url.clone() else { return };
+        let Some(tx) = self.ingest_tx.clone() else {
+            return;
+        };
+        let Some(base) = self.base_url.clone() else {
+            return;
+        };
         std::thread::Builder::new()
             .name("crabcc-kill".into())
             .spawn(move || {
@@ -393,6 +434,28 @@ impl AppState {
                 let _ = tx.send(AppEvent::AgentKillResult(client.agent_kill(&id)));
             })
             .expect("kill thread spawn");
+    }
+
+    /// One-shot fetch of an agent's stdout tail. The server's `since`
+    /// param is byte-offset; passing 0 returns the whole buffer (capped
+    /// at the server's window — see crabcc-viz `Client.agentLog`).
+    /// Result lands in `agent_log` keyed by id; the Agents route reads
+    /// it on next render.
+    pub fn submit_agent_log(&self, id: String, since: u64) {
+        let Some(tx) = self.ingest_tx.clone() else {
+            return;
+        };
+        let Some(base) = self.base_url.clone() else {
+            return;
+        };
+        std::thread::Builder::new()
+            .name("crabcc-agent-log".into())
+            .spawn(move || {
+                let client = Client::with_base_url(base);
+                let result = client.agent_log(&id, since);
+                let _ = tx.send(AppEvent::AgentLogResult { id, result });
+            })
+            .expect("agent-log thread spawn");
     }
 
     pub fn set_route(&mut self, route: Route) {
@@ -414,7 +477,11 @@ impl AppState {
         Some((up, total))
     }
 
-    pub fn pump_events(handle: &Entity<Self>, rx: flume::Receiver<AppEvent>, cx: &mut Context<Self>) {
+    pub fn pump_events(
+        handle: &Entity<Self>,
+        rx: flume::Receiver<AppEvent>,
+        cx: &mut Context<Self>,
+    ) {
         let weak = handle.downgrade();
         cx.spawn(async move |_, cx| {
             while let Ok(evt) = rx.recv_async().await {
@@ -538,7 +605,10 @@ pub fn spawn_workers(base_url: &str) -> (flume::Sender<AppEvent>, flume::Receive
                     // path, so we can sleep before the first GET to
                     // skip a redundant fetch at startup.
                     std::thread::sleep(MEMORY_POLL);
-                    if tx.send(AppEvent::MemoryRefresh(client.memory_recent())).is_err() {
+                    if tx
+                        .send(AppEvent::MemoryRefresh(client.memory_recent()))
+                        .is_err()
+                    {
                         return;
                     }
                 }
