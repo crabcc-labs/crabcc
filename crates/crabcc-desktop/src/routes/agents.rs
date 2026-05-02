@@ -1,4 +1,4 @@
-//! Agents route — full-detail live agents list.
+//! Agents route — full-detail live agents list with substring filter.
 //!
 //! The Home dashboard renders a compact 8-row tile with agent id /
 //! runtime — fine at a glance, but it loses the model, pid, prompt
@@ -6,23 +6,72 @@
 //! `AppState::agents` slice into a dedicated page with all the SSE
 //! fields visible and no row cap.
 //!
+//! Top-of-route TextInput filters the visible list as the user types
+//! (id / runtime / model / prompt-preview, case-insensitive). The
+//! filter lives on the route entity, not `AppState` — the filter is a
+//! UI affordance that doesn't need to survive nav switches today.
+//!
 //! Read-only by design. Per-agent actions (kill, log tail, profile
 //! lookup) live elsewhere in the kickoff initiative.
 
 use gpui::{div, prelude::*, px, Context, Entity, IntoElement, Render, SharedString, Window};
-use gpui_component::{h_flex, v_flex, ActiveTheme};
+use gpui_component::{
+    h_flex,
+    input::{Input, InputEvent, InputState},
+    v_flex, ActiveTheme,
+};
 
-use crate::api::types::AgentStatus;
+use crate::api::types::{AgentStatus, SseAgent};
 use crate::state::AppState;
 
 pub struct AgentsRoute {
     state: Entity<AppState>,
+    /// gpui-component InputState — owns text + focus for the filter.
+    query_input: Entity<InputState>,
+    /// Lower-cased mirror of the input's value, kept in sync via
+    /// `InputEvent::Change`. Avoids re-lowercasing the query for
+    /// every match check on every render.
+    query_lower: String,
 }
 
 impl AgentsRoute {
-    pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
+    pub fn new(state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         cx.observe(&state, |_, _, cx| cx.notify()).detach();
-        Self { state }
+        let query_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Filter by id / runtime / model…"));
+        cx.subscribe_in(&query_input, window, |this, state, event, _, cx| {
+            if let InputEvent::Change = event {
+                this.query_lower = state.read(cx).value().to_string().to_lowercase();
+                cx.notify();
+            }
+        })
+        .detach();
+        Self {
+            state,
+            query_input,
+            query_lower: String::new(),
+        }
+    }
+
+    fn agent_matches(&self, a: &SseAgent) -> bool {
+        if self.query_lower.is_empty() {
+            return true;
+        }
+        let q = self.query_lower.as_str();
+        if a.id.to_lowercase().contains(q) {
+            return true;
+        }
+        if let Some(r) = a.runtime.as_ref() {
+            if r.to_lowercase().contains(q) {
+                return true;
+            }
+        }
+        if let Some(m) = a.model.as_ref() {
+            if m.to_lowercase().contains(q) {
+                return true;
+            }
+        }
+        a.prompt_preview.to_lowercase().contains(q)
     }
 }
 
@@ -41,8 +90,22 @@ impl Render for AgentsRoute {
             .iter()
             .filter(|a| a.status == AgentStatus::Running)
             .count();
+        // Apply the filter once; we need the visible count for the
+        // header and the iterator for the body, so collect into a Vec
+        // rather than filter twice.
+        let visible: Vec<&SseAgent> = state
+            .agents
+            .iter()
+            .filter(|a| self.agent_matches(a))
+            .collect();
+        let visible_count = visible.len();
 
         // ── Header ──────────────────────────────────────────────────
+        let count_label = if self.query_lower.is_empty() {
+            format!("· {total} total · {running} running")
+        } else {
+            format!("· {visible_count} of {total} match")
+        };
         let header = h_flex()
             .gap_3()
             .px_5()
@@ -55,9 +118,22 @@ impl Render for AgentsRoute {
                     .text_color(foreground)
                     .child(SharedString::new_static("Agents")),
             )
-            .child(div().text_color(muted).child(SharedString::from(format!(
-                "· {total} total · {running} running"
-            ))));
+            .child(
+                div()
+                    .text_color(muted)
+                    .child(SharedString::from(count_label)),
+            );
+
+        // ── Filter input ────────────────────────────────────────────
+        let search_field = div()
+            .mx_5()
+            .mt_3()
+            .border_1()
+            .border_color(border)
+            .rounded_md()
+            .px_2()
+            .py_1()
+            .child(Input::new(&self.query_input).appearance(false));
 
         // ── Body ────────────────────────────────────────────────────
         let body: gpui::AnyElement = if state.agents.is_empty() {
@@ -69,12 +145,22 @@ impl Render for AgentsRoute {
                     "no agents tracked — launch one from Home or via crabcc agents",
                 ))
                 .into_any_element()
+        } else if visible.is_empty() {
+            div()
+                .px_5()
+                .py_3()
+                .text_color(muted)
+                .child(SharedString::from(format!(
+                    "no agents match \u{201C}{}\u{201D}",
+                    self.query_lower
+                )))
+                .into_any_element()
         } else {
             v_flex()
                 .px_5()
                 .py_2()
                 .gap_2()
-                .children(state.agents.iter().map(|a| {
+                .children(visible.into_iter().map(|a| {
                     let dot = match a.status {
                         AgentStatus::Running => "●",
                         AgentStatus::Exited => "○",
@@ -158,6 +244,7 @@ impl Render for AgentsRoute {
         v_flex()
             .size_full()
             .child(header)
+            .child(search_field)
             .child(div().flex_1().min_h(px(0.0)).child(body))
     }
 }
