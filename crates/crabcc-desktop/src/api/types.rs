@@ -9,7 +9,7 @@
 //   - `Option<T>` for every YAML `nullable: true` field.
 //   - Numeric `unix seconds` timestamps stay `i64` to match the server.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct HealthResponse {
@@ -309,6 +309,44 @@ pub struct MemoryRecentResponse {
     #[serde(default)]
     pub cursor: i64,
     pub drawers: Vec<MemoryDrawer>,
+}
+
+/// `POST /api/memory/ingest` body. All fields optional — the server
+/// accepts any subset; an empty body just no-ops with `stats.ok = 0`.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct MemoryIngestRequest {
+    /// Free-form note body. Hashed server-side into `text:HASH` ids.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    /// URLs to fetch + ingest. Server-side runs `crabcc-fetch` against
+    /// each, with the same SSRF guards the CLI applies.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub urls: Vec<String>,
+    /// Tag for the resulting drawer's `wing` (e.g. "desktop:ingest").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MemoryIngestStats {
+    pub ok: u32,
+    pub failed: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MemoryIngestEntry {
+    pub id: String,
+    pub kind: String,
+    pub bytes: u64,
+    pub drawer_id: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MemoryIngestResponse {
+    pub ingested: Vec<MemoryIngestEntry>,
+    /// Per-input error strings; matches the request order one-to-one.
+    pub errors: Vec<String>,
+    pub stats: MemoryIngestStats,
 }
 
 // ── /api/seed-graph (relations graph) ──────────────────────────────────
