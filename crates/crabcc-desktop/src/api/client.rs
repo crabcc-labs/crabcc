@@ -12,10 +12,11 @@ use anyhow::{Context, Result};
 use serde::{de::DeserializeOwned, Serialize};
 
 use super::types::{
-    ActivityResponse, AgentKillsResponse, AgentLog, AgentModelsResponse, AgentProfilesResponse,
-    AgentsResponse, Bootstrap, DiscoveryReport, GraphSnapshot, HealthResponse,
-    MemoryIngestRequest, MemoryIngestResponse, MemoryRecentResponse, OllamaKey, OtlpHealth,
-    RandomQueryResponse, ReindexReport, TelemetrySnapshot,
+    ActivityResponse, AgentKillsResponse, AgentLaunchRequest, AgentLaunchResponse, AgentLog,
+    AgentModelsResponse, AgentProfilesResponse, AgentsResponse, Bootstrap, DiscoveryReport,
+    GraphSnapshot, HealthResponse, MemoryIngestRequest, MemoryIngestResponse,
+    MemoryRecentResponse, OllamaKey, OtlpHealth, RandomQueryResponse, ReindexReport,
+    TelemetrySnapshot,
 };
 
 /// Default loopback origin for `crabcc serve`. Override via
@@ -188,5 +189,14 @@ impl Client {
     /// without waiting for the periodic poll.
     pub fn memory_ingest(&self, req: &MemoryIngestRequest) -> Result<MemoryIngestResponse> {
         self.post_json_body("/api/memory/ingest", req)
+    }
+
+    /// Spawn a one-off agent. Server returns its pid + the configured
+    /// timeout; the agent's stdout / stderr lands in the existing
+    /// telemetry / activity feeds, so the desktop UI doesn't need a
+    /// streaming response here — the dashboard's existing pumps surface
+    /// progress.
+    pub fn agent_launch(&self, req: &AgentLaunchRequest) -> Result<AgentLaunchResponse> {
+        self.post_json_body("/api/agents/launch", req)
     }
 }
