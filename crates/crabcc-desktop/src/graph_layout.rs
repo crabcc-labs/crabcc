@@ -15,6 +15,8 @@
 
 use std::collections::HashMap;
 
+use rayon::prelude::*;
+
 use crate::api::types::GraphSnapshot;
 
 const WARMUP_STEPS: usize = 200;
@@ -23,6 +25,17 @@ const REPEL_K: f32 = 0.0005;
 const SPRING_K: f32 = 0.05;
 const CENTER_K: f32 = 0.02;
 const DAMPING: f32 = 0.85;
+
+/// Below this node count the parallel pairwise-repulsion path is a
+/// net loss — rayon's work-stealing setup costs more than the
+/// arithmetic saved. Above it, the parallel version (which does ~2×
+/// arithmetic to enable lock-free per-`i` accumulation) wins via
+/// raw core count.
+///
+/// The threshold is an estimate, not measured. Re-tune once a
+/// `crates/crabcc-desktop` bench harness lands (warp-speed audit
+/// "Skipped tips → Tip 0").
+const PARALLEL_THRESHOLD: usize = 250;
 
 #[derive(Debug, Clone, Default)]
 pub struct Layout {
@@ -69,21 +82,52 @@ pub fn run(snapshot: &GraphSnapshot) -> Layout {
             *f = (0.0, 0.0);
         }
 
-        // Pairwise repulsion.
-        for i in 0..n {
-            for j in (i + 1)..n {
-                let dx = pos[j].0 - pos[i].0;
-                let dy = pos[j].1 - pos[i].1;
-                let d2 = dx * dx + dy * dy + 1e-6;
-                let inv_d = d2.sqrt().recip();
-                let f = REPEL_K / d2;
-                let fx = f * dx * inv_d;
-                let fy = f * dy * inv_d;
-                force[i].0 -= fx;
-                force[i].1 -= fy;
-                force[j].0 += fx;
-                force[j].1 += fy;
+        // Pairwise repulsion. Two paths share the same physics:
+        //   * Sequential (default for small N) uses the j>i symmetry
+        //     trick to halve arithmetic at the cost of cross-index
+        //     writes (`force[i]` and `force[j]` both touched per pair).
+        //   * Parallel (N >= PARALLEL_THRESHOLD) recomputes both
+        //     directions so every iteration writes only `force[i]`,
+        //     which is what rayon's `par_iter_mut` exposes safely.
+        //     2× arithmetic, no contention — wins above the threshold
+        //     once we have ~3+ cores worth of work.
+        if n < PARALLEL_THRESHOLD {
+            for i in 0..n {
+                for j in (i + 1)..n {
+                    let dx = pos[j].0 - pos[i].0;
+                    let dy = pos[j].1 - pos[i].1;
+                    let d2 = dx * dx + dy * dy + 1e-6;
+                    let inv_d = d2.sqrt().recip();
+                    let f = REPEL_K / d2;
+                    let fx = f * dx * inv_d;
+                    let fy = f * dy * inv_d;
+                    force[i].0 -= fx;
+                    force[i].1 -= fy;
+                    force[j].0 += fx;
+                    force[j].1 += fy;
+                }
             }
+        } else {
+            let pos_ref = pos.as_slice();
+            force.par_iter_mut().enumerate().for_each(|(i, f_i)| {
+                let (px_i, py_i) = pos_ref[i];
+                let mut fx_acc = 0.0_f32;
+                let mut fy_acc = 0.0_f32;
+                for (j, &(px_j, py_j)) in pos_ref.iter().enumerate() {
+                    if i == j {
+                        continue;
+                    }
+                    let dx = px_j - px_i;
+                    let dy = py_j - py_i;
+                    let d2 = dx * dx + dy * dy + 1e-6;
+                    let inv_d = d2.sqrt().recip();
+                    let f = REPEL_K / d2;
+                    fx_acc -= f * dx * inv_d;
+                    fy_acc -= f * dy * inv_d;
+                }
+                f_i.0 += fx_acc;
+                f_i.1 += fy_acc;
+            });
         }
 
         // Spring along edges.
@@ -183,5 +227,31 @@ mod tests {
         let l = run(&snap(&["a", "b"], &[("a", "a"), ("a", "b")]));
         assert_eq!(l.edge_indices.len(), 1);
         assert_eq!(l.edge_indices[0], (0, 1));
+    }
+
+    #[test]
+    fn parallel_path_stays_in_unit_square_at_threshold() {
+        // Exercise the rayon branch: N == PARALLEL_THRESHOLD is the
+        // smallest size that goes through `par_iter_mut`. We don't
+        // assert numerical equivalence with the sequential path
+        // (the algorithms differ — the parallel one recomputes both
+        // directions, so floating-point ordering is different), only
+        // that the same physics invariants hold: positions inside the
+        // canvas, no NaN, no escape.
+        let n = PARALLEL_THRESHOLD;
+        let ids: Vec<String> = (0..n).map(|i| format!("n{i}")).collect();
+        let id_refs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
+        // Sparse ring of edges so the spring force has work to do.
+        let edge_pairs: Vec<(&str, &str)> = (0..n)
+            .map(|i| (id_refs[i], id_refs[(i + 1) % n]))
+            .collect();
+        let l = run(&snap(&id_refs, &edge_pairs));
+        assert_eq!(l.positions.len(), n);
+        for (i, (x, y)) in l.positions.iter().enumerate() {
+            assert!(x.is_finite(), "non-finite x at node {i}: {x}");
+            assert!(y.is_finite(), "non-finite y at node {i}: {y}");
+            assert!(*x >= 0.02 && *x <= 0.98, "x out of bounds at {i}: {x}");
+            assert!(*y >= 0.02 && *y <= 0.98, "y out of bounds at {i}: {y}");
+        }
     }
 }

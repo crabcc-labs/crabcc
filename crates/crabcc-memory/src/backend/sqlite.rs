@@ -340,7 +340,10 @@ fn now_secs() -> i64 {
 /// (and `'` / `"` could cause syntax errors), so this normalisation also
 /// hardens the path against accidental query-string injection.
 fn fts_match_string(input: &str) -> String {
-    let mut terms: Vec<String> = Vec::new();
+    // Capacity hint: most user queries are 1-4 tokens. Starting at 8
+    // skips the early Vec doublings (4 → 8) for the common case while
+    // costing ~64 B of stack on the rare long-query path.
+    let mut terms: Vec<String> = Vec::with_capacity(8);
     for word in input
         .split(|c: char| !(c.is_alphanumeric() || c == '\''))
         .filter(|w| !w.is_empty())
@@ -519,7 +522,14 @@ impl Backend for SqliteBackend {
             Ok((id, body, source, wing, room, bytes))
         })?;
 
-        let mut scored: Vec<(f32, DrawerHit)> = Vec::new();
+        // `scored` accumulates one entry per matching drawer row before
+        // sorting + truncating to `q.limit`. The eventual ceiling is the
+        // total drawer count (unknown here without an extra COUNT), so
+        // the capacity hint is a heuristic: `q.limit.max(64)` skips the
+        // early 0 → 4 → 8 → 16 → 32 → 64 doubling chain in the common
+        // case. Larger result sets still pay re-allocs, but those are
+        // amortised under the cosine compute on each row.
+        let mut scored: Vec<(f32, DrawerHit)> = Vec::with_capacity(q.limit.max(64));
         for row in rows {
             let (id, body, source, wing, room, bytes) = row?;
             let emb = blob_to_vec(&bytes);
