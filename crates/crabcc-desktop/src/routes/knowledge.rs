@@ -291,6 +291,13 @@ impl Render for KnowledgeRoute {
                 } else {
                     format!("{visible_count} of {total} match · cursor {}", resp.cursor)
                 });
+                // Wing distribution — aggregates over the *unfiltered*
+                // drawer set so the user sees the full repo shape
+                // even when narrowed; otherwise narrowing on a
+                // specific wing trivially shows that wing as 100%
+                // and hides the comparison context. Capped at the
+                // top 5 wings; smaller wings collapse into "+N more".
+                let wing_summary = wing_summary_line(&resp.drawers, 5);
                 let entity = cx.entity();
                 let pinned_wing = self.wing_pin.clone();
                 let list: gpui::AnyElement = if visible.is_empty() {
@@ -325,9 +332,17 @@ impl Render for KnowledgeRoute {
                         )
                         .into_any_element()
                 };
+                let wing_line: gpui::AnyElement = match wing_summary {
+                    Some(text) => div()
+                        .text_color(muted)
+                        .child(SharedString::from(text))
+                        .into_any_element(),
+                    None => div().into_any_element(),
+                };
                 v_flex()
                     .gap_2()
                     .child(div().text_color(muted).child(count_line))
+                    .child(wing_line)
                     .child(list)
                     .into_any_element()
             }
@@ -413,6 +428,46 @@ fn drawer_row(
         .child(SharedString::from(truncate(&d.body_preview, 220)))
 }
 
+/// Build the wing-distribution summary line — `"doc 5 · session 3 · fix 2"`.
+/// Returns `None` when the input is empty or has only one distinct
+/// wing (a single-wing drawer pile gives no useful distribution
+/// information; the count line above already shows the total).
+///
+/// `cap` bounds the visible wings; any tail collapses into a `+N more`
+/// suffix so the line stays scannable on a wide repo.
+fn wing_summary_line(drawers: &[MemoryDrawer], cap: usize) -> Option<String> {
+    if drawers.len() < 2 {
+        return None;
+    }
+    // Tally by wing. Linear scan + small-vec — no HashMap (the wing
+    // cardinality on a typical repo is < 10, so a Vec is fine and
+    // keeps the iteration order deterministic for the sort below).
+    let mut tally: Vec<(String, usize)> = Vec::with_capacity(8);
+    for d in drawers {
+        if let Some(slot) = tally.iter_mut().find(|(k, _)| k == &d.wing) {
+            slot.1 += 1;
+        } else {
+            tally.push((d.wing.clone(), 1));
+        }
+    }
+    if tally.len() < 2 {
+        return None;
+    }
+    // Sort by count desc, then wing name asc for ties.
+    tally.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let visible: Vec<String> = tally
+        .iter()
+        .take(cap)
+        .map(|(w, n)| format!("{w} {n}"))
+        .collect();
+    let mut line = visible.join(" · ");
+    if tally.len() > cap {
+        let more = tally.len() - cap;
+        line.push_str(&format!(" · +{more} more"));
+    }
+    Some(line)
+}
+
 /// "Ns ago" / "Nm ago" / "Nh ago" — coarse but readable for a
 /// developer-facing memory tail. Computed against
 /// `SystemTime::now()` so timezone is irrelevant.
@@ -466,5 +521,61 @@ mod tests {
     fn truncate_appends_ellipsis() {
         assert_eq!(truncate("abc", 10), "abc");
         assert_eq!(truncate("abcdef", 4), "abc…");
+    }
+
+    fn drawer(id: i64, wing: &str) -> MemoryDrawer {
+        MemoryDrawer {
+            id,
+            wing: wing.to_string(),
+            room: None,
+            source_id: String::new(),
+            body_preview: String::new(),
+            created_at: 0,
+        }
+    }
+
+    #[test]
+    fn wing_summary_skips_single_wing() {
+        // A pile that's all one wing has nothing useful to say —
+        // the count line above already shows the total.
+        let ds: Vec<MemoryDrawer> = (0..5).map(|i| drawer(i, "doc")).collect();
+        assert_eq!(wing_summary_line(&ds, 5), None);
+    }
+
+    #[test]
+    fn wing_summary_skips_empty() {
+        assert_eq!(wing_summary_line(&[], 5), None);
+    }
+
+    #[test]
+    fn wing_summary_orders_by_count_then_name() {
+        let ds = vec![
+            drawer(1, "doc"),
+            drawer(2, "doc"),
+            drawer(3, "doc"),
+            drawer(4, "session"),
+            drawer(5, "session"),
+            drawer(6, "fix"),
+        ];
+        assert_eq!(
+            wing_summary_line(&ds, 5),
+            Some("doc 3 · session 2 · fix 1".to_string())
+        );
+    }
+
+    #[test]
+    fn wing_summary_collapses_tail_into_more() {
+        let ds = vec![
+            drawer(1, "doc"),
+            drawer(2, "session"),
+            drawer(3, "fix"),
+            drawer(4, "thinking"),
+            drawer(5, "memory"),
+            drawer(6, "tail-1"),
+            drawer(7, "tail-2"),
+        ];
+        let line = wing_summary_line(&ds, 3).unwrap();
+        assert!(line.starts_with("doc 1 · "));
+        assert!(line.contains(" · +4 more"));
     }
 }
