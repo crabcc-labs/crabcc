@@ -32,6 +32,12 @@ pub struct DashboardHome {
     spawn_input: Entity<InputState>,
     /// Live mirror of the spawn input's text — read on submit.
     spawn_text: String,
+    /// Active op-pin on the Activity tile — set by clicking an op
+    /// badge, cleared by clicking the active badge again or the
+    /// header pin pill's `×`. Filters the activity buffer to that op
+    /// before grouping. UI affordance per route, not on AppState
+    /// (same call as the substring filters).
+    activity_op_pin: Option<String>,
 }
 
 impl DashboardHome {
@@ -58,6 +64,18 @@ impl DashboardHome {
             graph_view,
             spawn_input,
             spawn_text: String::new(),
+            activity_op_pin: None,
+        }
+    }
+
+    /// Toggle activity op-pin. Clicking the active op clears it
+    /// (saves the user hunting for the header `×` for casual
+    /// narrow-then-clear).
+    fn pin_activity_op(&mut self, op: String) {
+        if self.activity_op_pin.as_deref() == Some(op.as_str()) {
+            self.activity_op_pin = None;
+        } else {
+            self.activity_op_pin = Some(op);
         }
     }
 
@@ -116,59 +134,146 @@ impl Render for DashboardHome {
         // Groups consecutive same-op rows into a single visual line so
         // a burst of the same query (common during a startup outline
         // sweep) doesn't drown out the variety. Op badge is colour-coded
-        // per family — see `op_color`.
+        // per family — see `op_color`. When `activity_op_pin` is set,
+        // the buffer is pre-filtered to that op before grouping.
         let theme = cx.theme();
-        let activity_groups = group_activity(&state.recent_activity, 8);
+        let primary = theme.primary;
+        let active_pin = self.activity_op_pin.clone();
+        let activity_iter = state
+            .recent_activity
+            .iter()
+            .filter(|e| match active_pin.as_deref() {
+                None => true,
+                Some(pinned) => e.op == pinned,
+            });
+        let activity_groups = group_activity(activity_iter, 8);
         // Use `last_event_ts` as a wall-clock proxy. Same trick as the
         // Agents-route relative-age formatter — keeps chrono out of
         // the dep tree for a tiny display tweak.
         let now_ts = state.last_event_ts.unwrap_or(0);
+        let entity_for_op = cx.entity();
+        let activity_body: gpui::AnyElement = if activity_groups.is_empty() && active_pin.is_some()
+        {
+            div()
+                .text_color(muted)
+                .child(SharedString::from(format!(
+                    "no \u{201C}{}\u{201D} activity in buffer",
+                    active_pin.as_deref().unwrap_or("")
+                )))
+                .into_any_element()
+        } else {
+            v_flex()
+                .gap_1()
+                .children(
+                    activity_groups
+                        .into_iter()
+                        .enumerate()
+                        .map(|(idx, g)| {
+                            let op_color = op_color(&g.op, theme);
+                            // Recency fade — newer rows render full alpha,
+                            // older rows fade toward the floor. Applied to
+                            // both the op-badge and the query text so the
+                            // whole row dims as one unit. Muted-side meta
+                            // already lives at low contrast, so leave it.
+                            let age = (now_ts - g.latest_ts).max(0);
+                            let alpha = fade_alpha_for_age(age);
+                            let faded_op = with_alpha(op_color, alpha);
+                            let faded_fg = with_alpha(theme.foreground, alpha);
+                            // Click-to-pin on the op badge. Active op
+                            // renders with a primary-colour border so
+                            // it's recognisable even when the badge
+                            // colour itself is muted (e.g. `outline`).
+                            // gpui requires stateful elements to declare
+                            // an id; suffixing with the row index keeps
+                            // it unique per render pass without an
+                            // extra alloc per group.
+                            let badge_id: gpui::ElementId =
+                                SharedString::from(format!("activity-op-{idx}")).into();
+                            let badge_pinned = active_pin.as_deref() == Some(g.op.as_str());
+                            let badge_border = if badge_pinned {
+                                primary
+                            } else {
+                                gpui::transparent_black()
+                            };
+                            let entity = entity_for_op.clone();
+                            let click_op = g.op.clone();
+                            h_flex()
+                                .gap_2()
+                                // Op badge — fixed-width column so the
+                                // query text aligns across rows.
+                                .child(
+                                    div()
+                                        .id(badge_id)
+                                        .w(px(80.0))
+                                        .px_1()
+                                        .border_1()
+                                        .border_color(badge_border)
+                                        .rounded_md()
+                                        .text_color(faded_op)
+                                        .child(SharedString::from(g.op.clone()))
+                                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                            let op = click_op.clone();
+                                            entity.update(cx, |this, cx| {
+                                                this.pin_activity_op(op);
+                                                cx.notify();
+                                            });
+                                        }),
+                                )
+                                .child(
+                                    div()
+                                        .text_color(faded_fg)
+                                        .child(SharedString::from(truncate(&g.latest_query, 60))),
+                                )
+                                .child(
+                                    div()
+                                        .text_color(muted)
+                                        .child(SharedString::from(if g.count == 1 {
+                                            format!("({})", g.latest_results)
+                                        } else {
+                                            format!("(×{} · {})", g.count, g.latest_results)
+                                        })),
+                                )
+                                .into_any_element()
+                        })
+                        .collect::<Vec<_>>(),
+                )
+                .into_any_element()
+        };
+        // Header pin-pill — only renders when an op is pinned. Acts as
+        // the canonical clear-affordance (clicking the pinned badge
+        // also toggles, but the pill is the place a user looks when
+        // narrowing feels stuck).
+        let pin_pill: gpui::AnyElement = match active_pin.as_ref() {
+            None => div().into_any_element(),
+            Some(op) => {
+                let entity_for_clear = cx.entity();
+                h_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .id("activity-op-pin-clear")
+                            .px_2()
+                            .py_0p5()
+                            .border_1()
+                            .border_color(primary)
+                            .rounded_md()
+                            .text_color(primary)
+                            .child(SharedString::from(format!("{op} \u{00D7}")))
+                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                entity_for_clear.update(cx, |this, cx| {
+                                    this.activity_op_pin = None;
+                                    cx.notify();
+                                });
+                            }),
+                    )
+                    .into_any_element()
+            }
+        };
         let activity_tile = tile(
             "Recent activity",
             card,
             border,
-            v_flex().gap_1().children(
-                activity_groups
-                    .into_iter()
-                    .map(|g| {
-                        let op_color = op_color(&g.op, theme);
-                        // Recency fade — newer rows render full alpha,
-                        // older rows fade toward the floor. Applied to
-                        // both the op-badge and the query text so the
-                        // whole row dims as one unit. Muted-side meta
-                        // already lives at low contrast, so leave it.
-                        let age = (now_ts - g.latest_ts).max(0);
-                        let alpha = fade_alpha_for_age(age);
-                        let faded_op = with_alpha(op_color, alpha);
-                        let faded_fg = with_alpha(theme.foreground, alpha);
-                        h_flex()
-                            .gap_2()
-                            // Op badge — fixed-width column so the
-                            // query text aligns across rows.
-                            .child(
-                                div()
-                                    .w(px(80.0))
-                                    .text_color(faded_op)
-                                    .child(SharedString::from(g.op.clone())),
-                            )
-                            .child(
-                                div()
-                                    .text_color(faded_fg)
-                                    .child(SharedString::from(truncate(&g.latest_query, 60))),
-                            )
-                            .child(
-                                div()
-                                    .text_color(muted)
-                                    .child(SharedString::from(if g.count == 1 {
-                                        format!("({})", g.latest_results)
-                                    } else {
-                                        format!("(×{} · {})", g.count, g.latest_results)
-                                    })),
-                            )
-                            .into_any_element()
-                    })
-                    .collect::<Vec<_>>(),
-            ),
+            v_flex().gap_2().child(pin_pill).child(activity_body),
         );
 
         // Agents tile gets a per-row Kill button for *running* agents.
