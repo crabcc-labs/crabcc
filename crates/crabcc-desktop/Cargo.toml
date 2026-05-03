@@ -1,0 +1,29 @@
+[package]
+name = "crabcc-desktop"
+version = "2.11.0"
+edition = "2021"
+rust-version = "1.87"
+license = "MIT"
+repository = "https://github.com/peterlodri-sec/crabcc"
+description = "macOS GPUI desktop shell for crabcc"
+
+# macOS-only GPUI desktop application.  Excluded from the workspace to avoid
+# requiring a macOS runner in CI.  Build standalone:
+#
+#   cd crates/crabcc-desktop && cargo build --release
+
+[dependencies]
+gpui = { git = "https://github.com/zed-industries/zed", tag = "v0.29.0" }
+crabcc-core = { path = "../crabcc-core" }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+tracing = "0.1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"
+
+[[bin]]
+name = "crabcc-desktop"
+path = "src/main.rs"
