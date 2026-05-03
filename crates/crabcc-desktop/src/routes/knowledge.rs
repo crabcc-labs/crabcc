@@ -4,6 +4,10 @@
 //! memory poller). The form at the top POSTs to `/api/memory/ingest`
 //! and pushes a follow-up `MemoryRefresh` so the new drawer appears
 //! immediately rather than waiting up to 10s for the next poll.
+//!
+//! A second TextInput below the ingest form filters the visible
+//! drawers as the user types (id / wing/room / body preview,
+//! case-insensitive). Mirrors the Agents-route filter pattern.
 
 use gpui::{
     div, prelude::*, px, Context, Entity, Hsla, IntoElement, MouseButton, Render, SharedString,
@@ -27,6 +31,11 @@ pub struct KnowledgeRoute {
     /// Live mirror of the input's text — read on submit so the click
     /// handler doesn't need to crack open the entity again.
     pending_text: String,
+    /// Filter input — narrows the visible drawer list.
+    filter_input: Entity<InputState>,
+    /// Lower-cased mirror of the filter input value, kept in sync via
+    /// `InputEvent::Change`. Avoids re-lowercasing on every render.
+    filter_lower: String,
 }
 
 impl KnowledgeRoute {
@@ -34,8 +43,10 @@ impl KnowledgeRoute {
         cx.observe(&state, |_, _, cx| cx.notify()).detach();
         let ingest_input =
             cx.new(|cx| InputState::new(window, cx).placeholder("Ingest a note (text)…"));
-        cx.subscribe_in(&ingest_input, window, |this, state, event, _, cx| {
-            match event {
+        cx.subscribe_in(
+            &ingest_input,
+            window,
+            |this, state, event, _, cx| match event {
                 InputEvent::Change => {
                     this.pending_text = state.read(cx).value().to_string();
                     cx.notify();
@@ -44,6 +55,16 @@ impl KnowledgeRoute {
                     this.submit(cx);
                 }
                 _ => {}
+            },
+        )
+        .detach();
+        let filter_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("Filter by id / wing / room / body…")
+        });
+        cx.subscribe_in(&filter_input, window, |this, state, event, _, cx| {
+            if let InputEvent::Change = event {
+                this.filter_lower = state.read(cx).value().to_string().to_lowercase();
+                cx.notify();
             }
         })
         .detach();
@@ -51,7 +72,28 @@ impl KnowledgeRoute {
             state,
             ingest_input,
             pending_text: String::new(),
+            filter_input,
+            filter_lower: String::new(),
         }
+    }
+
+    fn drawer_matches(&self, d: &MemoryDrawer) -> bool {
+        if self.filter_lower.is_empty() {
+            return true;
+        }
+        let q = self.filter_lower.as_str();
+        if d.id.to_string().contains(q) {
+            return true;
+        }
+        if d.wing.to_lowercase().contains(q) {
+            return true;
+        }
+        if let Some(room) = d.room.as_deref() {
+            if room.to_lowercase().contains(q) {
+                return true;
+            }
+        }
+        d.body_preview.to_lowercase().contains(q)
     }
 
     fn submit(&mut self, cx: &mut Context<Self>) {
@@ -130,6 +172,15 @@ impl Render for KnowledgeRoute {
             )
             .child(submit_btn);
 
+        let filter_field = div()
+            .flex_1()
+            .border_1()
+            .border_color(border)
+            .rounded_md()
+            .px_2()
+            .py_1()
+            .child(Input::new(&self.filter_input).appearance(false));
+
         let header = v_flex()
             .gap_2()
             .child(
@@ -141,7 +192,8 @@ impl Render for KnowledgeRoute {
                     ))),
             )
             .child(form)
-            .child(status_line);
+            .child(status_line)
+            .child(filter_field);
 
         let body: gpui::AnyElement = match state.memory_recent.as_ref() {
             None => div()
@@ -166,23 +218,42 @@ impl Render for KnowledgeRoute {
                 ))
                 .into_any_element(),
             Some(resp) => {
-                let count_line = SharedString::from(format!(
-                    "{} drawers · cursor {}",
-                    resp.drawers.len(),
-                    resp.cursor
-                ));
+                let total = resp.drawers.len();
+                let visible: Vec<&MemoryDrawer> = resp
+                    .drawers
+                    .iter()
+                    .filter(|d| self.drawer_matches(d))
+                    .take(VISIBLE_DRAWERS)
+                    .collect();
+                let visible_count = visible.len();
+                let count_line = SharedString::from(if self.filter_lower.is_empty() {
+                    format!("{total} drawers · cursor {}", resp.cursor)
+                } else {
+                    format!("{visible_count} of {total} match · cursor {}", resp.cursor)
+                });
+                let list: gpui::AnyElement = if visible.is_empty() {
+                    div()
+                        .text_color(muted)
+                        .child(SharedString::from(format!(
+                            "no drawers match \u{201C}{}\u{201D}",
+                            self.filter_lower
+                        )))
+                        .into_any_element()
+                } else {
+                    v_flex()
+                        .gap_1()
+                        .children(
+                            visible
+                                .into_iter()
+                                .map(|d| drawer_row(d, muted, border, secondary).into_any_element())
+                                .collect::<Vec<_>>(),
+                        )
+                        .into_any_element()
+                };
                 v_flex()
                     .gap_2()
                     .child(div().text_color(muted).child(count_line))
-                    .child(
-                        v_flex().gap_1().children(
-                            resp.drawers
-                                .iter()
-                                .take(VISIBLE_DRAWERS)
-                                .map(|d| drawer_row(d, muted, border, secondary).into_any_element())
-                                .collect::<Vec<_>>(),
-                        ),
-                    )
+                    .child(list)
                     .into_any_element()
             }
         };
