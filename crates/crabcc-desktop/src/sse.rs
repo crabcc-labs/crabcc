@@ -54,12 +54,30 @@ pub fn spawn_worker(base_url: impl AsRef<str>) -> flume::Receiver<SseEvent> {
 }
 
 fn run(url: &str, tx: &flume::Sender<SseEvent>) {
+    // Build the HTTP client ONCE and reuse it across reconnects. Each
+    // `Client` carries a connection pool + a TLS session cache; rebuilding
+    // it on every reconnect (the original shape) threw away those caches
+    // and forced a fresh handshake even for a brief reconnect blip. The
+    // `timeout(None)` is critical for SSE — a quiet server is normal, not
+    // a fault. Other `api::client` callers still use their own 5-second
+    // bounded client.
+    let http = match reqwest::blocking::Client::builder()
+        .timeout(None::<Duration>)
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("crabcc-sse: failed to build http client: {e}; worker exiting");
+            return;
+        }
+    };
+
     let mut backoff = Duration::from_secs(1);
     loop {
         if tx.is_disconnected() {
             return;
         }
-        match connect_and_pump(url, tx) {
+        match connect_and_pump(&http, url, tx) {
             Ok(()) => {
                 // Server closed cleanly — short delay before reconnect,
                 // reset the backoff window so a flaky server doesn't
@@ -77,14 +95,11 @@ fn run(url: &str, tx: &flume::Sender<SseEvent>) {
     }
 }
 
-fn connect_and_pump(url: &str, tx: &flume::Sender<SseEvent>) -> Result<()> {
-    // Dedicated client for SSE — no overall request timeout so a quiet
-    // server doesn't trip the default. The other API calls in
-    // `api::client` keep their own 5-second timeout.
-    let http = reqwest::blocking::Client::builder()
-        .timeout(None::<Duration>)
-        .build()
-        .context("build SSE http client")?;
+fn connect_and_pump(
+    http: &reqwest::blocking::Client,
+    url: &str,
+    tx: &flume::Sender<SseEvent>,
+) -> Result<()> {
     let resp = http.get(url).send().with_context(|| format!("GET {url}"))?;
     if !resp.status().is_success() {
         anyhow::bail!("{url} → {}", resp.status());
