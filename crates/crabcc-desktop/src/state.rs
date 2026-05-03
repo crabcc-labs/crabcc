@@ -245,6 +245,12 @@ pub struct AppState {
     telemetry_warning_id: Option<u64>,
     /// Same edge-trigger sentinel for the memory-recent poll.
     memory_warning_id: Option<u64>,
+    /// User-toggled mute. When `true`, [`AppState::push_toast`]
+    /// returns the next id but skips the actual push, so emit-paths
+    /// keep working (sentinels still get a non-zero id, dismiss
+    /// stays idempotent) but the strip shows nothing. Toggled by
+    /// the header bell — see `Shell::render`.
+    pub toasts_muted: bool,
 }
 
 /// Plumbing the route entities use to fire detached HTTP requests
@@ -278,10 +284,22 @@ impl AppState {
     /// interval. Combined with [`ToastStrip`]'s render-time skip,
     /// expired toasts disappear visually within the next render
     /// trigger after their interval lapses.
+    ///
+    /// When [`AppState::toasts_muted`] is `true`, returns a fresh
+    /// id but does NOT enqueue the toast — emit paths can keep
+    /// using the returned id as a sentinel (e.g.
+    /// `telemetry_warning_id`) and `dismiss_toast` stays idempotent
+    /// against an absent toast.
     pub fn push_toast(&mut self, level: ToastLevel, message: impl Into<SharedString>) -> u64 {
-        self.gc_expired_toasts();
         let id = self.next_toast_id;
         self.next_toast_id = self.next_toast_id.wrapping_add(1);
+        if self.toasts_muted {
+            // Sentinel-only: edge-trigger code (slice 3) needs a
+            // unique id even when muted, so dismiss-on-recover
+            // doesn't accidentally target somebody else's toast.
+            return id;
+        }
+        self.gc_expired_toasts();
         // Wall-clock proxy: prefer the latest observed event ts so
         // the timestamp matches other UI surfaces (KPI strip "X
         // seconds ago"). Falls back to 0 before the first event.
@@ -296,6 +314,17 @@ impl AppState {
             created_at,
         });
         id
+    }
+
+    /// Flip the mute state. When transitioning false→true, also
+    /// clears any currently-visible toasts — the user's intent is
+    /// "stop showing me things", so leaving stale rows on screen
+    /// would be a surprise.
+    pub fn toggle_toast_mute(&mut self) {
+        self.toasts_muted = !self.toasts_muted;
+        if self.toasts_muted {
+            self.toasts.clear();
+        }
     }
 
     /// Dismiss the toast with the given id. No-op if it was already
@@ -951,6 +980,44 @@ mod tests {
         s.apply(AppEvent::Telemetry(Err(anyhow::anyhow!("still boom"))));
         assert_eq!(s.toasts.len(), 1);
         assert_eq!(s.telemetry_warning_id, Some(original_id));
+    }
+
+    #[test]
+    fn mute_blocks_push_but_returns_unique_id() {
+        // Muted state: push_toast still hands out unique ids (so
+        // edge-trigger sentinels keep working), but no toast lands
+        // in the deque.
+        let mut s = AppState::new();
+        s.toasts_muted = true;
+        let a = s.push_toast(ToastLevel::Info, "hidden a");
+        let b = s.push_toast(ToastLevel::Warning, "hidden b");
+        assert_ne!(a, b, "ids must stay unique even when muted");
+        assert!(s.toasts.is_empty(), "muted pushes must not enqueue");
+        // Dismiss-by-id of the never-pushed toast is a no-op (must
+        // not panic). The contract: emit-paths pretend the push
+        // succeeded; dismiss tolerates the absence.
+        s.dismiss_toast(a);
+        s.dismiss_toast(b);
+        assert!(s.toasts.is_empty());
+    }
+
+    #[test]
+    fn toggle_mute_clears_visible_toasts_on_entry() {
+        // User intent of "mute" = "stop showing me things now". A
+        // half-finished pile of stale rows would surprise the user.
+        let mut s = AppState::new();
+        s.last_event_ts = Some(0);
+        s.push_toast(ToastLevel::Info, "x");
+        s.push_toast(ToastLevel::Warning, "y");
+        assert_eq!(s.toasts.len(), 2);
+        s.toggle_toast_mute();
+        assert!(s.toasts_muted);
+        assert!(s.toasts.is_empty());
+        // Unmuting alone doesn't re-emit anything — toasts only
+        // come from new push_toast calls.
+        s.toggle_toast_mute();
+        assert!(!s.toasts_muted);
+        assert!(s.toasts.is_empty());
     }
 
     #[test]
