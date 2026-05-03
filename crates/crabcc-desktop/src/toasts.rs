@@ -5,25 +5,27 @@
 //! the macOS rich-notification stack (track C.2+). Ships before the
 //! native side so error / status surfacing has a home from day one.
 //!
-//! ## Slice 1 (this file)
+//! ## What's wired today (slice 2)
 //!
-//! Data model + render component + manual dismiss only. No
-//! auto-dismiss timer and no SSE-driven auto-emit yet — emit-paths
-//! land in slice 2 once we've shaped the data model against a real
-//! caller.
+//! - Data model + render component (slice 1, [#308]).
+//! - Per-toast manual dismiss via the `×` button.
+//! - Auto-dismiss via [`Toast::is_active`] — render-time skip plus
+//!   in-state GC ([`AppState::gc_expired_toasts`]) called from
+//!   every `push_toast`. Persistent levels (warning / danger) stay
+//!   until manually dismissed.
+//! - Auto-emit on six result events: `MemoryIngestResult`,
+//!   `AgentLaunchResult`, `AgentKillResult` × `Ok` / `Err`. Level
+//!   selection: success → Success(5s) / launch ok → Primary(8s) /
+//!   kill ok → Info(3s) / errors → Danger (persist).
 //!
 //! ## What's intentionally not here
 //!
-//! - **Auto-dismiss timer.** Per the design brief: success 5s,
-//!   info 3s, primary 8s, warning / danger persist. The dismiss
-//!   timing lives on [`ToastLevel::dismiss_after_secs`] already so
-//!   slice 2 can wire it to either render-time age math (cheap, no
-//!   timer) or `cx.spawn(Timer::after)` (precise, more code).
-//! - **SSE auto-emit.** No call sites push toasts yet — the strip
-//!   is empty until slice 2 wires `submit_kill` / `submit_launch` /
-//!   bootstrap-failure paths to call [`AppState::push_toast`].
-//! - **"↗ system" tag.** Echo-dedup with native rich notifications
-//!   happens in track C.2 once the AppKit side exists.
+//! - **`↗ system` echo-dedup tag** — track C.2 once the AppKit
+//!   rich-notification side exists.
+//! - **Mute toggle + Settings entrypoint + `Show last 50 →` log**
+//!   — later slices.
+//!
+//! [#308]: https://github.com/peterlodri-sec/crabcc/pull/308
 
 use gpui::{div, prelude::*, px, Context, Entity, MouseButton, Render, SharedString, Window};
 use gpui_component::{h_flex, v_flex, ActiveTheme};
@@ -74,14 +76,29 @@ impl ToastLevel {
 ///
 /// `id` is monotonic per-`AppState` so the dismiss-button click can
 /// target a specific row even after the deque has been GC'd.
-/// `created_at` is the wall-clock the toast was pushed; consumed by
-/// the (slice 2) auto-dismiss path.
+/// `created_at` is the wall-clock the toast was pushed; consumed
+/// by [`Toast::is_active`] for render-time auto-dismiss.
 #[derive(Debug, Clone)]
 pub struct Toast {
     pub id: u64,
     pub level: ToastLevel,
     pub message: SharedString,
     pub created_at: i64,
+}
+
+impl Toast {
+    /// Whether the toast is still inside its auto-dismiss window
+    /// at the given wall-clock `now`. Persistent levels (warning /
+    /// danger) always return `true` — they require a manual
+    /// dismiss. Used by both the in-state GC
+    /// (`AppState::gc_expired_toasts`) and the render-time
+    /// auto-dismiss filter.
+    pub fn is_active(&self, now: i64) -> bool {
+        match self.level.dismiss_after_secs() {
+            None => true,
+            Some(secs) => (now - self.created_at) < secs as i64,
+        }
+    }
 }
 
 /// Maximum simultaneously-visible toasts. Excess oldest-first
@@ -105,9 +122,17 @@ impl ToastStrip {
 impl Render for ToastStrip {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.state.read(cx);
-        if state.toasts.is_empty() {
-            // Render nothing when empty — keeps the strip from
-            // taking layout space when there's nothing to show.
+        // Render-time auto-dismiss filter: hide toasts whose
+        // dismiss interval has lapsed even if `gc_expired_toasts`
+        // hasn't run since (e.g. no other event has fired
+        // `push_toast` to trigger a GC). The deque-side GC is the
+        // primary path; this just guarantees no expired toast is
+        // visible past its second.
+        let now = state.last_event_ts.unwrap_or(0);
+        let any_visible = state.toasts.iter().any(|t| t.is_active(now));
+        if !any_visible {
+            // Render nothing when empty / all expired — keeps the
+            // strip from taking layout space.
             return div();
         }
         let theme = cx.theme();
@@ -115,52 +140,59 @@ impl Render for ToastStrip {
         let bg = theme.secondary;
         let state_for_dismiss = self.state.clone();
 
-        div().child(v_flex().px_5().py_2().gap_2().children(
-            state.toasts.iter().take(MAX_VISIBLE_TOASTS).map(|t| {
-                let accent = match t.level {
-                    ToastLevel::Success => theme.success,
-                    ToastLevel::Info => theme.info,
-                    ToastLevel::Warning => theme.warning,
-                    ToastLevel::Danger => theme.danger,
-                    ToastLevel::Primary => theme.primary,
-                };
-                let id_for_click = t.id;
-                let state_clone = state_for_dismiss.clone();
-                // Element id must be unique per render pass; the
-                // monotonic toast id makes that trivial.
-                let dismiss_id: gpui::ElementId =
-                    SharedString::from(format!("toast-dismiss-{}", t.id)).into();
-                h_flex()
-                    .gap_3()
-                    .px_3()
-                    .py_2()
-                    .border_1()
-                    .border_color(accent)
-                    .rounded_md()
-                    .bg(bg)
-                    .child(
-                        div()
-                            .w(px(16.0))
-                            .text_color(accent)
-                            .child(SharedString::new_static(t.level.glyph())),
-                    )
-                    .child(div().flex_1().child(t.message.clone()))
-                    .child(
-                        div()
-                            .id(dismiss_id)
-                            .px_2()
-                            .text_color(muted)
-                            .child(SharedString::new_static("\u{00D7}"))
-                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                state_clone.update(cx, |s, cx| {
-                                    s.dismiss_toast(id_for_click);
-                                    cx.notify();
-                                });
-                            }),
-                    )
-                    .into_any_element()
-            }),
-        ))
+        div().child(
+            v_flex().px_5().py_2().gap_2().children(
+                state
+                    .toasts
+                    .iter()
+                    .filter(|t| t.is_active(now))
+                    .take(MAX_VISIBLE_TOASTS)
+                    .map(|t| {
+                        let accent = match t.level {
+                            ToastLevel::Success => theme.success,
+                            ToastLevel::Info => theme.info,
+                            ToastLevel::Warning => theme.warning,
+                            ToastLevel::Danger => theme.danger,
+                            ToastLevel::Primary => theme.primary,
+                        };
+                        let id_for_click = t.id;
+                        let state_clone = state_for_dismiss.clone();
+                        // Element id must be unique per render pass; the
+                        // monotonic toast id makes that trivial.
+                        let dismiss_id: gpui::ElementId =
+                            SharedString::from(format!("toast-dismiss-{}", t.id)).into();
+                        h_flex()
+                            .gap_3()
+                            .px_3()
+                            .py_2()
+                            .border_1()
+                            .border_color(accent)
+                            .rounded_md()
+                            .bg(bg)
+                            .child(
+                                div()
+                                    .w(px(16.0))
+                                    .text_color(accent)
+                                    .child(SharedString::new_static(t.level.glyph())),
+                            )
+                            .child(div().flex_1().child(t.message.clone()))
+                            .child(
+                                div()
+                                    .id(dismiss_id)
+                                    .px_2()
+                                    .text_color(muted)
+                                    .child(SharedString::new_static("\u{00D7}"))
+                                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                        state_clone.update(cx, |s, cx| {
+                                            s.dismiss_toast(id_for_click);
+                                            cx.notify();
+                                        });
+                                    }),
+                            )
+                            .into_any_element()
+                    }),
+            ),
+        )
     }
 }
 

@@ -266,10 +266,13 @@ impl AppState {
     /// assigned toast id so the caller can target a future
     /// [`dismiss_toast`] without scanning.
     ///
-    /// Slice 1 has no auto-dismiss timer — the toast stays until the
-    /// user clicks `×`. The `created_at` field is recorded so slice
-    /// 2 can drive age-based dismissal without a schema bump.
+    /// Also opportunistically GCs expired toasts before push so the
+    /// deque doesn't carry stale rows past their auto-dismiss
+    /// interval. Combined with [`ToastStrip`]'s render-time skip,
+    /// expired toasts disappear visually within the next render
+    /// trigger after their interval lapses.
     pub fn push_toast(&mut self, level: ToastLevel, message: impl Into<SharedString>) -> u64 {
+        self.gc_expired_toasts();
         let id = self.next_toast_id;
         self.next_toast_id = self.next_toast_id.wrapping_add(1);
         // Wall-clock proxy: prefer the latest observed event ts so
@@ -292,6 +295,17 @@ impl AppState {
     /// evicted by an over-cap push or a prior dismiss.
     pub fn dismiss_toast(&mut self, id: u64) {
         self.toasts.retain(|t| t.id != id);
+    }
+
+    /// Drop toasts whose [`ToastLevel::dismiss_after_secs`] interval
+    /// has elapsed since their `created_at`. Persistent levels
+    /// (warning / danger return `None`) stay until manually
+    /// dismissed. Cheap retain — runs on every `push_toast`.
+    pub fn gc_expired_toasts(&mut self) {
+        let Some(now) = self.last_event_ts else {
+            return;
+        };
+        self.toasts.retain(|t| t.is_active(now));
     }
 
     /// Apply one event. Pure mutation — the caller wraps in
@@ -389,24 +403,32 @@ impl AppState {
                     .first()
                     .map(|e| format!(" · drawer #{}", e.drawer_id))
                     .unwrap_or_default();
-                self.last_ingest = Some(Ok(format!(
-                    "ingested {n} row{}{drawer}",
-                    if n == 1 { "" } else { "s" }
-                )));
+                let msg = format!("ingested {n} row{}{drawer}", if n == 1 { "" } else { "s" });
+                self.push_toast(ToastLevel::Success, msg.clone());
+                self.last_ingest = Some(Ok(msg));
             }
             AppEvent::MemoryIngestResult(Err(e)) => {
-                self.last_ingest = Some(Err(format!("ingest failed: {e}")));
+                let msg = format!("ingest failed: {e}");
+                self.push_toast(ToastLevel::Danger, msg.clone());
+                self.last_ingest = Some(Err(msg));
             }
             AppEvent::AgentLaunchResult(Ok(resp)) => {
                 let pid = resp.pid.map(|p| format!(" pid {p}")).unwrap_or_default();
                 let chars = resp.prompt_chars;
-                self.last_launch = Some(Ok(format!(
+                let msg = format!(
                     "spawned agent{pid} · {chars} chars · timeout {}s",
                     resp.timeout_secs
-                )));
+                );
+                // Primary level (8s) — agent spawns are the
+                // operator's most-watched event, deserve the longer
+                // visible window.
+                self.push_toast(ToastLevel::Primary, msg.clone());
+                self.last_launch = Some(Ok(msg));
             }
             AppEvent::AgentLaunchResult(Err(e)) => {
-                self.last_launch = Some(Err(format!("launch failed: {e}")));
+                let msg = format!("launch failed: {e}");
+                self.push_toast(ToastLevel::Danger, msg.clone());
+                self.last_launch = Some(Err(msg));
             }
             AppEvent::AgentKillResult(Ok(resp)) => {
                 let pid = resp.pid.map(|p| format!(" pid {p}")).unwrap_or_default();
@@ -420,10 +442,16 @@ impl AppState {
                 } else {
                     "no signal"
                 };
-                self.last_kill = Some(Ok(format!("kill {} →{pid} · {signal}{note}", resp.id)));
+                let msg = format!("kill {} →{pid} · {signal}{note}", resp.id);
+                // Info level (3s) — kills are routine; the green
+                // tick on the agent card already conveys completion.
+                self.push_toast(ToastLevel::Info, msg.clone());
+                self.last_kill = Some(Ok(msg));
             }
             AppEvent::AgentKillResult(Err(e)) => {
-                self.last_kill = Some(Err(format!("kill failed: {e}")));
+                let msg = format!("kill failed: {e}");
+                self.push_toast(ToastLevel::Danger, msg.clone());
+                self.last_kill = Some(Err(msg));
             }
             AppEvent::AgentLogResult { id, result } => {
                 self.agent_log = Some(AgentLogState { id, result });
@@ -781,5 +809,52 @@ mod tests {
         assert!(s.toasts.iter().any(|t| t.id == a));
         assert!(s.toasts.iter().any(|t| t.id == c));
         assert!(!s.toasts.iter().any(|t| t.id == b));
+    }
+
+    #[test]
+    fn gc_drops_expired_keeps_persistent() {
+        // ts t=0 → push two toasts; advance to t=10 → only the
+        // persistent (Warning, no dismiss interval) survives, the
+        // Info toast (3s window) is GC'd.
+        let mut s = AppState::new();
+        s.last_event_ts = Some(0);
+        s.push_toast(ToastLevel::Info, "ephemeral");
+        s.push_toast(ToastLevel::Warning, "persistent");
+        assert_eq!(s.toasts.len(), 2);
+        s.last_event_ts = Some(10);
+        s.gc_expired_toasts();
+        assert_eq!(s.toasts.len(), 1);
+        assert_eq!(s.toasts.front().unwrap().message, "persistent");
+    }
+
+    #[test]
+    fn gc_is_noop_before_first_event() {
+        // Before any event has been observed, last_event_ts is None
+        // — GC must not panic and must not drop anything (we have
+        // no clock to compare against).
+        let mut s = AppState::new();
+        s.push_toast(ToastLevel::Info, "x");
+        s.push_toast(ToastLevel::Success, "y");
+        s.gc_expired_toasts();
+        assert_eq!(s.toasts.len(), 2);
+    }
+
+    #[test]
+    fn push_toast_gcs_before_appending() {
+        // After the auto-dismiss interval lapses, a new push should
+        // GC the expired entries first so the cap-eviction behaviour
+        // kicks in only on truly active toasts.
+        let mut s = AppState::new();
+        s.last_event_ts = Some(0);
+        for n in 0..5 {
+            s.push_toast(ToastLevel::Info, format!("n={n}"));
+        }
+        assert_eq!(s.toasts.len(), 5);
+        // Advance past the 3s Info window — every prior toast is
+        // expired. New push GCs them, then appends just the new one.
+        s.last_event_ts = Some(10);
+        s.push_toast(ToastLevel::Success, "fresh");
+        assert_eq!(s.toasts.len(), 1);
+        assert_eq!(s.toasts.front().unwrap().message, "fresh");
     }
 }
