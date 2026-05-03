@@ -578,6 +578,7 @@ mod tests {
             op: op.into(),
             query: q.into(),
             results,
+            agent_id: None,
         }
     }
 

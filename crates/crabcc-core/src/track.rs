@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -23,6 +24,38 @@ pub struct Entry {
     pub repo: String,
     pub used_tokens: usize,
     pub saved_tokens: usize,
+    /// Agent run id when this record originated inside an agent
+    /// process. `None` for direct CLI / IDE / MCP calls. Populated
+    /// from a process-global setter ([`set_active_agent_id`]) — the
+    /// agent runtime installs its `RunDir::id` once on startup;
+    /// every subsequent `record` in that process picks it up. Added
+    /// in #311 so the dashboard's Timeline route can group
+    /// consecutive same-agent rows. Older log lines (without the
+    /// field) decode as `None` thanks to `serde(default)`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_id: Option<String>,
+}
+
+/// Process-global agent run id. Set once per process by the agent
+/// runtime via [`set_active_agent_id`]; read by [`record`] on every
+/// log append. `Mutex<Option<String>>` rather than `OnceLock` so a
+/// long-running test harness (or a misbehaving caller) can clear /
+/// replace it without restarting the process.
+static ACTIVE_AGENT_ID: Mutex<Option<String>> = Mutex::new(None);
+
+/// Stamp every subsequent [`record`] call in this process with the
+/// given agent run id. Idempotent — calling twice with different
+/// values just replaces the prior one. Called once by the agent
+/// runtime after `RunDir::create` in `crabcc-cli::agent::run`. Pass
+/// `None` to clear (e.g. in tests).
+pub fn set_active_agent_id(id: Option<String>) {
+    if let Ok(mut guard) = ACTIVE_AGENT_ID.lock() {
+        *guard = id;
+    }
+}
+
+fn current_agent_id() -> Option<String> {
+    ACTIVE_AGENT_ID.lock().ok().and_then(|g| g.clone())
 }
 
 /// Estimate the tokens crabcc would have spent in the agent's context if
@@ -76,6 +109,7 @@ pub fn record(op: &str, query: &str, results: usize, repo: &str, output_bytes: u
         repo: repo.into(),
         used_tokens: used,
         saved_tokens: saved,
+        agent_id: current_agent_id(),
     };
     let Some(path) = log_path() else { return };
     let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&path) else {
