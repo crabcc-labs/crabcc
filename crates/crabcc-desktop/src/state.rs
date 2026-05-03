@@ -238,6 +238,13 @@ pub struct AppState {
     /// Monotonic counter for toast ids. Persists across pushes /
     /// evictions so dismiss-by-id never races a reused id.
     next_toast_id: u64,
+    /// Edge-trigger sentinel: when the telemetry poll is failing,
+    /// holds the id of the persistent Warning toast so we don't
+    /// spam a fresh one on every poll cycle. Cleared (and the
+    /// toast dismissed) when a poll succeeds.
+    telemetry_warning_id: Option<u64>,
+    /// Same edge-trigger sentinel for the memory-recent poll.
+    memory_warning_id: Option<u64>,
 }
 
 /// Plumbing the route entities use to fire detached HTTP requests
@@ -314,41 +321,86 @@ impl AppState {
         match evt {
             AppEvent::Initial(boxed) => {
                 let p = *boxed;
+                // Collect prefetch error sources so we can surface
+                // one summary toast at the end of the arm rather
+                // than spamming nine separate toasts (cap=5 would
+                // evict half of them anyway, and the user only
+                // needs one signal about prefetch health).
+                let mut prefetch_errs: Vec<&'static str> = Vec::new();
                 match p.bootstrap {
                     Ok(b) => self.bootstrap = Some(b),
-                    Err(e) => self.last_error = Some(format!("bootstrap: {e}")),
+                    Err(e) => {
+                        self.last_error = Some(format!("bootstrap: {e}"));
+                        prefetch_errs.push("bootstrap");
+                    }
                 }
                 match p.services {
                     Ok(s) => self.services = Some(s),
-                    Err(e) => self.last_error = Some(format!("services: {e}")),
+                    Err(e) => {
+                        self.last_error = Some(format!("services: {e}"));
+                        prefetch_errs.push("services");
+                    }
                 }
                 match p.graph {
                     Ok(g) => self.graph = Some(g),
-                    Err(e) => self.last_error = Some(format!("graph: {e}")),
+                    Err(e) => {
+                        self.last_error = Some(format!("graph: {e}"));
+                        prefetch_errs.push("graph");
+                    }
                 }
                 match p.memory_recent {
                     Ok(m) => self.memory_recent = Some(m),
-                    Err(e) => self.last_error = Some(format!("memory_recent: {e}")),
+                    Err(e) => {
+                        self.last_error = Some(format!("memory_recent: {e}"));
+                        prefetch_errs.push("memory_recent");
+                    }
                 }
                 match p.otlp_health {
                     Ok(o) => self.otlp_health = Some(o),
-                    Err(e) => self.last_error = Some(format!("otlp_health: {e}")),
+                    Err(e) => {
+                        self.last_error = Some(format!("otlp_health: {e}"));
+                        prefetch_errs.push("otlp_health");
+                    }
                 }
                 match p.agent_profiles {
                     Ok(a) => self.agent_profiles = Some(a),
-                    Err(e) => self.last_error = Some(format!("agent_profiles: {e}")),
+                    Err(e) => {
+                        self.last_error = Some(format!("agent_profiles: {e}"));
+                        prefetch_errs.push("agent_profiles");
+                    }
                 }
                 match p.agent_kills {
                     Ok(a) => self.agent_kills = Some(a),
-                    Err(e) => self.last_error = Some(format!("agent_kills: {e}")),
+                    Err(e) => {
+                        self.last_error = Some(format!("agent_kills: {e}"));
+                        prefetch_errs.push("agent_kills");
+                    }
                 }
                 match p.agent_models {
                     Ok(a) => self.agent_models = Some(a),
-                    Err(e) => self.last_error = Some(format!("agent_models: {e}")),
+                    Err(e) => {
+                        self.last_error = Some(format!("agent_models: {e}"));
+                        prefetch_errs.push("agent_models");
+                    }
                 }
                 match p.ollama_key {
                     Ok(k) => self.ollama_key = Some(k),
-                    Err(e) => self.last_error = Some(format!("ollama_key: {e}")),
+                    Err(e) => {
+                        self.last_error = Some(format!("ollama_key: {e}"));
+                        prefetch_errs.push("ollama_key");
+                    }
+                }
+                if !prefetch_errs.is_empty() {
+                    let msg = if prefetch_errs.len() == 1 {
+                        format!("prefetch failed: {}", prefetch_errs[0])
+                    } else {
+                        format!(
+                            "prefetch: {} sources failed ({})",
+                            prefetch_errs.len(),
+                            prefetch_errs.join(", ")
+                        )
+                    };
+                    self.push_toast(ToastLevel::Danger, msg);
                 }
             }
             AppEvent::Sse(SseEvent::Activity(frame)) => {
@@ -386,15 +438,41 @@ impl AppState {
                     }
                     self.telemetry.push_back(evt);
                 }
+                // Edge-trigger recovery: if the prior poll(s) had
+                // raised a Warning, dismiss it and pop a Success
+                // "recovered" toast so the user knows the channel
+                // is back without having to compare two negatives.
+                if let Some(id) = self.telemetry_warning_id.take() {
+                    self.dismiss_toast(id);
+                    self.push_toast(ToastLevel::Success, "telemetry recovered");
+                }
             }
             AppEvent::Telemetry(Err(e)) => {
                 self.last_error = Some(format!("telemetry: {e}"));
+                // Edge-trigger fail: emit one persistent Warning
+                // toast on the first failure and remember its id.
+                // Subsequent failures don't spam — they wait for
+                // either a recovery or a manual dismiss.
+                if self.telemetry_warning_id.is_none() {
+                    let id = self.push_toast(ToastLevel::Warning, format!("telemetry: {e}"));
+                    self.telemetry_warning_id = Some(id);
+                }
             }
             AppEvent::MemoryRefresh(Ok(snapshot)) => {
                 self.memory_recent = Some(snapshot);
+                // Same edge-trigger recovery as Telemetry — see
+                // there for the rationale.
+                if let Some(id) = self.memory_warning_id.take() {
+                    self.dismiss_toast(id);
+                    self.push_toast(ToastLevel::Success, "memory poll recovered");
+                }
             }
             AppEvent::MemoryRefresh(Err(e)) => {
                 self.last_error = Some(format!("memory_refresh: {e}"));
+                if self.memory_warning_id.is_none() {
+                    let id = self.push_toast(ToastLevel::Warning, format!("memory_refresh: {e}"));
+                    self.memory_warning_id = Some(id);
+                }
             }
             AppEvent::MemoryIngestResult(Ok(resp)) => {
                 let n = resp.stats.ok;
@@ -856,5 +934,55 @@ mod tests {
         s.push_toast(ToastLevel::Success, "fresh");
         assert_eq!(s.toasts.len(), 1);
         assert_eq!(s.toasts.front().unwrap().message, "fresh");
+    }
+
+    #[test]
+    fn telemetry_failure_emits_one_warning_then_dedupes() {
+        // First failure pops a Warning toast and stores the id.
+        // Subsequent failures must NOT spam — the deque stays at
+        // length 1 even after multiple Err arms apply.
+        let mut s = AppState::new();
+        s.last_event_ts = Some(0);
+        s.apply(AppEvent::Telemetry(Err(anyhow::anyhow!("boom"))));
+        assert_eq!(s.toasts.len(), 1);
+        assert!(s.telemetry_warning_id.is_some());
+        let original_id = s.telemetry_warning_id.unwrap();
+        // Second failure — id must NOT change, deque must stay at 1.
+        s.apply(AppEvent::Telemetry(Err(anyhow::anyhow!("still boom"))));
+        assert_eq!(s.toasts.len(), 1);
+        assert_eq!(s.telemetry_warning_id, Some(original_id));
+    }
+
+    #[test]
+    fn telemetry_recovery_dismisses_warning_and_pops_success() {
+        // After a fail then a recovery, the Warning is gone and a
+        // Success toast appears in its place.
+        let mut s = AppState::new();
+        s.last_event_ts = Some(0);
+        s.apply(AppEvent::Telemetry(Err(anyhow::anyhow!("boom"))));
+        assert_eq!(s.toasts.len(), 1);
+        assert!(matches!(
+            s.toasts.front().unwrap().level,
+            ToastLevel::Warning
+        ));
+        // Recover.
+        s.apply(AppEvent::Telemetry(Ok(
+            crate::api::types::TelemetrySnapshot {
+                cursor: 1,
+                events: vec![],
+                source: crate::api::types::TelemetrySource {
+                    path: String::new(),
+                    lines_read: 0,
+                    bytes: 0,
+                    exists: true,
+                },
+            },
+        )));
+        assert!(s.telemetry_warning_id.is_none());
+        // Newest is the Success "telemetry recovered" toast.
+        assert_eq!(s.toasts.len(), 1);
+        let front = s.toasts.front().unwrap();
+        assert!(matches!(front.level, ToastLevel::Success));
+        assert_eq!(front.message, "telemetry recovered");
     }
 }
