@@ -32,6 +32,11 @@ pub struct DashboardHome {
     spawn_input: Entity<InputState>,
     /// Live mirror of the spawn input's text — read on submit.
     spawn_text: String,
+    /// Per-render scratch buffer for collapsed activity rows. Kept
+    /// across renders so the heap allocation survives instead of
+    /// being freed + re-allocated on every SSE-driven `notify()`.
+    /// `group_activity` clears + refills this in place.
+    activity_buffer: Vec<ActivityGroup>,
 }
 
 impl DashboardHome {
@@ -57,6 +62,7 @@ impl DashboardHome {
             graph_view,
             spawn_input,
             spawn_text: String::new(),
+            activity_buffer: Vec::with_capacity(ACTIVITY_GROUPS_CAP),
         }
     }
 
@@ -121,40 +127,50 @@ impl Render for DashboardHome {
         // sweep) doesn't drown out the variety. Op badge is colour-coded
         // per family — see `op_color`.
         let theme = cx.theme();
-        let activity_groups = group_activity(&state.recent_activity, 8);
+        // Refill the persistent buffer in place — Wild trick from
+        // davidlattimore/wild "Buffer reuse": keep the heap allocation
+        // alive across renders so a Vec<ActivityGroup> isn't allocated
+        // and freed on every SSE-driven `notify()`. Concrete cost
+        // saved: one Vec spine allocation per render at steady state.
+        group_activity(
+            &state.recent_activity,
+            ACTIVITY_GROUPS_CAP,
+            &mut self.activity_buffer,
+        );
+        // We need the buffer's contents inside a `move` closure that
+        // builds the row elements. Drain it into a temporary iterator
+        // adapter so the closure consumes owned `ActivityGroup`s
+        // (their inner Strings move out — the spine is reused next
+        // render, when `clear()` runs at top of `group_activity`).
         let activity_tile = tile(
             "Recent activity",
             card,
             border,
-            v_flex().gap_1().children(
-                activity_groups
-                    .into_iter()
-                    .map(|g| {
-                        let op_color = op_color(&g.op, theme);
-                        h_flex()
-                            .gap_2()
-                            // Op badge — fixed-width column so the
-                            // query text aligns across rows.
-                            .child(
-                                div()
-                                    .w(px(80.0))
-                                    .text_color(op_color)
-                                    .child(SharedString::from(g.op.clone())),
-                            )
-                            .child(SharedString::from(truncate(&g.latest_query, 60)))
-                            .child(
-                                div()
-                                    .text_color(muted)
-                                    .child(SharedString::from(if g.count == 1 {
-                                        format!("({})", g.latest_results)
-                                    } else {
-                                        format!("(×{} · {})", g.count, g.latest_results)
-                                    })),
-                            )
-                            .into_any_element()
-                    })
-                    .collect::<Vec<_>>(),
-            ),
+            v_flex()
+                .gap_1()
+                .children(self.activity_buffer.drain(..).map(|g| {
+                    let op_color = op_color(&g.op, theme);
+                    h_flex()
+                        .gap_2()
+                        // Op badge — fixed-width column so the
+                        // query text aligns across rows.
+                        .child(
+                            div()
+                                .w(px(80.0))
+                                .text_color(op_color)
+                                .child(SharedString::from(g.op)),
+                        )
+                        .child(SharedString::from(truncate(&g.latest_query, 60)))
+                        .child(
+                            div()
+                                .text_color(muted)
+                                .child(SharedString::from(if g.count == 1 {
+                                    format!("({})", g.latest_results)
+                                } else {
+                                    format!("(×{} · {})", g.count, g.latest_results)
+                                })),
+                        )
+                })),
         );
 
         // Agents tile gets a per-row Kill button for *running* agents.
@@ -168,89 +184,78 @@ impl Render for DashboardHome {
             "Agents",
             card,
             border,
-            v_flex().gap_1().children(
-                state
-                    .agents
-                    .iter()
-                    .take(8)
-                    .map(|a| {
-                        let dot = match a.status {
-                            AgentStatus::Running => "●",
-                            AgentStatus::Exited => "○",
-                        };
-                        let kill_btn: gpui::AnyElement = if matches!(a.status, AgentStatus::Running)
-                        {
-                            let id_for_click = a.id.clone();
-                            let state_for_click = agents_state.clone();
-                            // Each clickable div needs a unique gpui ElementId
-                            // — derive from the agent id so re-renders don't
-                            // collide.
-                            let element_id: gpui::ElementId =
-                                SharedString::from(format!("kill-{}", a.id)).into();
-                            div()
-                                .id(element_id)
-                                .px_2()
-                                .py_0p5()
-                                .border_1()
-                                .border_color(danger)
-                                .rounded_md()
-                                .text_color(danger)
-                                .child(SharedString::new_static("Kill"))
-                                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                    state_for_click.read(cx).submit_kill(id_for_click.clone());
-                                })
-                                .into_any_element()
-                        } else {
-                            div().into_any_element()
-                        };
-                        h_flex()
-                            .gap_2()
-                            .child(SharedString::from(dot.to_string()))
-                            .child(SharedString::from(a.id.clone()))
-                            .child(
-                                div().text_color(muted).child(SharedString::from(
-                                    a.runtime
-                                        .clone()
-                                        .unwrap_or_else(|| "—".to_string()),
-                                )),
-                            )
-                            .child(div().flex_1())
-                            .child(kill_btn)
-                            .into_any_element()
-                    })
-                    .collect::<Vec<_>>(),
-            ),
+            v_flex().gap_1().children(state.agents.iter().take(8).map(|a| {
+                let dot = match a.status {
+                    AgentStatus::Running => "●",
+                    AgentStatus::Exited => "○",
+                };
+                let kill_btn: gpui::AnyElement = if matches!(a.status, AgentStatus::Running) {
+                    let id_for_click = a.id.clone();
+                    let state_for_click = agents_state.clone();
+                    // Each clickable div needs a unique gpui ElementId
+                    // — derive from the agent id so re-renders don't
+                    // collide.
+                    let element_id: gpui::ElementId =
+                        SharedString::from(format!("kill-{}", a.id)).into();
+                    div()
+                        .id(element_id)
+                        .px_2()
+                        .py_0p5()
+                        .border_1()
+                        .border_color(danger)
+                        .rounded_md()
+                        .text_color(danger)
+                        .child(SharedString::new_static("Kill"))
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            state_for_click.read(cx).submit_kill(id_for_click.clone());
+                        })
+                        .into_any_element()
+                } else {
+                    div().into_any_element()
+                };
+                h_flex()
+                    .gap_2()
+                    .child(SharedString::from(dot.to_string()))
+                    .child(SharedString::from(a.id.clone()))
+                    .child(
+                        div().text_color(muted).child(SharedString::from(
+                            a.runtime.clone().unwrap_or_else(|| "—".to_string()),
+                        )),
+                    )
+                    .child(div().flex_1())
+                    .child(kill_btn)
+            })),
         );
 
-        let services_tile = tile(
-            "Services",
-            card,
-            border,
-            v_flex().gap_1().children(match state.services.as_ref() {
-                Some(rep) => rep
-                    .services
-                    .iter()
-                    .take(10)
-                    .map(|s| {
-                        let mark = if s.reachable { "✓" } else { "✗" };
-                        h_flex()
-                            .gap_2()
-                            .child(SharedString::from(mark.to_string()))
-                            .child(SharedString::from(s.name.clone()))
-                            .child(
-                                div()
-                                    .text_color(muted)
-                                    .child(SharedString::from(format!("{}ms", s.latency_ms))),
-                            )
-                            .into_any_element()
-                    })
-                    .collect::<Vec<_>>(),
-                None => vec![div()
-                    .text_color(muted)
-                    .child(SharedString::new_static("loading…"))
-                    .into_any_element()],
-            }),
-        );
+        // Services tile splits the body by match arm so each branch can be
+        // its own iterator/element shape — `children(impl IntoIterator)`
+        // requires a unified type, so we'd otherwise need a `Vec` round-trip.
+        let services_body = match state.services.as_ref() {
+            Some(rep) => v_flex()
+                .gap_1()
+                .children(rep.services.iter().take(10).map(|s| {
+                    let mark = if s.reachable { "✓" } else { "✗" };
+                    h_flex()
+                        .gap_2()
+                        .child(SharedString::from(mark.to_string()))
+                        .child(SharedString::from(s.name.clone()))
+                        .child(
+                            div()
+                                .text_color(muted)
+                                .child(SharedString::from(format!("{}ms", s.latency_ms))),
+                        )
+                }))
+                .into_any_element(),
+            None => v_flex()
+                .gap_1()
+                .child(
+                    div()
+                        .text_color(muted)
+                        .child(SharedString::new_static("loading…")),
+                )
+                .into_any_element(),
+        };
+        let services_tile = tile("Services", card, border, services_body);
 
         let tile_row = h_flex()
             .gap_3()
@@ -388,16 +393,27 @@ struct ActivityGroup {
     count: usize,
 }
 
+/// Visible row cap on the Recent Activity tile. Used for the
+/// `activity_buffer` capacity hint and for the `cap` argument
+/// `group_activity` enforces.
+const ACTIVITY_GROUPS_CAP: usize = 8;
+
 /// Walk the buffer newest-first, collapsing runs of the same `op`
 /// into a single group whose `count` carries the run length and
 /// whose `latest_*` fields show the most-recent event in the run.
-/// Returns up to `cap` groups.
-fn group_activity<'a, I>(events: I, cap: usize) -> Vec<ActivityGroup>
+/// Writes up to `cap` groups into `out`.
+///
+/// `out` is cleared at entry — caller can reuse the same `Vec`
+/// across calls to avoid the per-render heap alloc that a freshly
+/// returned `Vec<ActivityGroup>` would cost. The String fields
+/// inside each group are still freshly allocated per call (their
+/// values rotate), but the spine allocation survives.
+fn group_activity<'a, I>(events: I, cap: usize, out: &mut Vec<ActivityGroup>)
 where
     I: IntoIterator<Item = &'a SseActivityEvent>,
     I::IntoIter: DoubleEndedIterator,
 {
-    let mut out: Vec<ActivityGroup> = Vec::with_capacity(cap);
+    out.clear();
     for evt in events.into_iter().rev() {
         if let Some(last) = out.last_mut() {
             if last.op == evt.op {
@@ -418,7 +434,6 @@ where
             count: 1,
         });
     }
-    out
 }
 
 /// Map an op family to a theme colour. Mirrors the rough cost/value
@@ -465,7 +480,8 @@ mod tests {
             evt("refs", "Store", 2),
             evt("refs", "Index", 3),
         ];
-        let groups = group_activity(&events, 8);
+        let mut groups = Vec::new();
+        group_activity(&events, 8, &mut groups);
         // Expected (newest first): refs ×2 (latest=Index), sym ×1, outline ×3 (latest=c)
         assert_eq!(groups.len(), 3);
         assert_eq!(groups[0].op, "refs");
@@ -483,7 +499,8 @@ mod tests {
         let events: Vec<SseActivityEvent> = (0..20)
             .map(|i| evt(&format!("op-{i}"), "q", i as u64))
             .collect();
-        let groups = group_activity(&events, 5);
+        let mut groups = Vec::new();
+        group_activity(&events, 5, &mut groups);
         // Each event has a unique op, so groups equal events. We expect
         // exactly 5 (the cap) — the *newest* 5.
         assert_eq!(groups.len(), 5);
@@ -493,7 +510,25 @@ mod tests {
 
     #[test]
     fn grouping_handles_empty_input() {
-        let groups: Vec<ActivityGroup> = group_activity(&[] as &[SseActivityEvent], 8);
+        let mut groups: Vec<ActivityGroup> = Vec::new();
+        group_activity(&[] as &[SseActivityEvent], 8, &mut groups);
         assert!(groups.is_empty());
+    }
+
+    #[test]
+    fn grouping_clears_existing_buffer_on_entry() {
+        // Buffer reuse contract: prior contents must be wiped.
+        let mut groups = vec![ActivityGroup {
+            op: "stale".to_string(),
+            latest_query: "old".to_string(),
+            latest_results: 99,
+            count: 99,
+        }];
+        let pre_capacity = groups.capacity();
+        group_activity(&[evt("sym", "Store", 1)], 8, &mut groups);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].op, "sym");
+        // Spine allocation reused — capacity hasn't shrunk.
+        assert!(groups.capacity() >= pre_capacity);
     }
 }
