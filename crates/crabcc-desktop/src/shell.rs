@@ -19,7 +19,7 @@ use gpui_component::{h_flex, v_flex, ActiveTheme};
 use crate::native;
 use crate::routes::{
     agents::AgentsRoute, commands::CommandsRoute, dashboard::DashboardHome,
-    knowledge::KnowledgeRoute, logs::LogsRoute, system::SystemRoute,
+    k_graph::KnowledgeGraphRoute, knowledge::KnowledgeRoute, logs::LogsRoute, system::SystemRoute,
 };
 use crate::state::{AppState, Route};
 use crate::toasts::ToastStrip;
@@ -32,6 +32,7 @@ pub struct Shell {
     system: Entity<SystemRoute>,
     knowledge: Entity<KnowledgeRoute>,
     commands: Entity<CommandsRoute>,
+    k_graph: Entity<KnowledgeGraphRoute>,
     /// In-window toast strip (track C.0). Mounted between the
     /// header and the body slot — renders nothing when
     /// `AppState::toasts` is empty so the layout stays unchanged
@@ -76,6 +77,11 @@ impl Shell {
         // CommandsRoute owns a TextInput (focusable widget) so it
         // needs `&mut Window` to register the focus handle.
         let commands = cx.new(|cx| CommandsRoute::new(window, cx));
+        // KnowledgeGraphRoute is a stub today — no focusable widgets
+        // because the canvas isn't rendered yet (server-side
+        // `/api/memory/graph` blocks #297). Owns no TextInput, so
+        // `window` is not threaded in.
+        let k_graph = cx.new(|cx| KnowledgeGraphRoute::new(state.clone(), cx));
         // No `window` argument — the strip has no focusable widgets
         // (yet). When the "Settings" entrypoint lands in slice 2+
         // it'll need `window` for that widget.
@@ -88,6 +94,7 @@ impl Shell {
             system,
             knowledge,
             commands,
+            k_graph,
             toasts,
             last_badge_count: u32::MAX,
             last_status_count: u32::MAX,
@@ -223,6 +230,7 @@ impl Render for Shell {
             Route::System => self.system.clone().into_any_element(),
             Route::Knowledge => self.knowledge.clone().into_any_element(),
             Route::Commands => self.commands.clone().into_any_element(),
+            Route::KnowledgeGraph => self.k_graph.clone().into_any_element(),
         };
 
         v_flex()

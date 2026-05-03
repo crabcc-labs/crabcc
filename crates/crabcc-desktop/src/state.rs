@@ -139,6 +139,13 @@ pub enum Route {
     System,
     Knowledge,
     Commands,
+    /// Knowledge graph canvas — a second graph view (distinct from
+    /// the Home dashboard's relations graph), backed by drawer
+    /// cross-references. Stubbed today: a server-side
+    /// `/api/memory/graph` endpoint is required and tracked
+    /// separately. The route surfaces the gap inline so the slot
+    /// reads as a known greenfield, not an empty tab.
+    KnowledgeGraph,
 }
 
 impl Route {
@@ -150,16 +157,18 @@ impl Route {
             Route::System => "System",
             Route::Knowledge => "Knowledge",
             Route::Commands => "Commands",
+            Route::KnowledgeGraph => "K-Graph",
         }
     }
 
-    pub const ALL: [Route; 6] = [
+    pub const ALL: [Route; 7] = [
         Route::Home,
         Route::Agents,
         Route::Logs,
         Route::System,
         Route::Knowledge,
         Route::Commands,
+        Route::KnowledgeGraph,
     ];
 }
 
