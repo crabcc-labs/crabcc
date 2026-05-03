@@ -19,7 +19,7 @@ use gpui_component::{h_flex, v_flex, ActiveTheme};
 use crate::native;
 use crate::routes::{
     agents::AgentsRoute, commands::CommandsRoute, dashboard::DashboardHome,
-    knowledge::KnowledgeRoute, logs::LogsRoute, system::SystemRoute,
+    knowledge::KnowledgeRoute, logs::LogsRoute, system::SystemRoute, timeline::TimelineRoute,
 };
 use crate::state::{AppState, Route};
 use crate::toasts::ToastStrip;
@@ -32,6 +32,7 @@ pub struct Shell {
     system: Entity<SystemRoute>,
     knowledge: Entity<KnowledgeRoute>,
     commands: Entity<CommandsRoute>,
+    timeline: Entity<TimelineRoute>,
     /// In-window toast strip (track C.0). Mounted between the
     /// header and the body slot — renders nothing when
     /// `AppState::toasts` is empty so the layout stays unchanged
@@ -87,6 +88,10 @@ impl Shell {
         // needs the shared `AppState` entity now to dispatch runnable
         // rows via `submit_command_run`.
         let commands = cx.new(|cx| CommandsRoute::new(state.clone(), window, cx));
+        // TimelineRoute owns the filter TextInput (focus handle), so
+        // it needs window. Same construction shape as the other
+        // input-bearing routes.
+        let timeline = cx.new(|cx| TimelineRoute::new(state.clone(), window, cx));
         // No `window` argument — the strip has no focusable widgets
         // (yet). When the "Settings" entrypoint lands in slice 2+
         // it'll need `window` for that widget.
@@ -99,6 +104,7 @@ impl Shell {
             system,
             knowledge,
             commands,
+            timeline,
             toasts,
             last_badge_count: u32::MAX,
             last_status_count: u32::MAX,
@@ -290,6 +296,7 @@ impl Render for Shell {
             Route::System => self.system.clone().into_any_element(),
             Route::Knowledge => self.knowledge.clone().into_any_element(),
             Route::Commands => self.commands.clone().into_any_element(),
+            Route::Timeline => self.timeline.clone().into_any_element(),
         };
 
         v_flex()
