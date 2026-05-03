@@ -301,11 +301,10 @@ impl Render for DashboardHome {
                         {
                             let id_for_click = a.id.clone();
                             let state_for_click = agents_state.clone();
-                            // Each clickable div needs a unique gpui ElementId
-                            // — derive from the agent id so re-renders don't
-                            // collide.
-                            let element_id: gpui::ElementId =
-                                SharedString::from(format!("kill-{}", a.id)).into();
+                            // Pre-computed at SSE-decode time — no
+                            // per-render `format!()` alloc. See
+                            // `AgentDerived` in `api/types.rs`.
+                            let element_id: gpui::ElementId = a.derived.kill_id_home.clone().into();
                             div()
                                 .id(element_id)
                                 .px_2()

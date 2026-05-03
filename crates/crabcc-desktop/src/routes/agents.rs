@@ -317,8 +317,11 @@ impl Render for AgentsRoute {
                     let kill_btn: gpui::AnyElement = if matches!(a.status, AgentStatus::Running) {
                         let id_for_kill = a.id.clone();
                         let state_for_kill = agents_state.clone();
+                        // Pre-computed at SSE-decode time — no
+                        // per-render `format!()` alloc. See
+                        // `AgentDerived` in `api/types.rs`.
                         let element_id: gpui::ElementId =
-                            SharedString::from(format!("agents-route-kill-{}", a.id)).into();
+                            a.derived.kill_id_agents_route.clone().into();
                         div()
                             .id(element_id)
                             .px_2()
@@ -392,7 +395,7 @@ impl Render for AgentsRoute {
                         let entity_refresh = entity_for_refresh.clone();
                         let id_for_refresh = a.id.clone();
                         let refresh_btn = div()
-                            .id(SharedString::from(format!("agent-log-refresh-{}", a.id)))
+                            .id(a.derived.log_refresh_id.clone())
                             .px_2()
                             .py_0p5()
                             .border_1()
@@ -455,7 +458,7 @@ impl Render for AgentsRoute {
                     let entity_click = entity_for_click.clone();
                     let id_for_click = a.id.clone();
                     v_flex()
-                        .id(SharedString::from(format!("agent-card-{}", a.id)))
+                        .id(a.derived.card_id.clone())
                         .gap_1()
                         .px_3()
                         .py_2()
