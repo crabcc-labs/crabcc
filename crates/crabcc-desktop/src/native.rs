@@ -18,6 +18,7 @@
 #[cfg(target_os = "macos")]
 mod imp {
     use std::cell::RefCell;
+    use std::process::Command;
 
     use objc2::rc::{autoreleasepool, Retained};
     use objc2_app_kit::{NSApplication, NSStatusBar, NSStatusItem, NSVariableStatusItemLength};
@@ -99,15 +100,52 @@ mod imp {
             });
         });
     }
+
+    /// Deliver a system rich-notification banner via Notification
+    /// Center. First-cut C.2 surface — uses `osascript` to side-step
+    /// the `UNUserNotificationCenter` requirement that the binary
+    /// be a properly-bundled `.app` (which `cargo run` is not).
+    /// Trade-offs:
+    ///   * The system attributes the notification to "Script Editor"
+    ///     rather than `crabcc-desktop` until we ship a real .app
+    ///     bundle + `UNUserNotificationCenter` wiring (C.2.1).
+    ///   * No actions / categories yet (C.2.2 — needs the .app path).
+    ///   * Spawn-and-forget — we don't wait for `osascript` to
+    ///     complete; the GUI shouldn't block on a side-channel.
+    ///   * AppleScript string-escapes for `\` and `"` so a Toast
+    ///     message containing quotes can't break out of the literal.
+    pub fn deliver_notification(title: &str, body: &str) {
+        // AppleScript double-quoted string literals only need
+        // `\` and `"` escaped — newlines are literal, accented
+        // characters pass through. Replace order matters: escape
+        // backslashes first so we don't double-escape the
+        // backslashes that quote-escaping itself introduces.
+        fn escape(s: &str) -> String {
+            s.replace('\\', "\\\\").replace('"', "\\\"")
+        }
+        let script = format!(
+            "display notification \"{}\" with title \"{}\"",
+            escape(body),
+            escape(title)
+        );
+        // Spawn-and-forget. Errors here mean the banner doesn't
+        // appear (typically because the user has revoked
+        // notification permissions for "Script Editor"); the
+        // in-window toast strip is still the primary surface so
+        // the message is never lost.
+        let _ = Command::new("osascript").args(["-e", &script]).spawn();
+    }
 }
 
 #[cfg(not(target_os = "macos"))]
 mod imp {
     /// No-op stub on non-macOS platforms. Lets the rest of the app
-    /// call `set_dock_badge` / `set_status_item` unconditionally
-    /// without `cfg` blocks at every call site.
+    /// call `set_dock_badge` / `set_status_item` /
+    /// `deliver_notification` unconditionally without `cfg` blocks
+    /// at every call site.
     pub fn set_dock_badge(_label: Option<&str>) {}
     pub fn set_status_item(_label: Option<&str>) {}
+    pub fn deliver_notification(_title: &str, _body: &str) {}
 }
 
-pub use imp::{set_dock_badge, set_status_item};
+pub use imp::{deliver_notification, set_dock_badge, set_status_item};
