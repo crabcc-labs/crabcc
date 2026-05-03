@@ -65,7 +65,7 @@ fastembed = "5"
 tiny_http = "0.12"
 serde_yml = "0.0.12"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
-redis   = { version = "0.27", default-features = false, features = ["tokio-comp", "aio"] }
+redis   = { version = "0.28", default-features = false, features = ["tokio-comp", "aio"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 linkify = "0.10"
 # html2md 0.2.x ships with `crate-type = ["rlib", "dylib", "staticlib"]`,
