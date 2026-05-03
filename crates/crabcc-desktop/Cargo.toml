@@ -60,6 +60,13 @@ flume = { version = "0.11", default-features = false, features = ["async"] }
 # per graph snapshot — not a per-frame hot path — so the dep cost
 # (~1 MB of compiled work-stealing scheduler) is amortised.
 rayon = "1"
+# Structured logging for thread lifecycle + SSE reconnect events. Critical
+# before the QUIC migration in #239 lands — path-change races + the
+# WiFi→cellular handover need observable signal, not eprintlns. Init
+# happens in `main.rs` with an `env_filter` so devs can enable verbose
+# spans via `RUST_LOG=crabcc_desktop=debug`.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 # GPUI deps — track gpui-component's own source URLs so cargo unifies
 # the gpui crate to a SINGLE compiled copy. Pinning a `rev =` here
