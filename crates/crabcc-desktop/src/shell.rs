@@ -44,6 +44,13 @@ pub struct Shell {
     /// could move the dock badge to a "new activity" indicator while
     /// keeping the status item on the agents count.
     last_status_count: u32,
+    /// Cached `"v<version>  <repo>"` line, populated on the first
+    /// render where `AppState::bootstrap` is `Some`. Bootstrap is a
+    /// one-shot immutable value, so once we've formatted it we never
+    /// need to do so again — subsequent renders just bump an Arc
+    /// refcount via `clone()`. Saves a `format!()` String alloc + a
+    /// `SharedString::from(String)` Arc alloc per render.
+    cached_brand: Option<SharedString>,
 }
 
 impl Shell {
@@ -73,6 +80,7 @@ impl Shell {
             commands,
             last_badge_count: u32::MAX,
             last_status_count: u32::MAX,
+            cached_brand: None,
         }
     }
 }
@@ -86,11 +94,20 @@ impl Render for Shell {
         let primary = cx.theme().primary;
 
         let state_for_brand = self.state.read(cx);
-        let brand_sub = state_for_brand
-            .bootstrap
-            .as_ref()
-            .map(|b| format!("v{}  {}", b.version, b.repo))
-            .unwrap_or_else(|| "loading…".into());
+        // Lazily format on the first frame where bootstrap is `Some`.
+        // From then on every render just clones the `SharedString`
+        // (Arc refcount bump, no heap alloc). Bootstrap is the
+        // one-shot `/api/bootstrap` payload — never mutated after
+        // first arrival.
+        if self.cached_brand.is_none() {
+            if let Some(b) = state_for_brand.bootstrap.as_ref() {
+                self.cached_brand = Some(SharedString::from(format!("v{}  {}", b.version, b.repo)));
+            }
+        }
+        let brand_sub = self
+            .cached_brand
+            .clone()
+            .unwrap_or_else(|| SharedString::new_static("loading…"));
         let active = state_for_brand.route;
 
         // Sync the macOS dock badge + menu-bar status item to the
@@ -160,7 +177,7 @@ impl Render for Shell {
                             .text_color(foreground)
                             .child(SharedString::new_static("crabcc · live")),
                     )
-                    .child(div().text_color(muted).child(SharedString::from(brand_sub))),
+                    .child(div().text_color(muted).child(brand_sub)),
             )
             .child(nav);
 
