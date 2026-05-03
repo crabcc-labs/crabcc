@@ -37,7 +37,7 @@ pub struct DashboardHome {
     /// header pin pill's `×`. Filters the activity buffer to that op
     /// before grouping. UI affordance per route, not on AppState
     /// (same call as the substring filters).
-    activity_op_pin: Option<String>,
+    activity_op_pin: Option<SharedString>,
 }
 
 impl DashboardHome {
@@ -71,8 +71,8 @@ impl DashboardHome {
     /// Toggle activity op-pin. Clicking the active op clears it
     /// (saves the user hunting for the header `×` for casual
     /// narrow-then-clear).
-    fn pin_activity_op(&mut self, op: String) {
-        if self.activity_op_pin.as_deref() == Some(op.as_str()) {
+    fn pin_activity_op(&mut self, op: SharedString) {
+        if self.activity_op_pin.as_deref() == Some(op.as_ref()) {
             self.activity_op_pin = None;
         } else {
             self.activity_op_pin = Some(op);
@@ -210,7 +210,7 @@ impl Render for DashboardHome {
                                         .border_color(badge_border)
                                         .rounded_md()
                                         .text_color(faded_op)
-                                        .child(SharedString::from(g.op.clone()))
+                                        .child(g.op.clone())
                                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                             let op = click_op.clone();
                                             entity.update(cx, |this, cx| {
@@ -353,7 +353,7 @@ impl Render for DashboardHome {
                         h_flex()
                             .gap_2()
                             .child(SharedString::from(mark.to_string()))
-                            .child(SharedString::from(s.name.clone()))
+                            .child(s.name.clone())
                             .child(
                                 div()
                                     .text_color(muted)
@@ -495,8 +495,8 @@ fn truncate(s: &str, max: usize) -> String {
 /// One visible row in the Recent Activity tile after consecutive
 /// same-op events have been collapsed.
 struct ActivityGroup {
-    op: String,
-    latest_query: String,
+    op: SharedString,
+    latest_query: SharedString,
     latest_results: u64,
     /// Timestamp of the freshest event in the run. Drives the
     /// recency-fade in the render path so newer rows render at full

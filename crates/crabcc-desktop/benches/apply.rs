@@ -53,8 +53,8 @@ fn synth_activity(n: usize) -> SseActivityFrame {
     let events = (0..n)
         .map(|i| SseActivityEvent {
             ts: 1_700_000_000 + i as i64,
-            op: ops[i % ops.len()].to_string(),
-            query: format!("Query{i:04}"),
+            op: ops[i % ops.len()].into(),
+            query: format!("Query{i:04}").into(),
             results: (i as u64) % 100,
         })
         .collect();
@@ -107,8 +107,8 @@ fn bench_apply_activity_drip(c: &mut Criterion) {
             cursor: i as i64,
             events: vec![SseActivityEvent {
                 ts: 1_700_000_000 + i as i64,
-                op: "sym".to_string(),
-                query: format!("Q{i}"),
+                op: "sym".into(),
+                query: format!("Q{i}").into(),
                 results: 1,
             }],
         })

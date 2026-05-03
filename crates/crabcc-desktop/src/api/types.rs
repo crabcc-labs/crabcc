@@ -65,8 +65,8 @@ pub struct ActivityResponse {
 #[derive(Debug, Clone, Deserialize)]
 pub struct SseActivityEvent {
     pub ts: i64,
-    pub op: String,
-    pub query: String,
+    pub op: SharedString,
+    pub query: SharedString,
     /// Wire field is `results`, not `count` — this is the SSE-side
     /// shape, not the `/api/activity` HTTP shape.
     pub results: u64,
@@ -74,7 +74,7 @@ pub struct SseActivityEvent {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SseActivityFrame {
-    pub repo: String,
+    pub repo: SharedString,
     pub cursor: i64,
     pub events: Vec<SseActivityEvent>,
 }
@@ -132,12 +132,12 @@ pub struct AgentLog {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentProfileEntry {
-    pub id: String,
+    pub id: SharedString,
     /// Trailing underscore mirrors the openapi field — `crate` is a
     /// reserved keyword in Rust, same as in TS.
-    pub crate_: Option<String>,
-    pub description: Option<String>,
-    pub model: Option<String>,
+    pub crate_: Option<SharedString>,
+    pub description: Option<SharedString>,
+    pub model: Option<SharedString>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -148,10 +148,10 @@ pub struct AgentProfilesResponse {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentKillRow {
-    pub run_id: String,
-    pub reason: String,
+    pub run_id: SharedString,
+    pub reason: SharedString,
     pub pid: Option<u64>,
-    pub detail: Option<String>,
+    pub detail: Option<SharedString>,
     pub killed_at: i64,
 }
 
@@ -163,12 +163,12 @@ pub struct AgentKillsResponse {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AgentModelEntry {
-    pub file: String,
-    pub provider: String,
-    pub name: String,
-    pub params: Option<String>,
+    pub file: SharedString,
+    pub provider: SharedString,
+    pub name: SharedString,
+    pub params: Option<SharedString>,
     pub context: Option<u64>,
-    pub docs_first: Option<String>,
+    pub docs_first: Option<SharedString>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -211,15 +211,15 @@ pub enum ServiceKind {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct ServiceStatus {
-    pub name: String,
+    pub name: SharedString,
     pub kind: ServiceKind,
-    pub url: String,
-    pub source: String,
-    pub host: String,
+    pub url: SharedString,
+    pub source: SharedString,
+    pub host: SharedString,
     pub port: u16,
     pub reachable: bool,
     pub latency_ms: u64,
-    pub error: Option<String>,
+    pub error: Option<SharedString>,
     pub probed_at: i64,
 }
 
@@ -244,7 +244,7 @@ pub enum LogLevel {
 pub struct TelemetryEvent {
     pub ts: i64,
     pub level: LogLevel,
-    pub target: String,
+    pub target: SharedString,
     /// `additionalProperties: true` on the YAML side — server emits
     /// whatever structured fields it has. Kept as a raw JSON value so
     /// the desktop UI can introspect without schema churn.
@@ -296,11 +296,11 @@ pub struct RandomQueryResponse {
 #[derive(Debug, Clone, Deserialize)]
 pub struct MemoryDrawer {
     pub id: i64,
-    pub wing: String,
-    pub room: Option<String>,
-    pub source_id: String,
+    pub wing: SharedString,
+    pub room: Option<SharedString>,
+    pub source_id: SharedString,
     /// Server-side trims to ~200 chars and adds an ellipsis.
-    pub body_preview: String,
+    pub body_preview: SharedString,
     /// Unix-seconds; same convention as activity / telemetry.
     pub created_at: i64,
 }
