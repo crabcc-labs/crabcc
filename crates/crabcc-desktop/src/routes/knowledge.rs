@@ -40,7 +40,7 @@ pub struct KnowledgeRoute {
     /// cleared by the active-pill `×` in the header. ANDed with
     /// `filter_lower` so a user can drill in: pin a wing, then refine
     /// by substring within it.
-    wing_pin: Option<String>,
+    wing_pin: Option<SharedString>,
 }
 
 impl KnowledgeRoute {
@@ -109,10 +109,10 @@ impl KnowledgeRoute {
         d.body_preview.to_lowercase().contains(q)
     }
 
-    fn pin_wing(&mut self, wing: String) {
+    fn pin_wing(&mut self, wing: SharedString) {
         // Click on the active wing toggles it off — saves the user
         // hunting for the header `×` for a casual narrow-then-clear.
-        if self.wing_pin.as_deref() == Some(wing.as_str()) {
+        if self.wing_pin.as_deref() == Some(wing.as_ref()) {
             self.wing_pin = None;
         } else {
             self.wing_pin = Some(wing);
@@ -368,8 +368,8 @@ fn drawer_row(
     wing_pinned: bool,
     entity: Entity<KnowledgeRoute>,
 ) -> gpui::Div {
-    let location = match d.room.as_deref() {
-        Some(room) if !room.is_empty() => format!("{}/{}", d.wing, room),
+    let location: SharedString = match d.room.as_deref() {
+        Some(room) if !room.is_empty() => format!("{}/{}", d.wing, room).into(),
         _ => d.wing.clone(),
     };
     // Click target id needs to be unique per row — `gpui` requires
@@ -410,7 +410,7 @@ fn drawer_row(
                         .border_1()
                         .border_color(badge_border)
                         .rounded_md()
-                        .child(SharedString::from(location))
+                        .child(location)
                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                             let wing = pin_wing.clone();
                             entity.update(cx, |this, cx| {
@@ -442,7 +442,9 @@ fn wing_summary_line(drawers: &[MemoryDrawer], cap: usize) -> Option<String> {
     // Tally by wing. Linear scan + small-vec — no HashMap (the wing
     // cardinality on a typical repo is < 10, so a Vec is fine and
     // keeps the iteration order deterministic for the sort below).
-    let mut tally: Vec<(String, usize)> = Vec::with_capacity(8);
+    // Tally key is `SharedString` so the `.clone()` per new wing is a
+    // refcount bump, not a heap allocation.
+    let mut tally: Vec<(SharedString, usize)> = Vec::with_capacity(8);
     for d in drawers {
         if let Some(slot) = tally.iter_mut().find(|(k, _)| k == &d.wing) {
             slot.1 += 1;
@@ -454,7 +456,7 @@ fn wing_summary_line(drawers: &[MemoryDrawer], cap: usize) -> Option<String> {
         return None;
     }
     // Sort by count desc, then wing name asc for ties.
-    tally.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    tally.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.as_ref().cmp(b.0.as_ref())));
     let visible: Vec<String> = tally
         .iter()
         .take(cap)
@@ -526,10 +528,10 @@ mod tests {
     fn drawer(id: i64, wing: &str) -> MemoryDrawer {
         MemoryDrawer {
             id,
-            wing: wing.to_string(),
+            wing: wing.into(),
             room: None,
-            source_id: String::new(),
-            body_preview: String::new(),
+            source_id: SharedString::new_static(""),
+            body_preview: SharedString::new_static(""),
             created_at: 0,
         }
     }

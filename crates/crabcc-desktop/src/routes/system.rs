@@ -199,18 +199,14 @@ fn services_section(
                                     .text_color(color)
                                     .child(SharedString::from(mark.to_string())),
                             )
-                            .child(div().w(px(160.0)).child(SharedString::from(s.name.clone())))
+                            .child(div().w(px(160.0)).child(s.name.clone()))
                             .child(
                                 div()
                                     .w(px(80.0))
                                     .text_color(muted)
                                     .child(SharedString::from(format!("{}ms", s.latency_ms))),
                             )
-                            .child(
-                                div()
-                                    .text_color(muted)
-                                    .child(SharedString::from(s.url.clone())),
-                            )
+                            .child(div().text_color(muted).child(s.url.clone()))
                             .into_any_element()
                     }))
                     .into_any_element()
@@ -355,14 +351,18 @@ fn profiles_section(
                                     .py_0p5()
                                     .bg(card)
                                     .rounded_md()
-                                    .child(SharedString::from(prof.id.clone())),
+                                    .child(prof.id.clone()),
                             )
-                            .children(prof.crate_.as_ref().map(|c| {
-                                div().text_color(muted).child(SharedString::from(c.clone()))
-                            }))
-                            .children(prof.model.as_ref().map(|m| {
-                                div().text_color(muted).child(SharedString::from(m.clone()))
-                            }))
+                            .children(
+                                prof.crate_
+                                    .as_ref()
+                                    .map(|c| div().text_color(muted).child(c.clone())),
+                            )
+                            .children(
+                                prof.model
+                                    .as_ref()
+                                    .map(|m| div().text_color(muted).child(m.clone())),
+                            )
                             .into_any_element()
                     }))
                     .into_any_element()
@@ -437,16 +437,15 @@ fn models_section(
                                     .py_0p5()
                                     .bg(card)
                                     .rounded_md()
-                                    .child(SharedString::from(model.provider.clone())),
+                                    .child(model.provider.clone()),
                             )
-                            .child(
-                                div()
-                                    .w(px(220.0))
-                                    .child(SharedString::from(model.name.clone())),
+                            .child(div().w(px(220.0)).child(model.name.clone()))
+                            .children(
+                                model
+                                    .params
+                                    .as_ref()
+                                    .map(|p| div().text_color(muted).child(p.clone())),
                             )
-                            .children(model.params.as_ref().map(|p| {
-                                div().text_color(muted).child(SharedString::from(p.clone()))
-                            }))
                             .into_any_element()
                     }))
                     .into_any_element()
@@ -507,20 +506,18 @@ fn kills_section(state: &AppState, muted: Hsla, border: Hsla, query_lower: &str)
                     .children(visible.into_iter().map(|row| {
                         h_flex()
                             .gap_3()
-                            .child(
-                                div()
-                                    .w(px(80.0))
-                                    .child(SharedString::from(row.run_id.clone())),
-                            )
+                            .child(div().w(px(80.0)).child(row.run_id.clone()))
                             .child(
                                 div()
                                     .w(px(140.0))
                                     .text_color(muted)
-                                    .child(SharedString::from(row.reason.clone())),
+                                    .child(row.reason.clone()),
                             )
-                            .children(row.detail.as_ref().map(|d| {
-                                div().text_color(muted).child(SharedString::from(d.clone()))
-                            }))
+                            .children(
+                                row.detail
+                                    .as_ref()
+                                    .map(|d| div().text_color(muted).child(d.clone())),
+                            )
                             .into_any_element()
                     }))
                     .into_any_element()
