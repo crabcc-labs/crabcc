@@ -28,9 +28,9 @@ use tracing::{debug, info};
 
 use crate::api::types::{
     AgentKillResponse, AgentKillsResponse, AgentLaunchRequest, AgentLaunchResponse, AgentLog,
-    AgentModelsResponse, AgentProfilesResponse, Bootstrap, DiscoveryReport, GraphSnapshot,
-    MemoryIngestRequest, MemoryIngestResponse, MemoryRecentResponse, OllamaKey, OtlpHealth,
-    SseActivityEvent, SseAgent, TelemetryEvent, TelemetrySnapshot,
+    AgentModelsResponse, AgentProfilesResponse, AgentStatus, Bootstrap, DiscoveryReport,
+    GraphSnapshot, MemoryIngestRequest, MemoryIngestResponse, MemoryRecentResponse, OllamaKey,
+    OtlpHealth, SseActivityEvent, SseAgent, TelemetryEvent, TelemetrySnapshot,
 };
 use crate::api::Client;
 use crate::sse::{self, SseEvent};
@@ -499,6 +499,32 @@ impl AppState {
                 // per SSE update.
                 for agent in &mut frame.agents {
                     agent.derived = crate::api::types::AgentDerived::from_id(&agent.id);
+                }
+                // Detect Running → Exited transitions and pop one
+                // Info toast per. Skip when the previous list was
+                // empty (first frame after startup) — otherwise the
+                // bootstrap "all already-Exited agents" history would
+                // toast each one. The system catalog of exits stays
+                // available via the Agents route's persistent list
+                // and the toast history log.
+                if !self.agents.is_empty() {
+                    let prev_running: std::collections::HashSet<SharedString> = self
+                        .agents
+                        .iter()
+                        .filter(|a| matches!(a.status, AgentStatus::Running))
+                        .map(|a| a.id.clone())
+                        .collect();
+                    let exits: Vec<SharedString> = frame
+                        .agents
+                        .iter()
+                        .filter(|a| {
+                            matches!(a.status, AgentStatus::Exited) && prev_running.contains(&a.id)
+                        })
+                        .map(|a| a.id.clone())
+                        .collect();
+                    for id in exits {
+                        self.push_toast(ToastLevel::Info, format!("agent {id} exited"));
+                    }
                 }
                 self.agents = frame.agents;
             }
@@ -1203,5 +1229,91 @@ mod tests {
         let front = s.toasts.front().unwrap();
         assert!(matches!(front.level, ToastLevel::Success));
         assert_eq!(front.message, "telemetry recovered");
+    }
+
+    fn make_agent(id: &str, status: AgentStatus) -> SseAgent {
+        SseAgent {
+            id: id.into(),
+            status,
+            started_ts: 0,
+            pid: None,
+            runtime: None,
+            model: None,
+            prompt_preview: SharedString::default(),
+            log_bytes: 0,
+            root: None,
+            derived: crate::api::types::AgentDerived::default(),
+        }
+    }
+
+    #[test]
+    fn agent_running_to_exited_transition_pops_info_toast() {
+        // Establish the prior state (agent A running). Then a frame
+        // arrives where A is Exited — pops one Info toast.
+        let mut s = AppState::new();
+        s.last_event_ts = Some(0);
+        s.apply(AppEvent::Sse(SseEvent::Agents(
+            crate::api::types::SseAgentsFrame {
+                agents: vec![make_agent("a", AgentStatus::Running)],
+            },
+        )));
+        // First frame seeds prior state — no toasts yet.
+        assert!(s.toasts.is_empty());
+
+        // Second frame: A has exited.
+        s.apply(AppEvent::Sse(SseEvent::Agents(
+            crate::api::types::SseAgentsFrame {
+                agents: vec![make_agent("a", AgentStatus::Exited)],
+            },
+        )));
+        assert_eq!(s.toasts.len(), 1);
+        let t = s.toasts.front().unwrap();
+        assert!(matches!(t.level, ToastLevel::Info));
+        assert_eq!(t.message, "agent a exited");
+    }
+
+    #[test]
+    fn first_agents_frame_with_only_exited_does_not_toast() {
+        // Bootstrap case: the very first SSE Agents frame may carry
+        // already-Exited agents from the server's history. Toasting
+        // each one would spam the strip with stale events. Skip when
+        // the prior `self.agents` was empty.
+        let mut s = AppState::new();
+        s.last_event_ts = Some(0);
+        s.apply(AppEvent::Sse(SseEvent::Agents(
+            crate::api::types::SseAgentsFrame {
+                agents: vec![
+                    make_agent("a", AgentStatus::Exited),
+                    make_agent("b", AgentStatus::Exited),
+                ],
+            },
+        )));
+        assert!(s.toasts.is_empty(), "first frame must not pop toasts");
+    }
+
+    #[test]
+    fn already_exited_agent_in_subsequent_frame_does_not_toast() {
+        // Agent B was already Exited in the prior frame. Re-receiving
+        // it as Exited must NOT pop a duplicate toast.
+        let mut s = AppState::new();
+        s.last_event_ts = Some(0);
+        s.apply(AppEvent::Sse(SseEvent::Agents(
+            crate::api::types::SseAgentsFrame {
+                agents: vec![
+                    make_agent("a", AgentStatus::Running),
+                    make_agent("b", AgentStatus::Exited),
+                ],
+            },
+        )));
+        assert!(s.toasts.is_empty());
+        s.apply(AppEvent::Sse(SseEvent::Agents(
+            crate::api::types::SseAgentsFrame {
+                agents: vec![
+                    make_agent("a", AgentStatus::Running),
+                    make_agent("b", AgentStatus::Exited),
+                ],
+            },
+        )));
+        assert!(s.toasts.is_empty(), "already-exited B must not re-toast");
     }
 }
