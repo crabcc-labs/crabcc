@@ -30,7 +30,7 @@ const FIXTURE_ACTIVITY_EVENTS: usize = 100;
 fn synth_agents(n: usize) -> SseAgentsFrame {
     let agents = (0..n)
         .map(|i| SseAgent {
-            id: format!("bench-agent-{i:03}"),
+            id: format!("bench-agent-{i:03}").into(),
             status: if i % 4 == 0 {
                 AgentStatus::Exited
             } else {
@@ -40,9 +40,9 @@ fn synth_agents(n: usize) -> SseAgentsFrame {
             pid: Some(10_000 + i as u64),
             runtime: Some("claude-code".into()),
             model: Some("sonnet-4-6".into()),
-            prompt_preview: format!("synthetic prompt {i} — produces realistic alloc churn"),
+            prompt_preview: format!("synthetic prompt {i} — produces realistic alloc churn").into(),
             log_bytes: (i as u64) * 1024,
-            root: Some(format!("/tmp/bench-{i:03}")),
+            root: Some(format!("/tmp/bench-{i:03}").into()),
         })
         .collect();
     SseAgentsFrame { agents }

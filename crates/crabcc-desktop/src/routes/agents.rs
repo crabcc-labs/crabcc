@@ -89,7 +89,7 @@ pub struct AgentsRoute {
     /// Currently selected agent id; `None` means no card is expanded.
     /// Click on the same id collapses; click on a new id selects +
     /// fires a fresh log fetch.
-    selected_id: Option<String>,
+    selected_id: Option<SharedString>,
     /// Status pill filter, ANDed with `query_lower` for visibility.
     status_filter: StatusFilter,
 }
@@ -143,8 +143,8 @@ impl AgentsRoute {
     /// on a new selection. Re-fetch on the same id is a separate path
     /// (the "Refresh" affordance), so this stays single-shot per
     /// click.
-    fn select_agent(&mut self, id: String, cx: &mut Context<Self>) {
-        if self.selected_id.as_deref() == Some(id.as_str()) {
+    fn select_agent(&mut self, id: SharedString, cx: &mut Context<Self>) {
+        if self.selected_id.as_deref() == Some(id.as_ref()) {
             // Toggle off.
             self.selected_id = None;
             return;
@@ -345,11 +345,11 @@ impl Render for AgentsRoute {
                                 .text_color(dot_color)
                                 .child(SharedString::from(dot.to_string())),
                         )
-                        .child(
-                            div()
+                        .child(div()
                                 .text_color(foreground)
-                                .child(SharedString::from(a.id.clone())),
-                        )
+                                // a.id is SharedString — clone is a refcount
+                                // bump, no alloc per render.
+                                .child(a.id.clone()))
                         .child(
                             div()
                                 .text_color(muted)
