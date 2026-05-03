@@ -183,3 +183,87 @@ tasks:
       pick up the same value via {{.CRABCC_VERSION}}.
     cmds:
       - 'bash scripts/version.sh{{if .JSON}} --json{{end}}'
+
+  install-iterm2:
+    desc: Install crabcc iTerm2 daemon into AutoLaunch + print activation steps (issue #132)
+    summary: |
+      Copies apps/crabcc-iterm2/main.py into
+      ~/Library/Application Support/iTerm2/Scripts/AutoLaunch/crabcc.py
+      then prints the remaining two manual steps (Python API pref + Automation).
+    cmds:
+      - |
+        AUTOLAUNCH="$HOME/Library/Application Support/iTerm2/Scripts/AutoLaunch"
+        mkdir -p "$AUTOLAUNCH"
+        if ! pip3 show iterm2 >/dev/null 2>&1; then
+          echo "▶ Installing iterm2 Python package..."
+          pip3 install iterm2
+        fi
+        cp "$(pwd)/apps/crabcc-iterm2/main.py" "$AUTOLAUNCH/crabcc.py"
+        echo "✓ Daemon installed: $AUTOLAUNCH/crabcc.py"
+        echo ""
+        echo "Remaining steps:"
+        echo "  1. iTerm2 → Preferences → General → Magic → ✅ Allow full Python API"
+        echo "  2. System Settings → Privacy & Security → Automation → iTerm2 → ✅"
+        echo "  3. Restart iTerm2"
+        echo "  4. Verify: crabcc doctor iterm2"
+
+  iterm2-test:
+    desc: Run crabcc-iterm2 HUD unit tests (no live iTerm2 required)
+    cmds:
+      - 'python3 -m unittest apps/crabcc-iterm2/tests/test_hud -v'
+
+  gpg-signing:
+    desc: Set up GPG-signed commits + tags for THIS repo (ed25519 key, repo-local git config)
+    summary: |
+      Generates a fresh ed25519 signing-only key (or reuses one matching
+      this repo's user.email), points repo-local user.signingkey at it,
+      enables commit.gpgsign + tag.gpgsign for THIS repo only (no global
+      pollution), and copies the armored public key to your clipboard so
+      you can paste it into https://github.com/settings/gpg/new.
+
+      Idempotent: re-running reuses an existing usable key; pass
+      MODE=rotate to force a new key (old key is left in your keyring).
+      MODE=print dry-runs. MODE=uninstall removes the repo-local config.
+
+      Identity defaults to repo's `git config user.{name,email}`; override
+      with GIT_USER_NAME and GIT_USER_EMAIL env vars.
+    vars:
+      MODE: '{{.MODE | default "install"}}'
+    cmds:
+      - 'bash scripts/setup-gpg-signing.sh{{if eq .MODE "rotate"}} --rotate{{end}}{{if eq .MODE "print"}} --print{{end}}{{if eq .MODE "uninstall"}} --uninstall{{end}}'
+
+  setup:
+    desc: Bootstrap full dev environment — uv, Rust, Ollama, pull model, start ollama-stack
+    summary: |
+      One-shot setup for a fresh machine. Idempotent — safe to re-run.
+      Steps:
+        1. Install uv (Python pkg manager, needed for free-claude-code)
+        2. Verify Rust/cargo is on PATH (install hint if missing)
+        3. Install Ollama via Homebrew if missing
+        4. Pull the default Apple-optimized model
+        5. Bring up the ollama-stack (Apple Containers → Docker)
+    cmds:
+      - |
+        if ! command -v uv >/dev/null 2>&1; then
+          echo "▶ Installing uv..."
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+        else
+          echo "✓ uv $(uv --version)"
+        fi
+      - |
+        if ! command -v cargo >/dev/null 2>&1; then
+          echo "✗ Rust not found — install: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
+          exit 1
+        else
+          echo "✓ $(cargo --version)"
+        fi
+      - |
+        if ! command -v ollama >/dev/null 2>&1; then
+          echo "▶ Installing Ollama..."
+          brew install ollama
+        else
+          echo "✓ ollama $(ollama --version 2>&1 | head -1)"
+        fi
+      - 'ollama pull qwen3.5:35b-a3b-coding-nvfp4'
+      - 'ollama pull qwen2.5-coder'
+      - 'bash install/ollama-stack/start.sh'

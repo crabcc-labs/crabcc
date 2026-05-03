@@ -162,3 +162,130 @@ tasks:
       - task: lint
       - task: test
       - task: bench-compress
+
+  service-discovery-check:
+    desc: Probe every known crabcc service (issue #143) — text report + non-zero exit if all are unreachable.
+    summary: |
+      Calls `crabcc debug-service-discovery` and asserts at least one
+      service is reachable. Useful as a smoke gate after a Compose
+      bring-up: `task service-discovery-check` should pass once the
+      stack is up.
+    cmds:
+      - "{{.CRABCC}} debug-service-discovery"
+      - |
+        UP=$({{.CRABCC}} debug-service-discovery --json | jq '[.services[] | select(.reachable)] | length')
+        if [ "${UP:-0}" -eq 0 ]; then
+          echo "service-discovery-check: no services reachable — bring up the stack" >&2
+          exit 1
+        fi
+        echo "service-discovery-check: $UP service(s) reachable"
+
+  images-build:
+    desc: Build local Docker images (crabcc binary + dev compose), with cache (issue #105)
+    summary: |
+      Builds:
+        - crabcc:local from install/Dockerfile.crabcc (multi-stage)
+        - All `build:` services from install/dev/docker-compose.yml
+          (today: just `crabcc`)
+
+      Image labels: OCI Image-Spec annotations (revision, created,
+      version, source, licenses) + crabcc-specific (com.crabcc.role,
+      com.crabcc.issue, com.crabcc.build.local). Source for these
+      values: workspace Cargo.toml + git rev-parse + ISO-8601 now.
+
+      Set NO_CACHE=1 (or call `task images-build-nocache`) to skip
+      BuildKit cache mounts AND --no-cache for the Compose builds.
+
+      BuildKit cache mounts on the Rust builder stage make iterative
+      `cargo build` rebuilds ~10–20 s instead of ~2 min cold.
+    vars:
+      NOCACHE: '{{.NO_CACHE | default ""}}'
+      GIT_SHA:
+        sh: git rev-parse --short HEAD 2>/dev/null || echo unknown
+      BUILD_DATE:
+        sh: date -u +%Y-%m-%dT%H:%M:%SZ
+      VERSION:
+        sh: bash scripts/version.sh 2>/dev/null || echo dev
+    env:
+      CRABCC_GIT_SHA: '{{.GIT_SHA}}'
+      CRABCC_BUILD_DATE: '{{.BUILD_DATE}}'
+      CRABCC_VERSION: '{{.VERSION}}'
+    cmds:
+      - >-
+        DOCKER_BUILDKIT=1 docker build
+        {{if eq .NOCACHE "1"}}--no-cache --pull{{end}}
+        --build-arg "RUST_VERSION=${RUST_VERSION:-1.83}"
+        --build-arg "GIT_SHA={{.GIT_SHA}}"
+        --build-arg "BUILD_DATE={{.BUILD_DATE}}"
+        --build-arg "VERSION={{.VERSION}}"
+        -t crabcc:local
+        -t crabcc:{{.VERSION}}
+        -t crabcc:{{.GIT_SHA}}
+        -f install/Dockerfile.crabcc .
+      - >-
+        docker compose -f install/dev/docker-compose.yml build
+        {{if eq .NOCACHE "1"}}--no-cache --pull{{end}}
+
+  images-build-nocache:
+    desc: Same as images-build but forces --no-cache + --pull on every layer (slow but reproducible)
+    cmds:
+      - task: images-build
+        vars:
+          NO_CACHE: '1'
+
+  images-build-nocache-apple:
+    desc: Build crabcc images using Apple Containers (macOS 26 native runtime)
+    vars:
+      GIT_SHA:
+        sh: git rev-parse --short HEAD 2>/dev/null || echo unknown
+      BUILD_DATE:
+        sh: date -u +%Y-%m-%dT%H:%M:%SZ
+      VERSION:
+        sh: bash scripts/version.sh 2>/dev/null || echo dev
+    cmds:
+      - >-
+        container build --no-cache --pull
+        --build-arg "RUST_VERSION=${RUST_VERSION:-1.86}"
+        --build-arg "GIT_SHA={{.GIT_SHA}}"
+        --build-arg "BUILD_DATE={{.BUILD_DATE}}"
+        --build-arg "VERSION={{.VERSION}}"
+        -t crabcc:local
+        -t crabcc:{{.VERSION}}
+        -t crabcc:{{.GIT_SHA}}
+        -f install/Dockerfile.crabcc .
+
+  images-inspect:
+    desc: Show image labels + size for crabcc:local (issue #105 verification)
+    cmds:
+      - 'docker image inspect crabcc:local | jq ".[0] | {labels: .Config.Labels, size_mb: (.Size / 1024 / 1024 | floor)}"'
+
+  pgo-release:
+    desc: Profile-guided optimization release build (issue #112) — typical 10–20% gain on hot paths
+    summary: |
+      Two-pass build via `cargo-pgo` (https://github.com/Kobzol/cargo-pgo):
+        pass 1 — `cargo pgo build` instrumented binary
+        pass 2 — `cargo pgo run -- <training corpus>` to generate profile data
+        pass 3 — `cargo pgo optimize` final release with profile data baked in
+
+      Training corpus runs `crabcc index` + `crabcc sym Foo` + `crabcc agent
+      --dry-run` against this repo (deterministic, ~30 s).
+
+      Prerequisites: `cargo install cargo-pgo` and llvm-profdata on PATH
+      (Xcode Command Line Tools on macOS, llvm-tools-preview rustup component
+      on Linux).
+
+      Output: target/release/crabcc with profile data baked in. Drops in
+      next to the regular release binary; install via `task install` after.
+    cmds:
+      - >-
+        if ! command -v cargo-pgo >/dev/null 2>&1; then
+          echo 'cargo-pgo missing; install: cargo install cargo-pgo' >&2; exit 1;
+        fi
+      - "{{.CARGO}} pgo build"
+      - >-
+        HOST=$(rustc -vV | sed -n 's/host: //p');
+        BIN="target/$HOST/release/crabcc";
+        "$BIN" index --root . >/dev/null 2>&1 || true;
+        "$BIN" sym Store --root . >/dev/null 2>&1 || true;
+        "$BIN" agent --dry-run --run "ping" --root . >/dev/null 2>&1 || true
+      - "{{.CARGO}} pgo optimize"
