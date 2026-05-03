@@ -1582,7 +1582,7 @@ fn agent_log(id: &str, query: &str) -> Result<AgentLog> {
 }
 
 fn agents_launch(mut request: Request, root: &Path) -> Result<()> {
-    // Parse JSON body: `{ "prompt": "...", "model"?: "...", "no_refresh"?: bool }`.
+    // Parse JSON body: `{ "prompt": "...", "model"?, "profile"?, "no_refresh"? }`.
     let mut body = String::new();
     if let Err(e) = request.as_reader().read_to_string(&mut body) {
         return respond_status(request, 400, &format!("read body: {e}"));
@@ -1594,6 +1594,12 @@ fn agents_launch(mut request: Request, root: &Path) -> Result<()> {
         model: Option<String>,
         #[serde(default)]
         no_refresh: bool,
+        /// Profile id from `/api/agent-profiles` — bare filename
+        /// without the `.profile.toml` suffix. Forwarded to the
+        /// spawned CLI as `--profile internal/<id>`. Added in #306;
+        /// `None` means "use the CLI's default".
+        #[serde(default)]
+        profile: Option<String>,
     }
     let req: LaunchReq = match serde_json::from_str(&body) {
         Ok(r) => r,
@@ -1601,6 +1607,25 @@ fn agents_launch(mut request: Request, root: &Path) -> Result<()> {
     };
     if req.prompt.trim().is_empty() {
         return respond_status(request, 400, "prompt must be non-empty");
+    }
+    // Validate the profile id shape before spawning. The CLI's
+    // `--profile internal/<id>` parser accepts only `[A-Za-z0-9_-]`
+    // and we pre-pend `internal/` here, so reject anything outside
+    // that alphabet up-front — a child failure exits silently
+    // (stderr is sunk to /dev/null) and the launch endpoint can't
+    // surface it.
+    if let Some(p) = req.profile.as_deref() {
+        if p.is_empty()
+            || !p
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return respond_status(
+                request,
+                400,
+                &format!("profile id must match [A-Za-z0-9_-]+ (got '{p}')"),
+            );
+        }
     }
 
     // Spawn `crabcc agent --run …` as a detached subprocess so the
@@ -1615,6 +1640,12 @@ fn agents_launch(mut request: Request, root: &Path) -> Result<()> {
     cmd.arg("agent").arg("--run").arg(&req.prompt);
     if let Some(m) = &req.model {
         cmd.arg("--model").arg(m);
+    }
+    if let Some(p) = &req.profile {
+        // Server-emitted profile ids are bare filenames; the CLI flag
+        // wants the `internal/<id>` namespace prefix. Pre-pend here
+        // so desktop / web clients don't need to know the namespace.
+        cmd.arg("--profile").arg(format!("internal/{p}"));
     }
     if req.no_refresh {
         cmd.arg("--no-refresh");

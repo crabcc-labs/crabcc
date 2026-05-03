@@ -407,6 +407,12 @@ pub struct AgentLaunchRequest {
     pub backend: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Profile id (bare filename without `.profile.toml`) — server
+    /// pre-pends the `internal/` namespace before forwarding to the
+    /// spawned CLI's `--profile` flag. Added in #306; pre-#306
+    /// servers ignore the field.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
 }
 
 /// Live response shape (verified via direct probes) — slightly wider
