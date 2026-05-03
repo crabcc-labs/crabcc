@@ -37,6 +37,13 @@ pub struct Shell {
     /// instead of `Option<u32>` so the comparison is a single integer
     /// equality check on every render.
     last_badge_count: u32,
+    /// Same change-detection sentinel for the menu-bar status item.
+    /// Same data source as `last_badge_count` (running-agents count),
+    /// but tracked separately so the two AppKit surfaces can be
+    /// retired / reshuffled independently — e.g. a future revision
+    /// could move the dock badge to a "new activity" indicator while
+    /// keeping the status item on the agents count.
+    last_status_count: u32,
 }
 
 impl Shell {
@@ -65,6 +72,7 @@ impl Shell {
             knowledge,
             commands,
             last_badge_count: u32::MAX,
+            last_status_count: u32::MAX,
         }
     }
 }
@@ -85,16 +93,26 @@ impl Render for Shell {
             .unwrap_or_else(|| "loading…".into());
         let active = state_for_brand.route;
 
-        // Sync the macOS dock badge to the running-agents count. Only
-        // calls into AppKit when the count actually changed — render
-        // fires on every AppState notify, but `setBadgeLabel:` is a
-        // window-server roundtrip we don't want to do on every tick.
-        // No-op on non-macOS targets (see `native::set_dock_badge`).
+        // Sync the macOS dock badge + menu-bar status item to the
+        // running-agents count. Both AppKit calls hit the window
+        // server, so we change-detect on `last_*_count` and only
+        // round-trip when the value actually moves. No-op on
+        // non-macOS targets (see `native::set_dock_badge` /
+        // `native::set_status_item`).
         let running = state_for_brand.agents_running();
         if running != self.last_badge_count {
             let label = (running > 0).then(|| running.to_string());
             native::set_dock_badge(label.as_deref());
             self.last_badge_count = running;
+        }
+        if running != self.last_status_count {
+            // Menu-bar title prepends a green-ish glyph so the user
+            // knows agents are running at a glance even when the
+            // window is hidden — matches the dot the agents tile
+            // uses (`AgentStatus::Running` → `●`).
+            let label = (running > 0).then(|| format!("\u{25CF} {running}"));
+            native::set_status_item(label.as_deref());
+            self.last_status_count = running;
         }
 
         // Build the nav strip. Each entry captures the AppState entity
