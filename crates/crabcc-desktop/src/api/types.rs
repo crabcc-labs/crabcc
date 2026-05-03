@@ -360,6 +360,54 @@ pub struct MemoryRecentResponse {
     pub drawers: Vec<MemoryDrawer>,
 }
 
+/// `GET /api/memory/graph` response — drawers as nodes + cross-refs
+/// as edges. Server-side detection covers `web:<hash>`, `text:<hash>`,
+/// `doc:<n>`, and Obsidian-style `[[Title]]` resolved against drawer
+/// titles. Used by the K-Graph route (#317).
+#[derive(Debug, Clone, Deserialize)]
+pub struct MemoryGraphNode {
+    /// Stable cross-process drawer id. NOT the SQL primary key
+    /// (which churns on re-import); matches `MemoryDrawer::source_id`.
+    pub id: SharedString,
+    /// First non-empty line of the drawer body, capped at 80 chars.
+    pub title: SharedString,
+    /// Wing name (e.g. "feedback", "project"). Server-side this is
+    /// labelled `kind` because it overloads the same canvas-node
+    /// concept, but on the client surface it really is the wing.
+    pub kind: SharedString,
+    /// Unix seconds.
+    pub ts: i64,
+    /// Body length in bytes.
+    pub len: u64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MemoryGraphEdge {
+    pub src: SharedString,
+    pub dst: SharedString,
+    /// How the cross-reference was detected: `ref` (direct id match)
+    /// or `wiki` (Obsidian-style `[[Title]]` resolution).
+    pub via: SharedString,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MemoryGraphStats {
+    pub drawers: u64,
+    pub edges: u64,
+    /// Whether the response includes embedding-similarity edges.
+    /// Server feature `memory-vec` / `memory-embed`; today always
+    /// false.
+    #[serde(default)]
+    pub embeddings: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MemoryGraphResponse {
+    pub nodes: Vec<MemoryGraphNode>,
+    pub edges: Vec<MemoryGraphEdge>,
+    pub stats: MemoryGraphStats,
+}
+
 /// `POST /api/memory/ingest` body. All fields optional — the server
 /// accepts any subset; an empty body just no-ops with `stats.ok = 0`.
 #[derive(Debug, Clone, Default, Serialize)]
