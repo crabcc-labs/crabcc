@@ -7,9 +7,11 @@
 //!   - `routes`        — body content views per dashboard route (A.4+)
 //!   - `graph_layout`  — pure-compute force-directed layout (A.5)
 //!   - `shell`         — top-level header + nav + body switcher (A.6)
+//!   - `native`        — native-OS hooks (dock badge today; menu bar / tray TBD)
 
 pub mod api;
 pub mod graph_layout;
+pub mod native;
 pub mod routes;
 pub mod shell;
 pub mod sse;
