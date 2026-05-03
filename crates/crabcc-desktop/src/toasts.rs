@@ -5,27 +5,33 @@
 //! the macOS rich-notification stack (track C.2+). Ships before the
 //! native side so error / status surfacing has a home from day one.
 //!
-//! ## What's wired today (slice 2)
+//! ## What's wired today
 //!
-//! - Data model + render component (slice 1, [#308]).
+//! - Data model + render component (slice 1).
 //! - Per-toast manual dismiss via the `×` button.
 //! - Auto-dismiss via [`Toast::is_active`] — render-time skip plus
 //!   in-state GC ([`AppState::gc_expired_toasts`]) called from
 //!   every `push_toast`. Persistent levels (warning / danger) stay
-//!   until manually dismissed.
+//!   until manually dismissed (slice 2).
 //! - Auto-emit on six result events: `MemoryIngestResult`,
-//!   `AgentLaunchResult`, `AgentKillResult` × `Ok` / `Err`. Level
-//!   selection: success → Success(5s) / launch ok → Primary(8s) /
-//!   kill ok → Info(3s) / errors → Danger (persist).
+//!   `AgentLaunchResult`, `AgentKillResult` × `Ok` / `Err`
+//!   (slice 2).
+//! - Edge-trigger emit on prefetch + telemetry/memory poll
+//!   failures and recoveries (slice 3).
+//! - Header mute toggle + `AppState::toasts_muted` — `push_toast`
+//!   skips the enqueue when muted but still hands out unique ids
+//!   so edge-trigger sentinels keep working (slice 4).
+//! - Append-only `AppState::toast_history` log (cap 50) recording
+//!   every push, including muted ones; footer "history (N) ·
+//!   clear" row (slice 5).
 //!
 //! ## What's intentionally not here
 //!
+//! - **Dedicated history view** — clicking the count is a no-op
+//!   today; a route stub or expanded view lands in a later slice.
 //! - **`↗ system` echo-dedup tag** — track C.2 once the AppKit
 //!   rich-notification side exists.
-//! - **Mute toggle + Settings entrypoint + `Show last 50 →` log**
-//!   — later slices.
-//!
-//! [#308]: https://github.com/peterlodri-sec/crabcc/pull/308
+//! - **"Settings" entrypoint** — later slice.
 
 use gpui::{div, prelude::*, px, Context, Entity, MouseButton, Render, SharedString, Window};
 use gpui_component::{h_flex, v_flex, ActiveTheme};
@@ -130,69 +136,104 @@ impl Render for ToastStrip {
         // visible past its second.
         let now = state.last_event_ts.unwrap_or(0);
         let any_visible = state.toasts.iter().any(|t| t.is_active(now));
-        if !any_visible {
-            // Render nothing when empty / all expired — keeps the
-            // strip from taking layout space.
+        let history_len = state.toast_history.len();
+        if !any_visible && history_len == 0 {
+            // Empty active deque AND empty history — nothing to
+            // show, claim zero layout. The footer keeps the strip
+            // visible whenever the operator has anything to audit.
             return div();
         }
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let bg = theme.secondary;
         let state_for_dismiss = self.state.clone();
+        let state_for_clear = self.state.clone();
 
-        div().child(
-            v_flex().px_5().py_2().gap_2().children(
-                state
-                    .toasts
-                    .iter()
-                    .filter(|t| t.is_active(now))
-                    .take(MAX_VISIBLE_TOASTS)
-                    .map(|t| {
-                        let accent = match t.level {
-                            ToastLevel::Success => theme.success,
-                            ToastLevel::Info => theme.info,
-                            ToastLevel::Warning => theme.warning,
-                            ToastLevel::Danger => theme.danger,
-                            ToastLevel::Primary => theme.primary,
-                        };
-                        let id_for_click = t.id;
-                        let state_clone = state_for_dismiss.clone();
-                        // Element id must be unique per render pass; the
-                        // monotonic toast id makes that trivial.
-                        let dismiss_id: gpui::ElementId =
-                            SharedString::from(format!("toast-dismiss-{}", t.id)).into();
-                        h_flex()
-                            .gap_3()
-                            .px_3()
-                            .py_2()
-                            .border_1()
-                            .border_color(accent)
-                            .rounded_md()
-                            .bg(bg)
-                            .child(
-                                div()
-                                    .w(px(16.0))
-                                    .text_color(accent)
-                                    .child(SharedString::new_static(t.level.glyph())),
-                            )
-                            .child(div().flex_1().child(t.message.clone()))
-                            .child(
-                                div()
-                                    .id(dismiss_id)
-                                    .px_2()
-                                    .text_color(muted)
-                                    .child(SharedString::new_static("\u{00D7}"))
-                                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                        state_clone.update(cx, |s, cx| {
-                                            s.dismiss_toast(id_for_click);
-                                            cx.notify();
-                                        });
-                                    }),
-                            )
-                            .into_any_element()
-                    }),
-            ),
-        )
+        // Footer "history (N) · clear" row — only renders when
+        // history is non-empty. Click "clear" wipes the history;
+        // the live toasts above stay (they're independent surfaces).
+        // Click on the count itself is a no-op for now — a
+        // dedicated history view lands in slice 6+.
+        let footer: gpui::AnyElement = if history_len > 0 {
+            let count_label = SharedString::from(format!("history ({history_len})"));
+            h_flex()
+                .gap_2()
+                .px_5()
+                .pb_1()
+                .child(div().text_color(muted).child(count_label))
+                .child(div().text_color(muted).child(SharedString::new_static("·")))
+                .child(
+                    div()
+                        .id("toast-history-clear")
+                        .text_color(muted)
+                        .child(SharedString::new_static("clear"))
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            state_for_clear.update(cx, |s, cx| {
+                                s.clear_toast_history();
+                                cx.notify();
+                            });
+                        }),
+                )
+                .into_any_element()
+        } else {
+            div().into_any_element()
+        };
+
+        v_flex()
+            .child(
+                v_flex().px_5().py_2().gap_2().children(
+                    state
+                        .toasts
+                        .iter()
+                        .filter(|t| t.is_active(now))
+                        .take(MAX_VISIBLE_TOASTS)
+                        .map(|t| {
+                            let accent = match t.level {
+                                ToastLevel::Success => theme.success,
+                                ToastLevel::Info => theme.info,
+                                ToastLevel::Warning => theme.warning,
+                                ToastLevel::Danger => theme.danger,
+                                ToastLevel::Primary => theme.primary,
+                            };
+                            let id_for_click = t.id;
+                            let state_clone = state_for_dismiss.clone();
+                            // Element id must be unique per render pass; the
+                            // monotonic toast id makes that trivial.
+                            let dismiss_id: gpui::ElementId =
+                                SharedString::from(format!("toast-dismiss-{}", t.id)).into();
+                            h_flex()
+                                .gap_3()
+                                .px_3()
+                                .py_2()
+                                .border_1()
+                                .border_color(accent)
+                                .rounded_md()
+                                .bg(bg)
+                                .child(
+                                    div()
+                                        .w(px(16.0))
+                                        .text_color(accent)
+                                        .child(SharedString::new_static(t.level.glyph())),
+                                )
+                                .child(div().flex_1().child(t.message.clone()))
+                                .child(
+                                    div()
+                                        .id(dismiss_id)
+                                        .px_2()
+                                        .text_color(muted)
+                                        .child(SharedString::new_static("\u{00D7}"))
+                                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                            state_clone.update(cx, |s, cx| {
+                                                s.dismiss_toast(id_for_click);
+                                                cx.notify();
+                                            });
+                                        }),
+                                )
+                                .into_any_element()
+                        }),
+                ),
+            )
+            .child(footer)
     }
 }
 

@@ -251,7 +251,18 @@ pub struct AppState {
     /// stays idempotent) but the strip shows nothing. Toggled by
     /// the header bell — see `Shell::render`.
     pub toasts_muted: bool,
+    /// Append-only log of every toast that has been emitted, even
+    /// when muted. Capped at [`TOAST_HISTORY_CAP`] entries — over-cap
+    /// pushes drop the oldest from the front. Drives the
+    /// "Show last N →" view (track C.0 slice 5+) so users can audit
+    /// notifications they missed (or muted away).
+    pub toast_history: VecDeque<Toast>,
 }
+
+/// Cap on the toast history log. The brief calls out
+/// "Show last 50 →" — pinning that here so the cap is one place to
+/// edit when we revisit.
+pub const TOAST_HISTORY_CAP: usize = 50;
 
 /// Plumbing the route entities use to fire detached HTTP requests
 /// back through the worker channel. Both fields are populated as a
@@ -293,6 +304,23 @@ impl AppState {
     pub fn push_toast(&mut self, level: ToastLevel, message: impl Into<SharedString>) -> u64 {
         let id = self.next_toast_id;
         self.next_toast_id = self.next_toast_id.wrapping_add(1);
+        // Wall-clock proxy: prefer the latest observed event ts so
+        // the timestamp matches other UI surfaces (KPI strip "X
+        // seconds ago"). Falls back to 0 before the first event.
+        let created_at = self.last_event_ts.unwrap_or(0);
+        let toast = Toast {
+            id,
+            level,
+            message: message.into(),
+            created_at,
+        };
+        // Always log to history — even muted toasts are recorded so
+        // the operator can audit what was suppressed via the
+        // "Show last N" view.
+        if self.toast_history.len() >= TOAST_HISTORY_CAP {
+            self.toast_history.pop_front();
+        }
+        self.toast_history.push_back(toast.clone());
         if self.toasts_muted {
             // Sentinel-only: edge-trigger code (slice 3) needs a
             // unique id even when muted, so dismiss-on-recover
@@ -300,19 +328,10 @@ impl AppState {
             return id;
         }
         self.gc_expired_toasts();
-        // Wall-clock proxy: prefer the latest observed event ts so
-        // the timestamp matches other UI surfaces (KPI strip "X
-        // seconds ago"). Falls back to 0 before the first event.
-        let created_at = self.last_event_ts.unwrap_or(0);
         if self.toasts.len() >= MAX_VISIBLE_TOASTS {
             self.toasts.pop_back();
         }
-        self.toasts.push_front(Toast {
-            id,
-            level,
-            message: message.into(),
-            created_at,
-        });
+        self.toasts.push_front(toast);
         id
     }
 
@@ -325,6 +344,12 @@ impl AppState {
         if self.toasts_muted {
             self.toasts.clear();
         }
+    }
+
+    /// Wipe the toast history log. Doesn't touch the visible deque
+    /// — those are independent surfaces (active vs audit log).
+    pub fn clear_toast_history(&mut self) {
+        self.toast_history.clear();
     }
 
     /// Dismiss the toast with the given id. No-op if it was already
@@ -1018,6 +1043,47 @@ mod tests {
         s.toggle_toast_mute();
         assert!(!s.toasts_muted);
         assert!(s.toasts.is_empty());
+    }
+
+    #[test]
+    fn push_logs_to_history_even_when_muted() {
+        // History is append-only and records every push, including
+        // muted ones — so the operator can audit what was suppressed.
+        let mut s = AppState::new();
+        s.toasts_muted = true;
+        s.push_toast(ToastLevel::Info, "muted-1");
+        s.push_toast(ToastLevel::Warning, "muted-2");
+        // Visible deque stays empty (mute), but history captures both.
+        assert!(s.toasts.is_empty());
+        assert_eq!(s.toast_history.len(), 2);
+        assert_eq!(s.toast_history.front().unwrap().message, "muted-1");
+        assert_eq!(s.toast_history.back().unwrap().message, "muted-2");
+    }
+
+    #[test]
+    fn history_caps_at_50_dropping_oldest() {
+        // Push 60 → keep the newest 50, oldest 10 are evicted from
+        // the front. Newest at the back, oldest at the front.
+        let mut s = AppState::new();
+        for n in 0..60 {
+            s.push_toast(ToastLevel::Info, format!("n={n}"));
+        }
+        assert_eq!(s.toast_history.len(), TOAST_HISTORY_CAP);
+        assert_eq!(s.toast_history.front().unwrap().message, "n=10");
+        assert_eq!(s.toast_history.back().unwrap().message, "n=59");
+    }
+
+    #[test]
+    fn clear_history_leaves_visible_alone() {
+        // Active deque and history are independent surfaces — clear
+        // history must not touch the visible toasts.
+        let mut s = AppState::new();
+        s.push_toast(ToastLevel::Info, "live");
+        assert_eq!(s.toasts.len(), 1);
+        assert_eq!(s.toast_history.len(), 1);
+        s.clear_toast_history();
+        assert_eq!(s.toasts.len(), 1, "active toast must survive clear_history");
+        assert!(s.toast_history.is_empty());
     }
 
     #[test]
