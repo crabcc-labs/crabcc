@@ -13,9 +13,7 @@
 //! today the cost of that machinery outweighs the maintenance cost
 //! of the table at the bottom of this file.
 
-use gpui::{
-    div, prelude::*, px, Context, Entity, Hsla, IntoElement, Render, SharedString, Window,
-};
+use gpui::{div, prelude::*, px, Context, Entity, Hsla, IntoElement, Render, SharedString, Window};
 use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -33,8 +31,7 @@ pub struct CommandsRoute {
 
 impl CommandsRoute {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let query_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Filter commands…"));
+        let query_input = cx.new(|cx| InputState::new(window, cx).placeholder("Filter commands…"));
         cx.subscribe_in(&query_input, window, |this, state, event, _, cx| {
             if let InputEvent::Change = event {
                 this.query_lower = state.read(cx).value().to_string().to_lowercase();
@@ -70,7 +67,11 @@ impl Render for CommandsRoute {
         let visible: Vec<(&Category, Vec<&Command>)> = CATALOG
             .iter()
             .map(|cat| {
-                let cmds: Vec<&Command> = cat.commands.iter().filter(|c| self.cmd_matches(c)).collect();
+                let cmds: Vec<&Command> = cat
+                    .commands
+                    .iter()
+                    .filter(|c| self.cmd_matches(c))
+                    .collect();
                 (cat, cmds)
             })
             .filter(|(_, cmds)| !cmds.is_empty())
@@ -79,20 +80,14 @@ impl Render for CommandsRoute {
 
         let header = h_flex()
             .gap_3()
-            .child(
-                div()
-                    .text_lg()
-                    .child(SharedString::new_static("Commands")),
-            )
-            .child(
-                div()
-                    .text_color(muted)
-                    .child(SharedString::from(if self.query_lower.is_empty() {
-                        format!("{total} commands")
-                    } else {
-                        format!("{visible_count} of {total} commands match")
-                    })),
-            );
+            .child(div().text_lg().child(SharedString::new_static("Commands")))
+            .child(div().text_color(muted).child(SharedString::from(
+                if self.query_lower.is_empty() {
+                    format!("{total} commands")
+                } else {
+                    format!("{visible_count} of {total} commands match")
+                },
+            )));
 
         let search_field = div()
             .border_1()
@@ -151,7 +146,11 @@ fn section(
                         .text_color(primary)
                         .child(SharedString::new_static(cat.name)),
                 )
-                .child(div().text_color(muted).child(SharedString::new_static(cat.blurb))),
+                .child(
+                    div()
+                        .text_color(muted)
+                        .child(SharedString::new_static(cat.blurb)),
+                ),
         )
         .child(
             v_flex().gap_1().children(
@@ -193,79 +192,170 @@ const CATALOG: &[Category] = &[
         name: "SYMBOLS",
         blurb: "Symbol-aware code lookup — the hot path.",
         commands: &[
-            Command { invocation: "sym <NAME>", summary: "Find the definition of a symbol." },
-            Command { invocation: "refs <NAME>", summary: "List references to a name. --files-only for a deduped path list." },
-            Command { invocation: "callers <NAME>", summary: "List callers of a function. --count for a single integer." },
-            Command { invocation: "fuzzy <QUERY>", summary: "Levenshtein-2 fuzzy match against indexed symbols." },
-            Command { invocation: "prefix <QUERY>", summary: "Prefix match — auto-complete-style lookup." },
-            Command { invocation: "outline <FILE>", summary: "Show every fn / struct / impl in a file with line ranges." },
-            Command { invocation: "files [FILTERS]", summary: "List indexed source files with --under / --ext / --limit." },
+            Command {
+                invocation: "sym <NAME>",
+                summary: "Find the definition of a symbol.",
+            },
+            Command {
+                invocation: "refs <NAME>",
+                summary: "List references to a name. --files-only for a deduped path list.",
+            },
+            Command {
+                invocation: "callers <NAME>",
+                summary: "List callers of a function. --count for a single integer.",
+            },
+            Command {
+                invocation: "fuzzy <QUERY>",
+                summary: "Levenshtein-2 fuzzy match against indexed symbols.",
+            },
+            Command {
+                invocation: "prefix <QUERY>",
+                summary: "Prefix match — auto-complete-style lookup.",
+            },
+            Command {
+                invocation: "outline <FILE>",
+                summary: "Show every fn / struct / impl in a file with line ranges.",
+            },
+            Command {
+                invocation: "files [FILTERS]",
+                summary: "List indexed source files with --under / --ext / --limit.",
+            },
         ],
     },
     Category {
         name: "GRAPH",
         blurb: "Call-graph queries — built from the populated edges table.",
         commands: &[
-            Command { invocation: "graph build", summary: "One-shot SQL scan to populate the edges table." },
-            Command { invocation: "graph walk <NAME>", summary: "BFS callers / callees from a named root." },
-            Command { invocation: "graph cycles", summary: "Strongly-connected components of size ≥ 2." },
-            Command { invocation: "graph orphans", summary: "Defined fns with no incoming callers." },
+            Command {
+                invocation: "graph build",
+                summary: "One-shot SQL scan to populate the edges table.",
+            },
+            Command {
+                invocation: "graph walk <NAME>",
+                summary: "BFS callers / callees from a named root.",
+            },
+            Command {
+                invocation: "graph cycles",
+                summary: "Strongly-connected components of size ≥ 2.",
+            },
+            Command {
+                invocation: "graph orphans",
+                summary: "Defined fns with no incoming callers.",
+            },
         ],
     },
     Category {
         name: "MEMORY",
         blurb: "Per-repo memory drawer — stores notes alongside the index.",
         commands: &[
-            Command { invocation: "memory init", summary: "Create .crabcc/memory.db with FTS5 + vec scaffolding." },
-            Command { invocation: "memory remember <ID> <BODY>", summary: "Stash a note keyed by id." },
-            Command { invocation: "memory search <QUERY>", summary: "Hybrid BM25 ⊕ vector search with RRF fusion." },
-            Command { invocation: "memory list", summary: "Recent drawers, newest-first." },
-            Command { invocation: "memory get <ID>", summary: "Fetch one drawer by id." },
-            Command { invocation: "memory ingest", summary: "Pipe stdin or a file into a new drawer." },
-            Command { invocation: "memory mine project", summary: "Walk the repo and ingest every file as a drawer." },
-            Command { invocation: "memory mine sessions", summary: "Walk Claude Code JSONL transcripts." },
-            Command { invocation: "memory health", summary: "Drawer count, FTS state, embedder dim." },
+            Command {
+                invocation: "memory init",
+                summary: "Create .crabcc/memory.db with FTS5 + vec scaffolding.",
+            },
+            Command {
+                invocation: "memory remember <ID> <BODY>",
+                summary: "Stash a note keyed by id.",
+            },
+            Command {
+                invocation: "memory search <QUERY>",
+                summary: "Hybrid BM25 ⊕ vector search with RRF fusion.",
+            },
+            Command {
+                invocation: "memory list",
+                summary: "Recent drawers, newest-first.",
+            },
+            Command {
+                invocation: "memory get <ID>",
+                summary: "Fetch one drawer by id.",
+            },
+            Command {
+                invocation: "memory ingest",
+                summary: "Pipe stdin or a file into a new drawer.",
+            },
+            Command {
+                invocation: "memory mine project",
+                summary: "Walk the repo and ingest every file as a drawer.",
+            },
+            Command {
+                invocation: "memory mine sessions",
+                summary: "Walk Claude Code JSONL transcripts.",
+            },
+            Command {
+                invocation: "memory health",
+                summary: "Drawer count, FTS state, embedder dim.",
+            },
         ],
     },
     Category {
         name: "AGENTS",
         blurb: "Local agent dispatch — Ollama / Anthropic via a per-profile registry.",
         commands: &[
-            Command { invocation: "agents run --profile <ID>", summary: "Launch an agent with a saved profile." },
-            Command { invocation: "agents launch --prompt …", summary: "One-off agent without persisting a profile." },
+            Command {
+                invocation: "agents run --profile <ID>",
+                summary: "Launch an agent with a saved profile.",
+            },
+            Command {
+                invocation: "agents launch --prompt …",
+                summary: "One-off agent without persisting a profile.",
+            },
         ],
     },
     Category {
         name: "FETCH",
         blurb: "URL extraction + per-domain content adapters.",
-        commands: &[
-            Command { invocation: "fetch <URL>", summary: "Download + extract a URL to markdown. --remember to ingest." },
-        ],
+        commands: &[Command {
+            invocation: "fetch <URL>",
+            summary: "Download + extract a URL to markdown. --remember to ingest.",
+        }],
     },
     Category {
         name: "INDEX",
         blurb: "Symbol-index lifecycle.",
         commands: &[
-            Command { invocation: "index", summary: "Walk the repo and (re)build .crabcc/symbols.db." },
-            Command { invocation: "smoke", summary: "Smoke-test the index pipeline against a fixture." },
-            Command { invocation: "compress", summary: "Train an FSST symbol table and re-encode rows." },
+            Command {
+                invocation: "index",
+                summary: "Walk the repo and (re)build .crabcc/symbols.db.",
+            },
+            Command {
+                invocation: "smoke",
+                summary: "Smoke-test the index pipeline against a fixture.",
+            },
+            Command {
+                invocation: "compress",
+                summary: "Train an FSST symbol table and re-encode rows.",
+            },
         ],
     },
     Category {
         name: "SERVE",
         blurb: "Live dashboard + MCP transports.",
         commands: &[
-            Command { invocation: "serve", summary: "Boot the dashboard at 127.0.0.1:7878 (this app talks to it)." },
-            Command { invocation: "--mcp", summary: "Stdio MCP transport — wire into Claude Code / Cursor." },
+            Command {
+                invocation: "serve",
+                summary: "Boot the dashboard at 127.0.0.1:7878 (this app talks to it).",
+            },
+            Command {
+                invocation: "--mcp",
+                summary: "Stdio MCP transport — wire into Claude Code / Cursor.",
+            },
         ],
     },
     Category {
         name: "META",
         blurb: "Token economy + version + install helpers.",
         commands: &[
-            Command { invocation: "track", summary: "Token-savings ledger for the session." },
-            Command { invocation: "install-claude", summary: "Symlink the skill + slash command into ~/.claude/." },
-            Command { invocation: "--version", summary: "Print version + git rev." },
+            Command {
+                invocation: "track",
+                summary: "Token-savings ledger for the session.",
+            },
+            Command {
+                invocation: "install-claude",
+                summary: "Symlink the skill + slash command into ~/.claude/.",
+            },
+            Command {
+                invocation: "--version",
+                summary: "Print version + git rev.",
+            },
         ],
     },
 ];

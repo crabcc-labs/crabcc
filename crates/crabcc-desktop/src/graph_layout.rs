@@ -60,7 +60,12 @@ pub fn run(snapshot: &GraphSnapshot) -> Layout {
     let edge_indices: Vec<(usize, usize)> = snapshot
         .edges
         .iter()
-        .filter_map(|e| Some((*id_to_idx.get(e.src.as_str())?, *id_to_idx.get(e.dst.as_str())?)))
+        .filter_map(|e| {
+            Some((
+                *id_to_idx.get(e.src.as_str())?,
+                *id_to_idx.get(e.dst.as_str())?,
+            ))
+        })
         .filter(|(a, b)| a != b)
         .collect();
 
@@ -216,7 +221,10 @@ mod tests {
 
     #[test]
     fn unknown_edge_endpoints_are_dropped() {
-        let l = run(&snap(&["a", "b"], &[("a", "b"), ("a", "ghost"), ("c", "d")]));
+        let l = run(&snap(
+            &["a", "b"],
+            &[("a", "b"), ("a", "ghost"), ("c", "d")],
+        ));
         // Only ("a", "b") survives since ghost / c / d aren't in nodes.
         assert_eq!(l.edge_indices.len(), 1);
         assert_eq!(l.edge_indices[0], (0, 1));
@@ -242,9 +250,8 @@ mod tests {
         let ids: Vec<String> = (0..n).map(|i| format!("n{i}")).collect();
         let id_refs: Vec<&str> = ids.iter().map(|s| s.as_str()).collect();
         // Sparse ring of edges so the spring force has work to do.
-        let edge_pairs: Vec<(&str, &str)> = (0..n)
-            .map(|i| (id_refs[i], id_refs[(i + 1) % n]))
-            .collect();
+        let edge_pairs: Vec<(&str, &str)> =
+            (0..n).map(|i| (id_refs[i], id_refs[(i + 1) % n])).collect();
         let l = run(&snap(&id_refs, &edge_pairs));
         assert_eq!(l.positions.len(), n);
         for (i, (x, y)) in l.positions.iter().enumerate() {

@@ -1,0 +1,105 @@
+name: desktop CI
+
+# Dedicated workflow for `crates/crabcc-desktop`. Triggers ONLY when
+# the crate (or this workflow file) actually changes — `paths:`
+# filters at the trigger level, so a PR that doesn't touch the
+# crate skips the whole workflow (no runner consumed, no required
+# checks blocked).
+#
+# Why a separate workflow:
+#   * The crate is excluded from the parent Cargo workspace
+#     (gpui-component pins tree-sitter 0.25 against the workspace's
+#     0.22 — see `crates/crabcc-desktop/README.md` "Why standalone").
+#     The main `ci.yml` filters `crabcc-desktop` out of `cargo
+#     clippy` / `cargo nextest` because the workspace-level commands
+#     can't see it. This workflow runs cargo from inside the crate
+#     directory so it operates on the standalone Cargo.lock.
+#   * Tests are skipped intentionally — the gpui dep tree is huge
+#     (objc2 + skia + tree-sitter + …, ~3 minute clean compile),
+#     and the desktop crate's tests are tiny pure-helper checks
+#     that the lint job's `cargo check` already exercises by
+#     compile. Re-running them under `cargo test` doubles the link
+#     time without catching anything new. Promote a slow / matrix
+#     job here if behavioural regressions ever start landing.
+
+on:
+  push:
+    branches: [main, worktree-feat+native-desktop-and-rich-notifications-kickoff]
+    paths:
+      - 'crates/crabcc-desktop/**'
+      - '.github/workflows/desktop-ci.yml'
+  pull_request:
+    paths:
+      - 'crates/crabcc-desktop/**'
+      - '.github/workflows/desktop-ci.yml'
+
+# Cancel previous runs on the same ref — same policy as `ci.yml`.
+concurrency:
+  group: desktop-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build-lint:
+    name: build + lint (no tests)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        # Standalone crate — all cargo commands operate on its own
+        # Cargo.lock from inside this directory.
+        working-directory: crates/crabcc-desktop
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Distinct from the workspace's `ci-lint` / `ci-test` keys
+          # so the desktop crate's huge gpui dep tree doesn't churn
+          # the workspace cache.
+          shared-key: desktop-ci
+          workspaces: crates/crabcc-desktop -> target
+
+      # gpui needs a few system libraries on Linux. Same set
+      # gpui-component itself documents in their README.
+      - name: install gpui linux deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+              libwayland-dev \
+              libxkbcommon-x11-dev \
+              libssl-dev \
+              libfontconfig1-dev \
+              libfreetype6-dev \
+              pkg-config
+
+      # `cargo check` sequence — order picked so the cheaper failures
+      # surface first. fmt is sub-second; clippy reuses check's
+      # build artifacts; bench --no-run is the slowest of the four
+      # but worth it because criterion dep changes can break the
+      # bench surface independently of the lib.
+      - name: rustfmt --check
+        # Crate-scoped fmt — the workspace-level `cargo fmt --all`
+        # in `ci.yml` doesn't see this crate, so we gate format
+        # drift here.
+        run: cargo fmt -- --check
+
+      - name: cargo check
+        run: cargo check --all-targets
+
+      - name: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo bench --no-run
+        # Compiles the bench harness without running. Catches
+        # criterion API drift + bench fixture compile errors
+        # without paying the criterion run-time.
+        run: cargo bench --no-run
+
+      # Tests deliberately skipped — see workflow docstring.
