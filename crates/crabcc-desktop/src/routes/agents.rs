@@ -275,6 +275,8 @@ impl Render for AgentsRoute {
             let agent_log = state.agent_log.as_ref();
             let entity_for_click = cx.entity();
             let entity_for_refresh = cx.entity();
+            let danger = cx.theme().danger;
+            let agents_state = self.state.clone();
 
             v_flex()
                 .px_5()
@@ -305,7 +307,37 @@ impl Render for AgentsRoute {
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| "—".into());
 
-                    // First row: status, id, runtime · model.
+                    // Kill button — running agents only. Mirrors the
+                    // Home Agents-tile pattern (#234) but lifted into
+                    // this route so a user filtering / drilling in
+                    // here can also stop a misbehaving agent without
+                    // navigating back. Click stops propagation so it
+                    // doesn't bubble into the outer card click that
+                    // would expand / collapse the log panel.
+                    let kill_btn: gpui::AnyElement = if matches!(a.status, AgentStatus::Running) {
+                        let id_for_kill = a.id.clone();
+                        let state_for_kill = agents_state.clone();
+                        let element_id: gpui::ElementId =
+                            SharedString::from(format!("agents-route-kill-{}", a.id)).into();
+                        div()
+                            .id(element_id)
+                            .px_2()
+                            .py_0p5()
+                            .border_1()
+                            .border_color(danger)
+                            .rounded_md()
+                            .text_color(danger)
+                            .child(SharedString::new_static("Kill"))
+                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                cx.stop_propagation();
+                                state_for_kill.read(cx).submit_kill(id_for_kill.clone());
+                            })
+                            .into_any_element()
+                    } else {
+                        div().into_any_element()
+                    };
+
+                    // First row: status, id, runtime · model · kill button.
                     let head_row = h_flex()
                         .gap_2()
                         .child(
@@ -322,7 +354,8 @@ impl Render for AgentsRoute {
                             div()
                                 .text_color(muted)
                                 .child(SharedString::from(format!("· {runtime} · {model}"))),
-                        );
+                        )
+                        .child(kill_btn);
 
                     // Second row: pid, age, log kib, root.
                     let meta_row = h_flex()
