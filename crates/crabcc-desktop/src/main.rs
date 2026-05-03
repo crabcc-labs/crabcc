@@ -1,31 +1,41 @@
-use gpui::{App, AppContext, Context, Entity, SharedString, Window};
+// Phase A.6 — multi-route shell mounted in the gpui window.
+//
+// `main` opens a 1280×800 window, builds the shared `AppState` entity
+// (prefetch + SSE workers), and mounts `crabcc_desktop::shell::Shell`
+// as the root view. Shell owns the header + nav strip and dispatches
+// the body slot based on `AppState::route`.
 
-mod home;
-mod native;
-mod shell;
-mod state;
+use crabcc_desktop::api::DEFAULT_BASE_URL;
+use crabcc_desktop::shell::Shell;
+use crabcc_desktop::state;
+use gpui::{prelude::*, px, size, App, Bounds, TitlebarOptions, WindowBounds, WindowOptions};
+use gpui_component::Root;
 
-use shell::Shell;
-use state::AppState;
+const WINDOW_TITLE: &str = "crabcc · live";
 
 fn main() {
-    App::new().run(|cx: &mut AppContext| {
-        let app_state = cx.new(|_cx| AppState::new());
+    gpui_platform::application().run(move |cx: &mut App| {
+        gpui_component::init(cx);
 
-        cx.open_window(
-            gpui::WindowOptions {
-                titlebar: Some(gpui::TitlebarOptions {
-                    title: Some(SharedString::new_static("crabcc · live")),
-                    appears_transparent: true,
-                    traffic_light_position: Some(gpui::Point::new(
-                        gpui::px(9.0),
-                        gpui::px(9.0),
-                    )),
-                }),
+        let bounds = Bounds::centered(None, size(px(1280.0), px(800.0)), cx);
+
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            titlebar: Some(TitlebarOptions {
+                title: Some(WINDOW_TITLE.into()),
                 ..Default::default()
-            },
-            |window, cx| cx.new(|cx| Shell::new(app_state, window, cx)),
-        )
-        .unwrap();
+            }),
+            ..Default::default()
+        };
+
+        cx.spawn(async move |cx| {
+            cx.open_window(options, |window, cx| {
+                let app_state = cx.new(|cx| state::build(cx, DEFAULT_BASE_URL));
+                let shell = cx.new(|cx| Shell::new(app_state, window, cx));
+                cx.new(|cx| Root::new(shell, window, cx))
+            })
+            .expect("failed to open window");
+        })
+        .detach();
     });
 }

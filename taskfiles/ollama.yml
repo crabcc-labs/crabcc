@@ -198,3 +198,18 @@ tasks:
       - mkdir -p "$HOME/.config/shell-ask"
       - cp install/shell-ask.json "$HOME/.config/shell-ask/config.json"
       - 'echo "✓ shell-ask config refreshed at $HOME/.config/shell-ask/config.json"'
+
+  ollama-stack-up:
+    desc: Bring up the ollama-stack (Apple Containers → Docker) with LiteLLM + Caddy
+    cmds:
+      - 'bash install/ollama-stack/start.sh'
+
+  ollama-stack-down:
+    desc: Tear down the ollama-stack
+    cmds:
+      - 'bash install/ollama-stack/start.sh --down'
+
+  ollama-stack-status:
+    desc: Show ollama-stack container status
+    cmds:
+      - 'bash install/ollama-stack/start.sh --status'
