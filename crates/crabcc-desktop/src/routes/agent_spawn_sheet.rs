@@ -14,16 +14,19 @@
 //!     the launch-result handler — the sheet observes the state and
 //!     transitions out of `Launching` once the id appears.
 //!
+//! Streaming auto-tails the agent log every
+//! [`LOG_TAIL_INTERVAL_MS`] (1.5s) via gpui's
+//! `cx.background_executor().timer()` — a single async loop is
+//! spawned on the `Launching → Streaming` transition and exits
+//! cleanly when the phase moves anywhere else. The Refresh button
+//! still works as a manual "fetch now" override.
+//!
 //! What's deliberately not here yet (call out, don't fake):
 //!   * Profile selection only sets the request's *model* override —
 //!     `AgentLaunchRequest` has no `profile` field today, so the
 //!     server runs the default profile regardless of which row the
 //!     user clicked. Tracked as a follow-up; the sheet displays a
 //!     warning line under the profile list when a row is selected.
-//!   * Streaming uses the same one-shot polled `agent_log` endpoint
-//!     the Agents route does — there's a manual "Refresh" button,
-//!     not an auto-tailing timer. Promotion to a tailing pump is a
-//!     v2 polish item.
 
 use gpui::{
     div, prelude::*, px, Context, Entity, IntoElement, MouseButton, Render, SharedString, Window,
@@ -63,18 +66,29 @@ pub struct AgentSpawnSheet {
     selected_profile: Option<SharedString>,
 }
 
+/// How often to re-poll the agent log while the sheet is in
+/// `Streaming`. 1.5s is slightly slower than the SSE activity
+/// cadence so we don't hammer the agent_log endpoint when nothing
+/// is happening, but fast enough that a tailing user sees output
+/// near-real-time. The agent's stdout is bounded — there's no
+/// useful gain from sub-second polling.
+const LOG_TAIL_INTERVAL_MS: u64 = 1_500;
+
 impl AgentSpawnSheet {
     pub fn new(state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         // Watch AppState for the launch-id arrival. The sheet stays in
         // `Launching` until the server hands back an id, then morphs
         // to `Streaming` and kicks off a first log fetch so the panel
-        // isn't blank on the next render.
+        // isn't blank on the next render. Once in `Streaming`, also
+        // spawn an auto-tail loop so subsequent log lines appear
+        // without a manual Refresh click.
         cx.observe(&state, |this, st, cx| {
             if matches!(this.phase, SheetPhase::Launching) {
                 let next_id = st.read(cx).last_launch_id.clone();
                 if let Some(id) = next_id {
                     this.phase = SheetPhase::Streaming { id: id.clone() };
-                    st.read(cx).submit_agent_log(id, 0);
+                    st.read(cx).submit_agent_log(id.clone(), 0);
+                    spawn_auto_tail(cx, id);
                 }
             }
             cx.notify();
@@ -623,4 +637,36 @@ impl AgentSpawnSheet {
             )
             .into_any_element()
     }
+}
+
+/// Spawn an async loop that re-fetches the agent log every
+/// [`LOG_TAIL_INTERVAL_MS`] while the sheet stays in `Streaming`
+/// with the matching id. Exits cleanly on phase change (Detach /
+/// Kill / Open in Agents) and on entity drop — gpui weakly captures
+/// the entity, so a closed sheet doesn't keep the loop alive.
+fn spawn_auto_tail(cx: &mut Context<AgentSpawnSheet>, id: SharedString) {
+    use std::time::Duration;
+    let interval = Duration::from_millis(LOG_TAIL_INTERVAL_MS);
+    cx.spawn(async move |this, cx| {
+        loop {
+            cx.background_executor().timer(interval).await;
+            // Bail if the entity has been dropped (window closed,
+            // sheet rebuilt, etc.). `update`'s Result is `Err` once
+            // the entity is gone.
+            let still_streaming = match this.update(cx, |sheet, cx| match &sheet.phase {
+                SheetPhase::Streaming { id: cur } if cur == &id => {
+                    sheet.state.read(cx).submit_agent_log(id.clone(), 0);
+                    true
+                }
+                _ => false,
+            }) {
+                Ok(v) => v,
+                Err(_) => return,
+            };
+            if !still_streaming {
+                return;
+            }
+        }
+    })
+    .detach();
 }
