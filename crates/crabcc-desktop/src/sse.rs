@@ -42,12 +42,22 @@ enum ParsedTopic {
     Unknown(String),
 }
 
+/// Bounded buffer for SSE events headed to the gpui pump. ~85 s of
+/// runway at the typical 3-events/s cadence — long enough that a
+/// transient gpui-side stall (a slow render, a debugger pause)
+/// doesn't drop frames, short enough that a stuck consumer can't
+/// monotonically grow memory. Overflow drops the *newest* event with
+/// a warn-level log line; see `try_send_with_overflow`. Drop-oldest
+/// would be more elegant but requires the worker to clone a drain
+/// receiver, which complicates disconnect detection.
+const SSE_CHANNEL_CAP: usize = 256;
+
 /// Spawn the SSE worker on its own OS thread. Returns the receiving
 /// end of the event channel — drop the receiver to stop the worker.
 pub fn spawn_worker(base_url: impl AsRef<str>) -> flume::Receiver<SseEvent> {
     let url = format!("{}/api/events", base_url.as_ref());
-    info!(target: "crabcc::sse", %url, "spawning SSE worker");
-    let (tx, rx) = flume::unbounded::<SseEvent>();
+    info!(target: "crabcc::sse", %url, cap = SSE_CHANNEL_CAP, "spawning SSE worker");
+    let (tx, rx) = flume::bounded::<SseEvent>(SSE_CHANNEL_CAP);
     std::thread::Builder::new()
         .name("crabcc-sse".into())
         .spawn(move || run(&url, &tx))
@@ -142,8 +152,26 @@ fn connect_and_pump(
             if let Some(topic) = current_topic.take() {
                 if !data_buf.is_empty() {
                     if let Some(evt) = parse_frame(topic, &data_buf) {
-                        if tx.send(evt).is_err() {
-                            return Ok(()); // receiver gone
+                        match tx.try_send(evt) {
+                            Ok(()) => {}
+                            Err(flume::TrySendError::Disconnected(_)) => {
+                                // Receiver dropped — exit cleanly.
+                                return Ok(());
+                            }
+                            Err(flume::TrySendError::Full(_)) => {
+                                // Bounded channel saturated. Drop the
+                                // newest frame (the one we just tried
+                                // to send) rather than block the SSE
+                                // reader — the gpui pump will catch up
+                                // on the next ungated tick. Logged at
+                                // warn level so a chronically stalled
+                                // consumer is visible.
+                                warn!(
+                                    target: "crabcc::sse",
+                                    cap = SSE_CHANNEL_CAP,
+                                    "channel full, dropping SSE frame"
+                                );
+                            }
                         }
                     }
                 }
