@@ -41,7 +41,9 @@ impl Shell {
         let agents = cx.new(|cx| AgentsRoute::new(state.clone(), window, cx));
         // LogsRoute owns the filter TextInput, so it needs window.
         let logs = cx.new(|cx| LogsRoute::new(state.clone(), window, cx));
-        let system = cx.new(|cx| SystemRoute::new(state.clone(), cx));
+        // SystemRoute owns the services-section filter TextInput,
+        // so it needs window.
+        let system = cx.new(|cx| SystemRoute::new(state.clone(), window, cx));
         // Knowledge owns the memory-ingest TextInput, so it needs window.
         let knowledge = cx.new(|cx| KnowledgeRoute::new(state.clone(), window, cx));
         // CommandsRoute owns a TextInput (focusable widget) so it
