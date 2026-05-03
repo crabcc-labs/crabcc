@@ -10,28 +10,38 @@ bridge, force-directed relations graph, and a native macOS surface
 ## Quick start
 
 ```bash
-# In one terminal: start the server.
-crabcc serve   # default loopback :7878
-
-# In another: launch the desktop app.
+# Single terminal — the binary auto-starts the docker-compose
+# backend stack on launch (see `src/services.rs`). If the stack is
+# already up or `crabcc serve` is running natively, the auto-start
+# is a no-op.
 cd crates/crabcc-desktop
 cargo run --release
 ```
 
-A 1280×800 window opens with the live dashboard. The header nav
+A 1600×1000 window opens with the live dashboard. The header nav
 switches between the six routes; AppState observers re-render on
-every SSE frame / poll tick.
+every SSE frame / poll tick. If the stack needed starting, the
+toast strip pops a Success "backend started via docker compose"
+banner once `/api/health` answers.
+
+Set `CRABCC_DESKTOP_SKIP_SERVICES=1` to opt out of the auto-start
+(useful when `crabcc serve` is already running from another shell
+or when iterating on the binary in CI).
 
 If you have [Task](https://taskfile.dev) installed
 (`brew install go-task`):
 
 ```bash
-task            # default — build + lint + test (the daily gate)
-task run        # debug-mode launch
-task run-rel    # release-mode launch (recommended)
-task bench      # criterion benches
-task watch      # cargo-watch + auto-reload
-task --list     # full menu
+task                 # default — build + lint + test (the daily gate)
+task run             # debug-mode launch
+task run-rel         # release-mode launch (recommended)
+task services-up     # start backend stack manually (mirrors auto-start)
+task services-down   # stop backend stack (graceful counterpart)
+task services-status # docker compose ps
+task services-logs   # tail backend logs (SVC=<svc> to scope)
+task bench           # criterion benches
+task watch           # cargo-watch + auto-reload
+task --list          # full menu
 ```
 
 ## Routes (what's where)
