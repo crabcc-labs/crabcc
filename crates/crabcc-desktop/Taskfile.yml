@@ -138,6 +138,36 @@ tasks:
       - 'cargo update -p gpui'
       - 'echo "✓ gpui bumped — verify the unification with cargo tree -p gpui"'
 
+  # ── services lifecycle ─────────────────────────────────────────────────────
+  #
+  # The desktop binary auto-starts the docker-compose stack on launch
+  # (see `src/services.rs` + PR #322). These targets are for the
+  # complementary lifecycle ops the binary doesn't own: stop / status /
+  # log tailing.
+
+  services-up:
+    desc: Start the desktop's backend stack (mirrors what the binary does on launch)
+    cmds:
+      - 'docker compose -f ../../install/dev/docker-compose.yml up -d'
+      - 'echo "✓ stack up — backend should answer on :7878 within ~5s"'
+
+  services-down:
+    desc: Stop the docker-compose backend stack (graceful counterpart of auto-start)
+    cmds:
+      - 'docker compose -f ../../install/dev/docker-compose.yml down'
+      - 'echo "✓ stack down"'
+
+  services-status:
+    desc: Show running containers in the desktop's backend stack
+    silent: true
+    cmds:
+      - 'docker compose -f ../../install/dev/docker-compose.yml ps'
+
+  services-logs:
+    desc: 'Tail logs for the backend stack (Ctrl-C to stop). Limit with SVC=<svc>.'
+    cmds:
+      - 'docker compose -f ../../install/dev/docker-compose.yml logs -f {{.SVC}}'
+
   # ── housekeeping ───────────────────────────────────────────────────────────
 
   clean:
@@ -154,7 +184,13 @@ tasks:
         if curl -fsS --max-time 2 http://127.0.0.1:7878/api/health >/dev/null; then
             echo "  ✓ crabcc serve reachable on :7878"
         else
-            echo "  ✗ crabcc serve not reachable — start with: crabcc serve"
+            echo "  ✗ crabcc serve not reachable — start with: task services-up"
+        fi
+        echo "── docker"
+        if docker info --format '{{.ServerVersion}}' >/dev/null 2>&1; then
+            echo "  ✓ docker daemon reachable"
+        else
+            echo "  ✗ docker daemon unreachable — auto-start path won't work"
         fi
         echo "── gpui pin"
         # Lockfile dependency lines are multi-line; grep the rev out
