@@ -404,13 +404,13 @@ impl AppState {
                 let client = Client::with_base_url(base_url);
                 let result = client.memory_ingest(&req);
                 let success = result.is_ok();
-                if tx.send(AppEvent::MemoryIngestResult(result)).is_err() {
+                if try_send_app_event(&tx, AppEvent::MemoryIngestResult(result)).is_err() {
                     debug!(target: "crabcc::state", thread = "ingest", "exiting (rx dropped)");
                     return;
                 }
                 if success {
                     let refresh = client.memory_recent();
-                    let _ = tx.send(AppEvent::MemoryRefresh(refresh));
+                    let _ = try_send_app_event(&tx, AppEvent::MemoryRefresh(refresh));
                 }
                 debug!(target: "crabcc::state", thread = "ingest", "exiting (done)");
             })
@@ -433,7 +433,8 @@ impl AppState {
             .spawn(move || {
                 debug!(target: "crabcc::state", thread = "launch", "starting");
                 let client = Client::with_base_url(base_url);
-                let _ = tx.send(AppEvent::AgentLaunchResult(client.agent_launch(&req)));
+                let _ =
+                    try_send_app_event(&tx, AppEvent::AgentLaunchResult(client.agent_launch(&req)));
                 debug!(target: "crabcc::state", thread = "launch", "exiting");
             })
             .expect("launch thread spawn");
@@ -452,7 +453,7 @@ impl AppState {
             .spawn(move || {
                 debug!(target: "crabcc::state", thread = "kill", agent_id = %id, "starting");
                 let client = Client::with_base_url(base_url);
-                let _ = tx.send(AppEvent::AgentKillResult(client.agent_kill(&id)));
+                let _ = try_send_app_event(&tx, AppEvent::AgentKillResult(client.agent_kill(&id)));
                 debug!(target: "crabcc::state", thread = "kill", agent_id = %id, "exiting");
             })
             .expect("kill thread spawn");
@@ -474,7 +475,7 @@ impl AppState {
                 debug!(target: "crabcc::state", thread = "agent-log", agent_id = %id, since, "starting");
                 let client = Client::with_base_url(base_url);
                 let result = client.agent_log(&id, since);
-                let _ = tx.send(AppEvent::AgentLogResult { id, result });
+                let _ = try_send_app_event(&tx, AppEvent::AgentLogResult { id, result });
             })
             .expect("agent-log thread spawn");
     }
@@ -528,8 +529,41 @@ impl AppState {
 /// Workers run on their own OS threads — no async runtime needed, and
 /// [`flume::Receiver::recv_async`] works inside gpui's smol-flavored
 /// `cx.spawn`.
+/// Bounded buffer for the multiplexed `AppEvent` channel. Four
+/// background workers (prefetch + SSE bridge + telemetry poll +
+/// memory poll) plus the four UI submit paths funnel through this
+/// channel; the gpui pump drains it on the main thread. Cap of 512
+/// is ~3 minutes of runway at the union of typical worker rates;
+/// overflow (a stuck pump) logs a warn-level line and drops the
+/// individual event rather than block any worker. See the
+/// `try_send_app_event` helper for the policy.
+const APP_CHANNEL_CAP: usize = 512;
+
+/// Best-effort `AppEvent` send. Drops the event (with a warn log)
+/// if the channel is full — preferable to blocking a worker thread
+/// on a stuck pump. Returns `Ok(())` on successful send, `Err(())`
+/// when the receiver has been dropped (caller should treat as
+/// shutdown signal).
+fn try_send_app_event(tx: &flume::Sender<AppEvent>, evt: AppEvent) -> Result<(), ()> {
+    match tx.try_send(evt) {
+        Ok(()) => Ok(()),
+        Err(flume::TrySendError::Disconnected(_)) => Err(()),
+        Err(flume::TrySendError::Full(_)) => {
+            tracing::warn!(
+                target: "crabcc::state",
+                cap = APP_CHANNEL_CAP,
+                "app-event channel full, dropping event"
+            );
+            // We deliberately don't propagate as Err here — the
+            // channel is still alive, just saturated. Caller treats
+            // the same as a successful send for control-flow purposes.
+            Ok(())
+        }
+    }
+}
+
 pub fn spawn_workers(base_url: &str) -> (flume::Sender<AppEvent>, flume::Receiver<AppEvent>) {
-    let (tx, rx) = flume::unbounded::<AppEvent>();
+    let (tx, rx) = flume::bounded::<AppEvent>(APP_CHANNEL_CAP);
 
     // One-shot prefetch — bootstrap + services + seed-graph all on the
     // same thread. The seed-graph response is ~20 KB / 96 nodes today
@@ -555,7 +589,7 @@ pub fn spawn_workers(base_url: &str) -> (flume::Sender<AppEvent>, flume::Receive
                     ollama_key: client.ollama_key(),
                 };
                 // Receiver disconnect is fine — app shutdown raced us.
-                let _ = tx.send(AppEvent::Initial(Box::new(prefetch)));
+                let _ = try_send_app_event(&tx, AppEvent::Initial(Box::new(prefetch)));
                 debug!(target: "crabcc::state", thread = "prefetch", "exiting");
             })
             .expect("prefetch thread spawn");
@@ -571,7 +605,7 @@ pub fn spawn_workers(base_url: &str) -> (flume::Sender<AppEvent>, flume::Receive
             .spawn(move || {
                 info!(target: "crabcc::state", thread = "sse-bridge", "starting");
                 while let Ok(evt) = sse_rx.recv() {
-                    if tx.send(AppEvent::Sse(evt)).is_err() {
+                    if try_send_app_event(&tx, AppEvent::Sse(evt)).is_err() {
                         info!(target: "crabcc::state", thread = "sse-bridge", "exiting (rx dropped)");
                         return;
                     }
@@ -604,7 +638,7 @@ pub fn spawn_workers(base_url: &str) -> (flume::Sender<AppEvent>, flume::Receive
                     if let Ok(snapshot) = &result {
                         cursor = snapshot.cursor as i64;
                     }
-                    if tx.send(AppEvent::Telemetry(result)).is_err() {
+                    if try_send_app_event(&tx, AppEvent::Telemetry(result)).is_err() {
                         info!(target: "crabcc::state", thread = "telemetry", "exiting (send fail)");
                         return;
                     }
