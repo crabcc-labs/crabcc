@@ -16,3 +16,4 @@ pub mod routes;
 pub mod shell;
 pub mod sse;
 pub mod state;
+pub mod toasts;
