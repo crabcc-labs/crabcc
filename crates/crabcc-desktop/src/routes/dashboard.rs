@@ -38,19 +38,20 @@ impl DashboardHome {
     pub fn new(state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         cx.observe(&state, |_, _, cx| cx.notify()).detach();
         let graph_view = cx.new(|cx| GraphView::new(state.clone(), cx));
-        let spawn_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Spawn agent: prompt…")
-        });
-        cx.subscribe_in(&spawn_input, window, |this, state, event, _, cx| {
-            match event {
+        let spawn_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Spawn agent: prompt…"));
+        cx.subscribe_in(
+            &spawn_input,
+            window,
+            |this, state, event, _, cx| match event {
                 InputEvent::Change => {
                     this.spawn_text = state.read(cx).value().to_string();
                     cx.notify();
                 }
                 InputEvent::PressEnter { .. } => this.submit_launch(cx),
                 _ => {}
-            }
-        })
+            },
+        )
         .detach();
         Self {
             state,
@@ -96,11 +97,7 @@ impl Render for DashboardHome {
         };
 
         let activity_kpi = format!("{} hits", state.activity_total);
-        let agents_kpi = format!(
-            "{}/{} running",
-            state.agents_running(),
-            state.agents.len()
-        );
+        let agents_kpi = format!("{}/{} running", state.agents_running(), state.agents.len());
         let services_kpi = state
             .services_reachable()
             .map(|(up, total)| format!("{up}/{total} reachable"))
@@ -122,6 +119,10 @@ impl Render for DashboardHome {
         // per family — see `op_color`.
         let theme = cx.theme();
         let activity_groups = group_activity(&state.recent_activity, 8);
+        // Use `last_event_ts` as a wall-clock proxy. Same trick as the
+        // Agents-route relative-age formatter — keeps chrono out of
+        // the dep tree for a tiny display tweak.
+        let now_ts = state.last_event_ts.unwrap_or(0);
         let activity_tile = tile(
             "Recent activity",
             card,
@@ -131,6 +132,15 @@ impl Render for DashboardHome {
                     .into_iter()
                     .map(|g| {
                         let op_color = op_color(&g.op, theme);
+                        // Recency fade — newer rows render full alpha,
+                        // older rows fade toward the floor. Applied to
+                        // both the op-badge and the query text so the
+                        // whole row dims as one unit. Muted-side meta
+                        // already lives at low contrast, so leave it.
+                        let age = (now_ts - g.latest_ts).max(0);
+                        let alpha = fade_alpha_for_age(age);
+                        let faded_op = with_alpha(op_color, alpha);
+                        let faded_fg = with_alpha(theme.foreground, alpha);
                         h_flex()
                             .gap_2()
                             // Op badge — fixed-width column so the
@@ -138,10 +148,14 @@ impl Render for DashboardHome {
                             .child(
                                 div()
                                     .w(px(80.0))
-                                    .text_color(op_color)
+                                    .text_color(faded_op)
                                     .child(SharedString::from(g.op.clone())),
                             )
-                            .child(SharedString::from(truncate(&g.latest_query, 60)))
+                            .child(
+                                div()
+                                    .text_color(faded_fg)
+                                    .child(SharedString::from(truncate(&g.latest_query, 60))),
+                            )
                             .child(
                                 div()
                                     .text_color(muted)
@@ -207,13 +221,9 @@ impl Render for DashboardHome {
                             .gap_2()
                             .child(SharedString::from(dot.to_string()))
                             .child(SharedString::from(a.id.clone()))
-                            .child(
-                                div().text_color(muted).child(SharedString::from(
-                                    a.runtime
-                                        .clone()
-                                        .unwrap_or_else(|| "—".to_string()),
-                                )),
-                            )
+                            .child(div().text_color(muted).child(SharedString::from(
+                                a.runtime.clone().unwrap_or_else(|| "—".to_string()),
+                            )))
                             .child(div().flex_1())
                             .child(kill_btn)
                             .into_any_element()
@@ -361,11 +371,7 @@ fn tile(
         .border_1()
         .border_color(border)
         .rounded_md()
-        .child(
-            div()
-                .text_sm()
-                .child(SharedString::new_static(title)),
-        )
+        .child(div().text_sm().child(SharedString::new_static(title)))
         .child(body)
 }
 
@@ -385,6 +391,10 @@ struct ActivityGroup {
     op: String,
     latest_query: String,
     latest_results: u64,
+    /// Timestamp of the freshest event in the run. Drives the
+    /// recency-fade in the render path so newer rows render at full
+    /// opacity and older ones fade toward muted.
+    latest_ts: i64,
     count: usize,
 }
 
@@ -415,10 +425,45 @@ where
             op: evt.op.clone(),
             latest_query: evt.query.clone(),
             latest_results: evt.results,
+            latest_ts: evt.ts,
             count: 1,
         });
     }
     out
+}
+
+/// Map a row's age (seconds since `now_ts`) to a multiplicative alpha
+/// for the recency-fade. Rows fresher than [`FADE_FRESH_SECS`] render
+/// at full opacity; rows older than [`FADE_STALE_SECS`] floor at
+/// [`FADE_FLOOR_ALPHA`]; in-between fades linearly. Tuning rationale
+/// in the constants' doc comments.
+fn fade_alpha_for_age(age_secs: i64) -> f32 {
+    if age_secs <= FADE_FRESH_SECS {
+        return 1.0;
+    }
+    if age_secs >= FADE_STALE_SECS {
+        return FADE_FLOOR_ALPHA;
+    }
+    let span = (FADE_STALE_SECS - FADE_FRESH_SECS) as f32;
+    let into = (age_secs - FADE_FRESH_SECS) as f32;
+    let t = (into / span).clamp(0.0, 1.0);
+    1.0 - t * (1.0 - FADE_FLOOR_ALPHA)
+}
+
+/// Anything within this many seconds of `now` renders at full
+/// opacity — short enough that activity in the last poll tick stays
+/// crisp.
+const FADE_FRESH_SECS: i64 = 5;
+/// Above this many seconds, rows render at [`FADE_FLOOR_ALPHA`].
+/// Tuned to match the activity-buffer churn rate — at typical work
+/// pace the bottom of an 8-row buffer is ~30s old.
+const FADE_STALE_SECS: i64 = 60;
+/// Floor alpha for the oldest visible row. Kept above 0.5 so the
+/// row stays legible — the fade is a "weight" cue, not "hide" cue.
+const FADE_FLOOR_ALPHA: f32 = 0.55;
+
+fn with_alpha(c: Hsla, a: f32) -> Hsla {
+    Hsla { a, ..c }
 }
 
 /// Map an op family to a theme colour. Mirrors the rough cost/value
