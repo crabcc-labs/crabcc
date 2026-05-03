@@ -14,24 +14,22 @@ use gpui::{
     div, prelude::*, px, Context, Entity, Hsla, IntoElement, MouseButton, Render, SharedString,
     Window,
 };
-use gpui_component::{
-    h_flex,
-    input::{Input, InputEvent, InputState},
-    v_flex, ActiveTheme,
-};
+use gpui_component::{h_flex, v_flex, ActiveTheme};
 
-use crate::api::types::{AgentLaunchRequest, AgentStatus, SseActivityEvent};
+use crate::api::types::{AgentStatus, SseActivityEvent};
+use crate::routes::agent_spawn_sheet::AgentSpawnSheet;
 use crate::routes::graph::GraphView;
 use crate::state::AppState;
 
 pub struct DashboardHome {
     state: Entity<AppState>,
     graph_view: Entity<GraphView>,
-    /// Agent-spawn form input — placed between the tile row and the
-    /// graph so it stays visible without scrolling.
-    spawn_input: Entity<InputState>,
-    /// Live mirror of the spawn input's text — read on submit.
-    spawn_text: String,
+    /// Modal-ish launch sheet (#294 / A.9). Opened by the dashboard's
+    /// "Launch agent…" CTA. The sheet self-closes on Detach / Kill /
+    /// Open in Agents, so the host doesn't track its open state
+    /// independently — render reads `spawn_sheet.is_open()` to decide
+    /// whether to overlay it.
+    spawn_sheet: Entity<AgentSpawnSheet>,
     /// Active op-pin on the Activity tile — set by clicking an op
     /// badge, cleared by clicking the active badge again or the
     /// header pin pill's `×`. Filters the activity buffer to that op
@@ -44,26 +42,15 @@ impl DashboardHome {
     pub fn new(state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         cx.observe(&state, |_, _, cx| cx.notify()).detach();
         let graph_view = cx.new(|cx| GraphView::new(state.clone(), cx));
-        let spawn_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Spawn agent: prompt…"));
-        cx.subscribe_in(
-            &spawn_input,
-            window,
-            |this, state, event, _, cx| match event {
-                InputEvent::Change => {
-                    this.spawn_text = state.read(cx).value().to_string();
-                    cx.notify();
-                }
-                InputEvent::PressEnter { .. } => this.submit_launch(cx),
-                _ => {}
-            },
-        )
-        .detach();
+        let spawn_sheet = cx.new(|cx| AgentSpawnSheet::new(state.clone(), window, cx));
+        // Re-render the dashboard whenever the sheet's open/phase state
+        // changes — the dashboard's own render decides whether to layer
+        // the sheet element on top.
+        cx.observe(&spawn_sheet, |_, _, cx| cx.notify()).detach();
         Self {
             state,
             graph_view,
-            spawn_input,
-            spawn_text: String::new(),
+            spawn_sheet,
             activity_op_pin: None,
         }
     }
@@ -79,17 +66,11 @@ impl DashboardHome {
         }
     }
 
-    fn submit_launch(&mut self, cx: &mut Context<Self>) {
-        let prompt = self.spawn_text.trim();
-        if prompt.is_empty() {
-            return;
-        }
-        let req = AgentLaunchRequest {
-            prompt: prompt.to_string(),
-            ..Default::default()
-        };
-        self.state.read(cx).submit_launch(req);
-        cx.notify();
+    fn open_spawn_sheet(&self, cx: &mut Context<Self>) {
+        self.spawn_sheet.update(cx, |sheet, cx| {
+            sheet.open();
+            cx.notify();
+        });
     }
 }
 
@@ -376,24 +357,27 @@ impl Render for DashboardHome {
             .child(agents_tile)
             .child(services_tile);
 
-        // ── Spawn-agent row ────────────────────────────────────────
+        // ── Spawn-agent CTA ────────────────────────────────────────
+        // The launch flow lives in `AgentSpawnSheet` now (#294). The
+        // dashboard just owns a button that opens the sheet, plus a
+        // status_line that surfaces the most recent server response so
+        // failed launches don't disappear silently if the user has
+        // already detached.
         let primary = cx.theme().primary;
         let success = cx.theme().success;
         let danger = cx.theme().danger;
-        let submit_disabled = self.spawn_text.trim().is_empty();
-        let submit_color = if submit_disabled { muted } else { primary };
         let view_entity = cx.entity();
         let launch_btn = div()
-            .id("agent-launch-submit")
+            .id("agent-launch-open-sheet")
             .px_3()
             .py_1()
             .border_1()
-            .border_color(submit_color)
+            .border_color(primary)
             .rounded_md()
-            .text_color(submit_color)
-            .child(SharedString::new_static("Launch"))
+            .text_color(primary)
+            .child(SharedString::new_static("Launch agent…"))
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                view_entity.update(cx, |this, cx| this.submit_launch(cx));
+                view_entity.update(cx, |this, cx| this.open_spawn_sheet(cx));
             });
         let status_line: gpui::AnyElement = match state.last_launch.as_ref() {
             None => div().into_any_element(),
@@ -410,31 +394,29 @@ impl Render for DashboardHome {
             .px_5()
             .py_2()
             .gap_1()
-            .child(
-                h_flex()
-                    .gap_2()
-                    .child(
-                        div()
-                            .flex_1()
-                            .border_1()
-                            .border_color(border)
-                            .rounded_md()
-                            .px_2()
-                            .py_1()
-                            .child(Input::new(&self.spawn_input).appearance(false)),
-                    )
-                    .child(launch_btn),
-            )
+            .child(h_flex().gap_2().child(launch_btn))
             .child(status_line);
 
         let graph_row = div().px_5().py_2().child(self.graph_view.clone());
 
-        v_flex()
+        // Wrap the route body in a `relative()` container so the spawn
+        // sheet can overlay it via `.absolute()` without affecting the
+        // dashboard's flex layout. The sheet element renders an empty
+        // div when `is_open == false`, so this overlay is zero-cost
+        // when the sheet is closed.
+        let sheet_open = self.spawn_sheet.read(cx).is_open();
+        let body = v_flex()
             .size_full()
             .child(kpi_strip)
             .child(tile_row)
             .child(spawn_row)
-            .child(graph_row)
+            .child(graph_row);
+
+        let mut shell = div().relative().size_full().child(body);
+        if sheet_open {
+            shell = shell.child(self.spawn_sheet.clone());
+        }
+        shell
     }
 }
 

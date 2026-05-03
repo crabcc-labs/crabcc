@@ -209,6 +209,13 @@ pub struct AppState {
     pub last_ingest: Option<Result<String, String>>,
     /// Mirror of `last_ingest` for the Home spawn-agent form.
     pub last_launch: Option<Result<String, String>>,
+    /// Agent id assigned by the server on the most recent successful
+    /// launch. Captured separately from `last_launch` (which is a
+    /// human-facing status string) so the agent-spawn sheet can pick
+    /// up the id and transition into its streaming view. `None` until
+    /// a launch succeeds; cleared on `submit_launch` so the sheet
+    /// doesn't replay a stale id on the next attempt.
+    pub last_launch_id: Option<SharedString>,
     /// Mirror of `last_ingest` for the per-agent kill button.
     pub last_kill: Option<Result<String, String>>,
     /// Most recent per-agent log fetch (Agents route). Holds both the
@@ -360,9 +367,13 @@ impl AppState {
                     "spawned agent{pid} · {chars} chars · timeout {}s",
                     resp.timeout_secs
                 )));
+                if let Some(id) = resp.id.as_ref() {
+                    self.last_launch_id = Some(id.clone().into());
+                }
             }
             AppEvent::AgentLaunchResult(Err(e)) => {
                 self.last_launch = Some(Err(format!("launch failed: {e}")));
+                self.last_launch_id = None;
             }
             AppEvent::AgentKillResult(Ok(resp)) => {
                 let pid = resp.pid.map(|p| format!(" pid {p}")).unwrap_or_default();
