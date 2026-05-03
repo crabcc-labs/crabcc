@@ -8,6 +8,7 @@
 // Logs) and a tall Home dashboard scroll instead of clipping.
 
 use crabcc_desktop::api::DEFAULT_BASE_URL;
+use crabcc_desktop::services::{self, BootstrapOutcome};
 use crabcc_desktop::shell::Shell;
 use crabcc_desktop::state;
 use gpui::{prelude::*, px, size, App, Bounds, TitlebarOptions, WindowBounds, WindowOptions};
@@ -30,6 +31,32 @@ fn main() {
         )
         .with_target(true)
         .init();
+
+    // Ensure the docker-compose backend stack is up before we open
+    // the window. Synchronous; non-fatal — the GUI proceeds even if
+    // bootstrap fails (slice 3's prefetch Danger toast surfaces the
+    // specific reachability error). Set `CRABCC_DESKTOP_SKIP_SERVICES`
+    // to opt out (devs running their own stack from another shell).
+    match services::ensure_stack_started() {
+        BootstrapOutcome::SkippedByEnv => {
+            tracing::info!("backend bootstrap skipped via env var");
+        }
+        BootstrapOutcome::AlreadyRunning => {
+            tracing::info!("backend already reachable — bootstrap was a no-op");
+        }
+        BootstrapOutcome::StartedViaCompose => {
+            tracing::info!("backend started via docker compose, ready");
+        }
+        BootstrapOutcome::StartedButNotReady { last_error } => {
+            tracing::warn!(error = %last_error, "compose up succeeded but backend didn't answer in time");
+        }
+        BootstrapOutcome::DockerUnavailable => {
+            tracing::warn!("docker daemon unavailable — backend won't be auto-started; install docker or run `crabcc serve` manually");
+        }
+        BootstrapOutcome::ComposeFailed { stderr } => {
+            tracing::error!(stderr = %stderr.trim(), "docker compose up failed");
+        }
+    }
 
     gpui_platform::application().run(move |cx: &mut App| {
         gpui_component::init(cx);

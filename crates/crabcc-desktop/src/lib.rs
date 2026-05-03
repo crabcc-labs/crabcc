@@ -13,6 +13,7 @@ pub mod api;
 pub mod graph_layout;
 pub mod native;
 pub mod routes;
+pub mod services;
 pub mod shell;
 pub mod sse;
 pub mod state;
