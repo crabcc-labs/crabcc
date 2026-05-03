@@ -70,6 +70,12 @@ pub struct SseActivityEvent {
     /// Wire field is `results`, not `count` — this is the SSE-side
     /// shape, not the `/api/activity` HTTP shape.
     pub results: u64,
+    /// Agent run id when the originating `crabcc.*` call ran inside
+    /// an agent process; `None` otherwise (direct CLI / IDE / MCP).
+    /// Server added in #311; pre-#311 servers omit the field, hence
+    /// `serde(default)`.
+    #[serde(default)]
+    pub agent_id: Option<SharedString>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

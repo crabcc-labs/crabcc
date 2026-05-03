@@ -16,11 +16,10 @@
 //!
 //! What's deliberately not here yet (called out, not faked):
 //!
-//!   * **Group-by-agent** — the brief asks for collapsible per-agent
-//!     groups, but `SseActivityEvent` carries only `ts / op / query /
-//!     results` on the wire today. Server-side enrichment to add
-//!     `agent_id` is a separate follow-up. The header surfaces the
-//!     gap inline.
+//!   * **Collapsible per-agent groups** — #311 added `agent_id` on
+//!     the wire and rows now render an `agt <id>` badge when set.
+//!     Folding consecutive same-agent rows behind a header is a
+//!     follow-up UX iteration.
 //!   * **Argument syntax highlighting / JSON pretty-print** — the
 //!     server emits `query` as a single string, not structured args.
 //!     The inspector renders it verbatim. If the server ever ships
@@ -259,11 +258,8 @@ impl Render for TimelineRoute {
         let active_pin = self.op_pin.clone();
         // First pill is "All" — clears the op_pin. Remaining pills are
         // the canonical tool families.
-        let pill_iter = std::iter::once::<Option<SharedString>>(None).chain(
-            TOOL_PILLS
-                .iter()
-                .map(|p| Some(SharedString::new_static(p))),
-        );
+        let pill_iter = std::iter::once::<Option<SharedString>>(None)
+            .chain(TOOL_PILLS.iter().map(|p| Some(SharedString::new_static(p))));
         let pill_row = h_flex()
             .mx_5()
             .mt_2()
@@ -380,17 +376,11 @@ impl Render for TimelineRoute {
             list.into_any_element()
         };
 
-        // ── Server-side enrichment gap ────────────────────────────
-        let gap_note = div()
-            .mx_5()
-            .mt_2()
-            .text_color(muted)
-            .text_xs()
-            .child(SharedString::new_static(
-            "group-by-agent requires server-side `agent_id` on SseActivityEvent — see follow-up.",
-        ));
-
         // ── Inspector pane (right column) ─────────────────────────
+        // #311 closed the server-side gap for agent_id; per-row agent
+        // badges render in `row()`. Collapsing consecutive same-agent
+        // rows into headers is a follow-up UX iteration — for now the
+        // badge alone makes attribution legible.
         let inspector = self.render_inspector(
             foreground,
             muted,
@@ -407,7 +397,6 @@ impl Render for TimelineRoute {
             .child(header)
             .child(filter_field)
             .child(pill_row)
-            .child(gap_note)
             .child(pinned_block)
             .child(timeline_block);
 
@@ -489,6 +478,25 @@ impl TimelineRoute {
                 if event.results == 1 { "" } else { "s" }
             )));
 
+        // Agent badge — only renders when the server (post-#311)
+        // tagged this row with an agent run id. Truncated to keep
+        // the row dense; the inspector pane shows the full id.
+        let agent_badge: gpui::AnyElement = match event.agent_id.as_ref() {
+            Some(id) => {
+                let trimmed: String = id.chars().take(8).collect();
+                div()
+                    .px_1()
+                    .border_1()
+                    .border_color(muted)
+                    .rounded_md()
+                    .text_color(muted)
+                    .text_xs()
+                    .child(SharedString::from(format!("agt {trimmed}")))
+                    .into_any_element()
+            }
+            None => div().into_any_element(),
+        };
+
         let pin_btn = div()
             .id(SharedString::from(format!("{row_id}-pin")))
             .px_1()
@@ -533,6 +541,7 @@ impl TimelineRoute {
                     .child(op)
                     .child(query)
                     .child(results)
+                    .child(agent_badge)
                     .child(pin_btn),
             )
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
@@ -676,6 +685,7 @@ mod tests {
             op: SharedString::from(op.to_string()),
             query: SharedString::from(q.to_string()),
             results: r,
+            agent_id: None,
         }
     }
 
