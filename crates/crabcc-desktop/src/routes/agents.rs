@@ -36,6 +36,48 @@ use crate::state::AppState;
 /// chatty agent.
 const LOG_TAIL_BYTES: usize = 4096;
 
+/// Status filter pill state. `None` means show all; `Some` narrows
+/// to one status. Kept on the route entity (not `AppState`) — it's a
+/// UI affordance, same call as the substring filter.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StatusFilter {
+    All,
+    Running,
+    Exited,
+}
+
+impl StatusFilter {
+    const ALL: [StatusFilter; 3] = [
+        StatusFilter::All,
+        StatusFilter::Running,
+        StatusFilter::Exited,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            StatusFilter::All => "All",
+            StatusFilter::Running => "Running",
+            StatusFilter::Exited => "Exited",
+        }
+    }
+
+    fn id(self) -> &'static str {
+        match self {
+            StatusFilter::All => "agents-pill-all",
+            StatusFilter::Running => "agents-pill-running",
+            StatusFilter::Exited => "agents-pill-exited",
+        }
+    }
+
+    fn matches(self, a: &SseAgent) -> bool {
+        match self {
+            StatusFilter::All => true,
+            StatusFilter::Running => a.status == AgentStatus::Running,
+            StatusFilter::Exited => a.status == AgentStatus::Exited,
+        }
+    }
+}
+
 pub struct AgentsRoute {
     state: Entity<AppState>,
     /// gpui-component InputState — owns text + focus for the filter.
@@ -48,6 +90,8 @@ pub struct AgentsRoute {
     /// Click on the same id collapses; click on a new id selects +
     /// fires a fresh log fetch.
     selected_id: Option<String>,
+    /// Status pill filter, ANDed with `query_lower` for visibility.
+    status_filter: StatusFilter,
 }
 
 impl AgentsRoute {
@@ -67,10 +111,14 @@ impl AgentsRoute {
             query_input,
             query_lower: String::new(),
             selected_id: None,
+            status_filter: StatusFilter::All,
         }
     }
 
     fn agent_matches(&self, a: &SseAgent) -> bool {
+        if !self.status_filter.matches(a) {
+            return false;
+        }
         if self.query_lower.is_empty() {
             return true;
         }
@@ -173,6 +221,34 @@ impl Render for AgentsRoute {
             .px_2()
             .py_1()
             .child(Input::new(&self.query_input).appearance(false));
+
+        // ── Status pills ────────────────────────────────────────────
+        let active_filter = self.status_filter;
+        let entity_for_pill = cx.entity();
+        let pill_row = h_flex()
+            .mx_5()
+            .mt_2()
+            .gap_2()
+            .children(StatusFilter::ALL.into_iter().map(|f| {
+                let is_active = f == active_filter;
+                let entity = entity_for_pill.clone();
+                div()
+                    .id(SharedString::new_static(f.id()))
+                    .px_2()
+                    .py_0p5()
+                    .border_1()
+                    .border_color(if is_active { primary } else { border })
+                    .rounded_md()
+                    .text_color(if is_active { foreground } else { muted })
+                    .child(SharedString::new_static(f.label()))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        entity.update(cx, |this, cx| {
+                            this.status_filter = f;
+                            cx.notify();
+                        });
+                    })
+                    .into_any_element()
+            }));
 
         // ── Body ────────────────────────────────────────────────────
         let body: gpui::AnyElement = if state.agents.is_empty() {
@@ -370,6 +446,7 @@ impl Render for AgentsRoute {
             .size_full()
             .child(header)
             .child(search_field)
+            .child(pill_row)
             .child(div().flex_1().min_h(px(0.0)).child(body))
     }
 }
