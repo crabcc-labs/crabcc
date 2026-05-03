@@ -101,3 +101,26 @@ opt-level = 3
 objc2 = "0.6"
 objc2-app-kit = "0.3"
 objc2-foundation = "0.3"
+
+# Bench harness — gates empirical work on the perf TODOs in
+# `.crabcc/kickoff-review.md` (Tip 0). `criterion` covers the
+# time-axis benches; `dhat-rs` for allocation counts can land in a
+# follow-up alongside the SharedString flip (PR-B) once we want to
+# prove the alloc delta. `default-features = false` drops the
+# rayon-based parallel bench-runner — the fixtures here are small
+# enough that the sequential default is fine.
+[dev-dependencies]
+criterion = { version = "0.5", default-features = false, features = ["html_reports"] }
+
+# Each bench needs `harness = false` so cargo invokes criterion's
+# `main` instead of the libtest harness. `apply` covers the
+# `AppState::apply` event-pump hot path; `graph_layout` covers the
+# force-directed layout that `routes/graph.rs` calls on every
+# snapshot fingerprint change.
+[[bench]]
+name = "apply"
+harness = false
+
+[[bench]]
+name = "graph_layout"
+harness = false
