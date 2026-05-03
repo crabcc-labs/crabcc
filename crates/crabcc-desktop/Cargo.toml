@@ -1,0 +1,18 @@
+[package]
+name                   = "crabcc-desktop"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+description            = "Single-window dashboard state model for the crabcc desktop client."
+
+[dependencies]
+anyhow        = { workspace = true }
+compact_str   = { workspace = true, features = ["serde"] }
+flume         = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+tracing       = { workspace = true }
+
+[dev-dependencies]

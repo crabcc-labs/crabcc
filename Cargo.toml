@@ -4,6 +4,7 @@ members = [
     "crates/crabcc-chrome",
     "crates/crabcc-cli",
     "crates/crabcc-core",
+    "crates/crabcc-desktop",
     "crates/crabcc-fetch",
     "crates/crabcc-mcp",
     "crates/crabcc-memory",
@@ -32,6 +33,8 @@ crabcc-viz = { path = "crates/crabcc-viz" }
 anyhow = "1"
 ahash = "0.8"
 clap = { version = "4", features = ["derive"] }
+compact_str = { version = "0.9", features = ["serde"] }
+flume = "0.12"
 markdown = { version = "1", default-features = false }
 rusqlite = { version = "0.31", features = ["bundled"] }
 sqlite-vec = "0.1"
