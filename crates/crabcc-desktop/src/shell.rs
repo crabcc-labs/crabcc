@@ -167,13 +167,20 @@ impl Render for Shell {
         if let Some(newest) = state_for_brand.toasts.front() {
             let prev_mark = self.last_delivered_toast_id;
             if prev_mark != Some(newest.id) {
-                for toast in state_for_brand.toasts.iter() {
-                    if matches!(prev_mark, Some(m) if toast.id <= m) {
-                        break;
+                if state_for_brand.echo_to_system {
+                    for toast in state_for_brand.toasts.iter() {
+                        if matches!(prev_mark, Some(m) if toast.id <= m) {
+                            break;
+                        }
+                        let title = format!("crabcc · {}", toast.level.glyph());
+                        native::deliver_notification(&title, &toast.message);
                     }
-                    let title = format!("crabcc · {}", toast.level.glyph());
-                    native::deliver_notification(&title, &toast.message);
                 }
+                // Advance the sentinel regardless of whether we
+                // delivered. When the user toggles echo OFF then ON
+                // again, queued-but-suppressed toasts shouldn't
+                // blast into Notification Center retroactively —
+                // that's surprising.
                 self.last_delivered_toast_id = Some(newest.id);
             }
         }
@@ -231,6 +238,30 @@ impl Render for Shell {
                 });
             });
 
+        // System-echo toggle for the macOS rich-notification side
+        // (track C.2). When on (`↗` glyph in primary), every visible
+        // toast also fires a banner via `native::deliver_notification`.
+        // When off (`↗` glyph in muted), the in-window strip stays
+        // alive but no banners ship — useful on a screen-sharing call
+        // where notification overlays would clutter the recording.
+        // Mute supersedes — if `toasts_muted` is set, no toast lands
+        // in the visible deque, so this toggle is moot.
+        let echo_state = state_for_brand.echo_to_system;
+        let echo_color = if echo_state { primary } else { muted };
+        let state_for_echo = self.state.clone();
+        let echo_btn = div()
+            .id("toasts-echo-toggle")
+            .px_2()
+            .py_1()
+            .text_color(echo_color)
+            .child(SharedString::new_static("\u{2197} system"))
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                state_for_echo.update(cx, |s, cx| {
+                    s.toggle_echo_to_system();
+                    cx.notify();
+                });
+            });
+
         let header = h_flex()
             .gap_6()
             .px_5()
@@ -249,7 +280,8 @@ impl Render for Shell {
                     .child(div().text_color(muted).child(brand_sub)),
             )
             .child(nav)
-            .child(alerts_btn);
+            .child(alerts_btn)
+            .child(echo_btn);
 
         let body: AnyElement = match active {
             Route::Home => self.home.clone().into_any_element(),

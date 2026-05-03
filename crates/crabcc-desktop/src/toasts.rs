@@ -156,6 +156,10 @@ impl Render for ToastStrip {
         let bg = theme.secondary;
         let state_for_dismiss = self.state.clone();
         let state_for_clear = self.state.clone();
+        // Snapshot the echo flag so the per-toast row closure can
+        // decide whether to render the `↗ system` tag without
+        // re-reading the state entity inside the closure.
+        let echo_to_system = state.echo_to_system;
 
         // Footer "history (N) · expand · clear" row — only
         // renders when history is non-empty. Expand toggles the
@@ -275,25 +279,25 @@ impl Render for ToastStrip {
                                         .child(SharedString::new_static(t.level.glyph())),
                                 )
                                 .child(div().flex_1().child(t.message.clone()))
-                                // "↗ system" tag — every visible toast
-                                // is also delivered to Notification
-                                // Center via `Shell::render` →
-                                // `native::deliver_notification` (track
-                                // C.2 first wedge), so this tag is
-                                // unconditional on visible toasts.
-                                // Mute would suppress delivery, but
-                                // mute also drops the toast from the
-                                // visible deque entirely (slice 4) so
-                                // the invariant "visible ⇒ system
-                                // echoed" holds without an extra flag.
-                                .child(
+                                // "↗ system" tag — visible only when
+                                // `AppState::echo_to_system` is on, in
+                                // which case every visible toast is
+                                // also delivered to Notification Center
+                                // via `Shell::render` →
+                                // `native::deliver_notification`. When
+                                // echo is off, the toast still shows
+                                // in-window but no banner fires; the
+                                // tag would be a lie.
+                                .child(if echo_to_system {
                                     div()
                                         .px_1()
                                         .text_color(muted)
                                         .child(SharedString::new_static(
                                             "\u{2197} system",
-                                        )),
-                                )
+                                        ))
+                                } else {
+                                    div()
+                                })
                                 .child(
                                     div()
                                         .id(dismiss_id)
