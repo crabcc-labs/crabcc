@@ -98,14 +98,17 @@ pub fn extract_file_with_edges(
 }
 
 fn ts_language(lang: &str) -> Result<tree_sitter::Language> {
+    // tree-sitter 0.26 + per-language crates ship `LANGUAGE` (or
+    // `LANGUAGE_TYPESCRIPT` / `LANGUAGE_TSX` for the polyglot crate) as
+    // a `LanguageFn`. `.into()` converts it to `tree_sitter::Language`.
     Ok(match lang {
-        "typescript" => tree_sitter_typescript::language_typescript(),
-        "tsx" => tree_sitter_typescript::language_tsx(),
-        "javascript" => tree_sitter_javascript::language(),
-        "ruby" => tree_sitter_ruby::language(),
-        "rust" => tree_sitter_rust::language(),
-        "go" => tree_sitter_go::language(),
-        "python" => tree_sitter_python::language(),
+        "typescript" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        "tsx" => tree_sitter_typescript::LANGUAGE_TSX.into(),
+        "javascript" => tree_sitter_javascript::LANGUAGE.into(),
+        "ruby" => tree_sitter_ruby::LANGUAGE.into(),
+        "rust" => tree_sitter_rust::LANGUAGE.into(),
+        "go" => tree_sitter_go::LANGUAGE.into(),
+        "python" => tree_sitter_python::LANGUAGE.into(),
         _ => return Err(anyhow!("unsupported lang: {lang}")),
     })
 }

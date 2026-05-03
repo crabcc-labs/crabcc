@@ -65,7 +65,7 @@ jobs:
             wild: false
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           # Pin to main HEAD; default behaviour for cron-triggered
           # workflows already does this, but explicit beats implicit
