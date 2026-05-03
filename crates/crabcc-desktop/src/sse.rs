@@ -29,15 +29,22 @@ pub enum SseEvent {
     /// raw payload so future code can introspect without reshipping
     /// the worker.
     Unknown {
-        topic: String,
+        topic: Box<str>,
         data: serde_json::Value,
     },
 }
 
+/// Parsed topic — avoids allocating strings for the two known topics.
+enum ParsedTopic {
+    Activity,
+    Agents,
+    Unknown(String),
+}
+
 /// Spawn the SSE worker on its own OS thread. Returns the receiving
 /// end of the event channel — drop the receiver to stop the worker.
-pub fn spawn_worker(base_url: impl Into<String>) -> flume::Receiver<SseEvent> {
-    let url = format!("{}/api/events", base_url.into());
+pub fn spawn_worker(base_url: impl AsRef<str>) -> flume::Receiver<SseEvent> {
+    let url = format!("{}/api/events", base_url.as_ref());
     let (tx, rx) = flume::unbounded::<SseEvent>();
     std::thread::Builder::new()
         .name("crabcc-sse".into())
@@ -82,16 +89,31 @@ fn connect_and_pump(url: &str, tx: &flume::Sender<SseEvent>) -> Result<()> {
     if !resp.status().is_success() {
         anyhow::bail!("{url} → {}", resp.status());
     }
-    let reader = BufReader::new(resp);
-    let mut event_topic: Option<String> = None;
-    let mut data_buf = String::new();
-    for line in reader.lines() {
-        let line = line.context("SSE line read")?;
+    let mut reader = BufReader::new(resp);
+
+    // Reusable byte buffers — avoids per-line String allocations and
+    // redundant UTF-8 validation (serde_json validates during parse).
+    let mut line_buf = Vec::new();
+    let mut data_buf = Vec::new();
+    let mut current_topic: Option<ParsedTopic> = None;
+
+    loop {
+        line_buf.clear();
+        let bytes_read = reader
+            .read_until(b'\n', &mut line_buf)
+            .context("SSE line read")?;
+        if bytes_read == 0 {
+            break; // EOF
+        }
+
+        // Strip trailing CR/LF.
+        let line = strip_line_ending(&line_buf);
+
         if line.is_empty() {
             // Blank line == end of frame. Dispatch what we have.
-            if let Some(topic) = event_topic.take() {
+            if let Some(topic) = current_topic.take() {
                 if !data_buf.is_empty() {
-                    if let Some(evt) = parse_frame(&topic, &data_buf) {
+                    if let Some(evt) = parse_frame(topic, &data_buf) {
                         if tx.send(evt).is_err() {
                             return Ok(()); // receiver gone
                         }
@@ -101,43 +123,84 @@ fn connect_and_pump(url: &str, tx: &flume::Sender<SseEvent>) -> Result<()> {
             data_buf.clear();
             continue;
         }
-        if let Some(rest) = line.strip_prefix("event:") {
-            event_topic = Some(rest.trim().to_string());
-        } else if let Some(rest) = line.strip_prefix("data:") {
+
+        if let Some(rest) = line.strip_prefix(b"event:") {
+            let topic_str = trim_ascii(rest);
+            current_topic = Some(match topic_str {
+                b"activity" => ParsedTopic::Activity,
+                b"agents" => ParsedTopic::Agents,
+                other => ParsedTopic::Unknown(String::from_utf8_lossy(other).into_owned()),
+            });
+        } else if let Some(rest) = line.strip_prefix(b"data:") {
             // Per the SSE spec, multi-line `data:` fields concatenate
             // with a literal newline. The crabcc server emits single-
             // line frames today; this preserves the standard regardless.
             if !data_buf.is_empty() {
-                data_buf.push('\n');
+                data_buf.push(b'\n');
             }
-            data_buf.push_str(rest.trim_start());
+            data_buf.extend_from_slice(trim_ascii_start(rest));
         }
         // `:`-prefixed comments and `id:` / `retry:` fields are ignored.
     }
     Ok(())
 }
 
-fn parse_frame(topic: &str, data: &str) -> Option<SseEvent> {
+/// Strip trailing `\n` and `\r` from a byte slice.
+fn strip_line_ending(buf: &[u8]) -> &[u8] {
+    let mut end = buf.len();
+    if end > 0 && buf[end - 1] == b'\n' {
+        end -= 1;
+    }
+    if end > 0 && buf[end - 1] == b'\r' {
+        end -= 1;
+    }
+    &buf[..end]
+}
+
+/// Trim leading and trailing ASCII whitespace from a byte slice.
+fn trim_ascii(buf: &[u8]) -> &[u8] {
+    let start = buf
+        .iter()
+        .position(|&b| !b.is_ascii_whitespace())
+        .unwrap_or(buf.len());
+    let end = buf
+        .iter()
+        .rposition(|&b| !b.is_ascii_whitespace())
+        .map_or(start, |i| i + 1);
+    &buf[start..end]
+}
+
+/// Trim leading ASCII whitespace from a byte slice.
+fn trim_ascii_start(buf: &[u8]) -> &[u8] {
+    let start = buf
+        .iter()
+        .position(|&b| !b.is_ascii_whitespace())
+        .unwrap_or(buf.len());
+    &buf[start..]
+}
+
+fn parse_frame(topic: ParsedTopic, data: &[u8]) -> Option<SseEvent> {
     match topic {
-        "activity" => match serde_json::from_str::<SseActivityFrame>(data) {
+        ParsedTopic::Activity => match serde_json::from_slice::<SseActivityFrame>(data) {
             Ok(f) => Some(SseEvent::Activity(f)),
             Err(e) => {
                 eprintln!("crabcc-sse: activity decode failed: {e}");
                 None
             }
         },
-        "agents" => match serde_json::from_str::<SseAgentsFrame>(data) {
+        ParsedTopic::Agents => match serde_json::from_slice::<SseAgentsFrame>(data) {
             Ok(f) => Some(SseEvent::Agents(f)),
             Err(e) => {
                 eprintln!("crabcc-sse: agents decode failed: {e}");
                 None
             }
         },
-        other => {
-            let value: serde_json::Value = serde_json::from_str(data)
-                .unwrap_or_else(|_| serde_json::Value::String(data.to_string()));
+        ParsedTopic::Unknown(other) => {
+            let value: serde_json::Value = serde_json::from_slice(data).unwrap_or_else(|_| {
+                serde_json::Value::String(String::from_utf8_lossy(data).into_owned())
+            });
             Some(SseEvent::Unknown {
-                topic: other.to_string(),
+                topic: other.into_boxed_str(),
                 data: value,
             })
         }
@@ -151,8 +214,8 @@ mod tests {
 
     #[test]
     fn parse_activity_frame_from_live_sample() {
-        let data = r#"{"repo":"crabcc","cursor":1777664931,"events":[{"ts":1777576223,"op":"sym","query":"Store","results":1}]}"#;
-        let evt = parse_frame("activity", data).expect("decoded");
+        let data = br#"{"repo":"crabcc","cursor":1777664931,"events":[{"ts":1777576223,"op":"sym","query":"Store","results":1}]}"#;
+        let evt = parse_frame(ParsedTopic::Activity, data).expect("decoded");
         match evt {
             SseEvent::Activity(f) => {
                 assert_eq!(f.repo, "crabcc");
@@ -166,8 +229,8 @@ mod tests {
 
     #[test]
     fn parse_agents_frame_from_live_sample() {
-        let data = r#"{"agents":[{"id":"abc","status":"running","started_ts":0,"pid":null,"runtime":"subprocess (host)","model":null,"prompt_preview":"","log_bytes":0,"root":null}]}"#;
-        let evt = parse_frame("agents", data).expect("decoded");
+        let data = br#"{"agents":[{"id":"abc","status":"running","started_ts":0,"pid":null,"runtime":"subprocess (host)","model":null,"prompt_preview":"","log_bytes":0,"root":null}]}"#;
+        let evt = parse_frame(ParsedTopic::Agents, data).expect("decoded");
         match evt {
             SseEvent::Agents(f) => {
                 assert_eq!(f.agents.len(), 1);
@@ -180,10 +243,14 @@ mod tests {
 
     #[test]
     fn parse_unknown_topic_preserved_verbatim() {
-        let evt = parse_frame("future-topic", r#"{"foo":42}"#).expect("decoded");
+        let evt = parse_frame(
+            ParsedTopic::Unknown("future-topic".to_string()),
+            br#"{"foo":42}"#,
+        )
+        .expect("decoded");
         match evt {
             SseEvent::Unknown { topic, data } => {
-                assert_eq!(topic, "future-topic");
+                assert_eq!(&*topic, "future-topic");
                 assert_eq!(data["foo"], 42);
             }
             _ => panic!("wrong variant"),
