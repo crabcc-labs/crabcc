@@ -8,6 +8,7 @@ pub mod agents;
 pub mod commands;
 pub mod dashboard;
 pub mod graph;
+pub mod k_graph;
 pub mod knowledge;
 pub mod logs;
 pub mod system;

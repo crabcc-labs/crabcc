@@ -154,6 +154,13 @@ pub enum Route {
     /// with per-tool colour coding, filters, pinning, and a right-rail
     /// inspector pane (#293).
     Timeline,
+    /// Knowledge graph canvas — a second graph view (distinct from
+    /// the Home dashboard's relations graph), backed by drawer
+    /// cross-references. Stubbed today: a server-side
+    /// `/api/memory/graph` endpoint is required and tracked
+    /// separately. The route surfaces the gap inline so the slot
+    /// reads as a known greenfield, not an empty tab.
+    KnowledgeGraph,
 }
 
 impl Route {
@@ -166,10 +173,11 @@ impl Route {
             Route::Knowledge => "Knowledge",
             Route::Commands => "Commands",
             Route::Timeline => "Timeline",
+            Route::KnowledgeGraph => "K-Graph",
         }
     }
 
-    pub const ALL: [Route; 7] = [
+    pub const ALL: [Route; 8] = [
         Route::Home,
         Route::Agents,
         Route::Logs,
@@ -177,6 +185,7 @@ impl Route {
         Route::Knowledge,
         Route::Commands,
         Route::Timeline,
+        Route::KnowledgeGraph,
     ];
 }
 
