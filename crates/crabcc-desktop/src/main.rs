@@ -38,7 +38,8 @@ fn main() {
     // bootstrap fails (slice 3's prefetch Danger toast surfaces the
     // specific reachability error). Set `CRABCC_DESKTOP_SKIP_SERVICES`
     // to opt out (devs running their own stack from another shell).
-    let bootstrap_toast = bootstrap_outcome_to_toast(services::ensure_stack_started());
+    let (outcome, elapsed) = services::ensure_stack_started();
+    let bootstrap_toast = bootstrap_outcome_to_toast(outcome, elapsed);
 
     // Optional graceful-shutdown counterpart. Off by default — most
     // users have multiple consumers of the stack (web dashboard,
@@ -105,29 +106,42 @@ fn main() {
 /// Convert a `BootstrapOutcome` into an optional toast pair, while
 /// emitting a structured `tracing` log for every variant. Returns
 /// `None` for the silent happy-paths (`AlreadyRunning` — operator
-/// doesn't need to know nothing happened).
-fn bootstrap_outcome_to_toast(outcome: BootstrapOutcome) -> Option<(ToastLevel, String)> {
+/// doesn't need to know nothing happened). The duration is
+/// rendered into the messages where it's interesting (i.e.
+/// happy-path "started in 2.3s" and the not-ready failure where
+/// "we waited Xs and gave up" is the relevant signal).
+fn bootstrap_outcome_to_toast(
+    outcome: BootstrapOutcome,
+    elapsed: std::time::Duration,
+) -> Option<(ToastLevel, String)> {
+    let secs = elapsed.as_secs_f32();
     match outcome {
         BootstrapOutcome::SkippedByEnv => {
             tracing::info!("backend bootstrap skipped via env var");
             Some((ToastLevel::Info, "backend bootstrap skipped (env)".into()))
         }
         BootstrapOutcome::AlreadyRunning => {
-            tracing::info!("backend already reachable — bootstrap was a no-op");
+            tracing::info!(
+                elapsed_secs = secs,
+                "backend already reachable — bootstrap was a no-op"
+            );
             None
         }
         BootstrapOutcome::StartedViaCompose => {
-            tracing::info!("backend started via docker compose, ready");
+            tracing::info!(
+                elapsed_secs = secs,
+                "backend started via docker compose, ready"
+            );
             Some((
                 ToastLevel::Success,
-                "backend started via docker compose".into(),
+                format!("backend started via docker compose in {secs:.1}s"),
             ))
         }
         BootstrapOutcome::StartedButNotReady { last_error } => {
-            tracing::warn!(error = %last_error, "compose up succeeded but backend didn't answer in time");
+            tracing::warn!(error = %last_error, elapsed_secs = secs, "compose up succeeded but backend didn't answer in time");
             Some((
                 ToastLevel::Danger,
-                format!("backend not responding: {last_error}"),
+                format!("backend not responding after {secs:.1}s: {last_error}"),
             ))
         }
         BootstrapOutcome::DockerUnavailable => {
@@ -138,7 +152,7 @@ fn bootstrap_outcome_to_toast(outcome: BootstrapOutcome) -> Option<(ToastLevel, 
             ))
         }
         BootstrapOutcome::ComposeFailed { stderr } => {
-            tracing::error!(stderr = %stderr.trim(), "docker compose up failed");
+            tracing::error!(stderr = %stderr.trim(), elapsed_secs = secs, "docker compose up failed");
             Some((
                 ToastLevel::Danger,
                 format!("docker compose up failed: {}", stderr.trim()),
