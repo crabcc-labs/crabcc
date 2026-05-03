@@ -67,6 +67,11 @@ rayon = "1"
 # spans via `RUST_LOG=crabcc_desktop=debug`.
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+# Tiny no-transitive-deps Ctrl-C handler — used by `main.rs` for the
+# opt-in graceful-shutdown path that runs `docker compose down` on
+# SIGINT when `CRABCC_DESKTOP_STOP_SERVICES_ON_EXIT=1`. Symmetric
+# counterpart of the auto-start in `services::ensure_stack_started`.
+ctrlc = "3"
 
 # GPUI deps — track gpui-component's own source URLs so cargo unifies
 # the gpui crate to a SINGLE compiled copy. Pinning a `rev =` here

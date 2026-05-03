@@ -40,6 +40,23 @@ fn main() {
     // to opt out (devs running their own stack from another shell).
     let bootstrap_toast = bootstrap_outcome_to_toast(services::ensure_stack_started());
 
+    // Optional graceful-shutdown counterpart. Off by default — most
+    // users have multiple consumers of the stack (web dashboard,
+    // agents, telegram bot) and tearing it down on every desktop
+    // quit would surprise them. Opt-in via
+    // `CRABCC_DESKTOP_STOP_SERVICES_ON_EXIT=1`. Catches SIGINT only;
+    // GPUI's window-close (cmd-Q) doesn't currently fire this path.
+    if std::env::var(services::STOP_ON_EXIT_ENV).is_ok() {
+        let _ = ctrlc::set_handler(|| {
+            tracing::info!("SIGINT received — stopping backend stack via docker compose down");
+            match services::stop_stack() {
+                Ok(()) => tracing::info!("backend stack stopped"),
+                Err(e) => tracing::error!(error = %e, "docker compose down failed on shutdown"),
+            }
+            std::process::exit(0);
+        });
+    }
+
     gpui_platform::application().run(move |cx: &mut App| {
         gpui_component::init(cx);
 
