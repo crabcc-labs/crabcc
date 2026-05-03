@@ -114,6 +114,16 @@ pub enum AppEvent {
         id: SharedString,
         result: anyhow::Result<AgentLog>,
     },
+    /// Result of a user-initiated Commands-launchpad run. The
+    /// [`RunnableCommand`] variant identifies which row was clicked;
+    /// the body is a Debug-formatted string of the response (no
+    /// JSON pretty-print since most response types are
+    /// `Deserialize`-only — promoting them to `Serialize` is a
+    /// bigger refactor than this slice deserves).
+    CommandRunResult(
+        crate::routes::commands::RunnableCommand,
+        Result<String, String>,
+    ),
     Sse(SseEvent),
 }
 
@@ -217,6 +227,17 @@ pub struct AppState {
     /// "stale" warning if the id no longer matches the active selection.
     /// Cleared explicitly when the user deselects.
     pub agent_log: Option<AgentLogState>,
+    /// Currently-running Commands-launchpad row, if any. Used to pulse
+    /// a "running…" affordance on the matching row. Set by
+    /// `submit_command_run`; cleared when the matching
+    /// `CommandRunResult` lands.
+    pub running_command: Option<crate::routes::commands::RunnableCommand>,
+    /// Most recent Commands-launchpad result. Single-slot — a fresh
+    /// click clears it before submitting the next run.
+    pub last_command_run: Option<(
+        crate::routes::commands::RunnableCommand,
+        Result<String, String>,
+    )>,
     /// Currently selected route — driven by the header nav clicks. The
     /// shell view re-renders on `cx.notify` and dispatches body content
     /// based on this value.
@@ -588,6 +609,12 @@ impl AppState {
             AppEvent::AgentLogResult { id, result } => {
                 self.agent_log = Some(AgentLogState { id, result });
             }
+            AppEvent::CommandRunResult(cmd, result) => {
+                if self.running_command == Some(cmd) {
+                    self.running_command = None;
+                }
+                self.last_command_run = Some((cmd, result));
+            }
         }
     }
 
@@ -684,6 +711,36 @@ impl AppState {
             .expect("agent-log thread spawn");
     }
 
+    /// Fire a Commands-launchpad row's HTTP method on a detached
+    /// thread. Mutates `running_command` + clears `last_command_run`
+    /// up front so the calling row can pulse a "running…" indicator
+    /// before the worker channel round-trips. The result is debug-
+    /// formatted (most response types are `Deserialize`-only); a
+    /// later refactor can promote them to `Serialize` for proper
+    /// JSON pretty-print.
+    pub fn submit_command_run(&mut self, cmd: crate::routes::commands::RunnableCommand) {
+        self.running_command = Some(cmd);
+        self.last_command_run = None;
+        let Some(handles) = self.workers.clone() else {
+            return;
+        };
+        let WorkerHandles { tx, base_url } = handles;
+        std::thread::Builder::new()
+            .name("crabcc-command-run".into())
+            .spawn(move || {
+                debug!(
+                    target: "crabcc::state",
+                    thread = "command-run",
+                    command = ?cmd,
+                    "starting"
+                );
+                let client = Client::with_base_url(base_url);
+                let result = run_command(&client, cmd).map_err(|e| e.to_string());
+                let _ = try_send_app_event(&tx, AppEvent::CommandRunResult(cmd, result));
+            })
+            .expect("command-run thread spawn");
+    }
+
     pub fn set_route(&mut self, route: Route) {
         self.route = route;
     }
@@ -745,6 +802,35 @@ const APP_CHANNEL_CAP: usize = 512;
 
 /// Best-effort `AppEvent` send. Drops the event (with a warn log)
 /// if the channel is full — preferable to blocking a worker thread
+/// Dispatch a [`crate::routes::commands::RunnableCommand`] to the
+/// matching [`Client`] method. Used by the worker thread spawned in
+/// [`AppState::submit_command_run`]. Returns the response Debug-
+/// formatted into a string — the underlying response types are
+/// `Deserialize`-only, so a proper JSON pretty-print needs a
+/// `Serialize` derive sweep that's deliberately out of scope for
+/// this slice.
+fn run_command(
+    client: &Client,
+    cmd: crate::routes::commands::RunnableCommand,
+) -> anyhow::Result<String> {
+    use crate::routes::commands::RunnableCommand as RC;
+    match cmd {
+        RC::Health => Ok(format!("{:#?}", client.health()?)),
+        RC::Bootstrap => Ok(format!("{:#?}", client.bootstrap()?)),
+        RC::Services => Ok(format!("{:#?}", client.services()?)),
+        RC::Agents => Ok(format!("{:#?}", client.agents()?)),
+        RC::AgentProfiles => Ok(format!("{:#?}", client.agent_profiles()?)),
+        RC::AgentKills => Ok(format!("{:#?}", client.agent_kills()?)),
+        RC::AgentModels => Ok(format!("{:#?}", client.agent_models()?)),
+        RC::OllamaKey => Ok(format!("{:#?}", client.ollama_key()?)),
+        RC::OtlpHealth => Ok(format!("{:#?}", client.otlp_health()?)),
+        RC::Reindex => Ok(format!("{:#?}", client.reindex()?)),
+        RC::RandomQuery => Ok(format!("{:#?}", client.random_query()?)),
+        RC::SeedGraph => Ok(format!("{:#?}", client.seed_graph()?)),
+        RC::MemoryRecent => Ok(format!("{:#?}", client.memory_recent()?)),
+    }
+}
+
 /// on a stuck pump. Returns `Ok(())` on successful send, `Err(())`
 /// when the receiver has been dropped (caller should treat as
 /// shutdown signal).
