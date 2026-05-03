@@ -98,7 +98,9 @@ impl Fts {
             .reload_policy(ReloadPolicy::Manual)
             .try_into()?;
         let searcher = reader.searcher();
-        let top = searcher.search(q, &TopDocs::with_limit(limit))?;
+        // tantivy 0.26: TopDocs is no longer itself a Collector — must call
+        // .order_by_score() to get one with Fruit = Vec<(Score, DocAddress)>.
+        let top = searcher.search(q, &TopDocs::with_limit(limit).order_by_score())?;
         let mut hits = Vec::new();
         for (score, addr) in top {
             let d: TantivyDocument = searcher.doc(addr)?;
@@ -108,16 +110,20 @@ impl Fts {
     }
 
     fn doc_to_hit(&self, d: &TantivyDocument, score: f32) -> FuzzyHit {
+        // tantivy 0.26: Document::get_first returns Option<CompactDocValue<'_>>
+        // instead of Option<&OwnedValue>. Convert through `OwnedValue::from`
+        // (impl From<CompactDocValue<'_>> for OwnedValue is provided upstream).
+        use tantivy::schema::document::CompactDocValue;
         use tantivy::schema::OwnedValue;
-        fn s(v: Option<&OwnedValue>) -> String {
-            match v {
-                Some(OwnedValue::Str(x)) => x.clone(),
+        fn s(v: Option<CompactDocValue<'_>>) -> String {
+            match v.map(OwnedValue::from) {
+                Some(OwnedValue::Str(x)) => x,
                 _ => String::new(),
             }
         }
-        fn u(v: Option<&OwnedValue>) -> u64 {
-            match v {
-                Some(OwnedValue::U64(x)) => *x,
+        fn u(v: Option<CompactDocValue<'_>>) -> u64 {
+            match v.map(OwnedValue::from) {
+                Some(OwnedValue::U64(x)) => x,
                 _ => 0,
             }
         }
