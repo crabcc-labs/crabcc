@@ -275,6 +275,25 @@ impl Render for ToastStrip {
                                         .child(SharedString::new_static(t.level.glyph())),
                                 )
                                 .child(div().flex_1().child(t.message.clone()))
+                                // "↗ system" tag — every visible toast
+                                // is also delivered to Notification
+                                // Center via `Shell::render` →
+                                // `native::deliver_notification` (track
+                                // C.2 first wedge), so this tag is
+                                // unconditional on visible toasts.
+                                // Mute would suppress delivery, but
+                                // mute also drops the toast from the
+                                // visible deque entirely (slice 4) so
+                                // the invariant "visible ⇒ system
+                                // echoed" holds without an extra flag.
+                                .child(
+                                    div()
+                                        .px_1()
+                                        .text_color(muted)
+                                        .child(SharedString::new_static(
+                                            "\u{2197} system",
+                                        )),
+                                )
                                 .child(
                                     div()
                                         .id(dismiss_id)
