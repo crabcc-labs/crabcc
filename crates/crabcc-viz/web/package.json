@@ -21,7 +21,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@typescript/native-preview": "^7.0.0-dev",
-    "esbuild": "^0.24.0",
+    "esbuild": "^0.28.0",
     "openapi-typescript": "^7.0.0"
   }
 }
