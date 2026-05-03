@@ -1,0 +1,205 @@
+name: nightly hyper-optimized build
+
+# Builds a hyper-optimized release of `crabcc` + `ccc` from the latest
+# `main` every second night and uploads the binaries as a workflow
+# artifact (NOT a GitHub Release — promoting to a Release is a manual
+# follow-up to keep the published-artifact surface intentional).
+#
+# Differences from `release.yml`:
+#   * Triggered by cron / manual dispatch, not tag push.
+#   * Builds the new `release-nightly` cargo profile (defined in the
+#     root Cargo.toml) which pins the same fat-LTO / single-codegen
+#     knobs as `release`. The wins come from per-target RUSTFLAGS:
+#       - x86_64-unknown-linux-gnu  → `-C target-cpu=x86-64-v3`
+#       - aarch64-apple-darwin       → `-C target-cpu=apple-m1`
+#     Both target floors are >= 2017 hardware, fine for a nightly.
+#   * Post-link UPX (`--best --lzma`) on Linux. macOS is skipped
+#     because UPX corrupts modern Mach-O binaries (Apple Silicon
+#     code-signing + dyld checks reject the packed image at exec).
+#   * Artifacts retain for 14 days — long enough to bisect a
+#     regression, short enough to keep storage cheap.
+
+on:
+  schedule:
+    # 04:00 UTC every second day. macOS-runner allocation usually
+    # clears within 5-10 minutes at this time. Note GHA cron may
+    # silently lag the schedule by 5-15 minutes under heavy load.
+    - cron: '0 4 */2 * *'
+  # Manual trigger from the Actions tab — useful for verifying a
+  # workflow change without waiting for the next cron tick.
+  workflow_dispatch: {}
+
+permissions:
+  contents: read   # workflow uploads artifacts only — no release / tag mutation
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: nightly build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            rustflags: '-C target-cpu=x86-64-v3'
+            upx: true
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            cross: true
+            # `cross` uses a Debian-based sysroot; target-cpu generic
+            # is correct here — we don't know which aarch64 server
+            # generation the user is on.
+            rustflags: ''
+            upx: true
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            # apple-m1 is the floor for any modern aarch64 macOS box;
+            # M1/M2/M3/M4 all run apple-m1 instructions natively.
+            rustflags: '-C target-cpu=apple-m1'
+            upx: false
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Pin to main HEAD; default behaviour for cron-triggered
+          # workflows already does this, but explicit beats implicit
+          # if someone later adds a tag-push trigger.
+          ref: main
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: nightly-${{ matrix.target }}
+
+      - name: install cross (linux aarch64 only)
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: install upx
+        if: matrix.upx
+        run: |
+          UPX_VERSION=4.2.4
+          curl -fsSL \
+            "https://github.com/upx/upx/releases/download/v${UPX_VERSION}/upx-${UPX_VERSION}-amd64_linux.tar.xz" \
+            -o /tmp/upx.tar.xz
+          tar -xf /tmp/upx.tar.xz -C /tmp
+          sudo mv "/tmp/upx-${UPX_VERSION}-amd64_linux/upx" /usr/local/bin/upx
+          upx --version
+
+      - name: build (release-nightly profile)
+        shell: bash
+        env:
+          # Per-target rustflags — `cargo`'s release-nightly profile
+          # carries the platform-agnostic knobs (fat LTO, single
+          # codegen unit, panic=abort, strip); the platform-specific
+          # micro-architecture floors live here so they're easy to
+          # adjust without touching workspace Cargo.toml.
+          RUSTFLAGS: ${{ matrix.rustflags }}
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build \
+              --profile release-nightly \
+              --target ${{ matrix.target }} \
+              -p crabcc-cli \
+              --features jemalloc
+          else
+            cargo build \
+              --profile release-nightly \
+              --target ${{ matrix.target }} \
+              -p crabcc-cli \
+              --features jemalloc
+          fi
+
+      - name: post-process binaries (UPX)
+        if: matrix.upx
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN_DIR="target/${{ matrix.target }}/release-nightly"
+          for bin in crabcc ccc; do
+            if [ -f "$BIN_DIR/$bin" ]; then
+              echo "── $bin ────────────────────────────────────────"
+              echo "Pre-UPX:"
+              ls -la "$BIN_DIR/$bin"
+              # `--best --lzma` is the slowest / smallest combo. Build
+              # time impact ~30-90 s per binary; acceptable for nightly.
+              # `|| true` because UPX errors on already-packed binaries
+              # if a re-run happens — we don't want a cosmetic failure
+              # to abort the upload.
+              upx --best --lzma "$BIN_DIR/$bin" || true
+              echo "Post-UPX:"
+              ls -la "$BIN_DIR/$bin"
+            fi
+          done
+
+      - name: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN_DIR="target/${{ matrix.target }}/release-nightly"
+          DATE=$(date -u +%Y%m%d)
+          NAME="crabcc-nightly-${DATE}-${{ matrix.target }}"
+          mkdir -p "dist/$NAME"
+          # Issue #74 — both `crabcc` and `ccc` ship in the same
+          # tarball; same rationale as `release.yml`.
+          if [ -f "$BIN_DIR/crabcc" ]; then
+            cp "$BIN_DIR/crabcc" "dist/$NAME/"
+          else
+            echo "::error::crabcc binary missing at $BIN_DIR/crabcc"
+            exit 1
+          fi
+          if [ -f "$BIN_DIR/ccc" ]; then
+            cp "$BIN_DIR/ccc" "dist/$NAME/"
+          else
+            echo "::warning::ccc binary missing at $BIN_DIR/ccc"
+          fi
+          cp README.md LICENSE CHANGELOG.md "dist/$NAME/" 2>/dev/null || true
+          # Stamp the source commit so a downloaded nightly is traceable.
+          {
+            echo "build: nightly"
+            echo "commit: ${GITHUB_SHA}"
+            echo "ref: ${GITHUB_REF}"
+            echo "date_utc: $(date -u +%FT%TZ)"
+            echo "target: ${{ matrix.target }}"
+            echo "rustflags: ${{ matrix.rustflags }}"
+            echo "upx: ${{ matrix.upx }}"
+          } > "dist/$NAME/BUILD-INFO"
+          tar -czf "dist/$NAME.tar.gz" -C dist "$NAME"
+          (cd dist && shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256")
+          (cd "dist/$NAME" && shasum -a 256 crabcc ccc 2>/dev/null > "../$NAME.bin-sha256.txt" || true)
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: crabcc-nightly-${{ matrix.target }}
+          path: dist/*
+          # 14-day retention — covers a typical bisection window.
+          # If a longer window is needed, retag the run via the
+          # Actions UI to convert the artifact into a release.
+          retention-days: 14
+
+  # Summary job that fails loudly if any matrix leg dropped a binary.
+  # Lets a single dashboard-line check tell you "today's nightly is
+  # healthy" without having to expand each matrix leg.
+  summary:
+    name: nightly summary
+    needs: build
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: assert all matrix legs succeeded
+        run: |
+          # `needs.build.result` is the union of the matrix children;
+          # `success` only when every leg passed.
+          if [ "${{ needs.build.result }}" != "success" ]; then
+            echo "::error::one or more nightly build legs failed — see job logs"
+            exit 1
+          fi
+          echo "all nightly build legs succeeded"

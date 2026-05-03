@@ -131,6 +131,22 @@ debug           = 1
 [profile.release-native]
 inherits = "release"
 
+# Nightly hyper-optimized build profile. Used by `.github/workflows/
+# nightly.yml` to produce per-target tarballs every second night from
+# `main`.
+#
+# Today this profile is identical to `release` — the wins come from
+# CI-side `RUSTFLAGS` (`-C target-cpu=x86-64-v3` on Linux x86_64,
+# `-C target-cpu=apple-m1` on aarch64-apple-darwin) and post-link UPX
+# packing on Linux. The named profile exists so future tweaks
+# (PGO, BOLT, opt-level=z experiments) can be opted into for nightlies
+# without touching the stable release path.
+#
+# DO NOT inline RUSTFLAGS here — they're target-specific, so they
+# belong in the workflow matrix where each leg sets its own.
+[profile.release-nightly]
+inherits = "release"
+
 [profile.profiling]
 inherits      = "release"
 debug         = "line-tables-only"
