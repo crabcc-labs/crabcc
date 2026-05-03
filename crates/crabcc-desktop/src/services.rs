@@ -98,7 +98,17 @@ pub enum BootstrapOutcome {
 /// answers or the deadline lapses, whichever comes first. The GUI
 /// proceeds regardless of outcome (errors are diagnostics, not
 /// blockers).
-pub fn ensure_stack_started() -> BootstrapOutcome {
+///
+/// Returns `(outcome, elapsed)` so the caller can surface the
+/// timing on the toast message ("backend started via docker
+/// compose in 2.3s") and in structured logs.
+pub fn ensure_stack_started() -> (BootstrapOutcome, Duration) {
+    let started = Instant::now();
+    let outcome = ensure_stack_started_inner();
+    (outcome, started.elapsed())
+}
+
+fn ensure_stack_started_inner() -> BootstrapOutcome {
     if std::env::var(SKIP_ENV).is_ok() {
         tracing::info!("{SKIP_ENV} set — skipping stack bootstrap");
         return BootstrapOutcome::SkippedByEnv;
