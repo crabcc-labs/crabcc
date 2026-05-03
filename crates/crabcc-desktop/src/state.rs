@@ -307,7 +307,14 @@ impl AppState {
                     self.recent_activity.push_back(evt);
                 }
             }
-            AppEvent::Sse(SseEvent::Agents(frame)) => {
+            AppEvent::Sse(SseEvent::Agents(mut frame)) => {
+                // Pre-compute the per-agent click-target gpui element
+                // ids once here, instead of per agent per render. See
+                // `AgentDerived` — the `format!()` cost is paid once
+                // per SSE update.
+                for agent in &mut frame.agents {
+                    agent.derived = crate::api::types::AgentDerived::from_id(&agent.id);
+                }
                 self.agents = frame.agents;
             }
             AppEvent::Sse(SseEvent::Unknown { .. }) => {

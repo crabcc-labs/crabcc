@@ -13,7 +13,7 @@
 use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
 
 use crabcc_desktop::api::types::{
-    AgentStatus, SseActivityEvent, SseActivityFrame, SseAgent, SseAgentsFrame,
+    AgentDerived, AgentStatus, SseActivityEvent, SseActivityFrame, SseAgent, SseAgentsFrame,
 };
 use crabcc_desktop::sse::SseEvent;
 use crabcc_desktop::state::{AppEvent, AppState};
@@ -43,6 +43,10 @@ fn synth_agents(n: usize) -> SseAgentsFrame {
             prompt_preview: format!("synthetic prompt {i} — produces realistic alloc churn").into(),
             log_bytes: (i as u64) * 1024,
             root: Some(format!("/tmp/bench-{i:03}").into()),
+            // `apply` populates this from `id` on receipt — leaving it
+            // default here measures the realistic "first frame" cost
+            // including the AgentDerived::from_id allocs.
+            derived: AgentDerived::default(),
         })
         .collect();
     SseAgentsFrame { agents }

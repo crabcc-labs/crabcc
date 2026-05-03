@@ -93,6 +93,50 @@ pub struct SseAgent {
     #[serde(default)]
     pub log_bytes: u64,
     pub root: Option<SharedString>,
+    /// Pre-computed `gpui::ElementId` strings for the click-target
+    /// widgets keyed off this agent's id. Populated in
+    /// `AppState::apply` when an `Agents` SSE frame arrives — the
+    /// `format!()` cost (~4 heap allocs per agent) happens once per
+    /// SSE update instead of N times per render.
+    ///
+    /// `serde(skip)` because the wire shape doesn't carry these;
+    /// `Default::default()` gives empty-string ids and the `apply`
+    /// pass populates them before any view sees the agent.
+    #[serde(skip, default)]
+    pub derived: AgentDerived,
+}
+
+/// Pre-computed gpui element-ids derived from `SseAgent::id`. Each
+/// click target on the agent surface gets its own field — gpui
+/// requires per-element id stability across renders (changing the
+/// id remounts the element + drops state). Caching at decode time
+/// means we pay the `format!()` cost once per SSE frame instead of
+/// once per agent per render.
+#[derive(Debug, Clone, Default)]
+pub struct AgentDerived {
+    /// Outer card click target on the Agents route — toggles the
+    /// log-tail panel.
+    pub card_id: SharedString,
+    /// Kill button on the Agents route per-row.
+    pub kill_id_agents_route: SharedString,
+    /// Kill button on the Home Agents tile (different namespace so
+    /// gpui doesn't re-mount when the same id appears on two views).
+    pub kill_id_home: SharedString,
+    /// Refresh button inside the expanded log panel.
+    pub log_refresh_id: SharedString,
+}
+
+impl AgentDerived {
+    /// Compute all ids from the agent's stable id string. Called
+    /// from `AppState::apply` whenever an Agents frame lands.
+    pub fn from_id(id: &str) -> Self {
+        Self {
+            card_id: format!("agent-card-{id}").into(),
+            kill_id_agents_route: format!("agents-route-kill-{id}").into(),
+            kill_id_home: format!("kill-{id}").into(),
+            log_refresh_id: format!("agent-log-refresh-{id}").into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
