@@ -29,8 +29,9 @@ use tracing::{debug, info};
 use crate::api::types::{
     AgentKillResponse, AgentKillsResponse, AgentLaunchRequest, AgentLaunchResponse, AgentLog,
     AgentModelsResponse, AgentProfilesResponse, AgentStatus, Bootstrap, DiscoveryReport,
-    GraphSnapshot, MemoryIngestRequest, MemoryIngestResponse, MemoryRecentResponse, OllamaKey,
-    OtlpHealth, SseActivityEvent, SseAgent, TelemetryEvent, TelemetrySnapshot,
+    GraphSnapshot, MemoryGraphResponse, MemoryIngestRequest, MemoryIngestResponse,
+    MemoryRecentResponse, OllamaKey, OtlpHealth, SseActivityEvent, SseAgent, TelemetryEvent,
+    TelemetrySnapshot,
 };
 use crate::api::Client;
 use crate::sse::{self, SseEvent};
@@ -91,6 +92,11 @@ pub enum AppEvent {
     /// `Ok`; routes `Err` through `last_error` and keeps the previous
     /// snapshot intact.
     MemoryRefresh(anyhow::Result<MemoryRecentResponse>),
+    /// One-shot result of [`AppState::submit_memory_graph`]. Replaces
+    /// `memory_graph` on success; `Err` lands in `memory_graph_error`
+    /// for inline display without disturbing the global error pill
+    /// (the K-Graph route has its own real estate for the gap).
+    MemoryGraphResult(anyhow::Result<MemoryGraphResponse>),
     /// Result of a user-initiated `POST /api/memory/ingest` from the
     /// Knowledge-route form. The view stashes a short status line in
     /// `last_ingest`; the worker also fires a follow-up `MemoryRefresh`
@@ -201,6 +207,16 @@ pub struct AppState {
     /// prefetch time. Future revs add a periodic refresh / on-demand
     /// re-fetch button.
     pub memory_recent: Option<MemoryRecentResponse>,
+    /// Drawer cross-reference graph from `/api/memory/graph`. Fetched
+    /// lazily by the K-Graph route via [`AppState::submit_memory_graph`]
+    /// — no periodic refresh, since the drawer set churns slower than
+    /// activity / telemetry. Replaced wholesale on success; `None`
+    /// until the route triggers the first fetch (#317).
+    pub memory_graph: Option<MemoryGraphResponse>,
+    /// Most recent error (if any) from the last `memory_graph` fetch.
+    /// Distinct from `last_error` so the K-Graph route can surface
+    /// the gap inline without competing for the global error pill.
+    pub memory_graph_error: Option<String>,
     /// One-shot OTLP collector health probe. Surfaces on the System
     /// route as a green/red pill.
     pub otlp_health: Option<OtlpHealth>,
@@ -610,6 +626,13 @@ impl AppState {
                     self.telemetry_warning_id = Some(id);
                 }
             }
+            AppEvent::MemoryGraphResult(Ok(snapshot)) => {
+                self.memory_graph = Some(snapshot);
+                self.memory_graph_error = None;
+            }
+            AppEvent::MemoryGraphResult(Err(e)) => {
+                self.memory_graph_error = Some(format!("memory_graph: {e}"));
+            }
             AppEvent::MemoryRefresh(Ok(snapshot)) => {
                 self.memory_recent = Some(snapshot);
                 // Same edge-trigger recovery as Telemetry — see
@@ -796,13 +819,31 @@ impl AppState {
             .expect("agent-log thread spawn");
     }
 
+    /// Fire a one-shot `/api/memory/graph` fetch. Result replaces
+    /// `memory_graph` on success; `Err` lands in `memory_graph_error`.
+    /// Triggered by the K-Graph route on first render + on a manual
+    /// refresh button (#317).
+    pub fn submit_memory_graph(&self) {
+        let Some(handles) = self.workers.clone() else {
+            return;
+        };
+        let WorkerHandles { tx, base_url } = handles;
+        std::thread::Builder::new()
+            .name("crabcc-memory-graph".into())
+            .spawn(move || {
+                debug!(target: "crabcc::state", thread = "memory-graph", "starting");
+                let client = Client::with_base_url(base_url);
+                let result = client.memory_graph();
+                let _ = try_send_app_event(&tx, AppEvent::MemoryGraphResult(result));
+            })
+            .expect("memory-graph thread spawn");
+    }
+
     /// Fire a Commands-launchpad row's HTTP method on a detached
     /// thread. Mutates `running_command` + clears `last_command_run`
     /// up front so the calling row can pulse a "running…" indicator
-    /// before the worker channel round-trips. The result is debug-
-    /// formatted (most response types are `Deserialize`-only); a
-    /// later refactor can promote them to `Serialize` for proper
-    /// JSON pretty-print.
+    /// before the worker channel round-trips. Result is JSON-pretty
+    /// formatted by `run_command` (#314 + #315).
     pub fn submit_command_run(&mut self, cmd: crate::routes::commands::RunnableCommand) {
         self.running_command = Some(cmd);
         self.last_command_run = None;

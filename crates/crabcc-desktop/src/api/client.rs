@@ -14,9 +14,9 @@ use serde::{de::DeserializeOwned, Serialize};
 use super::types::{
     ActivityResponse, AgentKillResponse, AgentKillsResponse, AgentLaunchRequest,
     AgentLaunchResponse, AgentLog, AgentModelsResponse, AgentProfilesResponse, AgentsResponse,
-    Bootstrap, DiscoveryReport, GraphSnapshot, HealthResponse, MemoryIngestRequest,
-    MemoryIngestResponse, MemoryRecentResponse, OllamaKey, OtlpHealth, RandomQueryResponse,
-    ReindexReport, TelemetrySnapshot,
+    Bootstrap, DiscoveryReport, GraphSnapshot, HealthResponse, MemoryGraphResponse,
+    MemoryIngestRequest, MemoryIngestResponse, MemoryRecentResponse, OllamaKey, OtlpHealth,
+    RandomQueryResponse, ReindexReport, TelemetrySnapshot,
 };
 
 /// Default loopback origin for `crabcc serve`. Override via
@@ -181,6 +181,15 @@ impl Client {
     /// Knowledge route. Server caps the body preview to ~200 chars.
     pub fn memory_recent(&self) -> Result<MemoryRecentResponse> {
         self.get_json("/api/memory/recent?limit=50")
+    }
+
+    /// Drawer cross-reference graph for the K-Graph route (#317).
+    /// Server-side scans drawer bodies for `web:<hash>`, `text:<hash>`,
+    /// `doc:<n>`, and Obsidian-style `[[Title]]` references and
+    /// returns nodes + resolved edges. `limit=200` matches the
+    /// server's default; bump for power-user repos with deep memory.
+    pub fn memory_graph(&self) -> Result<MemoryGraphResponse> {
+        self.get_json("/api/memory/graph?limit=500")
     }
 
     /// Submit a memory drawer (free-text and/or URLs). Returns the
