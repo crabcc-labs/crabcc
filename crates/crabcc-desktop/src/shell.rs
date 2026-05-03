@@ -177,6 +177,20 @@ impl Render for Shell {
             .size_full()
             .bg(bg)
             .child(header)
-            .child(div().flex_1().min_h(px(0.0)).child(body))
+            // Wrap the body in an overflow_y_scroll container so dense
+            // routes (System sections, Knowledge drawers, Logs tail) +
+            // the tall Home dashboard scroll under a small window
+            // instead of being clipped. `flex_1` + `min_h(0)` keeps the
+            // header pinned and lets the body claim the rest. `id` is
+            // required by gpui for a scrollable container so the
+            // scroll-offset state survives renders.
+            .child(
+                div()
+                    .id("shell-body-scroll")
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .overflow_y_scroll()
+                    .child(body),
+            )
     }
 }
