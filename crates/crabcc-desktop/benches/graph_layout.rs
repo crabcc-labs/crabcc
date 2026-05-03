@@ -15,6 +15,10 @@ fn synth_graph(nodes: usize, edges_per_node: usize) -> GraphSnapshot {
         .map(|i| GraphNode {
             id: format!("n{i:04}"),
             depth: (i % 5) as u32,
+            kind: None,
+            file: None,
+            line: None,
+            signature: None,
         })
         .collect();
     let mut edges_vec: Vec<GraphEdge> = Vec::with_capacity(nodes * edges_per_node);

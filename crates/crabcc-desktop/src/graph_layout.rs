@@ -187,6 +187,10 @@ mod tests {
                 .map(|id| GraphNode {
                     id: id.to_string(),
                     depth: 0,
+                    kind: None,
+                    file: None,
+                    line: None,
+                    signature: None,
                 })
                 .collect(),
             edges: edges

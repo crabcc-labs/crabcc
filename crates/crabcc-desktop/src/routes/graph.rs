@@ -631,11 +631,16 @@ fn render_node_drawer(
     primary: Hsla,
 ) -> gpui::AnyElement {
     let (incoming, outgoing) = directed;
-    let label = snapshot
-        .and_then(|g| g.nodes.get(idx))
-        .map(|n| n.id.clone())
-        .unwrap_or_else(|| "—".into());
-    let depth = snapshot.and_then(|g| g.nodes.get(idx)).map(|n| n.depth);
+    let node = snapshot.and_then(|g| g.nodes.get(idx));
+    let label = node.map(|n| n.id.clone()).unwrap_or_else(|| "—".into());
+    let depth = node.map(|n| n.depth);
+    // Server-side enrichment fields (#301). Pre-#301 servers omit
+    // them — defaulted to None via `serde(default)`. The drawer
+    // gracefully degrades: missing fields just don't render.
+    let kind_str = node.and_then(|n| n.kind.clone());
+    let file = node.and_then(|n| n.file.clone());
+    let line = node.and_then(|n| n.line);
+    let signature = node.and_then(|n| n.signature.clone());
     let degree = incoming.len() + outgoing.len();
 
     // Resolve neighbour indexes back to ids once. Costs O(degree) — the
@@ -652,44 +657,78 @@ fn render_node_drawer(
     let copy_view = view.clone();
     let close_view = view.clone();
 
-    // Header — symbol id (mono) + meta line + close affordance.
-    let header =
-        h_flex()
-            .items_start()
-            .justify_between()
-            .gap_2()
-            .child(
-                v_flex()
-                    .gap_0p5()
-                    .child(
+    // Kind badge — small inline chip in the kind's family colour.
+    // Maps `function` / `struct` / etc. to the existing `op_color`-
+    // adjacent palette so the drawer reads consistently with the
+    // dashboard activity tile.
+    let kind_chip: gpui::AnyElement = match kind_str.as_deref() {
+        Some(k) => {
+            let chip_color = kind_color(k, primary, muted);
+            div()
+                .px_2()
+                .py_0p5()
+                .border_1()
+                .border_color(chip_color)
+                .rounded_md()
+                .text_color(chip_color)
+                .text_xs()
+                .child(SharedString::from(k.to_string()))
+                .into_any_element()
+        }
+        None => div().into_any_element(),
+    };
+
+    // Subline: depth + edge count + (optional) file:line. Each part is
+    // separated by `·` so a missing optional folds the row cleanly.
+    let mut subline_parts: Vec<String> = Vec::with_capacity(3);
+    if let Some(d) = depth {
+        subline_parts.push(format!("depth {d}"));
+    }
+    subline_parts.push(format!(
+        "{degree} edge{}",
+        if degree == 1 { "" } else { "s" }
+    ));
+    if let (Some(f), Some(l)) = (file.as_deref(), line) {
+        subline_parts.push(format!("{f}:{l}"));
+    }
+    let subline_text = subline_parts.join(" · ");
+
+    // Header — symbol id (mono) + kind chip + meta line + close.
+    let header = h_flex()
+        .items_start()
+        .justify_between()
+        .gap_2()
+        .child(
+            v_flex()
+                .gap_0p5()
+                .child(
+                    h_flex().gap_2().items_center().child(kind_chip).child(
                         div()
                             .text_color(foreground)
                             .child(SharedString::from(label.clone())),
-                    )
-                    .child(div().text_color(muted).text_xs().child(SharedString::from(
-                        match depth {
-                            Some(d) => format!(
-                                "depth {d} · {degree} edge{}",
-                                if degree == 1 { "" } else { "s" }
-                            ),
-                            None => format!("{degree} edge{}", if degree == 1 { "" } else { "s" }),
-                        },
-                    ))),
-            )
-            .child(
-                div()
-                    .id("graph-drawer-close")
-                    .px_1()
-                    .text_color(muted)
-                    .child(SharedString::new_static("×"))
-                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                        cx.stop_propagation();
-                        close_view.update(cx, |this, cx| {
-                            this.selected = None;
-                            cx.notify();
-                        });
-                    }),
-            );
+                    ),
+                )
+                .child(
+                    div()
+                        .text_color(muted)
+                        .text_xs()
+                        .child(SharedString::from(subline_text)),
+                ),
+        )
+        .child(
+            div()
+                .id("graph-drawer-close")
+                .px_1()
+                .text_color(muted)
+                .child(SharedString::new_static("×"))
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    cx.stop_propagation();
+                    close_view.update(cx, |this, cx| {
+                        this.selected = None;
+                        cx.notify();
+                    });
+                }),
+        );
 
     // One edge sub-list. Caller picks Incoming vs Outgoing label and
     // passes the resolved indexes — we don't filter or reorder here.
@@ -733,16 +772,53 @@ fn render_node_drawer(
         list
     };
 
-    // Server-side gap — surface this inline so a contributor reading
-    // the drawer in-app sees the limitation rather than being puzzled
-    // by missing fields. Update the copy when /api/seed-graph is
-    // enriched.
-    let server_gap_note = div()
-        .text_color(muted)
-        .text_xs()
-        .child(SharedString::new_static(
-        "kind · file:line · signature · snippet require server-side enrichment of /api/seed-graph",
-    ));
+    // Signature block. Renders only when the server enrichment
+    // (#301) supplied one. Snippet (the brief's other section) still
+    // requires source-file access the desktop client doesn't have —
+    // tracked separately.
+    let signature_block: gpui::AnyElement = match signature.as_deref() {
+        Some(sig) => v_flex()
+            .gap_1()
+            .child(
+                div()
+                    .text_color(muted)
+                    .text_xs()
+                    .child(SharedString::new_static("SIGNATURE")),
+            )
+            .child(
+                div()
+                    .px_2()
+                    .py_1()
+                    .border_1()
+                    .border_color(border)
+                    .rounded_md()
+                    .bg(gpui::black().opacity(0.35))
+                    .text_color(foreground)
+                    .text_xs()
+                    .child(SharedString::from(sig.to_string())),
+            )
+            .into_any_element(),
+        None => div().into_any_element(),
+    };
+
+    // Pre-#301 servers don't emit kind / file / line / signature —
+    // the drawer falls back gracefully (sections that need a field
+    // skip if the field is None), but a one-line reminder still
+    // helps the user understand why the drawer is sparse on a stale
+    // server. Renders only when *all four* enrichment fields are
+    // missing (i.e. an old server).
+    let server_gap_note: gpui::AnyElement =
+        if kind_str.is_none() && file.is_none() && line.is_none() && signature.is_none() {
+            div()
+                .text_color(muted)
+                .text_xs()
+                .child(SharedString::new_static(
+                    "running against a pre-#301 server — kind / file:line / signature unavailable",
+                ))
+                .into_any_element()
+        } else {
+            div().into_any_element()
+        };
 
     let actions = h_flex().gap_2().child(
         div()
@@ -783,11 +859,34 @@ fn render_node_drawer(
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(header)
+        .child(signature_block)
         .child(edge_list("Incoming", &incoming))
         .child(edge_list("Outgoing", &outgoing))
         .child(actions)
         .child(server_gap_note)
         .into_any_element()
+}
+
+/// Map a server-emitted kind string (`function` / `struct` / `enum` /
+/// `trait` / `const` / `type` / `macro` / etc. — see `crabcc-viz`'s
+/// `symbol_kind_str`) to a tone in the gpui-component theme. The
+/// palette mirrors the dashboard's `op_color` so a user who's
+/// internalised the activity-tile colours reads the same families
+/// here.
+fn kind_color(kind: &str, primary: Hsla, muted: Hsla) -> Hsla {
+    match kind {
+        // primary purple for fns + their kin, plus type-construction
+        // shapes (struct / enum) — these dominate row volume in a
+        // typical Rust repo and cluster well as one visual family.
+        "function" | "method" | "macro" => primary,
+        // muted for shapes the eye doesn't need to track first.
+        "const" | "var" | "type" => muted,
+        // class / interface / struct / enum / trait — keep them all
+        // primary too for now; we can split if a user calls out the
+        // need to distinguish them at a glance.
+        "class" | "interface" | "struct" | "enum" | "trait" => primary,
+        _ => muted,
+    }
 }
 
 #[cfg(test)]

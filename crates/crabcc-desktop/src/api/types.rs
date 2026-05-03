@@ -453,6 +453,22 @@ pub struct GraphNode {
     /// dimmer so the entry points pop.
     #[serde(default)]
     pub depth: u32,
+    /// Symbol kind — `function` / `struct` / `enum` / `trait` /
+    /// `const` / `type` / `macro` / etc. `None` for nodes whose id
+    /// didn't match an indexed symbol (extern, std, etc.). Server
+    /// added these fields in #301; pre-#301 servers omit them, hence
+    /// `serde(default)`.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Repo-relative file path of the symbol's defining site.
+    #[serde(default)]
+    pub file: Option<String>,
+    /// 1-based line number of the symbol's defining site.
+    #[serde(default)]
+    pub line: Option<u32>,
+    /// Single-line signature (e.g. `pub fn open(path: &Path) -> Result<Store>`).
+    #[serde(default)]
+    pub signature: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

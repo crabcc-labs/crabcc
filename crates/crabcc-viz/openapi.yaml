@@ -350,16 +350,31 @@ paths:
   /api/seed-graph:
     get:
       tags: [activity]
-      summary: Seed nodes for the graph viewer (legacy).
+      summary: Seed nodes for the graph viewer.
+      description: |
+        Returns a bounded subgraph of the cached call graph rooted on
+        the highest-degree symbols. Each node carries optional symbol
+        metadata (kind / file / line / signature) when the id resolves
+        in the symbol index — added in #301 so the desktop drawer can
+        render symbol detail without a follow-up RPC.
       operationId: seedGraph
+      parameters:
+        - in: query
+          name: limit
+          required: false
+          description: Number of seed (high-degree) symbols. Clamped to [2, 32].
+          schema:
+            type: integer
+            minimum: 2
+            maximum: 32
+            default: 8
       responses:
         "200":
-          description: Seed nodes (free-form JSON for now).
+          description: Seed snapshot.
           content:
             application/json:
               schema:
-                type: object
-                additionalProperties: true
+                $ref: "#/components/schemas/SeedSnapshot"
 
   /api/debug/dump:
     get:
@@ -712,3 +727,55 @@ components:
       properties:
         op: { type: string }
         symbol: { type: string }
+
+    GraphNode:
+      type: object
+      required: [id, depth]
+      properties:
+        id:
+          type: string
+          description: Symbol name as the call graph stores it.
+        depth:
+          type: integer
+          description: BFS depth from the seed set (0 = seed).
+        kind:
+          type: string
+          description: |
+            Symbol kind from the index — one of `function`, `method`,
+            `class`, `struct`, `enum`, `trait`, `interface`, `const`,
+            `var`, `type`, `macro`. Omitted when `id` doesn't resolve
+            in the symbol index (extern crate, std, dynamic dispatch
+            target).
+          enum:
+            [function, method, class, struct, enum, trait, interface, const, var, type, macro]
+        file:
+          type: string
+          description: Repo-relative path of the defining site.
+        line:
+          type: integer
+          description: 1-based line number of the defining site.
+        signature:
+          type: string
+          description: Single-line signature (e.g. `pub fn open(path: &Path) -> Result<Store>`).
+
+    GraphEdge:
+      type: object
+      required: [src, dst]
+      properties:
+        src: { type: string, description: Caller symbol name. }
+        dst: { type: string, description: Callee symbol name. }
+
+    SeedSnapshot:
+      type: object
+      required: [nodes, edges, seeds]
+      properties:
+        nodes:
+          type: array
+          items: { $ref: "#/components/schemas/GraphNode" }
+        edges:
+          type: array
+          items: { $ref: "#/components/schemas/GraphEdge" }
+        seeds:
+          type: array
+          description: Subset of node ids that were chosen as seeds (depth 0).
+          items: { type: string }
