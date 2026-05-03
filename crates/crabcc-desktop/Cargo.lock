@@ -1236,6 +1236,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "criterion",
+ "ctrlc",
  "flume",
  "gpui",
  "gpui-component",
@@ -1359,6 +1360,17 @@ name = "ctor-proc-macro"
 version = "0.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2931af7e13dc045d8e9d26afccc6fa115d64e115c9c84b1166288b46f6782c2"
+
+[[package]]
+name = "ctrlc"
+version = "3.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e0b1fab2ae45819af2d0731d60f2afe17227ebb1a1538a236da84c93e9a60162"
+dependencies = [
+ "dispatch2",
+ "nix 0.31.2",
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "data-url"

@@ -64,6 +64,13 @@ const HEALTH_PROBE_SLEEP: Duration = Duration::from_millis(500);
 /// out of their way.
 const SKIP_ENV: &str = "CRABCC_DESKTOP_SKIP_SERVICES";
 
+/// Env var for the symmetric counterpart — when set, the binary's
+/// SIGINT handler runs `docker compose down` before exiting. Off
+/// by default because most users have multiple consumers of the
+/// stack (web dashboard, agents, telegram bot) and tearing it down
+/// on every desktop quit would be surprising.
+pub const STOP_ON_EXIT_ENV: &str = "CRABCC_DESKTOP_STOP_SERVICES_ON_EXIT";
+
 /// Outcome of a bootstrap attempt — surfaced to the caller for
 /// logging and (later slice) toasting.
 #[derive(Debug)]
@@ -135,6 +142,25 @@ pub fn ensure_stack_started() -> BootstrapOutcome {
         Ok(()) => BootstrapOutcome::StartedViaCompose,
         Err(last) => BootstrapOutcome::StartedButNotReady { last_error: last },
     }
+}
+
+/// Run `docker compose -f <compose> down` to stop the backend
+/// stack. Symmetric counterpart of [`ensure_stack_started`] —
+/// called from the binary's SIGINT handler when
+/// [`STOP_ON_EXIT_ENV`] is set. Synchronous; logs the outcome.
+/// Idempotent — succeeds even if the stack isn't running.
+pub fn stop_stack() -> Result<(), String> {
+    let output = Command::new("docker")
+        .args(["compose", "-f", COMPOSE_FILE, "down"])
+        .output()
+        .map_err(|e| format!("spawn failed: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "docker compose down: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(())
 }
 
 /// Quick `docker info` probe. Returns `true` only if the daemon
