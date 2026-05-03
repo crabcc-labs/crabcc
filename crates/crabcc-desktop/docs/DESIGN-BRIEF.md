@@ -355,31 +355,20 @@ In rough order of value:
 
 ## Appendix B — Stitch ref designs
 
-A Stitch project (`projects/3825002640704158815` —
-**`crabcc-desktop greenfield`**) was opened with a dark design system
-mirroring the gpui-component tokens above. Six screen prompts were
-submitted (one per greenfield surface). At the time of writing, the
-Stitch screen-generation API was returning timeouts on every call
-and `list_screens` stayed empty — so this appendix ships **without**
-embedded URLs. The Stitch project + design system survive and can
-be re-driven later via `mcp__stitch__generate_screen_from_text` once
-the API stabilises; the prompts that should be replayed live in
-`crates/crabcc-desktop/docs/DESIGN-PROMPTS.md`.
+Stitch project: [`crabcc-desktop greenfield`](https://stitch.withgoogle.com/projects/3825002640704158815)
+(`projects/3825002640704158815`).
+Design system: `assets/9253917256800618914` (`crabcc-desktop dark`).
 
-The brief itself (above) is the actual spec — every greenfield
-surface has its target shape, states, copy, density, and theme
-tokens defined inline. Implementation does not strictly need the
-Stitch screens to start, but the screens (when they land) should be
-backfilled here:
+Six screens were generated from the prompts in
+[`./DESIGN-PROMPTS.md`](./DESIGN-PROMPTS.md). The brief itself is the
+authoritative spec — Stitch screens are reference visualisations to
+shorten the cold-start when implementing each route.
 
 | # | Surface | Stitch screen | Follow-up issue |
 |---|---|---|---|
-| 1 | Tool-call timeline / inspector | _pending_ | [#293](https://github.com/peterlodri-sec/crabcc/issues/293) |
-| 2 | Agent-spawn sheet (3 states) | _pending_ | [#294](https://github.com/peterlodri-sec/crabcc/issues/294) |
-| 3 | Commands launchpad (run + result) | _pending_ | [#295](https://github.com/peterlodri-sec/crabcc/issues/295) |
-| 4 | Relations graph node-detail drawer | _pending_ | [#296](https://github.com/peterlodri-sec/crabcc/issues/296) |
-| 5 | Knowledge graph canvas | _pending_ | [#297](https://github.com/peterlodri-sec/crabcc/issues/297) |
-| 6 | In-window notifications strip | _pending_ | [#298](https://github.com/peterlodri-sec/crabcc/issues/298) |
-
-Stitch project: `projects/3825002640704158815` (`crabcc-desktop greenfield`).
-Design system: `assets/9253917256800618914` (`crabcc-desktop dark`).
+| 1 | Tool-call timeline / inspector | [b705813353a2](https://stitch.withgoogle.com/projects/3825002640704158815/screens/b705813353a2432b943c61fdbe0bd23a) | [#293](https://github.com/peterlodri-sec/crabcc/issues/293) |
+| 2 | Agent-spawn sheet (3 states) | [2373080f98d2](https://stitch.withgoogle.com/projects/3825002640704158815/screens/2373080f98d241daa2229d339634f2a8) | [#294](https://github.com/peterlodri-sec/crabcc/issues/294) |
+| 3 | Commands launchpad (run + result) | [5983308335a0](https://stitch.withgoogle.com/projects/3825002640704158815/screens/5983308335a046b58c233ec5f3acf79d) | [#295](https://github.com/peterlodri-sec/crabcc/issues/295) |
+| 4 | Relations graph node-detail drawer | [b17811fbee2f](https://stitch.withgoogle.com/projects/3825002640704158815/screens/b17811fbee2f468c9e20eaad1f5885ab) | [#296](https://github.com/peterlodri-sec/crabcc/issues/296) |
+| 5 | Knowledge graph canvas | [bfd4fb22b87e](https://stitch.withgoogle.com/projects/3825002640704158815/screens/bfd4fb22b87e4ee6910a2d238fd61379) | [#297](https://github.com/peterlodri-sec/crabcc/issues/297) |
+| 6 | In-window notifications strip | [02222cd4e083](https://stitch.withgoogle.com/projects/3825002640704158815/screens/02222cd4e0834a8ea8accb84ef12a473) | [#298](https://github.com/peterlodri-sec/crabcc/issues/298) |
