@@ -54,7 +54,10 @@ pub fn find_callers(src: &str, lang: SupportLang, name: &str) -> Vec<Hit> {
         let pattern = Pattern::new(pattern_src, lang);
         for m in root.find_all(pattern) {
             let n = m.get_node();
-            let (line, col) = n.start_pos();
+            // ast-grep-core 0.31: start_pos returns Position struct, not tuple.
+            // column requires the node to translate byte offset to char column.
+            let p = n.start_pos();
+            let (line, col) = (p.row(), p.column(n));
             if !seen.insert((line, col)) {
                 continue;
             }
