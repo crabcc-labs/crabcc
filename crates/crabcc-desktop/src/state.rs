@@ -876,37 +876,39 @@ impl AppState {
 /// `try_send_app_event` helper for the policy.
 const APP_CHANNEL_CAP: usize = 512;
 
-/// Best-effort `AppEvent` send. Drops the event (with a warn log)
-/// if the channel is full — preferable to blocking a worker thread
 /// Dispatch a [`crate::routes::commands::RunnableCommand`] to the
 /// matching [`Client`] method. Used by the worker thread spawned in
-/// [`AppState::submit_command_run`]. Returns the response Debug-
-/// formatted into a string — the underlying response types are
-/// `Deserialize`-only, so a proper JSON pretty-print needs a
-/// `Serialize` derive sweep that's deliberately out of scope for
-/// this slice.
+/// [`AppState::submit_command_run`]. Returns the response as a
+/// pretty-printed JSON string — every response type derives
+/// `Serialize` (sweep landed in this PR), so the launchpad's inline
+/// result block reads as proper JSON instead of Rust Debug format.
 fn run_command(
     client: &Client,
     cmd: crate::routes::commands::RunnableCommand,
 ) -> anyhow::Result<String> {
     use crate::routes::commands::RunnableCommand as RC;
+    fn pretty<T: serde::Serialize>(v: T) -> anyhow::Result<String> {
+        Ok(serde_json::to_string_pretty(&v)?)
+    }
     match cmd {
-        RC::Health => Ok(format!("{:#?}", client.health()?)),
-        RC::Bootstrap => Ok(format!("{:#?}", client.bootstrap()?)),
-        RC::Services => Ok(format!("{:#?}", client.services()?)),
-        RC::Agents => Ok(format!("{:#?}", client.agents()?)),
-        RC::AgentProfiles => Ok(format!("{:#?}", client.agent_profiles()?)),
-        RC::AgentKills => Ok(format!("{:#?}", client.agent_kills()?)),
-        RC::AgentModels => Ok(format!("{:#?}", client.agent_models()?)),
-        RC::OllamaKey => Ok(format!("{:#?}", client.ollama_key()?)),
-        RC::OtlpHealth => Ok(format!("{:#?}", client.otlp_health()?)),
-        RC::Reindex => Ok(format!("{:#?}", client.reindex()?)),
-        RC::RandomQuery => Ok(format!("{:#?}", client.random_query()?)),
-        RC::SeedGraph => Ok(format!("{:#?}", client.seed_graph()?)),
-        RC::MemoryRecent => Ok(format!("{:#?}", client.memory_recent()?)),
+        RC::Health => pretty(client.health()?),
+        RC::Bootstrap => pretty(client.bootstrap()?),
+        RC::Services => pretty(client.services()?),
+        RC::Agents => pretty(client.agents()?),
+        RC::AgentProfiles => pretty(client.agent_profiles()?),
+        RC::AgentKills => pretty(client.agent_kills()?),
+        RC::AgentModels => pretty(client.agent_models()?),
+        RC::OllamaKey => pretty(client.ollama_key()?),
+        RC::OtlpHealth => pretty(client.otlp_health()?),
+        RC::Reindex => pretty(client.reindex()?),
+        RC::RandomQuery => pretty(client.random_query()?),
+        RC::SeedGraph => pretty(client.seed_graph()?),
+        RC::MemoryRecent => pretty(client.memory_recent()?),
     }
 }
 
+/// Best-effort `AppEvent` send. Drops the event (with a warn log)
+/// if the channel is full — preferable to blocking a worker thread
 /// on a stuck pump. Returns `Ok(())` on successful send, `Err(())`
 /// when the receiver has been dropped (caller should treat as
 /// shutdown signal).

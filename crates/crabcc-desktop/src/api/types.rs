@@ -16,19 +16,19 @@
 use gpui::SharedString;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthResponse {
     pub status: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BootstrapIndex {
     pub present: Option<bool>,
     pub files: Option<u64>,
     pub symbols: Option<u64>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Bootstrap {
     pub repo: String,
     pub root: String,
@@ -36,7 +36,7 @@ pub struct Bootstrap {
     pub index: Option<BootstrapIndex>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActivityHit {
     pub ts: i64,
     pub op: String,
@@ -46,7 +46,7 @@ pub struct ActivityHit {
     pub source: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActivityResponse {
     pub items: Vec<ActivityHit>,
 }
@@ -62,7 +62,7 @@ pub struct ActivityResponse {
 // is the source of truth on the Rust side. Caught at A.3 implementation
 // time by sampling live frames.
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SseActivityEvent {
     pub ts: i64,
     pub op: SharedString,
@@ -78,14 +78,14 @@ pub struct SseActivityEvent {
     pub agent_id: Option<SharedString>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SseActivityFrame {
     pub repo: SharedString,
     pub cursor: i64,
     pub events: Vec<SseActivityEvent>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SseAgent {
     pub id: SharedString,
     pub status: AgentStatus,
@@ -145,19 +145,19 @@ impl AgentDerived {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SseAgentsFrame {
     pub agents: Vec<SseAgent>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentStatus {
     Running,
     Exited,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentSummary {
     pub id: String,
     pub status: AgentStatus,
@@ -168,19 +168,19 @@ pub struct AgentSummary {
     pub exit_code: Option<i32>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentsResponse {
     pub agents: Vec<AgentSummary>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentLog {
     pub body: String,
     pub cursor: u64,
     pub total: u64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentProfileEntry {
     pub id: SharedString,
     /// Trailing underscore mirrors the openapi field — `crate` is a
@@ -190,13 +190,13 @@ pub struct AgentProfileEntry {
     pub model: Option<SharedString>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentProfilesResponse {
     pub dir: String,
     pub profiles: Vec<AgentProfileEntry>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentKillRow {
     pub run_id: SharedString,
     pub reason: SharedString,
@@ -205,13 +205,13 @@ pub struct AgentKillRow {
     pub killed_at: i64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentKillsResponse {
     pub db: String,
     pub rows: Vec<AgentKillRow>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentModelEntry {
     pub file: SharedString,
     pub provider: SharedString,
@@ -221,13 +221,13 @@ pub struct AgentModelEntry {
     pub docs_first: Option<SharedString>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentModelsResponse {
     pub dir: String,
     pub models: Vec<AgentModelEntry>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OllamaKey {
     pub present: bool,
     pub path: String,
@@ -237,7 +237,7 @@ pub struct OllamaKey {
     pub key: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ServiceKind {
     Redis,
@@ -259,7 +259,7 @@ pub enum ServiceKind {
     Unknown,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceStatus {
     pub name: SharedString,
     pub kind: ServiceKind,
@@ -273,14 +273,14 @@ pub struct ServiceStatus {
     pub probed_at: i64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiscoveryReport {
     pub services: Vec<ServiceStatus>,
     pub compose_mode: bool,
     pub elapsed_ms: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum LogLevel {
     Trace,
@@ -290,7 +290,7 @@ pub enum LogLevel {
     Error,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TelemetryEvent {
     pub ts: i64,
     pub level: LogLevel,
@@ -301,7 +301,7 @@ pub struct TelemetryEvent {
     pub fields: serde_json::Value,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TelemetrySource {
     pub path: String,
     pub lines_read: u64,
@@ -309,21 +309,21 @@ pub struct TelemetrySource {
     pub exists: bool,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TelemetrySnapshot {
     pub cursor: u64,
     pub events: Vec<TelemetryEvent>,
     pub source: TelemetrySource,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OtlpHealth {
     pub reachable: bool,
     pub endpoint: String,
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReindexReport {
     pub root: String,
     pub elapsed_ms: u64,
@@ -332,7 +332,7 @@ pub struct ReindexReport {
     pub logs: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RandomQueryResponse {
     pub op: String,
     pub symbol: String,
@@ -343,7 +343,7 @@ pub struct RandomQueryResponse {
 // a live `crabcc serve`; openapi.yaml lists `/api/memory/recent` with
 // an opaque schema, so this is the source of truth on the Rust side.
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryDrawer {
     pub id: i64,
     pub wing: SharedString,
@@ -355,7 +355,7 @@ pub struct MemoryDrawer {
     pub created_at: i64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryRecentResponse {
     /// `false` if the memory backend isn't bootstrapped (no `.crabcc/memory.db`).
     pub present: bool,
@@ -382,13 +382,13 @@ pub struct MemoryIngestRequest {
     pub source: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryIngestStats {
     pub ok: u32,
     pub failed: u32,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryIngestEntry {
     pub id: String,
     pub kind: String,
@@ -396,7 +396,7 @@ pub struct MemoryIngestEntry {
     pub drawer_id: i64,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryIngestResponse {
     pub ingested: Vec<MemoryIngestEntry>,
     /// Per-input error strings; matches the request order one-to-one.
@@ -426,7 +426,7 @@ pub struct AgentLaunchRequest {
 /// `id` + `pid`. Server actually emits `ok`, `prompt_chars`,
 /// `timeout_secs` too. All fields kept `Option<…>` so future server
 /// drift in nullability doesn't crash decode.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentLaunchResponse {
     pub id: Option<String>,
     #[serde(default)]
@@ -441,7 +441,7 @@ pub struct AgentLaunchResponse {
 /// `POST /api/agents/{id}/kill` response. `signaled = false` means
 /// the process was already gone (server-side note: "process already
 /// exited"); `signaled = true` means SIGKILL was actually delivered.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentKillResponse {
     pub id: String,
     pub pid: Option<u64>,
@@ -457,7 +457,7 @@ pub struct AgentKillResponse {
 // fields below. Mirroring that on the Rust side until the call-graph
 // viewer is migrated fully (server-side TODO).
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphNode {
     pub id: String,
     /// BFS depth from the seed set. The web Graph.tsx ignores this
@@ -483,13 +483,13 @@ pub struct GraphNode {
     pub signature: Option<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphEdge {
     pub src: String,
     pub dst: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphSnapshot {
     pub nodes: Vec<GraphNode>,
     pub edges: Vec<GraphEdge>,
