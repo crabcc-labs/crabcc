@@ -78,3 +78,12 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.gpui_macros]
 opt-level = 3
+
+# macOS-only dock badge plumbing. `objc2-app-kit` is already transitively
+# pulled in by gpui_platform; pinning a direct dep here makes the call
+# site (`src/native_macos.rs`) self-contained and lets cargo unify on
+# whatever version gpui's transitive uses without us guessing.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = "0.3"
+objc2-foundation = "0.3"

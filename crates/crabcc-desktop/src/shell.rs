@@ -16,6 +16,7 @@ use gpui::{
 };
 use gpui_component::{h_flex, v_flex, ActiveTheme};
 
+use crate::native;
 use crate::routes::{
     agents::AgentsRoute, commands::CommandsRoute, dashboard::DashboardHome,
     knowledge::KnowledgeRoute, logs::LogsRoute, system::SystemRoute,
@@ -30,6 +31,12 @@ pub struct Shell {
     system: Entity<SystemRoute>,
     knowledge: Entity<KnowledgeRoute>,
     commands: Entity<CommandsRoute>,
+    /// Most-recent value passed to `native::set_dock_badge`, so the
+    /// render path can skip the AppKit call when the count hasn't
+    /// changed. `u32::MAX` is the sentinel "never set yet" — picked
+    /// instead of `Option<u32>` so the comparison is a single integer
+    /// equality check on every render.
+    last_badge_count: u32,
 }
 
 impl Shell {
@@ -57,6 +64,7 @@ impl Shell {
             system,
             knowledge,
             commands,
+            last_badge_count: u32::MAX,
         }
     }
 }
@@ -77,29 +85,47 @@ impl Render for Shell {
             .unwrap_or_else(|| "loading…".into());
         let active = state_for_brand.route;
 
+        // Sync the macOS dock badge to the running-agents count. Only
+        // calls into AppKit when the count actually changed — render
+        // fires on every AppState notify, but `setBadgeLabel:` is a
+        // window-server roundtrip we don't want to do on every tick.
+        // No-op on non-macOS targets (see `native::set_dock_badge`).
+        let running = state_for_brand.agents_running();
+        if running != self.last_badge_count {
+            let label = (running > 0).then(|| running.to_string());
+            native::set_dock_badge(label.as_deref());
+            self.last_badge_count = running;
+        }
+
         // Build the nav strip. Each entry captures the AppState entity
         // by clone and updates `route` on click — the shell observes
         // the entity and re-renders, dispatching a new body view.
-        let nav = h_flex().gap_4().children(Route::ALL.into_iter().map(|route| {
-            let is_active = route == active;
-            let label = route.label();
-            let state = self.state.clone();
-            div()
-                .id(label)
-                .px_2()
-                .py_1()
-                .text_color(if is_active { foreground } else { muted })
-                .border_b_2()
-                .border_color(if is_active { primary } else { gpui::transparent_black() })
-                .child(SharedString::new_static(label))
-                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                    state.update(cx, |s, cx| {
-                        s.set_route(route);
-                        cx.notify();
-                    });
-                })
-                .into_any_element()
-        }));
+        let nav = h_flex()
+            .gap_4()
+            .children(Route::ALL.into_iter().map(|route| {
+                let is_active = route == active;
+                let label = route.label();
+                let state = self.state.clone();
+                div()
+                    .id(label)
+                    .px_2()
+                    .py_1()
+                    .text_color(if is_active { foreground } else { muted })
+                    .border_b_2()
+                    .border_color(if is_active {
+                        primary
+                    } else {
+                        gpui::transparent_black()
+                    })
+                    .child(SharedString::new_static(label))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        state.update(cx, |s, cx| {
+                            s.set_route(route);
+                            cx.notify();
+                        });
+                    })
+                    .into_any_element()
+            }));
 
         let header = h_flex()
             .gap_6()
@@ -116,11 +142,7 @@ impl Render for Shell {
                             .text_color(foreground)
                             .child(SharedString::new_static("crabcc · live")),
                     )
-                    .child(
-                        div()
-                            .text_color(muted)
-                            .child(SharedString::from(brand_sub)),
-                    ),
+                    .child(div().text_color(muted).child(SharedString::from(brand_sub))),
             )
             .child(nav);
 
