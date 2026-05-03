@@ -18,6 +18,7 @@ use std::io::{BufRead, BufReader};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use tracing::{debug, error, info, warn};
 
 use crate::api::types::{SseActivityFrame, SseAgentsFrame};
 
@@ -45,6 +46,7 @@ enum ParsedTopic {
 /// end of the event channel — drop the receiver to stop the worker.
 pub fn spawn_worker(base_url: impl AsRef<str>) -> flume::Receiver<SseEvent> {
     let url = format!("{}/api/events", base_url.as_ref());
+    info!(target: "crabcc::sse", %url, "spawning SSE worker");
     let (tx, rx) = flume::unbounded::<SseEvent>();
     std::thread::Builder::new()
         .name("crabcc-sse".into())
@@ -54,22 +56,50 @@ pub fn spawn_worker(base_url: impl AsRef<str>) -> flume::Receiver<SseEvent> {
 }
 
 fn run(url: &str, tx: &flume::Sender<SseEvent>) {
+    // Build the HTTP client ONCE and reuse it across reconnects. Each
+    // `Client` carries a connection pool + a TLS session cache; rebuilding
+    // it on every reconnect (the original shape) threw away those caches
+    // and forced a fresh handshake even for a brief reconnect blip. The
+    // `timeout(None)` is critical for SSE — a quiet server is normal, not
+    // a fault. Other `api::client` callers still use their own 5-second
+    // bounded client.
+    let http = match reqwest::blocking::Client::builder()
+        .timeout(None::<Duration>)
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            error!(
+                target: "crabcc::sse",
+                error = %e,
+                "failed to build http client; worker exiting"
+            );
+            return;
+        }
+    };
+
     let mut backoff = Duration::from_secs(1);
     loop {
         if tx.is_disconnected() {
+            info!(target: "crabcc::sse", "receiver dropped; worker exiting");
             return;
         }
-        match connect_and_pump(url, tx) {
+        match connect_and_pump(&http, url, tx) {
             Ok(()) => {
                 // Server closed cleanly — short delay before reconnect,
                 // reset the backoff window so a flaky server doesn't
                 // permanently inflate it.
-                eprintln!("crabcc-sse: stream ended, reconnecting in 1s");
+                info!(target: "crabcc::sse", "stream ended cleanly, reconnecting in 1s");
                 std::thread::sleep(Duration::from_secs(1));
                 backoff = Duration::from_secs(1);
             }
             Err(e) => {
-                eprintln!("crabcc-sse: {e:?}; backing off {backoff:?}");
+                warn!(
+                    target: "crabcc::sse",
+                    error = ?e,
+                    backoff_ms = backoff.as_millis() as u64,
+                    "stream errored; backing off"
+                );
                 std::thread::sleep(backoff);
                 backoff = (backoff * 2).min(Duration::from_secs(30));
             }
@@ -77,14 +107,12 @@ fn run(url: &str, tx: &flume::Sender<SseEvent>) {
     }
 }
 
-fn connect_and_pump(url: &str, tx: &flume::Sender<SseEvent>) -> Result<()> {
-    // Dedicated client for SSE — no overall request timeout so a quiet
-    // server doesn't trip the default. The other API calls in
-    // `api::client` keep their own 5-second timeout.
-    let http = reqwest::blocking::Client::builder()
-        .timeout(None::<Duration>)
-        .build()
-        .context("build SSE http client")?;
+fn connect_and_pump(
+    http: &reqwest::blocking::Client,
+    url: &str,
+    tx: &flume::Sender<SseEvent>,
+) -> Result<()> {
+    debug!(target: "crabcc::sse", %url, "opening SSE connection");
     let resp = http.get(url).send().with_context(|| format!("GET {url}"))?;
     if !resp.status().is_success() {
         anyhow::bail!("{url} → {}", resp.status());
@@ -184,14 +212,14 @@ fn parse_frame(topic: ParsedTopic, data: &[u8]) -> Option<SseEvent> {
         ParsedTopic::Activity => match serde_json::from_slice::<SseActivityFrame>(data) {
             Ok(f) => Some(SseEvent::Activity(f)),
             Err(e) => {
-                eprintln!("crabcc-sse: activity decode failed: {e}");
+                warn!(target: "crabcc::sse", error = %e, topic = "activity", "frame decode failed");
                 None
             }
         },
         ParsedTopic::Agents => match serde_json::from_slice::<SseAgentsFrame>(data) {
             Ok(f) => Some(SseEvent::Agents(f)),
             Err(e) => {
-                eprintln!("crabcc-sse: agents decode failed: {e}");
+                warn!(target: "crabcc::sse", error = %e, topic = "agents", "frame decode failed");
                 None
             }
         },

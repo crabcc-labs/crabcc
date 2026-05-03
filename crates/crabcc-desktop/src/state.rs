@@ -24,6 +24,7 @@ use std::collections::VecDeque;
 use std::time::Duration;
 
 use gpui::{App, Context, Entity};
+use tracing::{debug, info};
 
 use crate::api::types::{
     AgentKillResponse, AgentKillsResponse, AgentLaunchRequest, AgentLaunchResponse, AgentLog,
@@ -392,16 +393,19 @@ impl AppState {
         std::thread::Builder::new()
             .name("crabcc-ingest".into())
             .spawn(move || {
+                debug!(target: "crabcc::state", thread = "ingest", "starting");
                 let client = Client::with_base_url(base_url);
                 let result = client.memory_ingest(&req);
                 let success = result.is_ok();
                 if tx.send(AppEvent::MemoryIngestResult(result)).is_err() {
+                    debug!(target: "crabcc::state", thread = "ingest", "exiting (rx dropped)");
                     return;
                 }
                 if success {
                     let refresh = client.memory_recent();
                     let _ = tx.send(AppEvent::MemoryRefresh(refresh));
                 }
+                debug!(target: "crabcc::state", thread = "ingest", "exiting (done)");
             })
             .expect("ingest thread spawn");
     }
@@ -420,8 +424,10 @@ impl AppState {
         std::thread::Builder::new()
             .name("crabcc-launch".into())
             .spawn(move || {
+                debug!(target: "crabcc::state", thread = "launch", "starting");
                 let client = Client::with_base_url(base_url);
                 let _ = tx.send(AppEvent::AgentLaunchResult(client.agent_launch(&req)));
+                debug!(target: "crabcc::state", thread = "launch", "exiting");
             })
             .expect("launch thread spawn");
     }
@@ -437,8 +443,10 @@ impl AppState {
         std::thread::Builder::new()
             .name("crabcc-kill".into())
             .spawn(move || {
+                debug!(target: "crabcc::state", thread = "kill", agent_id = %id, "starting");
                 let client = Client::with_base_url(base_url);
                 let _ = tx.send(AppEvent::AgentKillResult(client.agent_kill(&id)));
+                debug!(target: "crabcc::state", thread = "kill", agent_id = %id, "exiting");
             })
             .expect("kill thread spawn");
     }
@@ -456,6 +464,7 @@ impl AppState {
         std::thread::Builder::new()
             .name("crabcc-agent-log".into())
             .spawn(move || {
+                debug!(target: "crabcc::state", thread = "agent-log", agent_id = %id, since, "starting");
                 let client = Client::with_base_url(base_url);
                 let result = client.agent_log(&id, since);
                 let _ = tx.send(AppEvent::AgentLogResult { id, result });
@@ -525,6 +534,7 @@ pub fn spawn_workers(base_url: &str) -> (flume::Sender<AppEvent>, flume::Receive
         std::thread::Builder::new()
             .name("crabcc-prefetch".into())
             .spawn(move || {
+                debug!(target: "crabcc::state", thread = "prefetch", "starting");
                 let client = Client::with_base_url(base);
                 let prefetch = Prefetch {
                     bootstrap: client.bootstrap(),
@@ -539,6 +549,7 @@ pub fn spawn_workers(base_url: &str) -> (flume::Sender<AppEvent>, flume::Receive
                 };
                 // Receiver disconnect is fine — app shutdown raced us.
                 let _ = tx.send(AppEvent::Initial(Box::new(prefetch)));
+                debug!(target: "crabcc::state", thread = "prefetch", "exiting");
             })
             .expect("prefetch thread spawn");
     }
@@ -551,11 +562,14 @@ pub fn spawn_workers(base_url: &str) -> (flume::Sender<AppEvent>, flume::Receive
         std::thread::Builder::new()
             .name("crabcc-sse-bridge".into())
             .spawn(move || {
+                info!(target: "crabcc::state", thread = "sse-bridge", "starting");
                 while let Ok(evt) = sse_rx.recv() {
                     if tx.send(AppEvent::Sse(evt)).is_err() {
+                        info!(target: "crabcc::state", thread = "sse-bridge", "exiting (rx dropped)");
                         return;
                     }
                 }
+                info!(target: "crabcc::state", thread = "sse-bridge", "exiting (sse channel closed)");
             })
             .expect("sse bridge thread spawn");
     }
@@ -571,10 +585,12 @@ pub fn spawn_workers(base_url: &str) -> (flume::Sender<AppEvent>, flume::Receive
         std::thread::Builder::new()
             .name("crabcc-telemetry".into())
             .spawn(move || {
+                info!(target: "crabcc::state", thread = "telemetry", "starting");
                 let client = Client::with_base_url(base);
                 let mut cursor: i64 = 0;
                 loop {
                     if tx.is_disconnected() {
+                        info!(target: "crabcc::state", thread = "telemetry", "exiting (rx dropped)");
                         return;
                     }
                     let result = client.telemetry(Some(cursor), 100);
@@ -582,6 +598,7 @@ pub fn spawn_workers(base_url: &str) -> (flume::Sender<AppEvent>, flume::Receive
                         cursor = snapshot.cursor as i64;
                     }
                     if tx.send(AppEvent::Telemetry(result)).is_err() {
+                        info!(target: "crabcc::state", thread = "telemetry", "exiting (send fail)");
                         return;
                     }
                     std::thread::sleep(TELEMETRY_POLL);
@@ -600,9 +617,11 @@ pub fn spawn_workers(base_url: &str) -> (flume::Sender<AppEvent>, flume::Receive
         std::thread::Builder::new()
             .name("crabcc-memory-poll".into())
             .spawn(move || {
+                info!(target: "crabcc::state", thread = "memory-poll", "starting");
                 let client = Client::with_base_url(base);
                 loop {
                     if tx.is_disconnected() {
+                        info!(target: "crabcc::state", thread = "memory-poll", "exiting (rx dropped)");
                         return;
                     }
                     // First tick fires immediately after `MEMORY_POLL`
@@ -614,6 +633,7 @@ pub fn spawn_workers(base_url: &str) -> (flume::Sender<AppEvent>, flume::Receive
                         .send(AppEvent::MemoryRefresh(client.memory_recent()))
                         .is_err()
                     {
+                        info!(target: "crabcc::state", thread = "memory-poll", "exiting (send fail)");
                         return;
                     }
                 }

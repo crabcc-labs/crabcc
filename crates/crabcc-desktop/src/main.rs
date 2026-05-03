@@ -14,6 +14,21 @@ use gpui_component::Root;
 const WINDOW_TITLE: &str = "crabcc · live";
 
 fn main() {
+    // Structured logging — defaults to `info` if `RUST_LOG` isn't set.
+    // Devs can crank up SSE / state lifecycle visibility via:
+    //   RUST_LOG=crabcc_desktop=debug
+    // Pre-cursor to the QUIC migration work in #239: path-change races
+    // and the WiFi→cellular handover need observable signal, not
+    // eprintlns. The subscriber registers cheaply when no spans are
+    // recorded (typical user run with default `info`).
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .with_target(true)
+        .init();
+
     gpui_platform::application().run(move |cx: &mut App| {
         gpui_component::init(cx);
 
