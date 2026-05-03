@@ -156,25 +156,43 @@ impl Render for ToastStrip {
         let bg = theme.secondary;
         let state_for_dismiss = self.state.clone();
         let state_for_clear = self.state.clone();
+        let state_for_dismiss_all = self.state.clone();
         // Snapshot the echo flag so the per-toast row closure can
         // decide whether to render the `↗ system` tag without
         // re-reading the state entity inside the closure.
         let echo_to_system = state.echo_to_system;
+        let active_visible = state.toasts.iter().filter(|t| t.is_active(now)).count();
 
-        // Footer "history (N) · expand · clear" row — only
-        // renders when history is non-empty. Expand toggles the
-        // inline audit list below; clear wipes the history. Live
-        // toasts above are an independent surface and stay through
-        // both actions.
+        // Footer "[dismiss all] · history (N) · expand · clear" row.
+        // `dismiss all` only renders when 2+ toasts are visible — a
+        // single toast already has its own `×` so the convenience
+        // doesn't earn its layout. `history (N) · expand · clear`
+        // only renders when the audit log is non-empty.
         let expanded = self.expanded;
         let entity_for_expand = cx.entity();
+        let mut footer_row = h_flex().gap_2().px_5().pb_1();
+        if active_visible >= 2 {
+            footer_row = footer_row.child(
+                div()
+                    .id("toast-dismiss-all")
+                    .text_color(muted)
+                    .child(SharedString::new_static("dismiss all"))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        state_for_dismiss_all.update(cx, |s, cx| {
+                            s.clear_visible_toasts();
+                            cx.notify();
+                        });
+                    }),
+            );
+            if history_len > 0 {
+                footer_row =
+                    footer_row.child(div().text_color(muted).child(SharedString::new_static("·")));
+            }
+        }
         let footer: gpui::AnyElement = if history_len > 0 {
             let count_label = SharedString::from(format!("history ({history_len})"));
             let expand_label = if expanded { "collapse" } else { "expand" };
-            h_flex()
-                .gap_2()
-                .px_5()
-                .pb_1()
+            footer_row
                 .child(div().text_color(muted).child(count_label))
                 .child(div().text_color(muted).child(SharedString::new_static("·")))
                 .child(
@@ -203,6 +221,8 @@ impl Render for ToastStrip {
                         }),
                 )
                 .into_any_element()
+        } else if active_visible >= 2 {
+            footer_row.into_any_element()
         } else {
             div().into_any_element()
         };

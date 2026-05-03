@@ -440,6 +440,18 @@ impl AppState {
         self.toast_history.clear();
     }
 
+    /// Wipe all currently-visible toasts. Doesn't touch the
+    /// history log (the audit trail survives a UI dismiss-all),
+    /// and doesn't reset edge-trigger sentinels — if the
+    /// telemetry warning was visible and gets dismissed, the
+    /// next failure cycle is treated as a fresh first-failure
+    /// and re-emits a Warning. That's the right behaviour: the
+    /// user clicked "all gone", but the underlying conditions
+    /// are still tracked.
+    pub fn clear_visible_toasts(&mut self) {
+        self.toasts.clear();
+    }
+
     /// Dismiss the toast with the given id. No-op if it was already
     /// evicted by an over-cap push or a prior dismiss.
     pub fn dismiss_toast(&mut self, id: u64) {
@@ -1298,6 +1310,21 @@ mod tests {
         s.clear_toast_history();
         assert_eq!(s.toasts.len(), 1, "active toast must survive clear_history");
         assert!(s.toast_history.is_empty());
+    }
+
+    #[test]
+    fn clear_visible_leaves_history_alone() {
+        // Visible deque and history are independent. Wiping
+        // visible must not touch history (the audit trail
+        // survives a UI dismiss-all).
+        let mut s = AppState::new();
+        s.push_toast(ToastLevel::Info, "a");
+        s.push_toast(ToastLevel::Warning, "b");
+        assert_eq!(s.toasts.len(), 2);
+        assert_eq!(s.toast_history.len(), 2);
+        s.clear_visible_toasts();
+        assert!(s.toasts.is_empty());
+        assert_eq!(s.toast_history.len(), 2, "history must survive");
     }
 
     #[test]
