@@ -497,6 +497,78 @@ struct GraphSnapshot {
 struct NodeOut {
     id: String,
     depth: usize,
+    /// Symbol kind when the node id resolves to an indexed symbol —
+    /// `function` / `struct` / `enum` / `trait` / `const` / `type` /
+    /// `macro`. `None` for nodes whose id couldn't be matched (call
+    /// targets the indexer didn't catch — extern crate fns, std, etc).
+    /// Added in #301 so the desktop graph drawer can render a kind
+    /// badge without a follow-up RPC.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<String>,
+    /// Repo-relative file path of the symbol's defining site.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file: Option<String>,
+    /// 1-based line number of the symbol's defining site.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line: Option<u32>,
+    /// Single-line signature (e.g. `pub fn open(path: &Path) -> Result<Store>`).
+    /// `None` when the indexer didn't capture one (rare for fns,
+    /// common for type aliases / consts depending on language plugin).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signature: Option<String>,
+}
+
+impl NodeOut {
+    /// Build a `NodeOut` and try to enrich it from the symbol index.
+    /// Looks up `id` via [`crabcc_core::query::find_symbol`] and takes
+    /// the first match (callers / call targets are referenced by name,
+    /// so multiple definitions with the same name simply pick one
+    /// deterministic choice — same trade-off `crabcc sym` makes).
+    fn from_id_with_store(id: String, depth: usize, store: &Store) -> Self {
+        let metadata = crabcc_core::query::find_symbol(store, &id)
+            .ok()
+            .and_then(|hits| hits.into_iter().next());
+        match metadata {
+            Some(sym) => Self {
+                id,
+                depth,
+                kind: Some(symbol_kind_str(&sym.kind).to_string()),
+                file: Some(sym.file),
+                line: Some(sym.line_start),
+                signature: sym.signature,
+            },
+            None => Self {
+                id,
+                depth,
+                kind: None,
+                file: None,
+                line: None,
+                signature: None,
+            },
+        }
+    }
+}
+
+/// Map [`crabcc_core::types::SymbolKind`] to the wire string used in
+/// the seed-graph response. Mirrors the enum's `#[serde(rename_all =
+/// "snake_case")]` Serialize impl exactly so the wire shape is
+/// identical to whatever `crabcc_core` emits elsewhere. Keep in
+/// lockstep with the openapi spec's `GraphNode.kind` enum.
+fn symbol_kind_str(k: &crabcc_core::types::SymbolKind) -> &'static str {
+    use crabcc_core::types::SymbolKind as K;
+    match k {
+        K::Function => "function",
+        K::Method => "method",
+        K::Class => "class",
+        K::Struct => "struct",
+        K::Enum => "enum",
+        K::Trait => "trait",
+        K::Interface => "interface",
+        K::Const => "const",
+        K::Var => "var",
+        K::Type => "type",
+        K::Macro => "macro",
+    }
 }
 
 #[derive(Serialize)]
@@ -538,15 +610,17 @@ fn graph_snapshot(root: &Path, query: &str) -> Result<GraphSnapshot> {
 
     // The frontier from `incoming` / `outgoing` excludes the root itself.
     // Add it back at depth 0 so the canvas has a recognizable focus point.
-    let mut nodes: Vec<NodeOut> = std::iter::once(NodeOut {
-        id: q.root.clone(),
-        depth: 0,
-    })
-    .chain(frontier.into_iter().map(|h| NodeOut {
-        id: h.name,
-        depth: h.depth,
-    }))
-    .collect();
+    // Each node is enriched with kind / file / line / signature via
+    // `NodeOut::from_id_with_store` (#301) so the desktop drawer can
+    // render the full symbol header without a follow-up RPC.
+    let mut nodes: Vec<NodeOut> =
+        std::iter::once(NodeOut::from_id_with_store(q.root.clone(), 0, &store))
+            .chain(
+                frontier
+                    .into_iter()
+                    .map(|h| NodeOut::from_id_with_store(h.name, h.depth, &store)),
+            )
+            .collect();
     let truncated = nodes.len() > MAX_NODES;
     if truncated {
         nodes.truncate(MAX_NODES);
@@ -1189,6 +1263,12 @@ fn seed_graph(root: &Path, query: &str) -> Result<SeedSnapshot> {
         });
     }
     let graph = CallGraph::load(&graph_path)?;
+    // Open the symbol store too — node enrichment (#301) needs it to
+    // map each id to kind/file/line/signature. `Result` is propagated
+    // because a missing store means no index, and an unenriched seed
+    // graph is worse UX than the empty-state hint.
+    let db = root.join(".crabcc").join("index.db");
+    let store = Store::open(&db).with_context(|| format!("opening store at {}", db.display()))?;
 
     // Combined-degree ranking: a node's "importance" for the seed view
     // is the sum of its outgoing + incoming edge counts. This biases
@@ -1242,10 +1322,10 @@ fn seed_graph(root: &Path, query: &str) -> Result<SeedSnapshot> {
 
     let nodes: Vec<NodeOut> = node_set
         .iter()
-        .map(|id| NodeOut {
-            id: id.clone(),
+        .map(|id| {
             // Seeds are "depth 0" (queried-equivalent), neighbors are 1.
-            depth: if seeds.contains(id) { 0 } else { 1 },
+            let depth = if seeds.contains(id) { 0 } else { 1 };
+            NodeOut::from_id_with_store(id.clone(), depth, &store)
         })
         .collect();
     let mut edges: Vec<EdgeOut> = Vec::new();
