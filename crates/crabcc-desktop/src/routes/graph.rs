@@ -473,6 +473,18 @@ impl Render for GraphView {
                 .text_sm()
                 .child(SharedString::new_static("Relations graph")),
         );
+        // Node + edge counts. Pulled from the cached layout (set on
+        // the most recent `ensure_layout`) — same data the canvas is
+        // painting from, so the numbers always match the picture.
+        if let Some(l) = self.layout.as_ref() {
+            let nodes = l.positions.len();
+            let edges = l.edge_indices.len();
+            header = header.child(div().text_color(muted).child(SharedString::from(format!(
+                "· {nodes} node{} · {edges} edge{}",
+                if nodes == 1 { "" } else { "s" },
+                if edges == 1 { "" } else { "s" },
+            ))));
+        }
         if (self.zoom - 1.0).abs() > f32::EPSILON {
             header = header.child(div().text_color(muted).child(SharedString::from(format!(
                 "· {:.0}% zoom",
