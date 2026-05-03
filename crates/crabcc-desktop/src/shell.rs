@@ -74,8 +74,10 @@ impl Shell {
         // Knowledge owns the memory-ingest TextInput, so it needs window.
         let knowledge = cx.new(|cx| KnowledgeRoute::new(state.clone(), window, cx));
         // CommandsRoute owns a TextInput (focusable widget) so it
-        // needs `&mut Window` to register the focus handle.
-        let commands = cx.new(|cx| CommandsRoute::new(window, cx));
+        // needs `&mut Window` to register the focus handle. It also
+        // needs the shared `AppState` entity now to dispatch runnable
+        // rows via `submit_command_run`.
+        let commands = cx.new(|cx| CommandsRoute::new(state.clone(), window, cx));
         // No `window` argument — the strip has no focusable widgets
         // (yet). When the "Settings" entrypoint lands in slice 2+
         // it'll need `window` for that widget.
