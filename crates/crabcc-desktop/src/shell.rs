@@ -27,6 +27,8 @@ use crate::state::{AppState, Route};
 pub struct Shell {
     state: Entity<AppState>,
     home: Entity<DashboardHome>,
+    /// Sentinel: `u32::MAX` until the first real update; guards against
+    /// redundant AppKit calls when the running count hasn't actually changed.
     last_badge_count: u32,
 
     /// Cached `"v{version}  {repo}"` label. Populated lazily on the first

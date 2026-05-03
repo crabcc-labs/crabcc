@@ -28,6 +28,7 @@ pub struct AgentRun {
 pub struct AppState {
     pub bootstrap: Option<BootstrapInfo>,
     pub route: Route,
+    /// Tracked agent runs; populated by an external controller.
     agents: Vec<AgentRun>,
 }
 
