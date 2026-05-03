@@ -762,15 +762,25 @@ fn render_canvas(
         .into_any_element()
 }
 
+/// Dash period for memory-canvas edges in pixels. `DASH_ON_PX`
+/// segment painted, `DASH_OFF_PX` skipped, repeat. gpui's
+/// `PathBuilder` doesn't expose a dash pattern, so we walk each edge
+/// in fixed pixel steps and paint every other segment manually.
+/// 5/4 reads as a clear dash pattern at 1px stroke width without
+/// fragmenting too much on short edges.
+const DASH_ON_PX: f32 = 5.0;
+const DASH_OFF_PX: f32 = 4.0;
+
 /// Paint pass for the memory canvas. Differentiated from the
 /// relations graph in three ways:
 ///
 ///   * Nodes are wide rounded-rect "pills" (`PILL_WIDTH × PILL_HEIGHT`)
 ///     instead of small circles.
-///   * Edges are thin solid lines at low alpha — dashed strokes need
-///     manual segment painting (gpui's `PathBuilder` doesn't expose a
-///     dash pattern); the alpha drop keeps the visual quiet without
-///     waiting on that polish.
+///   * Edges are **dashed** thin lines (manual segment painting —
+///     gpui's `PathBuilder` doesn't expose a dash pattern; we walk
+///     each edge in `DASH_ON_PX` / `DASH_OFF_PX` steps and paint
+///     every other segment). At low alpha so the eye reads pills
+///     first.
 ///   * Selection ring uses `foreground` (off-white) instead of the
 ///     relations graph's `primary` purple — same idea (highlighted
 ///     pill stands out) but a deliberately different hue so a user
@@ -791,16 +801,17 @@ fn paint_k_graph(
 
     let to_px = |(ux, uy): (f32, f32)| point(px(ox + ux * w), px(oy + uy * h));
 
-    // Edges first so pills paint on top.
+    // Edges first so pills paint on top. Dashed via manual segment
+    // walk — see `paint_dashed_edge`.
     let edge_color = with_alpha(muted, 0.45);
     for &(a, b) in &layout.edge_indices {
         if let (Some(p1), Some(p2)) = (layout.positions.get(a), layout.positions.get(b)) {
-            let mut pb = PathBuilder::stroke(px(EDGE_WIDTH));
-            pb.move_to(to_px(*p1));
-            pb.line_to(to_px(*p2));
-            if let Ok(path) = pb.build() {
-                window.paint_path(path, edge_color);
-            }
+            // Convert unit-coord endpoints to canvas pixels here so
+            // the dash walk operates in pixel space (consistent
+            // dash period regardless of canvas size).
+            let p1_px = to_px(*p1);
+            let p2_px = to_px(*p2);
+            paint_dashed_edge(p1_px, p2_px, edge_color, window);
         }
     }
 
@@ -838,4 +849,58 @@ fn paint_k_graph(
 
 fn with_alpha(c: Hsla, a: f32) -> Hsla {
     Hsla { a, ..c }
+}
+
+/// Walk the segment from `p1` to `p2` in `DASH_ON_PX + DASH_OFF_PX`
+/// steps, painting only the "on" half each cycle. Cheap: O(length /
+/// period) `paint_path` calls per edge — for a ~400px edge that's
+/// ~45 short paths, well under per-frame budget for the bounded
+/// edge counts the K-Graph deals with (a few hundred at most).
+///
+/// Short edges (length < `DASH_ON_PX`) paint as a single solid
+/// segment — looks better than a single-pixel dash that would just
+/// disappear at low alpha.
+fn paint_dashed_edge(
+    p1: gpui::Point<Pixels>,
+    p2: gpui::Point<Pixels>,
+    color: Hsla,
+    window: &mut Window,
+) {
+    let x1 = f32::from(p1.x);
+    let y1 = f32::from(p1.y);
+    let x2 = f32::from(p2.x);
+    let y2 = f32::from(p2.y);
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    let len = (dx * dx + dy * dy).sqrt();
+    if len <= f32::EPSILON {
+        return;
+    }
+    if len <= DASH_ON_PX {
+        // Edge is shorter than a single dash — paint solid.
+        let mut pb = PathBuilder::stroke(px(EDGE_WIDTH));
+        pb.move_to(p1);
+        pb.line_to(p2);
+        if let Ok(path) = pb.build() {
+            window.paint_path(path, color);
+        }
+        return;
+    }
+    let nx = dx / len;
+    let ny = dy / len;
+    let period = DASH_ON_PX + DASH_OFF_PX;
+    let mut t = 0.0_f32;
+    while t < len {
+        let t0 = t;
+        let t1 = (t + DASH_ON_PX).min(len);
+        let s0 = point(px(x1 + nx * t0), px(y1 + ny * t0));
+        let s1 = point(px(x1 + nx * t1), px(y1 + ny * t1));
+        let mut pb = PathBuilder::stroke(px(EDGE_WIDTH));
+        pb.move_to(s0);
+        pb.line_to(s1);
+        if let Ok(path) = pb.build() {
+            window.paint_path(path, color);
+        }
+        t += period;
+    }
 }
