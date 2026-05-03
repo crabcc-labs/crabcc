@@ -1,0 +1,181 @@
+# https://taskfile.dev — install with `brew install go-task` or
+# `go install github.com/go-task/task/v3/cmd/task@latest`.
+#
+# Local-dev Taskfile for crates/crabcc-desktop. The crate is
+# excluded from the parent Cargo workspace (gpui-component pins
+# tree-sitter 0.25 against the workspace's 0.22 — see README's
+# "Why standalone" section), so all cargo commands operate on
+# this crate's own Cargo.lock.
+#
+# Quick start:
+#   task          # build + lint + fmt-check + test (the daily gate)
+#   task run      # debug-mode launch
+#   task run-rel  # release-mode launch (recommended)
+#   task bench    # criterion benches
+#   task watch    # cargo-watch + auto-reload
+#   task --list   # full menu
+#
+# Server side (run in another terminal first):
+#   crabcc serve  # default loopback :7878
+
+version: '3'
+
+vars:
+  BIN_NAME: crabcc-desktop
+  TARGET_DIR_DEBUG: target/debug
+  TARGET_DIR_RELEASE: target/release
+
+tasks:
+  default:
+    desc: Build + lint + fmt-check + test (the daily gate)
+    cmds:
+      - task: build
+      - task: fmt-check
+      - task: lint
+      - task: test
+
+  # ── build / run ────────────────────────────────────────────────────────────
+
+  build:
+    desc: Debug build
+    sources:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**/*.rs'
+    generates:
+      - '{{.TARGET_DIR_DEBUG}}/{{.BIN_NAME}}'
+    cmds:
+      - cargo build
+
+  build-rel:
+    desc: Release build (LTO=fat per parent profile inheritance)
+    sources:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'src/**/*.rs'
+    generates:
+      - '{{.TARGET_DIR_RELEASE}}/{{.BIN_NAME}}'
+    cmds:
+      - cargo build --release
+
+  run:
+    desc: Foreground run (debug build, faster compile)
+    cmds:
+      - cargo run
+
+  run-rel:
+    desc: Foreground run — release build (recommended; LTO=fat)
+    cmds:
+      - cargo run --release
+
+  watch:
+    desc: cargo-watch — rebuild + re-launch on src/ change (needs cargo-watch)
+    cmds:
+      - cargo watch -x run
+
+  # ── tests + benches ────────────────────────────────────────────────────────
+
+  test:
+    desc: Run unit + integration tests
+    cmds:
+      - cargo test
+
+  bench:
+    desc: Full criterion bench run (~30 s)
+    cmds:
+      - cargo bench
+
+  bench-quick:
+    desc: Quick criterion bench run (~3 s, lower precision)
+    cmds:
+      - cargo bench -- --quick
+
+  bench-baseline:
+    desc: 'Save current bench results as baseline named {{.NAME}} (default: "current")'
+    vars:
+      NAME: '{{.NAME | default "current"}}'
+    cmds:
+      - cargo bench -- --save-baseline {{.NAME}}
+
+  bench-against:
+    desc: 'Compare current bench results against baseline {{.NAME}}'
+    vars:
+      NAME: '{{.NAME | default "current"}}'
+    cmds:
+      - cargo bench -- --baseline {{.NAME}}
+
+  # ── code quality ───────────────────────────────────────────────────────────
+
+  lint:
+    desc: clippy --all-targets -- -D warnings
+    cmds:
+      - cargo clippy --all-targets -- -D warnings
+
+  fmt:
+    desc: cargo fmt
+    cmds:
+      - cargo fmt
+
+  fmt-check:
+    desc: cargo fmt -- --check
+    cmds:
+      - cargo fmt -- --check
+
+  # ── dependency hygiene ─────────────────────────────────────────────────────
+
+  bump-gpui-component:
+    desc: 'Bump gpui-component pin to {{.REV}} (run with REV=<new-rev>)'
+    preconditions:
+      - sh: '[ -n "{{.REV}}" ]'
+        msg: 'usage: task bump-gpui-component REV=<new-rev>'
+    cmds:
+      - 'cargo update -p gpui-component --precise {{.REV}}'
+      - 'echo "✓ gpui-component pinned to {{.REV}} — verify with task run-rel"'
+
+  bump-gpui:
+    desc: Bump gpui (zed-industries/zed revless source) to latest
+    cmds:
+      - 'cargo update -p gpui'
+      - 'echo "✓ gpui bumped — verify the unification with cargo tree -p gpui"'
+
+  # ── housekeeping ───────────────────────────────────────────────────────────
+
+  clean:
+    desc: cargo clean (per-crate; doesn't affect workspace target/)
+    cmds:
+      - cargo clean
+
+  doctor:
+    desc: Diagnose desktop-crate setup — server reachability, gpui pins, native APIs
+    silent: true
+    cmds:
+      - |
+        echo "── server"
+        if curl -fsS --max-time 2 http://127.0.0.1:7878/api/health >/dev/null; then
+            echo "  ✓ crabcc serve reachable on :7878"
+        else
+            echo "  ✗ crabcc serve not reachable — start with: crabcc serve"
+        fi
+        echo "── gpui pin"
+        # Lockfile dependency lines are multi-line; grep the rev out
+        # of the source URL specifically. Falls back to "?" if the
+        # pin format ever changes.
+        gpui_rev=$(grep -E '^source = .*gpui-component.*[a-f0-9]{40}' Cargo.lock | grep -oE '[a-f0-9]{40}' | head -1)
+        if [ -n "$gpui_rev" ]; then
+            echo "  gpui-component rev: ${gpui_rev:0:12}…"
+        else
+            echo "  ○ couldn't parse gpui-component rev from Cargo.lock"
+        fi
+        echo "── native APIs (macOS)"
+        if [ "$(uname -s)" = "Darwin" ]; then
+            echo "  ✓ macOS — dock badge + status item compiled in"
+        else
+            echo "  ○ non-macOS — native hooks compile to no-op stubs"
+        fi
+        echo "── bench harness"
+        if [ -d benches ]; then
+            count=$(find benches -name '*.rs' | wc -l | tr -d ' ')
+            echo "  ✓ ${count} bench file(s) under benches/"
+        else
+            echo "  ✗ benches/ missing"
+        fi
