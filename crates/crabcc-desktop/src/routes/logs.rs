@@ -84,6 +84,16 @@ impl LevelFilter {
             LevelFilter::Error => matches!(evt.level, LogLevel::Error),
         }
     }
+
+    fn from_log_level(level: LogLevel) -> Self {
+        match level {
+            LogLevel::Trace => LevelFilter::Trace,
+            LogLevel::Debug => LevelFilter::Debug,
+            LogLevel::Info => LevelFilter::Info,
+            LogLevel::Warn => LevelFilter::Warn,
+            LogLevel::Error => LevelFilter::Error,
+        }
+    }
 }
 
 pub struct LogsRoute {
@@ -243,13 +253,31 @@ impl Render for LogsRoute {
                 .child(SharedString::from(format!("no events match {what}")))
                 .into_any_element()
         } else {
+            // Capture the entity once outside the per-row map so each
+            // row's level-badge click handler can update the route's
+            // `level_filter` without recomputing on every iteration.
+            let entity = cx.entity();
+            let active_level = self.level_filter;
             v_flex()
                 .gap_1()
                 .children(
                     visible
                         .into_iter()
-                        .map(|evt| {
-                            row(evt, muted, border, info, warning, danger).into_any_element()
+                        .enumerate()
+                        .map(|(idx, evt)| {
+                            row(
+                                idx,
+                                evt,
+                                muted,
+                                border,
+                                info,
+                                warning,
+                                danger,
+                                primary,
+                                active_level,
+                                entity.clone(),
+                            )
+                            .into_any_element()
                         })
                         .collect::<Vec<_>>(),
                 )
@@ -268,13 +296,18 @@ impl Render for LogsRoute {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn row(
+    idx: usize,
     evt: &TelemetryEvent,
     muted: Hsla,
     border: Hsla,
     info: Hsla,
     warning: Hsla,
     danger: Hsla,
+    primary: Hsla,
+    active_level: LevelFilter,
+    entity: Entity<LogsRoute>,
 ) -> gpui::Div {
     let level_color = match evt.level {
         LogLevel::Trace | LogLevel::Debug => muted,
@@ -282,6 +315,16 @@ fn row(
         LogLevel::Warn => warning,
         LogLevel::Error => danger,
     };
+
+    // Click target — clicking a level badge sets that level as the
+    // active filter (toggles back to `All` if the same level is
+    // already pinned). gpui requires stateful elements (those with
+    // an `id`) to declare it; the rendered slice index is unique
+    // within a single render pass, so suffixing with `idx` is
+    // sufficient and avoids a String allocation per event.
+    let target_filter = LevelFilter::from_log_level(evt.level);
+    let level_pinned = active_level == target_filter;
+    let badge_id: gpui::ElementId = SharedString::from(format!("logs-row-level-{idx}")).into();
 
     h_flex()
         .gap_3()
@@ -296,11 +339,35 @@ fn row(
                 .child(SharedString::from(format_time(evt.ts))),
         )
         // Level badge — fixed-width so columns align across rows.
+        // Becomes a click target when the route is mounted; pinned
+        // levels render with the primary border + foreground colour
+        // so the user can spot the active filter even after pills
+        // scrolled off-screen.
         .child(
             div()
+                .id(badge_id)
                 .w(px(60.0))
+                .px_1()
+                .border_1()
+                .border_color(if level_pinned {
+                    primary
+                } else {
+                    gpui::transparent_black()
+                })
+                .rounded_md()
                 .text_color(level_color)
-                .child(SharedString::from(level_label(evt.level))),
+                .child(SharedString::from(level_label(evt.level)))
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    entity.update(cx, |this, cx| {
+                        // Toggle: same level → All; otherwise pin.
+                        this.level_filter = if this.level_filter == target_filter {
+                            LevelFilter::All
+                        } else {
+                            target_filter
+                        };
+                        cx.notify();
+                    });
+                }),
         )
         // Target (e.g. `crabcc::core::store`). Truncated to keep the
         // body column wide.
