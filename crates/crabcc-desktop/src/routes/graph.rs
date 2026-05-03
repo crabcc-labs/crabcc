@@ -32,8 +32,8 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use gpui::{
-    canvas, div, point, prelude::*, px, Bounds, Context, Entity, Hsla, IntoElement, MouseButton,
-    PathBuilder, Pixels, Render, SharedString, Window,
+    canvas, div, point, prelude::*, px, Bounds, ClipboardItem, Context, Entity, Hsla, IntoElement,
+    MouseButton, PathBuilder, Pixels, Render, SharedString, Window,
 };
 use gpui_component::{h_flex, v_flex, ActiveTheme};
 
@@ -270,6 +270,43 @@ impl GraphView {
         out.dedup();
         out
     }
+
+    /// Split the edges incident to `idx` into incoming (callers) and
+    /// outgoing (callees). Wraps the pure helper `directed_edges_of`
+    /// with the layout lookup so the free function stays unit-testable
+    /// without touching `Entity<AppState>`.
+    fn directed_edges(&self, idx: usize) -> (Vec<usize>, Vec<usize>) {
+        match self.layout.as_ref() {
+            Some(l) => directed_edges_of(&l.edge_indices, idx),
+            None => (Vec::new(), Vec::new()),
+        }
+    }
+}
+
+/// Walk a directed edge list `(src, dst)` and split the edges incident
+/// to `idx` into incoming (callers) and outgoing (callees). Both lists
+/// are sorted + deduped so repeat edges between the same pair render
+/// as a single row in the drawer.
+///
+/// Self-loops (a == b == idx) appear in BOTH lists by design, so the
+/// caller can see they exist from either direction. Callers that don't
+/// want self-loops should filter them out before invoking.
+fn directed_edges_of(edges: &[(usize, usize)], idx: usize) -> (Vec<usize>, Vec<usize>) {
+    let mut incoming = Vec::new();
+    let mut outgoing = Vec::new();
+    for &(a, b) in edges {
+        if b == idx {
+            incoming.push(a);
+        }
+        if a == idx {
+            outgoing.push(b);
+        }
+    }
+    incoming.sort_unstable();
+    incoming.dedup();
+    outgoing.sort_unstable();
+    outgoing.dedup();
+    (incoming, outgoing)
 }
 
 impl Render for GraphView {
@@ -333,68 +370,25 @@ impl Render for GraphView {
                 )
                 .size_full();
 
-                // Optional overlay panel (top-right) for the selected
-                // node's id + degree + first-N neighbours. Lives in
-                // the same outer element so it scrolls / resizes with
-                // the canvas.
+                // Right-side node-detail drawer (#296). Slides in (no
+                // animation yet — first cut) when a node is selected.
+                // Today the seed-graph response only carries `id` +
+                // `depth`, so kind / file:line / signature / snippet
+                // are deliberately absent and called out inline; the
+                // server-side enrichment is tracked separately.
                 let info_panel: gpui::AnyElement = match self.selected {
                     None => div().into_any_element(),
-                    Some(idx) => {
-                        let snapshot_ref = self.state.read(cx).graph.as_ref();
-                        let label = snapshot_ref
-                            .and_then(|g| g.nodes.get(idx))
-                            .map(|n| n.id.clone())
-                            .unwrap_or_else(|| "—".into());
-                        let neighbours: Vec<String> = self
-                            .neighbours(idx)
-                            .into_iter()
-                            .take(8)
-                            .filter_map(|n| {
-                                snapshot_ref
-                                    .and_then(|g| g.nodes.get(n))
-                                    .map(|n| n.id.clone())
-                            })
-                            .collect();
-                        let degree = self
-                            .layout
-                            .as_ref()
-                            .map(|l| {
-                                l.edge_indices
-                                    .iter()
-                                    .filter(|&&(a, b)| a == idx || b == idx)
-                                    .count()
-                            })
-                            .unwrap_or(0);
-
-                        v_flex()
-                            .absolute()
-                            .top_2()
-                            .right_2()
-                            .min_w(px(220.0))
-                            .max_w(px(280.0))
-                            .p_2()
-                            .gap_1()
-                            .bg(secondary)
-                            .border_1()
-                            .border_color(border)
-                            .rounded_md()
-                            .child(
-                                div()
-                                    .text_color(foreground)
-                                    .child(SharedString::from(label)),
-                            )
-                            .child(div().text_color(muted).child(SharedString::from(format!(
-                                "{degree} edge{}",
-                                if degree == 1 { "" } else { "s" }
-                            ))))
-                            .children(neighbours.into_iter().map(|n| {
-                                div()
-                                    .text_color(muted)
-                                    .child(SharedString::from(format!("· {n}")))
-                                    .into_any_element()
-                            }))
-                            .into_any_element()
-                    }
+                    Some(idx) => render_node_drawer(
+                        idx,
+                        self.state.read(cx).graph.as_ref(),
+                        self.directed_edges(idx),
+                        cx.entity(),
+                        secondary,
+                        border,
+                        muted,
+                        foreground,
+                        primary,
+                    ),
                 };
 
                 // Wrap canvas in an interactive container that owns
@@ -616,4 +610,227 @@ fn paint_graph(
 
 fn with_alpha(c: Hsla, a: f32) -> Hsla {
     Hsla { a, ..c }
+}
+
+/// How many incoming / outgoing rows to render before collapsing the
+/// rest behind a "show all N →" affordance. 6 keeps the drawer from
+/// dominating the canvas on hubs while still surfacing enough context
+/// for the common case (most symbols have <6 callers).
+const DRAWER_EDGE_VISIBLE: usize = 6;
+
+#[allow(clippy::too_many_arguments)]
+fn render_node_drawer(
+    idx: usize,
+    snapshot: Option<&GraphSnapshot>,
+    directed: (Vec<usize>, Vec<usize>),
+    view: Entity<GraphView>,
+    secondary: Hsla,
+    border: Hsla,
+    muted: Hsla,
+    foreground: Hsla,
+    primary: Hsla,
+) -> gpui::AnyElement {
+    let (incoming, outgoing) = directed;
+    let label = snapshot
+        .and_then(|g| g.nodes.get(idx))
+        .map(|n| n.id.clone())
+        .unwrap_or_else(|| "—".into());
+    let depth = snapshot.and_then(|g| g.nodes.get(idx)).map(|n| n.depth);
+    let degree = incoming.len() + outgoing.len();
+
+    // Resolve neighbour indexes back to ids once. Costs O(degree) — the
+    // drawer caps each list visually but keeps full lists in memory so
+    // a future "show all" expansion doesn't need a re-fetch.
+    let id_for = |n: usize| -> SharedString {
+        snapshot
+            .and_then(|g| g.nodes.get(n))
+            .map(|n| SharedString::from(n.id.clone()))
+            .unwrap_or_else(|| SharedString::new_static("—"))
+    };
+
+    let copy_label = label.clone();
+    let copy_view = view.clone();
+    let close_view = view.clone();
+
+    // Header — symbol id (mono) + meta line + close affordance.
+    let header =
+        h_flex()
+            .items_start()
+            .justify_between()
+            .gap_2()
+            .child(
+                v_flex()
+                    .gap_0p5()
+                    .child(
+                        div()
+                            .text_color(foreground)
+                            .child(SharedString::from(label.clone())),
+                    )
+                    .child(div().text_color(muted).text_xs().child(SharedString::from(
+                        match depth {
+                            Some(d) => format!(
+                                "depth {d} · {degree} edge{}",
+                                if degree == 1 { "" } else { "s" }
+                            ),
+                            None => format!("{degree} edge{}", if degree == 1 { "" } else { "s" }),
+                        },
+                    ))),
+            )
+            .child(
+                div()
+                    .id("graph-drawer-close")
+                    .px_1()
+                    .text_color(muted)
+                    .child(SharedString::new_static("×"))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        cx.stop_propagation();
+                        close_view.update(cx, |this, cx| {
+                            this.selected = None;
+                            cx.notify();
+                        });
+                    }),
+            );
+
+    // One edge sub-list. Caller picks Incoming vs Outgoing label and
+    // passes the resolved indexes — we don't filter or reorder here.
+    let edge_list = |title: &'static str, ids: &[usize]| -> gpui::Div {
+        let total = ids.len();
+        let visible = ids.iter().take(DRAWER_EDGE_VISIBLE).copied();
+        let mut list = v_flex().gap_0p5().child(
+            div()
+                .text_color(muted)
+                .text_xs()
+                .child(SharedString::from(format!("{title} ({total})"))),
+        );
+        for n in visible {
+            let row_view = view.clone();
+            list = list.child(
+                div()
+                    .id(SharedString::from(format!("graph-drawer-edge-{title}-{n}")))
+                    .pl_2()
+                    .text_color(foreground)
+                    .text_xs()
+                    .child(id_for(n))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        cx.stop_propagation();
+                        row_view.update(cx, |this, cx| {
+                            this.selected = Some(n);
+                            cx.notify();
+                        });
+                    }),
+            );
+        }
+        if total > DRAWER_EDGE_VISIBLE {
+            let extra = total - DRAWER_EDGE_VISIBLE;
+            list = list.child(
+                div()
+                    .pl_2()
+                    .text_color(muted)
+                    .text_xs()
+                    .child(SharedString::from(format!("+ {extra} more"))),
+            );
+        }
+        list
+    };
+
+    // Server-side gap — surface this inline so a contributor reading
+    // the drawer in-app sees the limitation rather than being puzzled
+    // by missing fields. Update the copy when /api/seed-graph is
+    // enriched.
+    let server_gap_note = div()
+        .text_color(muted)
+        .text_xs()
+        .child(SharedString::new_static(
+        "kind · file:line · signature · snippet require server-side enrichment of /api/seed-graph",
+    ));
+
+    let actions = h_flex().gap_2().child(
+        div()
+            .id("graph-drawer-copy-id")
+            .px_2()
+            .py_1()
+            .border_1()
+            .border_color(border)
+            .rounded_md()
+            .text_color(primary)
+            .child(SharedString::new_static("Copy id"))
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                cx.stop_propagation();
+                let item = ClipboardItem::new_string(copy_label.clone());
+                cx.write_to_clipboard(item);
+                copy_view.update(cx, |_, cx| cx.notify());
+            }),
+    );
+
+    v_flex()
+        .id("graph-node-drawer")
+        .absolute()
+        .top_2()
+        .right_2()
+        .w(px(340.0))
+        .max_h(px(560.0))
+        .p_3()
+        .gap_3()
+        .bg(secondary)
+        .border_1()
+        .border_color(border)
+        .rounded_md()
+        // Stop propagation so clicks inside the drawer don't drive the
+        // canvas drag-pan / click-to-select state machine. Without
+        // this, mouse-up on a button at the right edge of the canvas
+        // triggers `handle_click(pos)` which then clears the selection
+        // because no node is under the drawer.
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_mouse_up(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(header)
+        .child(edge_list("Incoming", &incoming))
+        .child(edge_list("Outgoing", &outgoing))
+        .child(actions)
+        .child(server_gap_note)
+        .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn directed_edges_separates_in_and_out() {
+        // 0 → 1, 0 → 2, 3 → 1, 1 → 4. From node 1's perspective:
+        //   incoming = [0, 3], outgoing = [4].
+        let edges = vec![(0, 1), (0, 2), (3, 1), (1, 4)];
+        let (incoming, outgoing) = directed_edges_of(&edges, 1);
+        assert_eq!(incoming, vec![0, 3]);
+        assert_eq!(outgoing, vec![4]);
+    }
+
+    #[test]
+    fn directed_edges_dedupes_parallel_edges() {
+        // Two parallel 0 → 1 edges, plus one 0 → 1 reversed pair, get
+        // collapsed to a single neighbour on each side.
+        let edges = vec![(0, 1), (0, 1), (1, 0)];
+        let (incoming, outgoing) = directed_edges_of(&edges, 0);
+        assert_eq!(incoming, vec![1]);
+        assert_eq!(outgoing, vec![1]);
+    }
+
+    #[test]
+    fn directed_edges_handles_unrelated_index() {
+        let edges = vec![(0, 1), (1, 2)];
+        let (incoming, outgoing) = directed_edges_of(&edges, 9);
+        assert!(incoming.is_empty());
+        assert!(outgoing.is_empty());
+    }
+
+    #[test]
+    fn directed_edges_self_loops_appear_both_sides() {
+        // Self-loop should surface in both directions so the drawer
+        // doesn't silently lose it. graph_layout strips self-loops at
+        // ingest, but if the server ever sends one, this is the
+        // contract the drawer presents.
+        let edges = vec![(2, 2)];
+        let (incoming, outgoing) = directed_edges_of(&edges, 2);
+        assert_eq!(incoming, vec![2]);
+        assert_eq!(outgoing, vec![2]);
+    }
 }
