@@ -230,9 +230,9 @@ impl Wired {
     /// // Pass `rx` to `pump_events` on the UI thread.
     /// drop(wired); // signals workers to exit
     /// ```
-    pub fn spawn(base_url: impl Into<Arc<str>>) -> (Self, Receiver<AppEvent>) {
+    pub fn spawn(base_url: impl AsRef<str>) -> (Self, Receiver<AppEvent>) {
         let (tx, rx) = flume::bounded::<AppEvent>(TX_CAP);
-        let base_url: Arc<str> = base_url.into();
+        let base_url: Arc<str> = Arc::from(base_url.as_ref());
 
         let handles = vec![
             spawn_prefetch(tx.clone(), Arc::clone(&base_url)),
@@ -313,7 +313,7 @@ impl Default for AppState {
             index_symbols: 0,
             memory_drawers: 0,
             telemetry_cursor: 0,
-            // Pre-allocate rings to their cap so steady-state push_back is free.
+            // Pre-allocate rings to their cap so steady-state insertion avoids reallocation.
             telemetry_events: VecDeque::with_capacity(TELEMETRY_RING),
             telemetry_source: None,
             memory_cursor: 0,
@@ -488,12 +488,18 @@ fn spawn_telemetry_poll(tx: Sender<AppEvent>, base_url: Arc<str>) -> thread::Joi
 fn spawn_memory_poll(tx: Sender<AppEvent>, base_url: Arc<str>) -> thread::JoinHandle<()> {
     thread::Builder::new()
         .name("desktop-memory".into())
-        .spawn(move || loop {
-            let resp = fetch_memory_recent(&base_url);
-            if tx.send(AppEvent::MemoryRecent(Box::new(resp))).is_err() {
-                break;
+        .spawn(move || {
+            let mut cursor: i64 = 0;
+            loop {
+                let resp = fetch_memory_recent(&base_url, cursor);
+                if let Ok(ref r) = resp {
+                    cursor = r.cursor;
+                }
+                if tx.send(AppEvent::MemoryRecent(Box::new(resp))).is_err() {
+                    break;
+                }
+                thread::sleep(MEMORY_INTERVAL);
             }
-            thread::sleep(MEMORY_INTERVAL);
         })
         .expect("spawn desktop-memory")
 }
@@ -513,7 +519,7 @@ fn fetch_telemetry(base_url: &str, _cursor: u64) -> Result<TelemetrySnapshot> {
     anyhow::bail!("telemetry poll not yet wired (base_url={base_url})")
 }
 
-fn fetch_memory_recent(base_url: &str) -> Result<MemoryRecentResponse> {
+fn fetch_memory_recent(base_url: &str, _cursor: i64) -> Result<MemoryRecentResponse> {
     anyhow::bail!("memory poll not yet wired (base_url={base_url})")
 }
 
