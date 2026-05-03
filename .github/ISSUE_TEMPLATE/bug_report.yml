@@ -1,0 +1,59 @@
+name: Bug report
+description: Something is broken or behaves incorrectly.
+title: "fix(<scope>): <one-line summary>"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Title convention: `fix(<scope>): <summary>` — scopes seen in this repo include
+        `cli`, `viz`, `agents`, `memory`, `mcp`, `desktop`, `macos-app`, `telegram`,
+        `mobile`, `extension`, `tts`, `events`, `netlog`, `service-discovery`, `jobs`, `docs`.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: One paragraph. What did you expect, what actually happened.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Minimal steps. Paste exact commands and trimmed output.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: crabcc version
+      placeholder: "crabcc --version"
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options:
+        - macOS
+        - Linux
+        - Windows (WSL)
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / stack
+      description: Trimmed `RUST_LOG=debug` output or panic backtrace if available.
+      render: shell
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority (your read)
+      options:
+        - "priority:low"
+        - "priority:medium"
+        - "priority:high"
+      default: 1

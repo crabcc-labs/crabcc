@@ -1,0 +1,58 @@
+name: Feature request
+description: Net-new capability. Mirrors the 238–242 issue style.
+title: "feat(<scope>): <one-line summary>"
+labels: ["enhancement", "feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Title convention: `feat(<scope>): <summary>`. Common scopes: `cli`, `viz`,
+        `agents`, `memory`, `mcp`, `desktop`, `macos-app`, `telegram`, `mobile`,
+        `extension`, `tts`, `events`, `netlog`, `service-discovery`, `jobs`.
+  - type: textarea
+    id: overview
+    attributes:
+      label: Overview
+      description: One paragraph. What this adds and the user-visible outcome.
+    validations:
+      required: true
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation / why now
+      description: Why is this worth building? What does it unblock?
+    validations:
+      required: true
+  - type: textarea
+    id: design
+    attributes:
+      label: Sketch / design
+      description: Module layout, API shape, data model — whatever applies. Tables and diagrams welcome.
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Checklist of what "done" looks like.
+      placeholder: |
+        - [ ] CLI surface implemented
+        - [ ] Tests in crates/<crate>/tests/
+        - [ ] Docs updated in docs/
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - "priority:low"
+        - "priority:medium"
+        - "priority:high"
+      default: 1
+  - type: dropdown
+    id: milestone
+    attributes:
+      label: Target milestone
+      options:
+        - none
+        - v2.5
+        - v3.0
+        - v3.1
+      default: 0

@@ -1,0 +1,43 @@
+name: Performance work
+description: Speed / memory / disk efficiency. Mirrors the #236 review style.
+title: "perf(<scope>): <one-line summary>"
+labels: ["enhancement", "performance"]
+body:
+  - type: textarea
+    id: target
+    attributes:
+      label: Target file / hot path
+      description: Crate, file, function. e.g. `crates/crabcc-desktop/src/state.rs`.
+    validations:
+      required: true
+  - type: textarea
+    id: hypothesis
+    attributes:
+      label: Hypothesis
+      description: What you think is slow and why. Include the numbers if you have them.
+    validations:
+      required: true
+  - type: textarea
+    id: measurement
+    attributes:
+      label: Measurement plan
+      description: How will we know it's faster? `task bench-*`, `cargo bench`, `samply`, `dtrace`, etc.
+  - type: dropdown
+    id: lang
+    attributes:
+      label: Language scope
+      options:
+        - "lang:rust"
+        - "lang:go"
+        - "lang:python"
+        - other
+      default: 0
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - "priority:low"
+        - "priority:medium"
+        - "priority:high"
+      default: 1

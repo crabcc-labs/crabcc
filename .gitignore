@@ -14,8 +14,10 @@
 # author's reference; ship-relevant content lives in README.md, CLAUDE.md,
 # AGENTS.md, CHANGELOG.md, and the in-source rustdoc.
 /bench/
-/docs/
 /ARCHITECTURE.md
+# /docs/ is now a private submodule (peterlodri-sec/crabcc-docs).
+# Only the gitlink + .gitmodules are tracked; submodule contents stay
+# in the submodule's own history.
 
 # Research artifacts produced by sub-agents — not source.
 STORAGE_RESEARCH.md

@@ -1,0 +1,36 @@
+name: Epic / cross-cutting initiative
+description: Multi-issue umbrella. Mirrors #163, #216, #227 style.
+title: "epic(<scope>): <one-line summary>"
+labels: ["enhancement", "epic"]
+body:
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Outcome
+      description: One paragraph. What lands when this epic closes.
+    validations:
+      required: true
+  - type: textarea
+    id: phases
+    attributes:
+      label: Phases / sub-issues
+      description: Checklist of child issues. One per line.
+      placeholder: |
+        - [ ] #N feat(scope): phase 1 — …
+        - [ ] #N feat(scope): phase 2 — …
+    validations:
+      required: true
+  - type: textarea
+    id: non_goals
+    attributes:
+      label: Non-goals
+      description: What we are explicitly NOT doing in this epic.
+  - type: dropdown
+    id: milestone
+    attributes:
+      label: Target milestone
+      options:
+        - none
+        - v2.5
+        - v3.0
+        - v3.1
