@@ -13,10 +13,17 @@
 //! `AppState::last_error` (rendered next to the header) — they don't
 //! prevent the other sections from drawing.
 //!
-//! A top-of-route TextInput filters the Service Discovery list by
-//! substring (name / url). Mirrors the Agents / Knowledge / Logs
-//! filter pattern. The other sections aren't filtered today —
-//! profiles / models / kills are short and read top-to-bottom.
+//! A single top-of-route TextInput filters the long sections by
+//! substring (case-insensitive). One input narrows everything; the
+//! short single-row sections (OTLP, Ollama) aren't filtered. Per-
+//! section match field lists:
+//!
+//! | Section          | Match against                                       |
+//! |------------------|-----------------------------------------------------|
+//! | services         | `name`, `url`                                       |
+//! | agent_profiles   | `id`, `crate_?`, `description?`, `model?`           |
+//! | agent_models     | `provider`, `name`, `params?`, `file`               |
+//! | agent_kills      | `run_id`, `reason`, `detail?`                       |
 
 use gpui::{div, prelude::*, px, Context, Entity, Hsla, IntoElement, Render, SharedString, Window};
 use gpui_component::{
@@ -32,32 +39,28 @@ const KILLS_VISIBLE: usize = 8;
 pub struct SystemRoute {
     state: Entity<AppState>,
     /// gpui-component InputState — owns text + focus for the filter.
-    services_query_input: Entity<InputState>,
+    query_input: Entity<InputState>,
     /// Lower-cased mirror of the filter input value, kept in sync via
     /// `InputEvent::Change`. Avoids re-lowercasing on every render.
-    services_query_lower: String,
+    query_lower: String,
 }
 
 impl SystemRoute {
     pub fn new(state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         cx.observe(&state, |_, _, cx| cx.notify()).detach();
-        let services_query_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Filter services by name / url…"));
-        cx.subscribe_in(
-            &services_query_input,
-            window,
-            |this, state, event, _, cx| {
-                if let InputEvent::Change = event {
-                    this.services_query_lower = state.read(cx).value().to_string().to_lowercase();
-                    cx.notify();
-                }
-            },
-        )
+        let query_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Filter visible rows…"));
+        cx.subscribe_in(&query_input, window, |this, state, event, _, cx| {
+            if let InputEvent::Change = event {
+                this.query_lower = state.read(cx).value().to_string().to_lowercase();
+                cx.notify();
+            }
+        })
         .detach();
         Self {
             state,
-            services_query_input,
-            services_query_lower: String::new(),
+            query_input,
+            query_lower: String::new(),
         }
     }
 }
@@ -81,26 +84,33 @@ impl Render for SystemRoute {
                     .child(SharedString::from(format!("• {e}")))
             }));
 
+        // Single filter input above all sections — narrows services
+        // / profiles / models / kills uniformly. Sits below the
+        // header so it's visible without scrolling, no matter which
+        // section the user's eye is on.
+        let filter_field = div()
+            .border_1()
+            .border_color(border)
+            .rounded_md()
+            .px_2()
+            .py_1()
+            .child(Input::new(&self.query_input).appearance(false));
+
+        let q = self.query_lower.as_str();
+
         v_flex()
             .size_full()
             .px_5()
             .py_4()
             .gap_4()
             .child(header)
-            .child(services_section(
-                state,
-                muted,
-                border,
-                success,
-                danger,
-                &self.services_query_lower,
-                &self.services_query_input,
-            ))
+            .child(filter_field)
+            .child(services_section(state, muted, border, success, danger, q))
             .child(otlp_section(state, muted, border, success, danger))
             .child(ollama_section(state, muted, border, success, danger))
-            .child(profiles_section(state, muted, border, card))
-            .child(models_section(state, muted, border, card))
-            .child(kills_section(state, muted, border))
+            .child(profiles_section(state, muted, border, card, q))
+            .child(models_section(state, muted, border, card, q))
+            .child(kills_section(state, muted, border, q))
     }
 }
 
@@ -121,7 +131,31 @@ fn loading(text: &'static str, muted: Hsla) -> gpui::AnyElement {
         .into_any_element()
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Render the count-line that sits above each filterable section's
+/// list — only when the filter is active. Keeps the no-filter happy
+/// path visually compact.
+fn count_line(visible: usize, total: usize, query_lower: &str, muted: Hsla) -> gpui::AnyElement {
+    if query_lower.is_empty() {
+        div().into_any_element()
+    } else {
+        div()
+            .text_color(muted)
+            .child(SharedString::from(format!("{visible} of {total} match")))
+            .into_any_element()
+    }
+}
+
+/// Distinct empty-state for "filter mismatched everything" — keeps a
+/// typo from looking like the data slot is empty.
+fn no_match(noun: &str, query_lower: &str, muted: Hsla) -> gpui::AnyElement {
+    div()
+        .text_color(muted)
+        .child(SharedString::from(format!(
+            "no {noun} match \u{201C}{query_lower}\u{201D}"
+        )))
+        .into_any_element()
+}
+
 fn services_section(
     state: &AppState,
     muted: Hsla,
@@ -129,18 +163,7 @@ fn services_section(
     success: Hsla,
     danger: Hsla,
     query_lower: &str,
-    query_input: &Entity<InputState>,
 ) -> gpui::Div {
-    // Filter input sits between the section title and the list,
-    // matches the visual rhythm of the other route filters.
-    let filter_field = div()
-        .border_1()
-        .border_color(border)
-        .rounded_md()
-        .px_2()
-        .py_1()
-        .child(Input::new(query_input).appearance(false));
-
     let body: gpui::AnyElement = match state.services.as_ref() {
         None => loading("loading services…", muted),
         Some(rep) => {
@@ -157,27 +180,8 @@ fn services_section(
                 })
                 .collect();
             let visible_count = visible.len();
-
-            // Count line — only renders when the filter is active so
-            // the section stays compact in the no-filter happy path.
-            let count_line: gpui::AnyElement = if query_lower.is_empty() {
-                div().into_any_element()
-            } else {
-                div()
-                    .text_color(muted)
-                    .child(SharedString::from(format!(
-                        "{visible_count} of {total} match"
-                    )))
-                    .into_any_element()
-            };
-
             let list: gpui::AnyElement = if visible.is_empty() && !query_lower.is_empty() {
-                div()
-                    .text_color(muted)
-                    .child(SharedString::from(format!(
-                        "no services match \u{201C}{query_lower}\u{201D}"
-                    )))
-                    .into_any_element()
+                no_match("services", query_lower, muted)
             } else {
                 v_flex()
                     .gap_1()
@@ -211,17 +215,14 @@ fn services_section(
                     }))
                     .into_any_element()
             };
-
             v_flex()
                 .gap_1()
-                .child(count_line)
+                .child(count_line(visible_count, total, query_lower, muted))
                 .child(list)
                 .into_any_element()
         }
     };
-
-    let body_with_filter = v_flex().gap_2().child(filter_field).child(body);
-    section("SERVICE DISCOVERY", border, body_with_filter)
+    section("SERVICE DISCOVERY", border, body)
 }
 
 fn otlp_section(
@@ -302,20 +303,50 @@ fn ollama_section(
     section("OLLAMA KEY", border, body)
 }
 
-fn profiles_section(state: &AppState, muted: Hsla, border: Hsla, card: Hsla) -> gpui::Div {
-    let body: gpui::AnyElement =
-        match state.agent_profiles.as_ref() {
-            None => loading("loading profiles…", muted),
-            Some(p) if p.profiles.is_empty() => loading("no profiles registered", muted),
-            Some(p) => {
+fn profiles_section(
+    state: &AppState,
+    muted: Hsla,
+    border: Hsla,
+    card: Hsla,
+    query_lower: &str,
+) -> gpui::Div {
+    let body: gpui::AnyElement = match state.agent_profiles.as_ref() {
+        None => loading("loading profiles…", muted),
+        Some(p) if p.profiles.is_empty() => loading("no profiles registered", muted),
+        Some(p) => {
+            let total = p.profiles.len();
+            let visible: Vec<_> = p
+                .profiles
+                .iter()
+                .filter(|prof| {
+                    if query_lower.is_empty() {
+                        return true;
+                    }
+                    if prof.id.to_lowercase().contains(query_lower) {
+                        return true;
+                    }
+                    if let Some(c) = prof.crate_.as_ref() {
+                        if c.to_lowercase().contains(query_lower) {
+                            return true;
+                        }
+                    }
+                    if let Some(d) = prof.description.as_ref() {
+                        if d.to_lowercase().contains(query_lower) {
+                            return true;
+                        }
+                    }
+                    prof.model
+                        .as_ref()
+                        .is_some_and(|m| m.to_lowercase().contains(query_lower))
+                })
+                .collect();
+            let visible_count = visible.len();
+            let list: gpui::AnyElement = if visible.is_empty() && !query_lower.is_empty() {
+                no_match("profiles", query_lower, muted)
+            } else {
                 v_flex()
                     .gap_1()
-                    .child(div().text_color(muted).child(SharedString::from(format!(
-                        "{} profiles · {}",
-                        p.profiles.len(),
-                        p.dir
-                    ))))
-                    .child(v_flex().gap_1().children(p.profiles.iter().map(|prof| {
+                    .children(visible.into_iter().map(|prof| {
                         h_flex()
                             .gap_3()
                             .child(
@@ -333,82 +364,173 @@ fn profiles_section(state: &AppState, muted: Hsla, border: Hsla, card: Hsla) -> 
                                 div().text_color(muted).child(SharedString::from(m.clone()))
                             }))
                             .into_any_element()
-                    })))
+                    }))
                     .into_any_element()
-            }
-        };
+            };
+            v_flex()
+                .gap_1()
+                .child(if query_lower.is_empty() {
+                    div().text_color(muted).child(SharedString::from(format!(
+                        "{} profiles · {}",
+                        total, p.dir
+                    )))
+                } else {
+                    div().text_color(muted).child(SharedString::from(format!(
+                        "{visible_count} of {total} match · {}",
+                        p.dir
+                    )))
+                })
+                .child(list)
+                .into_any_element()
+        }
+    };
     section("AGENT PROFILES", border, body)
 }
 
-fn models_section(state: &AppState, muted: Hsla, border: Hsla, card: Hsla) -> gpui::Div {
+fn models_section(
+    state: &AppState,
+    muted: Hsla,
+    border: Hsla,
+    card: Hsla,
+    query_lower: &str,
+) -> gpui::Div {
     let body: gpui::AnyElement = match state.agent_models.as_ref() {
         None => loading("loading models…", muted),
         Some(m) if m.models.is_empty() => loading("no models registered", muted),
-        Some(m) => v_flex()
-            .gap_1()
-            .child(div().text_color(muted).child(SharedString::from(format!(
-                "{} models · {}",
-                m.models.len(),
-                m.dir
-            ))))
-            .child(v_flex().gap_1().children(m.models.iter().map(|model| {
-                h_flex()
-                    .gap_3()
-                    .child(
-                        div()
-                            .w(px(80.0))
-                            .px_2()
-                            .py_0p5()
-                            .bg(card)
-                            .rounded_md()
-                            .child(SharedString::from(model.provider.clone())),
-                    )
-                    .child(
-                        div()
-                            .w(px(220.0))
-                            .child(SharedString::from(model.name.clone())),
-                    )
-                    .children(
-                        model
-                            .params
-                            .as_ref()
-                            .map(|p| div().text_color(muted).child(SharedString::from(p.clone()))),
-                    )
+        Some(m) => {
+            let total = m.models.len();
+            let visible: Vec<_> = m
+                .models
+                .iter()
+                .filter(|model| {
+                    if query_lower.is_empty() {
+                        return true;
+                    }
+                    if model.provider.to_lowercase().contains(query_lower) {
+                        return true;
+                    }
+                    if model.name.to_lowercase().contains(query_lower) {
+                        return true;
+                    }
+                    if model.file.to_lowercase().contains(query_lower) {
+                        return true;
+                    }
+                    model
+                        .params
+                        .as_ref()
+                        .is_some_and(|p| p.to_lowercase().contains(query_lower))
+                })
+                .collect();
+            let visible_count = visible.len();
+            let list: gpui::AnyElement = if visible.is_empty() && !query_lower.is_empty() {
+                no_match("models", query_lower, muted)
+            } else {
+                v_flex()
+                    .gap_1()
+                    .children(visible.into_iter().map(|model| {
+                        h_flex()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .w(px(80.0))
+                                    .px_2()
+                                    .py_0p5()
+                                    .bg(card)
+                                    .rounded_md()
+                                    .child(SharedString::from(model.provider.clone())),
+                            )
+                            .child(
+                                div()
+                                    .w(px(220.0))
+                                    .child(SharedString::from(model.name.clone())),
+                            )
+                            .children(model.params.as_ref().map(|p| {
+                                div().text_color(muted).child(SharedString::from(p.clone()))
+                            }))
+                            .into_any_element()
+                    }))
                     .into_any_element()
-            })))
-            .into_any_element(),
+            };
+            v_flex()
+                .gap_1()
+                .child(if query_lower.is_empty() {
+                    div()
+                        .text_color(muted)
+                        .child(SharedString::from(format!("{} models · {}", total, m.dir)))
+                } else {
+                    div().text_color(muted).child(SharedString::from(format!(
+                        "{visible_count} of {total} match · {}",
+                        m.dir
+                    )))
+                })
+                .child(list)
+                .into_any_element()
+        }
     };
     section("AGENT MODELS", border, body)
 }
 
-fn kills_section(state: &AppState, muted: Hsla, border: Hsla) -> gpui::Div {
+fn kills_section(state: &AppState, muted: Hsla, border: Hsla, query_lower: &str) -> gpui::Div {
     let body: gpui::AnyElement = match state.agent_kills.as_ref() {
         None => loading("loading kills…", muted),
         Some(k) if k.rows.is_empty() => loading("no recent kills — clean run", muted),
-        Some(k) => v_flex()
-            .gap_1()
-            .children(k.rows.iter().take(KILLS_VISIBLE).map(|row| {
-                h_flex()
-                    .gap_3()
-                    .child(
-                        div()
-                            .w(px(80.0))
-                            .child(SharedString::from(row.run_id.clone())),
-                    )
-                    .child(
-                        div()
-                            .w(px(140.0))
-                            .text_color(muted)
-                            .child(SharedString::from(row.reason.clone())),
-                    )
-                    .children(
-                        row.detail
-                            .as_ref()
-                            .map(|d| div().text_color(muted).child(SharedString::from(d.clone()))),
-                    )
+        Some(k) => {
+            // Filter first, then cap. A targeted query can surface
+            // older kills that would otherwise be off the bottom of
+            // the 8-row visible window.
+            let total = k.rows.len();
+            let visible: Vec<_> = k
+                .rows
+                .iter()
+                .filter(|row| {
+                    if query_lower.is_empty() {
+                        return true;
+                    }
+                    if row.run_id.to_lowercase().contains(query_lower) {
+                        return true;
+                    }
+                    if row.reason.to_lowercase().contains(query_lower) {
+                        return true;
+                    }
+                    row.detail
+                        .as_ref()
+                        .is_some_and(|d| d.to_lowercase().contains(query_lower))
+                })
+                .take(KILLS_VISIBLE)
+                .collect();
+            let visible_count = visible.len();
+            let list: gpui::AnyElement = if visible.is_empty() && !query_lower.is_empty() {
+                no_match("kills", query_lower, muted)
+            } else {
+                v_flex()
+                    .gap_1()
+                    .children(visible.into_iter().map(|row| {
+                        h_flex()
+                            .gap_3()
+                            .child(
+                                div()
+                                    .w(px(80.0))
+                                    .child(SharedString::from(row.run_id.clone())),
+                            )
+                            .child(
+                                div()
+                                    .w(px(140.0))
+                                    .text_color(muted)
+                                    .child(SharedString::from(row.reason.clone())),
+                            )
+                            .children(row.detail.as_ref().map(|d| {
+                                div().text_color(muted).child(SharedString::from(d.clone()))
+                            }))
+                            .into_any_element()
+                    }))
                     .into_any_element()
-            }))
-            .into_any_element(),
+            };
+            v_flex()
+                .gap_1()
+                .child(count_line(visible_count, total, query_lower, muted))
+                .child(list)
+                .into_any_element()
+        }
     };
     section("RECENT KILLS", border, body)
 }
