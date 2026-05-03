@@ -20,6 +20,7 @@ use crate::api::types::{AgentStatus, SseActivityEvent};
 use crate::routes::agent_spawn_sheet::AgentSpawnSheet;
 use crate::routes::graph::GraphView;
 use crate::state::AppState;
+use crate::theme_helpers::op_color;
 
 pub struct DashboardHome {
     state: Entity<AppState>,
@@ -546,26 +547,6 @@ const FADE_FLOOR_ALPHA: f32 = 0.55;
 
 fn with_alpha(c: Hsla, a: f32) -> Hsla {
     Hsla { a, ..c }
-}
-
-/// Map an op family to a theme colour. Mirrors the rough cost/value
-/// hierarchy of crabcc operations: structural lookups (sym/refs/
-/// callers) get bright primary/info/warning; outline (cheap, often
-/// fired in bulk) stays muted; success-coloured ops are
-/// non-destructive discovery (fuzzy / prefix / random-query); ingest
-/// gets the primary highlight because it writes state.
-fn op_color(op: &str, theme: &gpui_component::Theme) -> Hsla {
-    match op {
-        "sym" => theme.primary,
-        "refs" => theme.info,
-        "callers" => theme.warning,
-        "fuzzy" | "prefix" | "random-query" => theme.success,
-        "ingest" | "memory.ingest" => theme.primary,
-        // Default for `outline`, `track`, and anything new we haven't
-        // categorised yet — these dominate row volume and shouldn't
-        // pull the eye.
-        _ => theme.muted_foreground,
-    }
 }
 
 #[cfg(test)]

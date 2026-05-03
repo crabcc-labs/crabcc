@@ -40,6 +40,7 @@ use gpui_component::{
 
 use crate::api::types::SseActivityEvent;
 use crate::state::AppState;
+use crate::theme_helpers::op_color;
 
 /// Cap on the number of timeline rows actually rendered after filtering.
 /// `recent_activity` is bounded server-side too, but the brief calls
@@ -162,20 +163,6 @@ impl TimelineRoute {
 /// same second are rare enough to merge intentionally.
 fn same_event(a: &SseActivityEvent, b: &SseActivityEvent) -> bool {
     a.ts == b.ts && a.op == b.op && a.query == b.query
-}
-
-/// Mirror of `routes::dashboard::op_color`. Duplicated rather than
-/// promoted to a shared module so this PR doesn't add a refactor lane;
-/// promote when a third caller appears.
-fn op_color(op: &str, theme: &gpui_component::Theme) -> Hsla {
-    match op {
-        "sym" => theme.primary,
-        "refs" => theme.info,
-        "callers" => theme.warning,
-        "fuzzy" | "prefix" | "random-query" => theme.success,
-        "ingest" | "memory.ingest" => theme.primary,
-        _ => theme.muted_foreground,
-    }
 }
 
 /// `HH:MM:SS` from a unix-seconds timestamp. UTC; matches `routes::logs`
