@@ -36,6 +36,11 @@ pub struct KnowledgeRoute {
     /// Lower-cased mirror of the filter input value, kept in sync via
     /// `InputEvent::Change`. Avoids re-lowercasing on every render.
     filter_lower: String,
+    /// Active wing-pin filter — set by clicking a drawer's wing badge,
+    /// cleared by the active-pill `×` in the header. ANDed with
+    /// `filter_lower` so a user can drill in: pin a wing, then refine
+    /// by substring within it.
+    wing_pin: Option<String>,
 }
 
 impl KnowledgeRoute {
@@ -74,10 +79,18 @@ impl KnowledgeRoute {
             pending_text: String::new(),
             filter_input,
             filter_lower: String::new(),
+            wing_pin: None,
         }
     }
 
     fn drawer_matches(&self, d: &MemoryDrawer) -> bool {
+        // Wing pin first — exact match, fast reject. Reduces the
+        // substring-search workload when a wing is pinned.
+        if let Some(pin) = self.wing_pin.as_ref() {
+            if &d.wing != pin {
+                return false;
+            }
+        }
         if self.filter_lower.is_empty() {
             return true;
         }
@@ -94,6 +107,16 @@ impl KnowledgeRoute {
             }
         }
         d.body_preview.to_lowercase().contains(q)
+    }
+
+    fn pin_wing(&mut self, wing: String) {
+        // Click on the active wing toggles it off — saves the user
+        // hunting for the header `×` for a casual narrow-then-clear.
+        if self.wing_pin.as_deref() == Some(wing.as_str()) {
+            self.wing_pin = None;
+        } else {
+            self.wing_pin = Some(wing);
+        }
     }
 
     fn submit(&mut self, cx: &mut Context<Self>) {
@@ -181,6 +204,42 @@ impl Render for KnowledgeRoute {
             .py_1()
             .child(Input::new(&self.filter_input).appearance(false));
 
+        // Active wing-pin pill — only renders when a wing is pinned.
+        // Acts as the canonical clear-affordance (clicking the pinned
+        // wing badge in a row also toggles it off, but the header pill
+        // is the place a user looks when narrowing feels stuck).
+        let pin_pill: gpui::AnyElement = match self.wing_pin.as_ref() {
+            None => div().into_any_element(),
+            Some(wing) => {
+                let entity_for_clear = cx.entity();
+                h_flex()
+                    .gap_2()
+                    .child(
+                        div()
+                            .text_color(muted)
+                            .child(SharedString::new_static("wing pinned:")),
+                    )
+                    .child(
+                        div()
+                            .id("knowledge-wing-pin-clear")
+                            .px_2()
+                            .py_0p5()
+                            .border_1()
+                            .border_color(primary)
+                            .rounded_md()
+                            .text_color(primary)
+                            .child(SharedString::from(format!("{wing} \u{00D7}")))
+                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                entity_for_clear.update(cx, |this, cx| {
+                                    this.wing_pin = None;
+                                    cx.notify();
+                                });
+                            }),
+                    )
+                    .into_any_element()
+            }
+        };
+
         let header = v_flex()
             .gap_2()
             .child(
@@ -193,7 +252,8 @@ impl Render for KnowledgeRoute {
             )
             .child(form)
             .child(status_line)
-            .child(filter_field);
+            .child(filter_field)
+            .child(pin_pill);
 
         let body: gpui::AnyElement = match state.memory_recent.as_ref() {
             None => div()
@@ -231,6 +291,8 @@ impl Render for KnowledgeRoute {
                 } else {
                     format!("{visible_count} of {total} match · cursor {}", resp.cursor)
                 });
+                let entity = cx.entity();
+                let pinned_wing = self.wing_pin.clone();
                 let list: gpui::AnyElement = if visible.is_empty() {
                     div()
                         .text_color(muted)
@@ -245,7 +307,20 @@ impl Render for KnowledgeRoute {
                         .children(
                             visible
                                 .into_iter()
-                                .map(|d| drawer_row(d, muted, border, secondary).into_any_element())
+                                .map(|d| {
+                                    let wing_pinned =
+                                        pinned_wing.as_deref() == Some(d.wing.as_str());
+                                    drawer_row(
+                                        d,
+                                        muted,
+                                        border,
+                                        secondary,
+                                        primary,
+                                        wing_pinned,
+                                        entity.clone(),
+                                    )
+                                    .into_any_element()
+                                })
                                 .collect::<Vec<_>>(),
                         )
                         .into_any_element()
@@ -268,11 +343,29 @@ impl Render for KnowledgeRoute {
     }
 }
 
-fn drawer_row(d: &MemoryDrawer, muted: Hsla, border: Hsla, badge_bg: Hsla) -> gpui::Div {
+#[allow(clippy::too_many_arguments)]
+fn drawer_row(
+    d: &MemoryDrawer,
+    muted: Hsla,
+    border: Hsla,
+    badge_bg: Hsla,
+    primary: Hsla,
+    wing_pinned: bool,
+    entity: Entity<KnowledgeRoute>,
+) -> gpui::Div {
     let location = match d.room.as_deref() {
         Some(room) if !room.is_empty() => format!("{}/{}", d.wing, room),
         _ => d.wing.clone(),
     };
+    // Click target id needs to be unique per row — `gpui` requires
+    // stateful elements to declare an id, and it must not collide
+    // across the children list within a single render. Drawer ids
+    // are unique within the response so suffixing with `d.id` is
+    // sufficient. `SharedString` rather than `&'static str` so
+    // `format!` works.
+    let badge_id = SharedString::from(format!("knowledge-wing-{}-{}", d.id, d.wing));
+    let pin_wing = d.wing.clone();
+    let badge_border = if wing_pinned { primary } else { badge_bg };
 
     v_flex()
         .gap_1()
@@ -290,14 +383,26 @@ fn drawer_row(d: &MemoryDrawer, muted: Hsla, border: Hsla, badge_bg: Hsla) -> gp
                         .child(SharedString::from(format!("#{}", d.id))),
                 )
                 // Wing/room badge — uses the secondary token as a
-                // subtle pill background.
+                // subtle pill background. Clicking pins the wing as
+                // an extra filter; clicking the active wing toggles
+                // the pin off.
                 .child(
                     div()
+                        .id(badge_id)
                         .px_2()
                         .py_0p5()
                         .bg(badge_bg)
+                        .border_1()
+                        .border_color(badge_border)
                         .rounded_md()
-                        .child(SharedString::from(location)),
+                        .child(SharedString::from(location))
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            let wing = pin_wing.clone();
+                            entity.update(cx, |this, cx| {
+                                this.pin_wing(wing);
+                                cx.notify();
+                            });
+                        }),
                 )
                 .child(
                     div()
