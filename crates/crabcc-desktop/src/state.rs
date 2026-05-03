@@ -272,6 +272,17 @@ pub struct AppState {
     /// stays idempotent) but the strip shows nothing. Toggled by
     /// the header bell — see `Shell::render`.
     pub toasts_muted: bool,
+    /// Whether visible toasts should ALSO be echoed to the macOS
+    /// Notification Center via `native::deliver_notification` (track
+    /// C.2). Defaults to `true` — every visible toast fires a system
+    /// banner. Toggle off via the header `↗ system` button for
+    /// "in-window only" mode (e.g. operator on screen-sharing call
+    /// who doesn't want banners cluttering the recording).
+    ///
+    /// `Shell::render`'s delivery hook still advances its
+    /// last-delivered-id sentinel even when echo is off, so toggling
+    /// echo back on doesn't blast the queued-but-suppressed toasts.
+    pub echo_to_system: bool,
     /// Append-only log of every toast that has been emitted, even
     /// when muted. Capped at [`TOAST_HISTORY_CAP`] entries — over-cap
     /// pushes drop the oldest from the front. Drives the
@@ -302,7 +313,15 @@ pub struct WorkerHandles {
 
 impl AppState {
     pub fn new() -> Self {
-        Self::default()
+        // `Default` gives `echo_to_system: false` (bool defaults to
+        // false) but we want the system-echo on by default — every
+        // visible toast also fires a banner unless the user opts
+        // out. Override here so the field doesn't need a manual
+        // `Default` impl on the whole struct.
+        Self {
+            echo_to_system: true,
+            ..Self::default()
+        }
     }
 
     /// Push a new toast into the strip. Newest goes to the front;
@@ -365,6 +384,15 @@ impl AppState {
         if self.toasts_muted {
             self.toasts.clear();
         }
+    }
+
+    /// Flip the system-echo state. No deque side-effects — the
+    /// in-window strip is unchanged either way; the next toast
+    /// pushed will be (or won't be) echoed to Notification Center
+    /// per the new value. See [`Shell::render`]'s delivery hook
+    /// for the consumer side.
+    pub fn toggle_echo_to_system(&mut self) {
+        self.echo_to_system = !self.echo_to_system;
     }
 
     /// Wipe the toast history log. Doesn't touch the visible deque
@@ -1196,6 +1224,23 @@ mod tests {
         s.clear_toast_history();
         assert_eq!(s.toasts.len(), 1, "active toast must survive clear_history");
         assert!(s.toast_history.is_empty());
+    }
+
+    #[test]
+    fn echo_to_system_default_on_then_toggle_off() {
+        // Default state: echo on. Toggle flips it; toggle again
+        // restores. No deque side-effects either direction.
+        let mut s = AppState::new();
+        assert!(s.echo_to_system, "default must be on");
+        s.push_toast(ToastLevel::Info, "x");
+        let visible_before = s.toasts.len();
+        s.toggle_echo_to_system();
+        assert!(!s.echo_to_system);
+        // Visible deque unchanged — echo toggle is purely about
+        // the system-side delivery, not the in-window strip.
+        assert_eq!(s.toasts.len(), visible_before);
+        s.toggle_echo_to_system();
+        assert!(s.echo_to_system);
     }
 
     #[test]
