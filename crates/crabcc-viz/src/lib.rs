@@ -613,6 +613,12 @@ struct ActivityEvent {
     op: String,
     query: String,
     results: usize,
+    /// Agent run id when the originating `track::record` call ran
+    /// inside an agent process. `None` for direct CLI / IDE / MCP
+    /// calls. Forwarded straight from the on-disk usage.log entry —
+    /// see `crabcc_core::track::Entry::agent_id` (#311).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_id: Option<String>,
 }
 
 // =====================================================================
@@ -879,6 +885,7 @@ fn activity_tail(root: &Path, query: &str) -> Result<ActivitySnapshot> {
             op: e.op,
             query: e.query,
             results: e.results,
+            agent_id: e.agent_id,
         })
         .collect();
     // The on-disk log is naturally append-ordered, but we re-sort defensively

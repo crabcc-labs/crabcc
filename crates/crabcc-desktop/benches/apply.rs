@@ -60,6 +60,7 @@ fn synth_activity(n: usize) -> SseActivityFrame {
             op: ops[i % ops.len()].into(),
             query: format!("Query{i:04}").into(),
             results: (i as u64) % 100,
+            agent_id: None,
         })
         .collect();
     SseActivityFrame {
@@ -114,6 +115,7 @@ fn bench_apply_activity_drip(c: &mut Criterion) {
                 op: "sym".into(),
                 query: format!("Q{i}").into(),
                 results: 1,
+                agent_id: None,
             }],
         })
         .collect();
