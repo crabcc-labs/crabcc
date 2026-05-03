@@ -210,7 +210,7 @@ dependencies = [
  "tree-sitter-lua",
  "tree-sitter-php",
  "tree-sitter-python",
- "tree-sitter-ruby",
+ "tree-sitter-ruby 0.21.0",
  "tree-sitter-rust",
  "tree-sitter-scala",
  "tree-sitter-sequel",
@@ -950,7 +950,7 @@ dependencies = [
  "tree-sitter-go",
  "tree-sitter-javascript",
  "tree-sitter-python",
- "tree-sitter-ruby",
+ "tree-sitter-ruby 0.23.0",
  "tree-sitter-rust",
  "tree-sitter-typescript",
 ]
@@ -5574,6 +5574,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "tree-sitter-language"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "009994f150cc0cd50ff54917d5bc8bffe8cad10ca10d81c34da2ec421ae61782"
+
+[[package]]
 name = "tree-sitter-lua"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5611,6 +5617,16 @@ checksum = "c0031f687c0772f2dad7b77104c43428611099a1804c81244ada21560f41f0b1"
 dependencies = [
  "cc",
  "tree-sitter",
+]
+
+[[package]]
+name = "tree-sitter-ruby"
+version = "0.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6ec5ee842e27791e0adffa0b2a177614de51d2a26e5c7e84d014ed7f097e5ed0"
+dependencies = [
+ "cc",
+ "tree-sitter-language",
 ]
 
 [[package]]
