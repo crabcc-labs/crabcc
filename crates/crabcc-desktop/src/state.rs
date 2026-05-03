@@ -219,16 +219,29 @@ pub struct AppState {
     /// shell view re-renders on `cx.notify` and dispatches body content
     /// based on this value.
     pub route: Route,
-    /// Channel back into the worker pump. Set by `state::build`.
-    /// Routes that fire one-shot HTTP work (e.g. memory-ingest from
-    /// the Knowledge form) `clone()` it and feed an `AppEvent` from a
-    /// detached `std::thread`. Optional only because `Default` can't
-    /// fabricate a real channel — the unwrap in `submit_ingest` is
-    /// guaranteed safe in practice.
-    ingest_tx: Option<flume::Sender<AppEvent>>,
-    /// Base URL for any `Client` instances spawned from
-    /// `submit_ingest`. Mirrors the value passed to `state::build`.
-    base_url: Option<String>,
+    /// Worker plumbing for one-shot HTTP submits — see [`WorkerHandles`].
+    /// `Option` only because `Default` can't fabricate a real flume
+    /// channel; `state::build` populates it before the view ever
+    /// reads. The two fields used to live here directly as paired
+    /// `Option<_>`s; the review in #236 flagged that as a smell — they
+    /// always come from `state::build` together, so they should
+    /// always *be* together.
+    workers: Option<WorkerHandles>,
+}
+
+/// Plumbing the route entities use to fire detached HTTP requests
+/// back through the worker channel. Both fields are populated as a
+/// unit by `state::build` and never re-set after — the bundle exists
+/// so each `submit_*` method needs only one `let Some(handles) = …`
+/// guard instead of two paired-Optional unwraps.
+#[derive(Debug, Clone)]
+pub struct WorkerHandles {
+    /// Channel back into the worker pump. `clone()`-cheap (flume's
+    /// senders are MPSC handles wrapping an `Arc`).
+    pub tx: flume::Sender<AppEvent>,
+    /// Base URL for `Client` instances spawned from `submit_*`.
+    /// Mirrors the value `state::build` was called with.
+    pub base_url: String,
 }
 
 impl AppState {
@@ -372,16 +385,14 @@ impl AppState {
     /// new drawer appears in the Knowledge list without waiting for
     /// the periodic poller.
     pub fn submit_ingest(&self, req: MemoryIngestRequest) {
-        let Some(tx) = self.ingest_tx.clone() else {
+        let Some(handles) = self.workers.clone() else {
             return;
         };
-        let Some(base) = self.base_url.clone() else {
-            return;
-        };
+        let WorkerHandles { tx, base_url } = handles;
         std::thread::Builder::new()
             .name("crabcc-ingest".into())
             .spawn(move || {
-                let client = Client::with_base_url(base);
+                let client = Client::with_base_url(base_url);
                 let result = client.memory_ingest(&req);
                 let success = result.is_ok();
                 if tx.send(AppEvent::MemoryIngestResult(result)).is_err() {
@@ -402,16 +413,14 @@ impl AppState {
     /// of the launch (pid + timeout) lands in `last_launch` for the
     /// Home-route status line.
     pub fn submit_launch(&self, req: AgentLaunchRequest) {
-        let Some(tx) = self.ingest_tx.clone() else {
+        let Some(handles) = self.workers.clone() else {
             return;
         };
-        let Some(base) = self.base_url.clone() else {
-            return;
-        };
+        let WorkerHandles { tx, base_url } = handles;
         std::thread::Builder::new()
             .name("crabcc-launch".into())
             .spawn(move || {
-                let client = Client::with_base_url(base);
+                let client = Client::with_base_url(base_url);
                 let _ = tx.send(AppEvent::AgentLaunchResult(client.agent_launch(&req)));
             })
             .expect("launch thread spawn");
@@ -421,16 +430,14 @@ impl AppState {
     /// SSE frame on each kill, so the running-agents list refreshes
     /// itself — no follow-up fetch needed here.
     pub fn submit_kill(&self, id: String) {
-        let Some(tx) = self.ingest_tx.clone() else {
+        let Some(handles) = self.workers.clone() else {
             return;
         };
-        let Some(base) = self.base_url.clone() else {
-            return;
-        };
+        let WorkerHandles { tx, base_url } = handles;
         std::thread::Builder::new()
             .name("crabcc-kill".into())
             .spawn(move || {
-                let client = Client::with_base_url(base);
+                let client = Client::with_base_url(base_url);
                 let _ = tx.send(AppEvent::AgentKillResult(client.agent_kill(&id)));
             })
             .expect("kill thread spawn");
@@ -442,16 +449,14 @@ impl AppState {
     /// Result lands in `agent_log` keyed by id; the Agents route reads
     /// it on next render.
     pub fn submit_agent_log(&self, id: String, since: u64) {
-        let Some(tx) = self.ingest_tx.clone() else {
+        let Some(handles) = self.workers.clone() else {
             return;
         };
-        let Some(base) = self.base_url.clone() else {
-            return;
-        };
+        let WorkerHandles { tx, base_url } = handles;
         std::thread::Builder::new()
             .name("crabcc-agent-log".into())
             .spawn(move || {
-                let client = Client::with_base_url(base);
+                let client = Client::with_base_url(base_url);
                 let result = client.agent_log(&id, since);
                 let _ = tx.send(AppEvent::AgentLogResult { id, result });
             })
@@ -626,8 +631,10 @@ pub fn build(cx: &mut Context<AppState>, base_url: &str) -> AppState {
     let entity = cx.entity();
     AppState::pump_events(&entity, rx, cx);
     AppState {
-        ingest_tx: Some(tx),
-        base_url: Some(base_url.to_string()),
+        workers: Some(WorkerHandles {
+            tx,
+            base_url: base_url.to_string(),
+        }),
         ..AppState::new()
     }
 }
