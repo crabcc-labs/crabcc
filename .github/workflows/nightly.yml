@@ -5,17 +5,21 @@ name: nightly hyper-optimized build
 # artifact (NOT a GitHub Release — promoting to a Release is a manual
 # follow-up to keep the published-artifact surface intentional).
 #
+# Targets (intentionally narrow):
+#   * x86_64-unknown-linux-gnu — wild linker, UPX `--best --lzma`,
+#     RUSTFLAGS `-C target-cpu=x86-64-v3` (Skylake+ floor, ~2017).
+#   * aarch64-apple-darwin     — system ld, no UPX (corrupts modern
+#     Mach-O), RUSTFLAGS `-C target-cpu=apple-m1` (M1+ floor).
+#
 # Differences from `release.yml`:
 #   * Triggered by cron / manual dispatch, not tag push.
 #   * Builds the new `release-nightly` cargo profile (defined in the
 #     root Cargo.toml) which pins the same fat-LTO / single-codegen
-#     knobs as `release`. The wins come from per-target RUSTFLAGS:
-#       - x86_64-unknown-linux-gnu  → `-C target-cpu=x86-64-v3`
-#       - aarch64-apple-darwin       → `-C target-cpu=apple-m1`
-#     Both target floors are >= 2017 hardware, fine for a nightly.
-#   * Post-link UPX (`--best --lzma`) on Linux. macOS is skipped
-#     because UPX corrupts modern Mach-O binaries (Apple Silicon
-#     code-signing + dyld checks reject the packed image at exec).
+#     knobs as `release`; the wins come from per-target RUSTFLAGS,
+#     wild on the linux leg, and post-link UPX on linux.
+#   * Smoke-tests `--version` on the produced binaries on each leg
+#     before packaging — catches a wild + UPX combo regression before
+#     it ships.
 #   * Artifacts retain for 14 days — long enough to bisect a
 #     regression, short enough to keep storage cheap.
 
@@ -46,20 +50,19 @@ jobs:
             os: ubuntu-latest
             rustflags: '-C target-cpu=x86-64-v3'
             upx: true
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            cross: true
-            # `cross` uses a Debian-based sysroot; target-cpu generic
-            # is correct here — we don't know which aarch64 server
-            # generation the user is on.
-            rustflags: ''
-            upx: true
+            # Wild (https://github.com/davidlattimore/wild) is a
+            # production-grade Rust-friendly linker. x86_64-linux is
+            # its primary, well-tested target — flip wild on here.
+            wild: true
           - target: aarch64-apple-darwin
             os: macos-latest
             # apple-m1 is the floor for any modern aarch64 macOS box;
             # M1/M2/M3/M4 all run apple-m1 instructions natively.
+            # Wild does not support Mach-O; UPX corrupts modern
+            # signed Mach-O so it's skipped too.
             rustflags: '-C target-cpu=apple-m1'
             upx: false
+            wild: false
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -77,9 +80,20 @@ jobs:
         with:
           shared-key: nightly-${{ matrix.target }}
 
-      - name: install cross (linux aarch64 only)
-        if: matrix.cross
-        run: cargo install cross --locked
+      - name: install wild linker (x86_64-linux only)
+        if: matrix.wild
+        run: |
+          set -euo pipefail
+          # `cargo install --locked` honours wild's own Cargo.lock, so
+          # the build is reproducible across runs. Swatinem/rust-cache
+          # caches `~/.cargo/bin` (incl. the wild binary), so this is
+          # near-instant on warm runs.
+          cargo install --locked wild-linker
+          wild --version
+          # clang is required as the linker driver for `--ld-path`.
+          # ubuntu-latest ships it preinstalled, but assert anyway so
+          # a future runner image change fails loud.
+          clang --version
 
       - name: install upx
         if: matrix.upx
@@ -103,19 +117,23 @@ jobs:
           RUSTFLAGS: ${{ matrix.rustflags }}
         run: |
           set -euo pipefail
-          if [ "${{ matrix.cross }}" = "true" ]; then
-            cross build \
-              --profile release-nightly \
-              --target ${{ matrix.target }} \
-              -p crabcc-cli \
-              --features jemalloc
-          else
-            cargo build \
-              --profile release-nightly \
-              --target ${{ matrix.target }} \
-              -p crabcc-cli \
-              --features jemalloc
+          # Layer wild on top of the matrix-supplied rustflags. clang
+          # acts as the linker driver; `--ld-path=<path>` points it
+          # at our cargo-installed binary. Append rather than
+          # overwrite — keeps `target-cpu=x86-64-v3` etc. intact.
+          if [ "${{ matrix.wild }}" = "true" ]; then
+            # SC2155: separate `which` from the export so a missing
+            # binary fails the step instead of being masked by export's
+            # 0 exit code.
+            WILD_PATH=$(which wild)
+            export RUSTFLAGS="${RUSTFLAGS} -C linker=clang -C link-arg=--ld-path=${WILD_PATH}"
+            echo "wild-augmented RUSTFLAGS: ${RUSTFLAGS}"
           fi
+          cargo build \
+            --profile release-nightly \
+            --target ${{ matrix.target }} \
+            -p crabcc-cli \
+            --features jemalloc
 
       - name: post-process binaries (UPX)
         if: matrix.upx
@@ -138,6 +156,21 @@ jobs:
               ls -la "$BIN_DIR/$bin"
             fi
           done
+
+      # Minimal smoke test — `--version` exercises the whole load
+      # path: exec format, dynamic linker, jemalloc init, clap setup.
+      # Both runners build natively for the target arch (linux x86_64
+      # on ubuntu-latest; aarch64 darwin on macos-latest), so the
+      # produced binaries are directly executable. UPX-packed binaries
+      # also unpack here, catching wild + UPX combo regressions before
+      # they ship.
+      - name: smoke (--version)
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN_DIR="target/${{ matrix.target }}/release-nightly"
+          "$BIN_DIR/crabcc" --version
+          "$BIN_DIR/ccc" --version
 
       - name: package
         shell: bash
@@ -169,6 +202,7 @@ jobs:
             echo "date_utc: $(date -u +%FT%TZ)"
             echo "target: ${{ matrix.target }}"
             echo "rustflags: ${{ matrix.rustflags }}"
+            echo "linker: ${{ matrix.wild && 'wild' || 'system-default' }}"
             echo "upx: ${{ matrix.upx }}"
           } > "dist/$NAME/BUILD-INFO"
           tar -czf "dist/$NAME.tar.gz" -C dist "$NAME"
