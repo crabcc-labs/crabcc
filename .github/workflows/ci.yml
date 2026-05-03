@@ -51,7 +51,7 @@ jobs:
     name: lint (fmt + clippy)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           # Issue #87 — Pillar 3: need history for git-diff scoping.
           fetch-depth: 0
@@ -143,7 +143,7 @@ jobs:
     name: test (ubuntu, scoped)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           # Need git history to diff PR head against base for crate scoping.
           fetch-depth: 0
