@@ -506,6 +506,14 @@ components:
         prompt: { type: string }
         model: { type: string }
         backend: { type: string, enum: [ollama, anthropic] }
+        profile:
+          type: string
+          description: |
+            Profile id (bare filename without `.profile.toml`). When
+            set, the server forwards `--profile internal/<id>` to the
+            spawned CLI. Validated against `[A-Za-z0-9_-]+` server-
+            side; pre-#306 servers silently ignore the field.
+          pattern: "^[A-Za-z0-9_-]+$"
 
     AgentLaunchResponse:
       type: object

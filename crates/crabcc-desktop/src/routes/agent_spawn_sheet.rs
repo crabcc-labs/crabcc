@@ -15,11 +15,6 @@
 //!     transitions out of `Launching` once the id appears.
 //!
 //! What's deliberately not here yet (call out, don't fake):
-//!   * Profile selection only sets the request's *model* override —
-//!     `AgentLaunchRequest` has no `profile` field today, so the
-//!     server runs the default profile regardless of which row the
-//!     user clicked. Tracked as a follow-up; the sheet displays a
-//!     warning line under the profile list when a row is selected.
 //!   * Streaming uses the same one-shot polled `agent_log` endpoint
 //!     the Agents route does — there's a manual "Refresh" button,
 //!     not an auto-tailing timer. Promotion to a tailing pump is a
@@ -137,23 +132,17 @@ impl AgentSpawnSheet {
             return;
         }
 
-        // Pull the model override from the picked profile so the
-        // launch request reflects the user's selection at least on
-        // the model axis. The server-side `profile` field doesn't
-        // exist yet — see module docstring + follow-up issue.
-        let model = self.selected_profile.as_ref().and_then(|pid| {
-            let st = self.state.read(cx);
-            let resp = st.agent_profiles.as_ref()?;
-            resp.profiles
-                .iter()
-                .find(|p| p.id.as_ref() == pid.as_ref())
-                .and_then(|p| p.model.as_ref())
-                .map(|m| m.to_string())
-        });
+        // Forward the picked profile id directly — the server (#306)
+        // accepts it as a bare filename and pre-pends the `internal/`
+        // namespace before passing to the spawned CLI's `--profile`
+        // flag. Pre-#306 servers silently ignore the field, so this
+        // is safe against an old server (the launch just runs with
+        // the CLI default).
+        let profile = self.selected_profile.as_ref().map(|p| p.to_string());
 
         let req = AgentLaunchRequest {
             prompt: prompt.to_string(),
-            model,
+            profile,
             ..Default::default()
         };
         self.phase = SheetPhase::Launching;
@@ -426,21 +415,12 @@ impl AgentSpawnSheet {
             .child(picker)
             .child(prompt_col);
 
-        // Server-side gap warning — only rendered when a profile is
-        // actively picked, so the default flow ("just submit") doesn't
-        // get a permanent yellow stripe.
-        let mut col = v_flex().gap_3().child(body);
-        if self.selected_profile.is_some() {
-            col = col.child(
-                div()
-                    .text_color(warning)
-                    .text_xs()
-                    .child(SharedString::new_static(
-                        "profile selection only sets the model override · server-side `profile` field is a follow-up",
-                    )),
-            );
-        }
-        col.into_any_element()
+        // #306 closed the server-side gap — picking a profile now
+        // forwards as the launch request's `profile` field. Pre-#306
+        // servers silently ignore the field; warning kept off the
+        // happy path.
+        let _ = warning;
+        v_flex().gap_3().child(body).into_any_element()
     }
 
     fn render_launching(
