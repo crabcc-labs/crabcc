@@ -3,31 +3,63 @@
 //! server-side from `web:<hash>` / `text:<hash>` / `doc:<n>` ids and
 //! Obsidian-style `[[Title]]` matches) as edges.
 //!
-//! The brief asks for a Roam-like canvas (rounded-rect pills,
-//! dashed cross-ref lines, foreground-coloured selection ring,
-//! right-rail Drawer Detail panel). This v1 ships a **list-based
-//! rendering** of the same data: wing-grouped node list with
-//! cross-ref counts per drawer + a top-N edges section. A force-
-//! directed paint pass distinct from the relations graph is a
-//! deliberate follow-up — the data layer landing first lets a
-//! later PR focus purely on the visual differentiation without
-//! touching state plumbing.
+//! The brief asks for a Roam-like canvas distinct from the relations
+//! graph. This route ships:
 //!
-//! State is stored on `AppState::memory_graph` (lazy fetch on
-//! first render via `submit_memory_graph`; manual refresh button
-//! re-runs the same path). Errors land on
-//! `AppState::memory_graph_error` and render inline.
+//!   * a **force-directed canvas** at the top of the route — nodes
+//!     are wing-coloured rounded-rect pills (NOT circles, the
+//!     relations graph's primary), edges are thin solid lines, and
+//!     the selected node carries a foreground-coloured ring. Click a
+//!     node to select; click empty canvas to deselect.
+//!   * the **wing-grouped list** below the canvas — same data, easier
+//!     to scan at scale.
+//!   * a **right-rail Drawer Detail** panel on the active selection
+//!     (incoming + outgoing edge lists, `via` annotation).
+//!
+//! What's deliberately not here yet:
+//!
+//!   * Pan / zoom on the canvas. The relations graph has it; the
+//!     memory graph rarely tops a few hundred drawers, so a static
+//!     fit-to-bounds layout is enough for v1. Promote when the
+//!     deque outgrows the visible canvas at typical density.
+//!   * Dashed edges. gpui's `PathBuilder` doesn't expose a dash
+//!     pattern; faking it via short segments is a polish item.
+//!     Edge muting (alpha 0.45) is enough differentiation today.
+//!
+//! State is stored on `AppState::memory_graph` (lazy fetch on first
+//! render via `submit_memory_graph`; manual refresh button re-runs
+//! the same path). Errors land on `AppState::memory_graph_error` and
+//! render inline.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::{Arc, Mutex};
 
 use gpui::{
-    div, prelude::*, px, Context, Entity, Hsla, IntoElement, MouseButton, Render, SharedString,
-    Window,
+    canvas, div, point, prelude::*, px, Bounds, Context, Entity, Hsla, IntoElement, MouseButton,
+    PathBuilder, Pixels, Render, SharedString, Window,
 };
 use gpui_component::{h_flex, v_flex, ActiveTheme};
 
-use crate::api::types::{MemoryGraphEdge, MemoryGraphNode};
+use crate::api::types::{GraphEdge, GraphNode, GraphSnapshot, MemoryGraphEdge, MemoryGraphNode};
+use crate::graph_layout::{self, Layout};
 use crate::state::AppState;
+
+/// Pill dimensions for memory-graph nodes — wider than tall so the
+/// shape reads as a "pill" / "card". Distinct from the relations
+/// graph's circles (5-7 px radius). Caps a comfortable density at
+/// 200-300 nodes; beyond that the layout collapses into overlap and
+/// pan/zoom becomes load-bearing (not in v1).
+const PILL_WIDTH: f32 = 14.0;
+const PILL_HEIGHT: f32 = 8.0;
+/// Click tolerance — anything within this many pixels of a pill's
+/// bounding box counts as a hit. Keeps the small pill hittable in
+/// dense clusters without making clicks ambiguous.
+const HIT_PADDING_PX: f32 = 4.0;
+const EDGE_WIDTH: f32 = 1.0;
+/// Canvas height. The shell wraps the body in `overflow_y_scroll`,
+/// so the route can be taller than the window — keep the canvas
+/// generous so the layout has room to breathe.
+const CANVAS_HEIGHT: f32 = 380.0;
 
 /// Cap on the rows shown in the per-section list. `recent_activity`
 /// equivalent — keeps paint cost bounded under deep memory; a
@@ -43,9 +75,27 @@ pub struct KnowledgeGraphRoute {
     /// `state.memory_graph.is_some()` avoids re-fetching when an
     /// empty result is the genuine response (no drawers).
     fetched_once: bool,
-    /// Selected node id (for the right-rail detail panel). Cleared
-    /// by clicking the active row again or the panel's × button.
+    /// Selected node id (for the right-rail detail panel + canvas
+    /// ring). Cleared by clicking the active row / pill again or the
+    /// panel's × button.
     selected: Option<SharedString>,
+    /// Cached force-directed layout for the canvas. Recomputed when
+    /// the memory_graph response identity changes (cheap fingerprint
+    /// of node + edge counts). The layout's `positions` and
+    /// `edge_indices` index into `node_ids` below.
+    layout: Option<Layout>,
+    /// Fingerprint of the memory_graph the cached layout was built
+    /// for. `(nodes_len, edges_len)` xor-folded — same trick as
+    /// `routes::graph::GraphView`.
+    layout_fingerprint: usize,
+    /// Parallel array to `layout.positions` — node id at each layout
+    /// index. Used by the canvas hit-test to map (x, y) clicks back
+    /// to the SharedString id stored in `selected`.
+    node_ids: Vec<SharedString>,
+    /// Latest canvas bounds, written by `paint` and read by the click
+    /// handler. Both fire on the gpui main thread sequentially — the
+    /// mutex is just type-system glue across the two closures.
+    last_canvas_bounds: Arc<Mutex<Option<Bounds<Pixels>>>>,
 }
 
 impl KnowledgeGraphRoute {
@@ -55,6 +105,10 @@ impl KnowledgeGraphRoute {
             state,
             fetched_once: false,
             selected: None,
+            layout: None,
+            layout_fingerprint: 0,
+            node_ids: Vec::new(),
+            last_canvas_bounds: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -74,6 +128,90 @@ impl KnowledgeGraphRoute {
             self.selected = None;
         } else {
             self.selected = Some(id);
+        }
+    }
+
+    /// (Re)compute the force-directed layout from the current memory
+    /// graph if the response identity has changed. Caches both the
+    /// `Layout` and a parallel `node_ids` vec so the canvas hit-test
+    /// can map a click back to a `SharedString` id without re-walking
+    /// the original snapshot.
+    fn ensure_layout(&mut self, nodes: &[MemoryGraphNode], edges: &[MemoryGraphEdge]) {
+        let fp = nodes.len() ^ (edges.len() << 16);
+        if self.layout.is_some() && self.layout_fingerprint == fp {
+            return;
+        }
+        let snapshot = GraphSnapshot {
+            nodes: nodes
+                .iter()
+                .map(|n| GraphNode {
+                    id: n.id.to_string(),
+                    depth: 0,
+                    kind: Some(n.kind.to_string()),
+                    file: None,
+                    line: None,
+                    signature: None,
+                })
+                .collect(),
+            edges: edges
+                .iter()
+                .map(|e| GraphEdge {
+                    src: e.src.to_string(),
+                    dst: e.dst.to_string(),
+                })
+                .collect(),
+            seeds: Vec::new(),
+        };
+        self.layout = Some(graph_layout::run(&snapshot));
+        self.layout_fingerprint = fp;
+        self.node_ids = nodes.iter().map(|n| n.id.clone()).collect();
+        // Layout shape changed — drop a stale selection so the
+        // canvas ring doesn't point at the wrong pill.
+        self.selected = None;
+    }
+
+    /// Convert a window-relative click position into the layout
+    /// index of the nearest pill (within the hit tolerance). `None`
+    /// if the click missed every pill.
+    fn hit_test(&self, win_pos: gpui::Point<Pixels>) -> Option<usize> {
+        let bounds = self.last_canvas_bounds.lock().ok()?.as_ref().copied()?;
+        let layout = self.layout.as_ref()?;
+        let local_x = f32::from(win_pos.x - bounds.origin.x);
+        let local_y = f32::from(win_pos.y - bounds.origin.y);
+        let w = f32::from(bounds.size.width);
+        let h = f32::from(bounds.size.height);
+        if w <= 0.0 || h <= 0.0 {
+            return None;
+        }
+        // Pills are axis-aligned rectangles; a hit is any (x, y)
+        // inside the bounding box plus the tolerance in each axis.
+        let half_w = PILL_WIDTH * 0.5 + HIT_PADDING_PX;
+        let half_h = PILL_HEIGHT * 0.5 + HIT_PADDING_PX;
+        let mut best: Option<(usize, f32)> = None;
+        for (i, &(ux, uy)) in layout.positions.iter().enumerate() {
+            let cx = ux * w;
+            let cy = uy * h;
+            let dx = (local_x - cx).abs();
+            let dy = (local_y - cy).abs();
+            if dx <= half_w && dy <= half_h {
+                // Tie-break by Manhattan distance — closer click wins.
+                let nd = dx + dy;
+                if best.map(|(_, b)| nd < b).unwrap_or(true) {
+                    best = Some((i, nd));
+                }
+            }
+        }
+        best.map(|(i, _)| i)
+    }
+
+    fn handle_canvas_click(&mut self, win_pos: gpui::Point<Pixels>) {
+        match self.hit_test(win_pos) {
+            Some(idx) => {
+                if let Some(id) = self.node_ids.get(idx).cloned() {
+                    self.select(id);
+                }
+            }
+            None => self.selected = None,
         }
     }
 }
@@ -178,8 +316,28 @@ impl Render for KnowledgeGraphRoute {
                 ))
                 .into_any_element(),
             Some(g) => {
+                // Build / refresh the cached layout BEFORE the
+                // closures capture the route entity; the layout
+                // mutation is route-state, the canvas only reads.
+                self.ensure_layout(&g.nodes, &g.edges);
+
                 let edges_for_node = build_edge_index(&g.edges);
                 let by_wing = group_by_wing(&g.nodes);
+
+                // ── Canvas (top) ──────────────────────────────────
+                let canvas_block = render_canvas(
+                    self.layout.as_ref(),
+                    &self.node_ids,
+                    &g.nodes,
+                    self.selected.as_ref(),
+                    self.last_canvas_bounds.clone(),
+                    cx.entity(),
+                    foreground,
+                    muted,
+                    border,
+                    secondary,
+                    theme,
+                );
 
                 let view_for_select = cx.entity();
                 let mut sections = v_flex()
@@ -221,10 +379,15 @@ impl Render for KnowledgeGraphRoute {
                     primary,
                 );
 
-                h_flex()
+                v_flex()
                     .size_full()
-                    .child(sections)
-                    .child(detail_panel)
+                    .child(canvas_block)
+                    .child(
+                        h_flex()
+                            .size_full()
+                            .child(sections)
+                            .child(detail_panel),
+                    )
                     .into_any_element()
             }
         };
@@ -493,4 +656,186 @@ fn render_detail(
 
     let _ = primary;
     frame.child(header).child(in_block).child(out_block)
+}
+
+/// Build the canvas block — header strip + click-handling
+/// `gpui::canvas` element of fixed [`CANVAS_HEIGHT`]. Returns an
+/// empty div if the layout isn't ready (no drawers yet).
+#[allow(clippy::too_many_arguments)]
+fn render_canvas(
+    layout: Option<&Layout>,
+    node_ids: &[SharedString],
+    nodes: &[MemoryGraphNode],
+    selected: Option<&SharedString>,
+    bounds_share: Arc<Mutex<Option<Bounds<Pixels>>>>,
+    view: Entity<KnowledgeGraphRoute>,
+    foreground: Hsla,
+    muted: Hsla,
+    border: Hsla,
+    secondary: Hsla,
+    theme: &gpui_component::Theme,
+) -> gpui::AnyElement {
+    let Some(layout) = layout else {
+        return div().into_any_element();
+    };
+    if layout.positions.is_empty() {
+        return div().into_any_element();
+    }
+
+    // Pre-resolve per-node tones — pill colour follows wing, since
+    // the K-Graph palette differs from the relations graph's primary
+    // monochrome. The closures don't borrow `theme`, so this resolves
+    // before paint and is cheap (each node = one match).
+    let node_tones: Vec<Hsla> = nodes.iter().map(|n| wing_color(&n.kind, theme)).collect();
+
+    // Map the selected id to a layout index so paint can ring the
+    // correct pill without re-walking node_ids on every frame.
+    let selected_idx: Option<usize> =
+        selected.and_then(|sel| node_ids.iter().position(|id| id == sel));
+
+    let layout_clone = layout.clone();
+    let node_tones_clone = node_tones.clone();
+
+    let canvas_el = canvas(
+        move |_bounds, _, _| (),
+        move |bounds: Bounds<Pixels>, _, window, _| {
+            if let Ok(mut guard) = bounds_share.lock() {
+                *guard = Some(bounds);
+            }
+            paint_k_graph(
+                bounds,
+                &layout_clone,
+                &node_tones_clone,
+                selected_idx,
+                foreground,
+                muted,
+                window,
+            );
+        },
+    )
+    .size_full();
+
+    let entity_for_click = view.clone();
+    let canvas_container = div()
+        .id("k-graph-canvas")
+        .size_full()
+        .child(canvas_el)
+        .on_mouse_down(MouseButton::Left, move |event, _, cx| {
+            let pos = event.position;
+            entity_for_click.update(cx, |this, cx| {
+                this.handle_canvas_click(pos);
+                cx.notify();
+            });
+        });
+
+    v_flex()
+        .mx_5()
+        .mt_3()
+        .px_3()
+        .py_2()
+        .border_1()
+        .border_color(border)
+        .rounded_md()
+        .bg(secondary)
+        .gap_2()
+        .child(
+            h_flex()
+                .gap_2()
+                .child(
+                    div()
+                        .text_color(muted)
+                        .text_xs()
+                        .child(SharedString::new_static("CANVAS")),
+                )
+                .child(
+                    div()
+                        .text_color(muted)
+                        .text_xs()
+                        .child(SharedString::from(format!(
+                            "{} pills · {} cross-refs",
+                            layout.positions.len(),
+                            layout.edge_indices.len()
+                        ))),
+                ),
+        )
+        .child(div().h(px(CANVAS_HEIGHT)).child(canvas_container))
+        .into_any_element()
+}
+
+/// Paint pass for the memory canvas. Differentiated from the
+/// relations graph in three ways:
+///
+///   * Nodes are wide rounded-rect "pills" (`PILL_WIDTH × PILL_HEIGHT`)
+///     instead of small circles.
+///   * Edges are thin solid lines at low alpha — dashed strokes need
+///     manual segment painting (gpui's `PathBuilder` doesn't expose a
+///     dash pattern); the alpha drop keeps the visual quiet without
+///     waiting on that polish.
+///   * Selection ring uses `foreground` (off-white) instead of the
+///     relations graph's `primary` purple — same idea (highlighted
+///     pill stands out) but a deliberately different hue so a user
+///     bouncing between routes never confuses the two graphs.
+fn paint_k_graph(
+    bounds: Bounds<Pixels>,
+    layout: &Layout,
+    node_tones: &[Hsla],
+    selected: Option<usize>,
+    foreground: Hsla,
+    muted: Hsla,
+    window: &mut Window,
+) {
+    let ox = f32::from(bounds.origin.x);
+    let oy = f32::from(bounds.origin.y);
+    let w = f32::from(bounds.size.width);
+    let h = f32::from(bounds.size.height);
+
+    let to_px = |(ux, uy): (f32, f32)| point(px(ox + ux * w), px(oy + uy * h));
+
+    // Edges first so pills paint on top.
+    let edge_color = with_alpha(muted, 0.45);
+    for &(a, b) in &layout.edge_indices {
+        if let (Some(p1), Some(p2)) = (layout.positions.get(a), layout.positions.get(b)) {
+            let mut pb = PathBuilder::stroke(px(EDGE_WIDTH));
+            pb.move_to(to_px(*p1));
+            pb.line_to(to_px(*p2));
+            if let Ok(path) = pb.build() {
+                window.paint_path(path, edge_color);
+            }
+        }
+    }
+
+    // Pills. Each gets its wing colour at base alpha; the selected
+    // pill paints again with a 2-px foreground ring (drawn as a
+    // slightly larger filled quad below the inner fill).
+    let half_w = PILL_WIDTH * 0.5;
+    let half_h = PILL_HEIGHT * 0.5;
+    for (i, &(ux, uy)) in layout.positions.iter().enumerate() {
+        let centre = point(px(ox + ux * w), px(oy + uy * h));
+        let tone = node_tones.get(i).copied().unwrap_or(muted);
+        if Some(i) == selected {
+            // Foreground ring: a slightly larger quad in foreground
+            // colour painted first, then the wing-coloured pill on
+            // top — cheap "ring around pill" without a stroked path.
+            let ring_w = PILL_WIDTH + 4.0;
+            let ring_h = PILL_HEIGHT + 4.0;
+            let ring_bounds = Bounds {
+                origin: point(centre.x - px(ring_w * 0.5), centre.y - px(ring_h * 0.5)),
+                size: gpui::size(px(ring_w), px(ring_h)),
+            };
+            window.paint_quad(
+                gpui::fill(ring_bounds, foreground)
+                    .corner_radii(gpui::Corners::all(px(ring_h * 0.5))),
+            );
+        }
+        let pill_bounds = Bounds {
+            origin: point(centre.x - px(half_w), centre.y - px(half_h)),
+            size: gpui::size(px(PILL_WIDTH), px(PILL_HEIGHT)),
+        };
+        window
+            .paint_quad(gpui::fill(pill_bounds, tone).corner_radii(gpui::Corners::all(px(half_h))));
+    }
+}
+
+fn with_alpha(c: Hsla, a: f32) -> Hsla {
+    Hsla { a, ..c }
 }
