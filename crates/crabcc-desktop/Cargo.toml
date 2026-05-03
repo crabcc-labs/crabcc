@@ -1,18 +1,89 @@
+# Phase A.1 — gpui shell, standalone crate.
+#
+# `crates/crabcc-desktop` deliberately stays OUT of the parent workspace.
+# Two reasons:
+#
+#   1. gpui-component pulls a hard, non-optional dep on `tree-sitter =
+#      "0.25"` (with `links = "tree-sitter"` so cargo enforces a single
+#      version per resolution). The rest of crabcc is on tree-sitter
+#      0.22 with its grammar fleet at 0.21. Joining the parent workspace
+#      would force a coordinated tree-sitter-22→25 bump across six
+#      grammar crates — out of scope here.
+#
+#   2. gpui pins specific zed-industries/zed revs and adds ~3 GB of
+#      cold-build deps. Keeping it standalone means the rest of the
+#      crabcc build stays warm and unaffected.
+#
+# Wire to the rest of crabcc over HTTP/SSE on `http://127.0.0.1:7878`,
+# never via path deps. See
+# `docs/RESEARCH-native-desktop-and-rich-notifications.md` (Track A).
+
+[workspace]
+# Empty table → cargo treats this as its own root, ignoring the parent
+# workspace.
+
 [package]
-name                   = "crabcc-desktop"
-version.workspace      = true
-edition.workspace      = true
-rust-version.workspace = true
-license.workspace      = true
-repository.workspace   = true
-description            = "Single-window dashboard state model for the crabcc desktop client."
+name = "crabcc-desktop"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.87"
+license = "MIT"
+repository = "https://github.com/peterlodri-sec/crabcc"
+
+[lib]
+# rlib so integration tests + `main.rs` consume the same `api::Client`.
+name = "crabcc_desktop"
+path = "src/lib.rs"
+
+[[bin]]
+name = "crabcc-desktop"
+path = "src/main.rs"
 
 [dependencies]
-anyhow        = { workspace = true }
-compact_str   = { workspace = true, features = ["serde"] }
-flume         = { workspace = true }
-serde         = { workspace = true }
-serde_json    = { workspace = true }
-tracing       = { workspace = true }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Blocking client is enough today: GET fetches happen off the UI thread
+# in `cx.background_executor().spawn(...)`, and the SSE worker
+# (`src/sse.rs`) holds the response as a `std::io::Read` from its own
+# `std::thread`. No async runtime needed in this crate.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+# Runtime-agnostic mpsc — the SSE worker thread sends typed events,
+# the gpui-side `cx.spawn` consumes them via `recv_async()`. flume's
+# async receiver works on any executor (smol-flavored gpui included),
+# which is the whole reason it's here vs. tokio's mpsc.
+flume = { version = "0.11", default-features = false, features = ["async"] }
 
-[dev-dependencies]
+# GPUI deps — track gpui-component's own source URLs so cargo unifies
+# the gpui crate to a SINGLE compiled copy. Pinning a `rev =` here
+# splits the resolution from gpui-component's revless `git = "...zed"`
+# entries, which produces two zed checkouts and a `Render` trait
+# collision at compile time. Reproducibility for this (binary) crate
+# comes from `Cargo.lock` instead. Bump recipe + rationale in
+# `docs/RESEARCH-native-desktop-and-rich-notifications.md`.
+#
+# gpui-component is pinned by rev because IT is published from one place
+# and we want a deterministic upstream surface; its transitive zed dep
+# is left to cargo to resolve.
+gpui           = { git = "https://github.com/zed-industries/zed" }
+gpui_platform  = { git = "https://github.com/zed-industries/zed", features = ["font-kit", "x11", "wayland", "runtime_shaders"] }
+gpui-component = { git = "https://github.com/longbridge/gpui-component", rev = "41f51428c563597af4f04fb476141d3311a1c0c4" }
+
+# GPUI ships its own GPU-rendering hot path; opt-level=1 makes window
+# rendering feel laggy in dev. Mirror upstream's per-package overrides
+# so only the GPUI crates pay opt-level=3 in dev builds.
+[profile.dev.package.gpui]
+opt-level = 3
+[profile.dev.package.gpui_platform]
+opt-level = 3
+[profile.dev.package.gpui_macros]
+opt-level = 3
+
+# macOS-only dock badge plumbing. `objc2-app-kit` is already transitively
+# pulled in by gpui_platform; pinning a direct dep here makes the call
+# site (`src/native_macos.rs`) self-contained and lets cargo unify on
+# whatever version gpui's transitive uses without us guessing.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = "0.3"
+objc2-foundation = "0.3"

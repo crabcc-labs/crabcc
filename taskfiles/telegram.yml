@@ -1,0 +1,111 @@
+# Telegram bot tasks + cloudflared tunnel + MCP HTTP server.
+# telegram-*, tunnel-*, mcp-serve.
+version: '3'
+
+vars:
+  CARGO: cargo
+  CRABCC: ~/.cargo/bin/crabcc
+
+tasks:
+  telegram-up:
+    desc: Run the telegram bot in a docker container, detached (#195)
+    summary: |
+      Stops + removes any prior 'crabcc-telegram' container, then
+      starts a fresh one with --restart=unless-stopped. Reads
+      apps/crabcc-telegram/.env at run time via --env-file (.env is
+      gitignored + .dockerignored — never baked into the image).
+      No host mounts — purely subprocess-isolated. Use `task
+      telegram-logs` to watch output.
+    deps: [docker-build-telegram]
+    vars:
+      BOT_VERSION:
+        sh: awk -F'"' '/^version[[:space:]]*=/ {print $2; exit}' apps/crabcc-telegram/Cargo.toml
+    cmds:
+      - docker rm -f crabcc-telegram 2>/dev/null || true
+      - >-
+        docker run -d
+        --name crabcc-telegram
+        --restart=unless-stopped
+        --env-file apps/crabcc-telegram/.env
+        ghcr.io/peterlodri-sec/crabcc-telegram:{{.BOT_VERSION}}
+      - docker ps --filter name=crabcc-telegram --format 'table {{`{{.Names}}`}}\t{{`{{.Status}}`}}\t{{`{{.Image}}`}}'
+
+  telegram-down:
+    desc: Stop + remove the telegram bot container (#195)
+    cmds:
+      - docker rm -f crabcc-telegram 2>/dev/null || echo "(not running)"
+
+  telegram-logs:
+    desc: Tail the telegram bot container's logs (Ctrl-C to stop)
+    cmds:
+      - docker logs -f crabcc-telegram
+
+  telegram-status:
+    desc: Liveness check + recent logs for the telegram bot container
+    cmds:
+      - >-
+        docker ps -a --filter name=crabcc-telegram
+        --format 'table {{`{{.Names}}`}}\t{{`{{.Status}}`}}\t{{`{{.Image}}`}}'
+      - echo "--- last 20 log lines ---"
+      - docker logs --tail 20 crabcc-telegram 2>&1 || echo "(container not present)"
+
+  telegram-bot:
+    desc: Run CrabCC_bot (Telegram). Reads TELEGRAM_BOT_TOKEN from env.
+    summary: |
+      Required env vars (set in .env or shell):
+        TELEGRAM_BOT_TOKEN   — from BotFather (never commit)
+      Optional:
+        CRABCC_SERVE_URL     — default http://localhost:8090
+        CRABCC_PUBLIC_URL    — public HTTPS URL for WebApp dashboard button
+                               e.g. from `ngrok http 8090` or cloudflared
+        ALLOWED_TELEGRAM_IDS — comma-separated Telegram user IDs (empty = open)
+    cmds:
+      - '{{.CARGO}} run -p crabcc-telegram --release'
+
+  telegram-bot-dev:
+    desc: Run CrabCC_bot in dev mode with RUST_LOG=debug
+    cmds:
+      - 'RUST_LOG=crabcc_telegram=debug {{.CARGO}} run -p crabcc-telegram'
+
+  tunnel-start:
+    desc: Start cloudflared quick-tunnel for crabcc serve (port 8090) — prints public URL
+    summary: |
+      Backgrounds cloudflared via nohup, waits up to 30s for the
+      trycloudflare.com URL to appear in its log, prints the URL plus
+      the matching `CRABCC_PUBLIC_URL=…` line for the bot's .env and
+      the `…/?role=mini` URL to paste into BotFather.
+      Idempotent — re-running while the tunnel is up just re-prints
+      the URL. Pass `PORT=N` to expose a different port.
+    cmds:
+      - bash scripts/cloudflared-tunnel.sh start
+
+  tunnel-stop:
+    desc: Stop the backgrounded cloudflared tunnel
+    cmds:
+      - bash scripts/cloudflared-tunnel.sh stop
+
+  tunnel-url:
+    desc: Print the cloudflared tunnel URL (assumes tunnel-start has run)
+    cmds:
+      - bash scripts/cloudflared-tunnel.sh url
+
+  tunnel-status:
+    desc: Liveness check for the cloudflared tunnel
+    cmds:
+      - bash scripts/cloudflared-tunnel.sh status
+
+  mcp-serve:
+    desc: Run the crabcc MCP server over HTTP on 127.0.0.1:8091 (#204)
+    summary: |
+      Foreground server. Loopback-only by default — the bot container
+      reaches it via host.docker.internal. Auth via MCP_AUTH_TOKEN env
+      var when set; unset = no auth (acceptable for single-user
+      loopback). Add `--dev` (or set CRABCC_MCP_DEV=1) for the dev
+      tool surface (_openapi/_health endpoints).
+
+      Service-discovery already advertises this endpoint via
+      `crabcc-core::service_discovery::known_services()` (#205) so
+      the viz dashboard's /api/services + the menubar Services panel
+      light up the moment the server is reachable.
+    cmds:
+      - "{{.CRABCC}} --mcp-http 127.0.0.1:8091"

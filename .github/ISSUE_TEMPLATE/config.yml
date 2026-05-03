@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question / discussion
+    url: https://github.com/peterlodri-sec/crabcc/discussions
+    about: Open-ended questions, design ideas, "how do I…?". Use Discussions, not Issues.
+  - name: Security report (private)
+    url: https://github.com/peterlodri-sec/crabcc/security/advisories/new
+    about: Report a vulnerability privately via GitHub Security Advisories.

@@ -1,0 +1,36 @@
+name: RFC / design proposal
+description: Cross-cutting design that needs discussion before implementation.
+title: "rfc(<scope>): <one-line summary>"
+labels: ["enhancement", "rfc"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Two or three sentences. The change being proposed.
+    validations:
+      required: true
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: Problem this solves. Constraints, prior art, links to incidents.
+    validations:
+      required: true
+  - type: textarea
+    id: design
+    attributes:
+      label: Design
+      description: API shape, data model, migration strategy, rollout plan.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What else was on the table and why it lost.
+  - type: textarea
+    id: open_questions
+    attributes:
+      label: Open questions
+      description: Items that need a decision before we start coding.

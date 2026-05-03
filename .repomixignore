@@ -53,6 +53,12 @@ target/doc/
 docs/build/
 **/_book/
 
+# /docs is a private submodule (peterlodri-sec/crabcc-docs).
+# Exclude the entire subtree so repomix never recurses in even if
+# someone adds non-md content there later.
+/docs/
+docs/**
+
 # ---------------------------------------------------------------------------
 # Static / binary resources — useless to a code-reviewing LLM
 # ---------------------------------------------------------------------------

@@ -9,11 +9,11 @@ use anyhow::{anyhow, Result};
 use tree_sitter::{Node, Parser};
 
 pub fn find_refs(src: &str, lang: &str, name: &str) -> Result<Vec<Hit>> {
-    let ts_lang = match lang {
-        "typescript" => tree_sitter_typescript::language_typescript(),
-        "tsx" => tree_sitter_typescript::language_tsx(),
-        "javascript" => tree_sitter_javascript::language(),
-        "ruby" => tree_sitter_ruby::language(),
+    let ts_lang: tree_sitter::Language = match lang {
+        "typescript" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+        "tsx" => tree_sitter_typescript::LANGUAGE_TSX.into(),
+        "javascript" => tree_sitter_javascript::LANGUAGE.into(),
+        "ruby" => tree_sitter_ruby::LANGUAGE.into(),
         _ => return Err(anyhow!("unsupported lang: {lang}")),
     };
     let mut parser = Parser::new();

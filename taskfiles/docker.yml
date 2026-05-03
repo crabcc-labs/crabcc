@@ -1,0 +1,109 @@
+# Docker / container image tasks: build, push, SBOM, OrbStack setup.
+# docker-build-crabcc, docker-push-crabcc, docker-sbom-crabcc,
+# docker-build-telegram, setup-orbstack.
+version: '3'
+
+vars:
+  CRABCC_VERSION:
+    sh: bash scripts/version.sh
+
+tasks:
+  setup-orbstack:
+    desc: Install + start OrbStack and link it as the active Docker context (#195)
+    summary: |
+      OrbStack is the recommended Docker daemon for Apple Silicon Mac
+      per apps/CONTAINER-POLICY.md — faster, lighter, arm64-native vs
+      Docker Desktop. Idempotent; safe to re-run.
+
+      Run this once before `task docker-build-crabcc`. The script:
+        1. Installs OrbStack via brew cask (skip if already present)
+        2. Launches OrbStack and waits for the docker daemon
+        3. Switches `docker context` to 'orbstack'
+        4. Ensures a buildx builder exists
+        5. Smoke-tests with `docker run hello-world`
+    cmds:
+      - bash scripts/setup-orbstack.sh
+
+  docker-build-crabcc:
+    desc: Build ghcr.io/peterlodri-sec/crabcc:<semver> locally for linux/arm64 (#195)
+    summary: |
+      Multi-stage build via crates/crabcc-cli/Dockerfile. Runtime is
+      gcr.io/distroless/cc-debian12:nonroot. Single platform
+      (linux/arm64 — Apple Silicon target). Semver tag only; no
+      `:latest`. Build-time ARGs populate the OCI metadata labels
+      (version, revision, created) so the registry-side metadata
+      reflects the actual commit + build timestamp.
+    vars:
+      GIT_SHA:
+        sh: git rev-parse HEAD
+      BUILD_DATE:
+        sh: date -u +%Y-%m-%dT%H:%M:%SZ
+    cmds:
+      - >-
+        docker buildx build
+        -f crates/crabcc-cli/Dockerfile
+        --platform linux/arm64
+        --build-arg VERSION="{{.CRABCC_VERSION}}"
+        --build-arg REVISION="{{.GIT_SHA}}"
+        --build-arg CREATED="{{.BUILD_DATE}}"
+        -t ghcr.io/peterlodri-sec/crabcc:{{.CRABCC_VERSION}}
+        --load
+        .
+
+  docker-push-crabcc:
+    desc: Push ghcr.io/peterlodri-sec/crabcc:<semver> to GHCR (#195)
+    summary: |
+      Pushes the semver tag only — no `:latest`. Requires GHCR write
+      credentials in DOCKER_CONFIG (run `gh auth login` then
+      `gh auth setup-git` once, or `echo $GHCR_TOKEN | docker login
+      ghcr.io -u <user> --password-stdin`).
+    deps: [docker-build-crabcc]
+    cmds:
+      - docker push ghcr.io/peterlodri-sec/crabcc:{{.CRABCC_VERSION}}
+
+  docker-sbom-crabcc:
+    desc: Generate SPDX SBOM for ghcr.io/peterlodri-sec/crabcc:<semver> (#195)
+    summary: |
+      Runs Syft against the locally-built image and writes
+      dist/sbom/crabcc-<version>.spdx.json. CI publishes this alongside
+      the image to GHCR via anchore/sbom-action — this target is the
+      local-dev equivalent for inspecting the SBOM ad-hoc.
+      Install Syft: `brew install syft` (or curl the install script
+      from https://github.com/anchore/syft).
+    deps: [docker-build-crabcc]
+    vars:
+      SBOM_DIR: dist/sbom
+      SBOM_FILE: 'dist/sbom/crabcc-{{.CRABCC_VERSION}}.spdx.json'
+    cmds:
+      - mkdir -p {{.SBOM_DIR}}
+      - >-
+        syft ghcr.io/peterlodri-sec/crabcc:{{.CRABCC_VERSION}}
+        -o spdx-json={{.SBOM_FILE}}
+      - echo "SBOM written to {{.SBOM_FILE}}"
+
+  docker-build-telegram:
+    desc: Build ghcr.io/peterlodri-sec/crabcc-telegram:<semver> for linux/arm64 (#195)
+    summary: |
+      Multi-stage build via apps/crabcc-telegram/Dockerfile. Build
+      context is apps/crabcc-telegram/ (the crate is excluded from
+      the workspace per /Cargo.toml's teloxide ICE comment, so the
+      build is standalone). Runtime is gcr.io/distroless/cc-debian12:nonroot.
+      OCI labels populated from VERSION/REVISION/CREATED build-args.
+    vars:
+      GIT_SHA:
+        sh: git rev-parse HEAD
+      BUILD_DATE:
+        sh: date -u +%Y-%m-%dT%H:%M:%SZ
+      BOT_VERSION:
+        sh: awk -F'"' '/^version[[:space:]]*=/ {print $2; exit}' apps/crabcc-telegram/Cargo.toml
+    cmds:
+      - >-
+        docker buildx build
+        -f apps/crabcc-telegram/Dockerfile
+        --platform linux/arm64
+        --build-arg VERSION="{{.BOT_VERSION}}"
+        --build-arg REVISION="{{.GIT_SHA}}"
+        --build-arg CREATED="{{.BUILD_DATE}}"
+        -t ghcr.io/peterlodri-sec/crabcc-telegram:{{.BOT_VERSION}}
+        --load
+        apps/crabcc-telegram

@@ -1,0 +1,37 @@
+name: Chore / maintenance
+description: CI, deps upgrade, refactor, test infra, release plumbing.
+title: "<type>(<scope>): <one-line summary>"
+labels: ["enhancement"]
+body:
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind of chore
+      options:
+        - ci
+        - dependencies
+        - refactor
+        - test
+        - docs
+        - chore
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What
+      description: Concrete change being requested.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+      description: What does this unlock / clean up?
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      placeholder: |
+        - [ ] `task ci` clean
+        - [ ] No new clippy warnings

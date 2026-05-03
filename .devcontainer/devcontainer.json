@@ -1,0 +1,61 @@
+{
+  "name": "crabcc",
+  "image": "mcr.microsoft.com/devcontainers/rust:1-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": {
+      "version": "20"
+    },
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers-contrib/features/typescript:2": {}
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "vadimcn.vscode-lldb",
+        "fill-labs.dependi",
+        "esbenp.prettier-vscode",
+        "dbaeumer.vscode-eslint",
+        "task.vscode-task",
+        "GitHub.vscode-pull-request-github",
+        "GitHub.copilot-chat"
+      ],
+      "settings": {
+        "rust-analyzer.cargo.allFeatures": true,
+        "rust-analyzer.check.command": "clippy",
+        "editor.formatOnSave": true,
+        "[rust]": {
+          "editor.defaultFormatter": "rust-lang.rust-analyzer"
+        },
+        "files.watcherExclude": {
+          "**/target/**": true,
+          "**/.repomix/**": true,
+          "**/node_modules/**": true
+        }
+      }
+    }
+  },
+  "remoteEnv": {
+    "RUST_BACKTRACE": "1",
+    "CARGO_TERM_COLOR": "always"
+  },
+  "mounts": [
+    "source=${localWorkspaceFolderBasename}-cargo-cache,target=/usr/local/cargo/registry,type=volume",
+    "source=${localWorkspaceFolderBasename}-target,target=${containerWorkspaceFolder}/target,type=volume"
+  ],
+  "onCreateCommand": ".devcontainer/on-create.sh",
+  "postCreateCommand": ".devcontainer/post-create.sh",
+  "postStartCommand": "cargo --version && task --version || true",
+  "forwardPorts": [7878, 8080],
+  "portsAttributes": {
+    "7878": { "label": "crabcc-viz live dashboard", "onAutoForward": "notify" },
+    "8080": { "label": "litellm proxy" }
+  },
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "8gb",
+    "storage": "32gb"
+  }
+}
