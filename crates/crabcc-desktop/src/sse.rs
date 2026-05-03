@@ -197,7 +197,11 @@ fn parse_frame(topic: ParsedTopic, data: &[u8]) -> Option<SseEvent> {
         },
         ParsedTopic::Unknown(other) => {
             let value: serde_json::Value = serde_json::from_slice(data).unwrap_or_else(|_| {
-                serde_json::Value::String(String::from_utf8_lossy(data).into_owned())
+                let s = match std::str::from_utf8(data) {
+                    Ok(valid) => valid.to_owned(),
+                    Err(_) => String::from_utf8_lossy(data).into_owned(),
+                };
+                serde_json::Value::String(s)
             });
             Some(SseEvent::Unknown {
                 topic: other.into_boxed_str(),
