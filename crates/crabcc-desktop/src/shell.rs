@@ -173,6 +173,29 @@ impl Render for Shell {
                     .into_any_element()
             }));
 
+        // Mute toggle for the in-window toast strip (track C.0 slice
+        // 4). `●` (primary) when alerts are live, `○` (muted) when
+        // muted — same character count so the header doesn't jitter
+        // on toggle. Clicking flips `AppState::toasts_muted` and
+        // clears any visible toasts on transition into mute (see
+        // `AppState::toggle_toast_mute`).
+        let muted_state = state_for_brand.toasts_muted;
+        let alerts_glyph = if muted_state { "\u{25CB}" } else { "\u{25CF}" };
+        let alerts_color = if muted_state { muted } else { primary };
+        let state_for_alerts = self.state.clone();
+        let alerts_btn = div()
+            .id("toasts-mute-toggle")
+            .px_2()
+            .py_1()
+            .text_color(alerts_color)
+            .child(SharedString::from(format!("{alerts_glyph} alerts")))
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                state_for_alerts.update(cx, |s, cx| {
+                    s.toggle_toast_mute();
+                    cx.notify();
+                });
+            });
+
         let header = h_flex()
             .gap_6()
             .px_5()
@@ -190,7 +213,8 @@ impl Render for Shell {
                     )
                     .child(div().text_color(muted).child(brand_sub)),
             )
-            .child(nav);
+            .child(nav)
+            .child(alerts_btn);
 
         let body: AnyElement = match active {
             Route::Home => self.home.clone().into_any_element(),
