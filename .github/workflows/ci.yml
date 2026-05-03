@@ -60,7 +60,7 @@ jobs:
         with:
           components: clippy, rustfmt
 
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: mozilla-actions/sccache-action@v0.0.10
 
       # mold linker — Apache-2.0, ~3-5x faster link than lld on big
       # debug + ci profile builds. Apt install is sub-second.
@@ -150,7 +150,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: install mold linker
         run: sudo apt-get install -y --no-install-recommends mold
