@@ -3,6 +3,7 @@
 //! based on `AppState::route`. Each route view is self-contained and
 //! observes `AppState` only for the slices it cares about.
 
+pub mod agent_spawn_sheet;
 pub mod agents;
 pub mod commands;
 pub mod dashboard;
