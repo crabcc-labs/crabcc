@@ -138,6 +138,11 @@ pub enum Route {
     System,
     Knowledge,
     Commands,
+    /// Tool-call timeline / inspector — richer rendering of the same
+    /// SSE activity stream the Home dashboard's activity tile shows,
+    /// with per-tool colour coding, filters, pinning, and a right-rail
+    /// inspector pane (#293).
+    Timeline,
 }
 
 impl Route {
@@ -149,16 +154,18 @@ impl Route {
             Route::System => "System",
             Route::Knowledge => "Knowledge",
             Route::Commands => "Commands",
+            Route::Timeline => "Timeline",
         }
     }
 
-    pub const ALL: [Route; 6] = [
+    pub const ALL: [Route; 7] = [
         Route::Home,
         Route::Agents,
         Route::Logs,
         Route::System,
         Route::Knowledge,
         Route::Commands,
+        Route::Timeline,
     ];
 }
 

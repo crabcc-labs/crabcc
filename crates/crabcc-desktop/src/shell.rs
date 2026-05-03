@@ -19,7 +19,7 @@ use gpui_component::{h_flex, v_flex, ActiveTheme};
 use crate::native;
 use crate::routes::{
     agents::AgentsRoute, commands::CommandsRoute, dashboard::DashboardHome,
-    knowledge::KnowledgeRoute, logs::LogsRoute, system::SystemRoute,
+    knowledge::KnowledgeRoute, logs::LogsRoute, system::SystemRoute, timeline::TimelineRoute,
 };
 use crate::state::{AppState, Route};
 
@@ -31,6 +31,7 @@ pub struct Shell {
     system: Entity<SystemRoute>,
     knowledge: Entity<KnowledgeRoute>,
     commands: Entity<CommandsRoute>,
+    timeline: Entity<TimelineRoute>,
     /// Most-recent value passed to `native::set_dock_badge`, so the
     /// render path can skip the AppKit call when the count hasn't
     /// changed. `u32::MAX` is the sentinel "never set yet" — picked
@@ -70,6 +71,10 @@ impl Shell {
         // CommandsRoute owns a TextInput (focusable widget) so it
         // needs `&mut Window` to register the focus handle.
         let commands = cx.new(|cx| CommandsRoute::new(window, cx));
+        // TimelineRoute owns the filter TextInput (focus handle), so
+        // it needs window. Same construction shape as the other
+        // input-bearing routes.
+        let timeline = cx.new(|cx| TimelineRoute::new(state.clone(), window, cx));
         Self {
             state,
             home,
@@ -78,6 +83,7 @@ impl Shell {
             system,
             knowledge,
             commands,
+            timeline,
             last_badge_count: u32::MAX,
             last_status_count: u32::MAX,
             cached_brand: None,
@@ -188,6 +194,7 @@ impl Render for Shell {
             Route::System => self.system.clone().into_any_element(),
             Route::Knowledge => self.knowledge.clone().into_any_element(),
             Route::Commands => self.commands.clone().into_any_element(),
+            Route::Timeline => self.timeline.clone().into_any_element(),
         };
 
         v_flex()
