@@ -11,7 +11,10 @@
 //! message preview (case-insensitive). Mirrors the Agents / Knowledge
 //! filter pattern.
 
-use gpui::{div, prelude::*, px, Context, Entity, Hsla, IntoElement, Render, SharedString, Window};
+use gpui::{
+    div, prelude::*, px, Context, Entity, Hsla, IntoElement, MouseButton, Render, SharedString,
+    Window,
+};
 use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -24,6 +27,65 @@ use crate::state::AppState;
 
 const VISIBLE_ROWS: usize = 80;
 
+/// Level filter pill — `All` matches every level, the rest narrow to
+/// one. ANDed with the substring filter at match time so a user can
+/// drill in: "ERROR rows whose target contains store" works in two
+/// interactions. Kept on the route entity (not `AppState`) — same
+/// call as the substring filter; UI affordance, not domain state.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LevelFilter {
+    All,
+    Trace,
+    Debug,
+    Info,
+    Warn,
+    Error,
+}
+
+impl LevelFilter {
+    const ALL: [LevelFilter; 6] = [
+        LevelFilter::All,
+        LevelFilter::Trace,
+        LevelFilter::Debug,
+        LevelFilter::Info,
+        LevelFilter::Warn,
+        LevelFilter::Error,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            LevelFilter::All => "All",
+            LevelFilter::Trace => "TRACE",
+            LevelFilter::Debug => "DEBUG",
+            LevelFilter::Info => "INFO",
+            LevelFilter::Warn => "WARN",
+            LevelFilter::Error => "ERROR",
+        }
+    }
+
+    fn id(self) -> &'static str {
+        match self {
+            LevelFilter::All => "logs-pill-all",
+            LevelFilter::Trace => "logs-pill-trace",
+            LevelFilter::Debug => "logs-pill-debug",
+            LevelFilter::Info => "logs-pill-info",
+            LevelFilter::Warn => "logs-pill-warn",
+            LevelFilter::Error => "logs-pill-error",
+        }
+    }
+
+    fn matches(self, evt: &TelemetryEvent) -> bool {
+        match self {
+            LevelFilter::All => true,
+            LevelFilter::Trace => matches!(evt.level, LogLevel::Trace),
+            LevelFilter::Debug => matches!(evt.level, LogLevel::Debug),
+            LevelFilter::Info => matches!(evt.level, LogLevel::Info),
+            LevelFilter::Warn => matches!(evt.level, LogLevel::Warn),
+            LevelFilter::Error => matches!(evt.level, LogLevel::Error),
+        }
+    }
+}
+
 pub struct LogsRoute {
     state: Entity<AppState>,
     /// gpui-component InputState — owns text + focus for the filter.
@@ -32,6 +94,8 @@ pub struct LogsRoute {
     /// `InputEvent::Change`. Avoids re-lowercasing the query for
     /// every match check on every render.
     query_lower: String,
+    /// Level pill state, ANDed with `query_lower` for visibility.
+    level_filter: LevelFilter,
 }
 
 impl LogsRoute {
@@ -50,10 +114,14 @@ impl LogsRoute {
             state,
             query_input,
             query_lower: String::new(),
+            level_filter: LevelFilter::All,
         }
     }
 
     fn event_matches(&self, evt: &TelemetryEvent) -> bool {
+        if !self.level_filter.matches(evt) {
+            return false;
+        }
         if self.query_lower.is_empty() {
             return true;
         }
@@ -114,6 +182,34 @@ impl Render for LogsRoute {
             .py_1()
             .child(Input::new(&self.query_input).appearance(false));
 
+        // ── Level pills ────────────────────────────────────────────
+        let foreground = cx.theme().foreground;
+        let primary = cx.theme().primary;
+        let active_filter = self.level_filter;
+        let entity_for_pill = cx.entity();
+        let pill_row = h_flex()
+            .gap_2()
+            .children(LevelFilter::ALL.into_iter().map(|f| {
+                let is_active = f == active_filter;
+                let entity = entity_for_pill.clone();
+                div()
+                    .id(SharedString::new_static(f.id()))
+                    .px_2()
+                    .py_0p5()
+                    .border_1()
+                    .border_color(if is_active { primary } else { border })
+                    .rounded_md()
+                    .text_color(if is_active { foreground } else { muted })
+                    .child(SharedString::new_static(f.label()))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        entity.update(cx, |this, cx| {
+                            this.level_filter = f;
+                            cx.notify();
+                        });
+                    })
+                    .into_any_element()
+            }));
+
         let body: gpui::AnyElement = if state.telemetry.is_empty() {
             div()
                 .text_color(muted)
@@ -123,16 +219,28 @@ impl Render for LogsRoute {
                 ))
                 .into_any_element()
         } else if visible.is_empty() {
-            // Telemetry has rows but none match the filter. Distinct
-            // copy from the empty-tail state so a typo doesn't read
-            // as "the poller is dead".
+            // Telemetry has rows but none match the filter(s). Distinct
+            // copy from the empty-tail state so the user doesn't read
+            // it as "the poller is dead". Description mentions
+            // whichever filters are currently narrowing the view.
+            let mut bits: Vec<String> = Vec::new();
+            if self.level_filter != LevelFilter::All {
+                bits.push(format!("level {}", self.level_filter.label()));
+            }
+            if !self.query_lower.is_empty() {
+                bits.push(format!("\u{201C}{}\u{201D}", self.query_lower));
+            }
+            let what = if bits.is_empty() {
+                // Defensive — shouldn't fire since the no-filter
+                // visible-is-empty case is already covered above.
+                "current filters".to_string()
+            } else {
+                bits.join(" + ")
+            };
             div()
                 .text_color(muted)
                 .min_h(px(60.0))
-                .child(SharedString::from(format!(
-                    "no events match \u{201C}{}\u{201D}",
-                    self.query_lower
-                )))
+                .child(SharedString::from(format!("no events match {what}")))
                 .into_any_element()
         } else {
             v_flex()
@@ -155,6 +263,7 @@ impl Render for LogsRoute {
             .gap_3()
             .child(header)
             .child(search_field)
+            .child(pill_row)
             .child(body)
     }
 }
