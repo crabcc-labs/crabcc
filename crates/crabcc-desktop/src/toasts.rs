@@ -116,12 +116,20 @@ pub const MAX_VISIBLE_TOASTS: usize = 5;
 /// re-renders on `cx.notify()` (observed in `new`).
 pub struct ToastStrip {
     state: Entity<AppState>,
+    /// Whether the audit log is currently expanded inline below
+    /// the active strip. Toggled by clicking the footer's
+    /// "expand" / "collapse" affordance — pure UI state, not
+    /// persisted across app restarts.
+    expanded: bool,
 }
 
 impl ToastStrip {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         cx.observe(&state, |_, _, cx| cx.notify()).detach();
-        Self { state }
+        Self {
+            state,
+            expanded: false,
+        }
     }
 }
 
@@ -149,18 +157,34 @@ impl Render for ToastStrip {
         let state_for_dismiss = self.state.clone();
         let state_for_clear = self.state.clone();
 
-        // Footer "history (N) · clear" row — only renders when
-        // history is non-empty. Click "clear" wipes the history;
-        // the live toasts above stay (they're independent surfaces).
-        // Click on the count itself is a no-op for now — a
-        // dedicated history view lands in slice 6+.
+        // Footer "history (N) · expand · clear" row — only
+        // renders when history is non-empty. Expand toggles the
+        // inline audit list below; clear wipes the history. Live
+        // toasts above are an independent surface and stay through
+        // both actions.
+        let expanded = self.expanded;
+        let entity_for_expand = cx.entity();
         let footer: gpui::AnyElement = if history_len > 0 {
             let count_label = SharedString::from(format!("history ({history_len})"));
+            let expand_label = if expanded { "collapse" } else { "expand" };
             h_flex()
                 .gap_2()
                 .px_5()
                 .pb_1()
                 .child(div().text_color(muted).child(count_label))
+                .child(div().text_color(muted).child(SharedString::new_static("·")))
+                .child(
+                    div()
+                        .id("toast-history-expand")
+                        .text_color(muted)
+                        .child(SharedString::new_static(expand_label))
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            entity_for_expand.update(cx, |this, cx| {
+                                this.expanded = !this.expanded;
+                                cx.notify();
+                            });
+                        }),
+                )
                 .child(div().text_color(muted).child(SharedString::new_static("·")))
                 .child(
                     div()
@@ -174,6 +198,41 @@ impl Render for ToastStrip {
                             });
                         }),
                 )
+                .into_any_element()
+        } else {
+            div().into_any_element()
+        };
+
+        // Expanded audit list. Newest-first (mirrors the active
+        // strip), single-line per entry. No dismiss button —
+        // history is a log, not active surface. Renders only when
+        // toggled open and history is non-empty.
+        let history_panel: gpui::AnyElement = if expanded && history_len > 0 {
+            v_flex()
+                .px_5()
+                .py_1()
+                .gap_1()
+                .border_t_1()
+                .border_color(theme.border)
+                .children(state.toast_history.iter().rev().map(|t| {
+                    let accent = match t.level {
+                        ToastLevel::Success => theme.success,
+                        ToastLevel::Info => theme.info,
+                        ToastLevel::Warning => theme.warning,
+                        ToastLevel::Danger => theme.danger,
+                        ToastLevel::Primary => theme.primary,
+                    };
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            div()
+                                .w(px(16.0))
+                                .text_color(accent)
+                                .child(SharedString::new_static(t.level.glyph())),
+                        )
+                        .child(div().flex_1().text_color(muted).child(t.message.clone()))
+                        .into_any_element()
+                }))
                 .into_any_element()
         } else {
             div().into_any_element()
@@ -234,6 +293,7 @@ impl Render for ToastStrip {
                 ),
             )
             .child(footer)
+            .child(history_panel)
     }
 }
 
