@@ -11,6 +11,7 @@ use crabcc_desktop::api::DEFAULT_BASE_URL;
 use crabcc_desktop::services::{self, BootstrapOutcome};
 use crabcc_desktop::shell::Shell;
 use crabcc_desktop::state;
+use crabcc_desktop::toasts::ToastLevel;
 use gpui::{prelude::*, px, size, App, Bounds, TitlebarOptions, WindowBounds, WindowOptions};
 use gpui_component::Root;
 
@@ -37,26 +38,7 @@ fn main() {
     // bootstrap fails (slice 3's prefetch Danger toast surfaces the
     // specific reachability error). Set `CRABCC_DESKTOP_SKIP_SERVICES`
     // to opt out (devs running their own stack from another shell).
-    match services::ensure_stack_started() {
-        BootstrapOutcome::SkippedByEnv => {
-            tracing::info!("backend bootstrap skipped via env var");
-        }
-        BootstrapOutcome::AlreadyRunning => {
-            tracing::info!("backend already reachable — bootstrap was a no-op");
-        }
-        BootstrapOutcome::StartedViaCompose => {
-            tracing::info!("backend started via docker compose, ready");
-        }
-        BootstrapOutcome::StartedButNotReady { last_error } => {
-            tracing::warn!(error = %last_error, "compose up succeeded but backend didn't answer in time");
-        }
-        BootstrapOutcome::DockerUnavailable => {
-            tracing::warn!("docker daemon unavailable — backend won't be auto-started; install docker or run `crabcc serve` manually");
-        }
-        BootstrapOutcome::ComposeFailed { stderr } => {
-            tracing::error!(stderr = %stderr.trim(), "docker compose up failed");
-        }
-    }
+    let bootstrap_toast = bootstrap_outcome_to_toast(services::ensure_stack_started());
 
     gpui_platform::application().run(move |cx: &mut App| {
         gpui_component::init(cx);
@@ -78,9 +60,22 @@ fn main() {
             ..Default::default()
         };
 
+        let bootstrap_toast = bootstrap_toast.clone();
         cx.spawn(async move |cx| {
-            cx.open_window(options, |window, cx| {
+            let bootstrap_toast = bootstrap_toast.clone();
+            cx.open_window(options, move |window, cx| {
                 let app_state = cx.new(|cx| state::build(cx, DEFAULT_BASE_URL));
+                // Pre-seed the toast strip with the services
+                // bootstrap outcome — so the user sees Docker /
+                // health problems on the live surface, not just in
+                // stderr. `AlreadyRunning` is the silent happy-path
+                // and contributes no toast; the other variants pop
+                // an Info / Success / Danger row on first render.
+                if let Some((level, msg)) = bootstrap_toast {
+                    app_state.update(cx, |s, _| {
+                        s.push_toast(level, msg);
+                    });
+                }
                 let shell = cx.new(|cx| Shell::new(app_state, window, cx));
                 cx.new(|cx| Root::new(shell, window, cx))
             })
@@ -88,4 +83,49 @@ fn main() {
         })
         .detach();
     });
+}
+
+/// Convert a `BootstrapOutcome` into an optional toast pair, while
+/// emitting a structured `tracing` log for every variant. Returns
+/// `None` for the silent happy-paths (`AlreadyRunning` — operator
+/// doesn't need to know nothing happened).
+fn bootstrap_outcome_to_toast(outcome: BootstrapOutcome) -> Option<(ToastLevel, String)> {
+    match outcome {
+        BootstrapOutcome::SkippedByEnv => {
+            tracing::info!("backend bootstrap skipped via env var");
+            Some((ToastLevel::Info, "backend bootstrap skipped (env)".into()))
+        }
+        BootstrapOutcome::AlreadyRunning => {
+            tracing::info!("backend already reachable — bootstrap was a no-op");
+            None
+        }
+        BootstrapOutcome::StartedViaCompose => {
+            tracing::info!("backend started via docker compose, ready");
+            Some((
+                ToastLevel::Success,
+                "backend started via docker compose".into(),
+            ))
+        }
+        BootstrapOutcome::StartedButNotReady { last_error } => {
+            tracing::warn!(error = %last_error, "compose up succeeded but backend didn't answer in time");
+            Some((
+                ToastLevel::Danger,
+                format!("backend not responding: {last_error}"),
+            ))
+        }
+        BootstrapOutcome::DockerUnavailable => {
+            tracing::warn!("docker daemon unavailable — backend won't be auto-started; install docker or run `crabcc serve` manually");
+            Some((
+                ToastLevel::Danger,
+                "docker daemon unavailable — start crabcc serve manually".into(),
+            ))
+        }
+        BootstrapOutcome::ComposeFailed { stderr } => {
+            tracing::error!(stderr = %stderr.trim(), "docker compose up failed");
+            Some((
+                ToastLevel::Danger,
+                format!("docker compose up failed: {}", stderr.trim()),
+            ))
+        }
+    }
 }
