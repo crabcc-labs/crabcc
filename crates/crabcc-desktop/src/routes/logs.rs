@@ -5,11 +5,18 @@
 //! ~256 events newest-first, and colours level badges from the gpui
 //! theme (`info` / `warning` / `danger`, with TRACE/DEBUG falling
 //! back to `muted_foreground`).
+//!
+//! Top-of-route TextInput filters events as the user types — matches
+//! against target (e.g. `crabcc::core::store`) and the rendered
+//! message preview (case-insensitive). Mirrors the Agents / Knowledge
+//! filter pattern.
 
-use gpui::{
-    div, prelude::*, px, Context, Entity, Hsla, IntoElement, Render, SharedString, Window,
+use gpui::{div, prelude::*, px, Context, Entity, Hsla, IntoElement, Render, SharedString, Window};
+use gpui_component::{
+    h_flex,
+    input::{Input, InputEvent, InputState},
+    v_flex, ActiveTheme,
 };
-use gpui_component::{h_flex, v_flex, ActiveTheme};
 use serde_json::Value;
 
 use crate::api::types::{LogLevel, TelemetryEvent};
@@ -19,12 +26,42 @@ const VISIBLE_ROWS: usize = 80;
 
 pub struct LogsRoute {
     state: Entity<AppState>,
+    /// gpui-component InputState — owns text + focus for the filter.
+    query_input: Entity<InputState>,
+    /// Lower-cased mirror of the input value, kept in sync via
+    /// `InputEvent::Change`. Avoids re-lowercasing the query for
+    /// every match check on every render.
+    query_lower: String,
 }
 
 impl LogsRoute {
-    pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
+    pub fn new(state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         cx.observe(&state, |_, _, cx| cx.notify()).detach();
-        Self { state }
+        let query_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Filter by target / message…"));
+        cx.subscribe_in(&query_input, window, |this, state, event, _, cx| {
+            if let InputEvent::Change = event {
+                this.query_lower = state.read(cx).value().to_string().to_lowercase();
+                cx.notify();
+            }
+        })
+        .detach();
+        Self {
+            state,
+            query_input,
+            query_lower: String::new(),
+        }
+    }
+
+    fn event_matches(&self, evt: &TelemetryEvent) -> bool {
+        if self.query_lower.is_empty() {
+            return true;
+        }
+        let q = self.query_lower.as_str();
+        if evt.target.to_lowercase().contains(q) {
+            return true;
+        }
+        preview(&evt.fields).to_lowercase().contains(q)
     }
 }
 
@@ -37,16 +74,45 @@ impl Render for LogsRoute {
         let warning = cx.theme().warning;
         let danger = cx.theme().danger;
 
+        // Filter applies to the live tail; collect the visible slice
+        // once so the header count and the body iterator agree.
+        let total = state.telemetry.len();
+        let visible: Vec<&TelemetryEvent> = state
+            .telemetry
+            .iter()
+            .rev()
+            .filter(|e| self.event_matches(e))
+            .take(VISIBLE_ROWS)
+            .collect();
+        let visible_count = visible.len();
+
+        let count_label = if self.query_lower.is_empty() {
+            format!(
+                "{total} events · cursor {} · poll 3s",
+                state.telemetry_cursor
+            )
+        } else {
+            format!(
+                "{visible_count} of {total} match · cursor {} · poll 3s",
+                state.telemetry_cursor
+            )
+        };
         let header = h_flex()
             .gap_3()
             .child(div().text_lg().child(SharedString::new_static("Logs")))
             .child(
-                div().text_color(muted).child(SharedString::from(format!(
-                    "{} events · cursor {} · poll 3s",
-                    state.telemetry.len(),
-                    state.telemetry_cursor
-                ))),
+                div()
+                    .text_color(muted)
+                    .child(SharedString::from(count_label)),
             );
+
+        let search_field = div()
+            .border_1()
+            .border_color(border)
+            .rounded_md()
+            .px_2()
+            .py_1()
+            .child(Input::new(&self.query_input).appearance(false));
 
         let body: gpui::AnyElement = if state.telemetry.is_empty() {
             div()
@@ -56,15 +122,24 @@ impl Render for LogsRoute {
                     "no events yet — telemetry poller fires every 3s",
                 ))
                 .into_any_element()
+        } else if visible.is_empty() {
+            // Telemetry has rows but none match the filter. Distinct
+            // copy from the empty-tail state so a typo doesn't read
+            // as "the poller is dead".
+            div()
+                .text_color(muted)
+                .min_h(px(60.0))
+                .child(SharedString::from(format!(
+                    "no events match \u{201C}{}\u{201D}",
+                    self.query_lower
+                )))
+                .into_any_element()
         } else {
             v_flex()
                 .gap_1()
                 .children(
-                    state
-                        .telemetry
-                        .iter()
-                        .rev()
-                        .take(VISIBLE_ROWS)
+                    visible
+                        .into_iter()
                         .map(|evt| {
                             row(evt, muted, border, info, warning, danger).into_any_element()
                         })
@@ -79,6 +154,7 @@ impl Render for LogsRoute {
             .py_4()
             .gap_3()
             .child(header)
+            .child(search_field)
             .child(body)
     }
 }
