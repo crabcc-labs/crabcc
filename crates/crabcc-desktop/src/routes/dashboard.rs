@@ -325,10 +325,12 @@ impl Render for DashboardHome {
                         h_flex()
                             .gap_2()
                             .child(SharedString::from(dot.to_string()))
-                            .child(SharedString::from(a.id.clone()))
-                            .child(div().text_color(muted).child(SharedString::from(
-                                a.runtime.clone().unwrap_or_else(|| "—".to_string()),
-                            )))
+                            // a.id is now SharedString — clone is a refcount
+                            // bump, no allocation per render.
+                            .child(a.id.clone())
+                            .child(div().text_color(muted).child(
+                                a.runtime.clone().unwrap_or_else(|| "—".into()),
+                            ))
                             .child(div().flex_1())
                             .child(kill_btn)
                             .into_any_element()

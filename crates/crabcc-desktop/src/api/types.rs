@@ -8,7 +8,12 @@
 //   - Field names mirror the JSON keys exactly (snake_case throughout).
 //   - `Option<T>` for every YAML `nullable: true` field.
 //   - Numeric `unix seconds` timestamps stay `i64` to match the server.
+//   - Hot user-facing string fields (rendered every frame) are
+//     `SharedString` (gpui's `SmolStr`-backed string) — `.clone()` is
+//     a refcount bump or inline copy, not an allocation. Cold strings
+//     stay as `String` for now; flipping in batches per PR-B.x.
 
+use gpui::SharedString;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Deserialize)]
@@ -76,18 +81,18 @@ pub struct SseActivityFrame {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SseAgent {
-    pub id: String,
+    pub id: SharedString,
     pub status: AgentStatus,
     #[serde(default)]
     pub started_ts: i64,
     pub pid: Option<u64>,
-    pub runtime: Option<String>,
-    pub model: Option<String>,
+    pub runtime: Option<SharedString>,
+    pub model: Option<SharedString>,
     #[serde(default)]
-    pub prompt_preview: String,
+    pub prompt_preview: SharedString,
     #[serde(default)]
     pub log_bytes: u64,
-    pub root: Option<String>,
+    pub root: Option<SharedString>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

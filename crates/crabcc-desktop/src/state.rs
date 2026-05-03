@@ -23,7 +23,7 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
-use gpui::{App, Context, Entity};
+use gpui::{App, Context, Entity, SharedString};
 use tracing::{debug, info};
 
 use crate::api::types::{
@@ -107,10 +107,10 @@ pub enum AppEvent {
     AgentKillResult(anyhow::Result<AgentKillResponse>),
     /// Result of a one-shot `GET /api/agents/{id}/log?since=0`, dispatched
     /// from the Agents route when the user clicks an agent card. The
-    /// String carries the agent id so the route can ignore late results
-    /// for an agent the user already deselected (cheap stale-check).
+    /// id carries through so the route can ignore late results for an
+    /// agent the user already deselected (cheap stale-check).
     AgentLogResult {
-        id: String,
+        id: SharedString,
         result: anyhow::Result<AgentLog>,
     },
     Sse(SseEvent),
@@ -122,7 +122,7 @@ pub enum AppEvent {
 /// dispatch path.
 #[derive(Debug)]
 pub struct AgentLogState {
-    pub id: String,
+    pub id: SharedString,
     pub result: anyhow::Result<AgentLog>,
 }
 
@@ -435,7 +435,7 @@ impl AppState {
     /// SIGKILL a running agent by id. The server emits an `agents`
     /// SSE frame on each kill, so the running-agents list refreshes
     /// itself — no follow-up fetch needed here.
-    pub fn submit_kill(&self, id: String) {
+    pub fn submit_kill(&self, id: SharedString) {
         let Some(handles) = self.workers.clone() else {
             return;
         };
@@ -456,7 +456,7 @@ impl AppState {
     /// at the server's window — see crabcc-viz `Client.agentLog`).
     /// Result lands in `agent_log` keyed by id; the Agents route reads
     /// it on next render.
-    pub fn submit_agent_log(&self, id: String, since: u64) {
+    pub fn submit_agent_log(&self, id: SharedString, since: u64) {
         let Some(handles) = self.workers.clone() else {
             return;
         };
