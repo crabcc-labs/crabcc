@@ -34,6 +34,7 @@ use crate::api::types::{
 };
 use crate::api::Client;
 use crate::sse::{self, SseEvent};
+use crate::toasts::{Toast, ToastLevel, MAX_VISIBLE_TOASTS};
 
 /// Cap on the in-memory recent-activity buffer. Tuned for the
 /// DashboardHome tile (~5 visible rows + headroom). Large queries
@@ -228,6 +229,15 @@ pub struct AppState {
     /// always come from `state::build` together, so they should
     /// always *be* together.
     workers: Option<WorkerHandles>,
+    /// Active in-window toasts (track C.0). Newest-first, capped
+    /// at [`MAX_VISIBLE_TOASTS`] — over-cap pushes evict the oldest
+    /// (back of the deque). The render component
+    /// (`crate::toasts::ToastStrip`) reads this directly and renders
+    /// up to the cap.
+    pub toasts: VecDeque<Toast>,
+    /// Monotonic counter for toast ids. Persists across pushes /
+    /// evictions so dismiss-by-id never races a reused id.
+    next_toast_id: u64,
 }
 
 /// Plumbing the route entities use to fire detached HTTP requests
@@ -248,6 +258,40 @@ pub struct WorkerHandles {
 impl AppState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Push a new toast into the strip. Newest goes to the front;
+    /// when the buffer hits [`MAX_VISIBLE_TOASTS`] the oldest (back)
+    /// is evicted so the strip never grows past the cap. Returns the
+    /// assigned toast id so the caller can target a future
+    /// [`dismiss_toast`] without scanning.
+    ///
+    /// Slice 1 has no auto-dismiss timer — the toast stays until the
+    /// user clicks `×`. The `created_at` field is recorded so slice
+    /// 2 can drive age-based dismissal without a schema bump.
+    pub fn push_toast(&mut self, level: ToastLevel, message: impl Into<SharedString>) -> u64 {
+        let id = self.next_toast_id;
+        self.next_toast_id = self.next_toast_id.wrapping_add(1);
+        // Wall-clock proxy: prefer the latest observed event ts so
+        // the timestamp matches other UI surfaces (KPI strip "X
+        // seconds ago"). Falls back to 0 before the first event.
+        let created_at = self.last_event_ts.unwrap_or(0);
+        if self.toasts.len() >= MAX_VISIBLE_TOASTS {
+            self.toasts.pop_back();
+        }
+        self.toasts.push_front(Toast {
+            id,
+            level,
+            message: message.into(),
+            created_at,
+        });
+        id
+    }
+
+    /// Dismiss the toast with the given id. No-op if it was already
+    /// evicted by an over-cap push or a prior dismiss.
+    pub fn dismiss_toast(&mut self, id: u64) {
+        self.toasts.retain(|t| t.id != id);
     }
 
     /// Apply one event. Pure mutation — the caller wraps in
@@ -703,3 +747,39 @@ pub fn build(cx: &mut Context<AppState>, base_url: &str) -> AppState {
 // Suppress dead-code lint for the unused `_app` arg until A.5 needs it.
 #[allow(dead_code)]
 fn _app_marker(_app: &App) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn push_toast_caps_at_max_and_evicts_oldest() {
+        // Six pushes against a cap of 5 — newest five must be
+        // visible newest-first; the very first push must be gone.
+        let mut s = AppState::new();
+        let first = s.push_toast(ToastLevel::Info, "first");
+        for n in 1..=5 {
+            s.push_toast(ToastLevel::Info, format!("n={n}"));
+        }
+        assert_eq!(s.toasts.len(), MAX_VISIBLE_TOASTS);
+        assert_eq!(s.toasts.front().unwrap().message, "n=5");
+        assert_eq!(s.toasts.back().unwrap().message, "n=1");
+        // Dismiss-by-id of the evicted toast is a no-op (must not
+        // panic).
+        s.dismiss_toast(first);
+        assert_eq!(s.toasts.len(), MAX_VISIBLE_TOASTS);
+    }
+
+    #[test]
+    fn dismiss_removes_only_the_targeted_toast() {
+        let mut s = AppState::new();
+        let a = s.push_toast(ToastLevel::Info, "a");
+        let b = s.push_toast(ToastLevel::Warning, "b");
+        let c = s.push_toast(ToastLevel::Danger, "c");
+        s.dismiss_toast(b);
+        assert_eq!(s.toasts.len(), 2);
+        assert!(s.toasts.iter().any(|t| t.id == a));
+        assert!(s.toasts.iter().any(|t| t.id == c));
+        assert!(!s.toasts.iter().any(|t| t.id == b));
+    }
+}

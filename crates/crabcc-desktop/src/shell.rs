@@ -22,6 +22,7 @@ use crate::routes::{
     knowledge::KnowledgeRoute, logs::LogsRoute, system::SystemRoute,
 };
 use crate::state::{AppState, Route};
+use crate::toasts::ToastStrip;
 
 pub struct Shell {
     state: Entity<AppState>,
@@ -31,6 +32,11 @@ pub struct Shell {
     system: Entity<SystemRoute>,
     knowledge: Entity<KnowledgeRoute>,
     commands: Entity<CommandsRoute>,
+    /// In-window toast strip (track C.0). Mounted between the
+    /// header and the body slot — renders nothing when
+    /// `AppState::toasts` is empty so the layout stays unchanged
+    /// for the common case.
+    toasts: Entity<ToastStrip>,
     /// Most-recent value passed to `native::set_dock_badge`, so the
     /// render path can skip the AppKit call when the count hasn't
     /// changed. `u32::MAX` is the sentinel "never set yet" — picked
@@ -70,6 +76,10 @@ impl Shell {
         // CommandsRoute owns a TextInput (focusable widget) so it
         // needs `&mut Window` to register the focus handle.
         let commands = cx.new(|cx| CommandsRoute::new(window, cx));
+        // No `window` argument — the strip has no focusable widgets
+        // (yet). When the "Settings" entrypoint lands in slice 2+
+        // it'll need `window` for that widget.
+        let toasts = cx.new(|cx| ToastStrip::new(state.clone(), cx));
         Self {
             state,
             home,
@@ -78,6 +88,7 @@ impl Shell {
             system,
             knowledge,
             commands,
+            toasts,
             last_badge_count: u32::MAX,
             last_status_count: u32::MAX,
             cached_brand: None,
@@ -194,6 +205,10 @@ impl Render for Shell {
             .size_full()
             .bg(bg)
             .child(header)
+            // Toast strip — pinned below the header, above the body.
+            // Renders nothing when `state.toasts` is empty so it
+            // claims zero layout in the common case.
+            .child(self.toasts.clone())
             // Wrap the body in an overflow_y_scroll container so dense
             // routes (System sections, Knowledge drawers, Logs tail) +
             // the tall Home dashboard scroll under a small window
