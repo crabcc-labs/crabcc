@@ -28,6 +28,7 @@
 //! contention is nil; the mutex just gets the type-checker out of
 //! the way of cross-closure sharing.
 
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
 use gpui::{
@@ -295,6 +296,14 @@ impl Render for GraphView {
                 let edge_color = with_alpha(muted, 0.45);
                 let highlight_color = cx.theme().success;
                 let selected_idx = self.selected;
+                // Pre-compute the neighbour set once so the per-node
+                // paint loop can do an O(1) lookup. Cheap — graphs in
+                // this view rarely top a few hundred nodes, and the
+                // set is rebuilt only on selection change anyway.
+                let neighbours: HashSet<usize> = match selected_idx {
+                    Some(i) => self.neighbours(i).into_iter().collect(),
+                    None => HashSet::new(),
+                };
                 let zoom = self.zoom;
                 let pan = self.pan;
                 let bounds_share = self.last_bounds.clone();
@@ -315,6 +324,7 @@ impl Render for GraphView {
                             node_color,
                             highlight_color,
                             selected_idx,
+                            &neighbours,
                             zoom,
                             pan,
                             window,
@@ -520,6 +530,7 @@ fn paint_graph(
     node_color: Hsla,
     highlight_color: Hsla,
     selected: Option<usize>,
+    neighbours: &HashSet<usize>,
     zoom: f32,
     pan: (f32, f32),
     window: &mut Window,
@@ -559,14 +570,24 @@ fn paint_graph(
         }
     }
 
-    // Nodes. Selected node renders larger + in the highlight colour.
+    // Nodes. Three render tiers:
+    //   * selected     — larger radius + full highlight colour
+    //   * neighbour    — base radius + dimmed highlight colour
+    //   * other        — base radius + base node colour
+    // Edges incident to the selection are already stroked in the
+    // brighter highlight above, so the eye traces the connection
+    // ring naturally without further wiring.
     let r = NODE_RADIUS;
     let r_sel = NODE_RADIUS + 2.0;
+    let neighbour_color = with_alpha(highlight_color, 0.55);
     for (i, pos) in layout.positions.iter().enumerate() {
         let is_selected = selected == Some(i);
+        let is_neighbour = !is_selected && neighbours.contains(&i);
         let radius = if is_selected { r_sel } else { r };
         let color = if is_selected {
             highlight_color
+        } else if is_neighbour {
+            neighbour_color
         } else {
             node_color
         };
