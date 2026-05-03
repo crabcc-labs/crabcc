@@ -57,6 +57,15 @@ pub struct Shell {
     /// refcount via `clone()`. Saves a `format!()` String alloc + a
     /// `SharedString::from(String)` Arc alloc per render.
     cached_brand: Option<SharedString>,
+    /// Newest toast id we've already delivered to the macOS
+    /// Notification Center via `native::deliver_notification`
+    /// (track C.2 first wedge). `None` until the first toast is
+    /// delivered. The render path fires a system banner only when
+    /// the front-of-deque toast's id is strictly greater — guards
+    /// against re-firing on every observation tick. When mute is
+    /// engaged the visible deque drops new pushes entirely (slice
+    /// 4), so this sentinel naturally stops advancing.
+    last_delivered_toast_id: Option<u64>,
 }
 
 impl Shell {
@@ -94,6 +103,7 @@ impl Shell {
             last_badge_count: u32::MAX,
             last_status_count: u32::MAX,
             cached_brand: None,
+            last_delivered_toast_id: None,
         }
     }
 }
@@ -143,6 +153,29 @@ impl Render for Shell {
             let label = (running > 0).then(|| format!("\u{25CF} {running}"));
             native::set_status_item(label.as_deref());
             self.last_status_count = running;
+        }
+
+        // System rich-notification banners (track C.2 first wedge).
+        // Walks the active toast deque newest-first and fires one
+        // banner per toast strictly newer than the high-water mark
+        // we last delivered. This makes alerts survive the
+        // dashboard window being hidden — Notification Center is
+        // the canonical surface for "something happened while you
+        // weren't looking". Mute is enforced upstream: when
+        // `AppState::toasts_muted` is set, `push_toast` skips the
+        // enqueue, so the deque has nothing to deliver here.
+        if let Some(newest) = state_for_brand.toasts.front() {
+            let prev_mark = self.last_delivered_toast_id;
+            if prev_mark != Some(newest.id) {
+                for toast in state_for_brand.toasts.iter() {
+                    if matches!(prev_mark, Some(m) if toast.id <= m) {
+                        break;
+                    }
+                    let title = format!("crabcc · {}", toast.level.glyph());
+                    native::deliver_notification(&title, &toast.message);
+                }
+                self.last_delivered_toast_id = Some(newest.id);
+            }
         }
 
         // Build the nav strip. Each entry captures the AppState entity
