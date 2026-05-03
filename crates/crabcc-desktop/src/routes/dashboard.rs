@@ -38,6 +38,10 @@ pub struct DashboardHome {
     /// before grouping. UI affordance per route, not on AppState
     /// (same call as the substring filters).
     activity_op_pin: Option<SharedString>,
+    /// Reusable scratch buffer for `group_activity`. Cleared and
+    /// refilled on every render — keeps the spine allocation across
+    /// SSE-driven `notify()`s instead of allocating fresh each frame.
+    activity_buffer: Vec<ActivityGroup>,
 }
 
 impl DashboardHome {
@@ -65,6 +69,7 @@ impl DashboardHome {
             spawn_input,
             spawn_text: String::new(),
             activity_op_pin: None,
+            activity_buffer: Vec::with_capacity(8),
         }
     }
 
@@ -146,14 +151,14 @@ impl Render for DashboardHome {
                 None => true,
                 Some(pinned) => e.op == pinned,
             });
-        let activity_groups = group_activity(activity_iter, 8);
+        group_activity(activity_iter, 8, &mut self.activity_buffer);
+        let groups_empty = self.activity_buffer.is_empty();
         // Use `last_event_ts` as a wall-clock proxy. Same trick as the
         // Agents-route relative-age formatter — keeps chrono out of
         // the dep tree for a tiny display tweak.
         let now_ts = state.last_event_ts.unwrap_or(0);
         let entity_for_op = cx.entity();
-        let activity_body: gpui::AnyElement = if activity_groups.is_empty() && active_pin.is_some()
-        {
+        let activity_body: gpui::AnyElement = if groups_empty && active_pin.is_some() {
             div()
                 .text_color(muted)
                 .child(SharedString::from(format!(
@@ -164,40 +169,36 @@ impl Render for DashboardHome {
         } else {
             v_flex()
                 .gap_1()
-                .children(
-                    activity_groups
-                        .into_iter()
-                        .enumerate()
-                        .map(|(idx, g)| {
-                            let op_color = op_color(&g.op, theme);
-                            // Recency fade — newer rows render full alpha,
-                            // older rows fade toward the floor. Applied to
-                            // both the op-badge and the query text so the
-                            // whole row dims as one unit. Muted-side meta
-                            // already lives at low contrast, so leave it.
-                            let age = (now_ts - g.latest_ts).max(0);
-                            let alpha = fade_alpha_for_age(age);
-                            let faded_op = with_alpha(op_color, alpha);
-                            let faded_fg = with_alpha(theme.foreground, alpha);
-                            // Click-to-pin on the op badge. Active op
-                            // renders with a primary-colour border so
-                            // it's recognisable even when the badge
-                            // colour itself is muted (e.g. `outline`).
-                            // gpui requires stateful elements to declare
-                            // an id; suffixing with the row index keeps
-                            // it unique per render pass without an
-                            // extra alloc per group.
-                            let badge_id: gpui::ElementId =
-                                SharedString::from(format!("activity-op-{idx}")).into();
-                            let badge_pinned = active_pin.as_deref() == Some(g.op.as_str());
-                            let badge_border = if badge_pinned {
-                                primary
-                            } else {
-                                gpui::transparent_black()
-                            };
-                            let entity = entity_for_op.clone();
-                            let click_op = g.op.clone();
-                            h_flex()
+                .children(self.activity_buffer.drain(..).enumerate().map(|(idx, g)| {
+                    let op_color = op_color(&g.op, theme);
+                    // Recency fade — newer rows render full alpha,
+                    // older rows fade toward the floor. Applied to
+                    // both the op-badge and the query text so the
+                    // whole row dims as one unit. Muted-side meta
+                    // already lives at low contrast, so leave it.
+                    let age = (now_ts - g.latest_ts).max(0);
+                    let alpha = fade_alpha_for_age(age);
+                    let faded_op = with_alpha(op_color, alpha);
+                    let faded_fg = with_alpha(theme.foreground, alpha);
+                    // Click-to-pin on the op badge. Active op
+                    // renders with a primary-colour border so
+                    // it's recognisable even when the badge
+                    // colour itself is muted (e.g. `outline`).
+                    // gpui requires stateful elements to declare
+                    // an id; suffixing with the row index keeps
+                    // it unique per render pass without an
+                    // extra alloc per group.
+                    let badge_id: gpui::ElementId =
+                        SharedString::from(format!("activity-op-{idx}")).into();
+                    let badge_pinned = active_pin.as_deref() == Some(g.op.as_str());
+                    let badge_border = if badge_pinned {
+                        primary
+                    } else {
+                        gpui::transparent_black()
+                    };
+                    let entity = entity_for_op.clone();
+                    let click_op = g.op.clone();
+                    h_flex()
                                 .gap_2()
                                 // Op badge — fixed-width column so the
                                 // query text aligns across rows.
@@ -234,9 +235,7 @@ impl Render for DashboardHome {
                                         })),
                                 )
                                 .into_any_element()
-                        })
-                        .collect::<Vec<_>>(),
-                )
+                }))
                 .into_any_element()
         };
         // Header pin-pill — only renders when an op is pinned. Acts as
@@ -287,41 +286,37 @@ impl Render for DashboardHome {
             "Agents",
             card,
             border,
-            v_flex().gap_1().children(
-                state
-                    .agents
-                    .iter()
-                    .take(8)
-                    .map(|a| {
-                        let dot = match a.status {
-                            AgentStatus::Running => "●",
-                            AgentStatus::Exited => "○",
-                        };
-                        let kill_btn: gpui::AnyElement = if matches!(a.status, AgentStatus::Running)
-                        {
-                            let id_for_click = a.id.clone();
-                            let state_for_click = agents_state.clone();
-                            // Pre-computed at SSE-decode time — no
-                            // per-render `format!()` alloc. See
-                            // `AgentDerived` in `api/types.rs`.
-                            let element_id: gpui::ElementId = a.derived.kill_id_home.clone().into();
-                            div()
-                                .id(element_id)
-                                .px_2()
-                                .py_0p5()
-                                .border_1()
-                                .border_color(danger)
-                                .rounded_md()
-                                .text_color(danger)
-                                .child(SharedString::new_static("Kill"))
-                                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                    state_for_click.read(cx).submit_kill(id_for_click.clone());
-                                })
-                                .into_any_element()
-                        } else {
-                            div().into_any_element()
-                        };
-                        h_flex()
+            v_flex()
+                .gap_1()
+                .children(state.agents.iter().take(8).map(|a| {
+                    let dot = match a.status {
+                        AgentStatus::Running => "●",
+                        AgentStatus::Exited => "○",
+                    };
+                    let kill_btn: gpui::AnyElement = if matches!(a.status, AgentStatus::Running) {
+                        let id_for_click = a.id.clone();
+                        let state_for_click = agents_state.clone();
+                        // Pre-computed at SSE-decode time — no
+                        // per-render `format!()` alloc. See
+                        // `AgentDerived` in `api/types.rs`.
+                        let element_id: gpui::ElementId = a.derived.kill_id_home.clone().into();
+                        div()
+                            .id(element_id)
+                            .px_2()
+                            .py_0p5()
+                            .border_1()
+                            .border_color(danger)
+                            .rounded_md()
+                            .text_color(danger)
+                            .child(SharedString::new_static("Kill"))
+                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                state_for_click.read(cx).submit_kill(id_for_click.clone());
+                            })
+                            .into_any_element()
+                    } else {
+                        div().into_any_element()
+                    };
+                    h_flex()
                             .gap_2()
                             .child(SharedString::from(dot.to_string()))
                             // a.id is now SharedString — clone is a refcount
@@ -333,40 +328,35 @@ impl Render for DashboardHome {
                             .child(div().flex_1())
                             .child(kill_btn)
                             .into_any_element()
-                    })
-                    .collect::<Vec<_>>(),
-            ),
+                })),
         );
 
-        let services_tile = tile(
-            "Services",
-            card,
-            border,
-            v_flex().gap_1().children(match state.services.as_ref() {
-                Some(rep) => rep
-                    .services
-                    .iter()
-                    .take(10)
-                    .map(|s| {
-                        let mark = if s.reachable { "✓" } else { "✗" };
-                        h_flex()
-                            .gap_2()
-                            .child(SharedString::from(mark.to_string()))
-                            .child(s.name.clone())
-                            .child(
-                                div()
-                                    .text_color(muted)
-                                    .child(SharedString::from(format!("{}ms", s.latency_ms))),
-                            )
-                            .into_any_element()
-                    })
-                    .collect::<Vec<_>>(),
-                None => vec![div()
+        // Hoist the Some/None match outside `.children()` so each arm
+        // can call its own builder method (children-iter vs single
+        // child) — drops the `Vec<AnyElement>` round-trip both arms
+        // were paying for type unification.
+        let services_body = v_flex().gap_1();
+        let services_body = match state.services.as_ref() {
+            Some(rep) => services_body.children(rep.services.iter().take(10).map(|s| {
+                let mark = if s.reachable { "✓" } else { "✗" };
+                h_flex()
+                    .gap_2()
+                    .child(SharedString::from(mark.to_string()))
+                    .child(s.name.clone())
+                    .child(
+                        div()
+                            .text_color(muted)
+                            .child(SharedString::from(format!("{}ms", s.latency_ms))),
+                    )
+                    .into_any_element()
+            })),
+            None => services_body.child(
+                div()
                     .text_color(muted)
-                    .child(SharedString::new_static("loading…"))
-                    .into_any_element()],
-            }),
-        );
+                    .child(SharedString::new_static("loading…")),
+            ),
+        };
+        let services_tile = tile("Services", card, border, services_body);
 
         let tile_row = h_flex()
             .gap_3()
@@ -507,13 +497,18 @@ struct ActivityGroup {
 /// Walk the buffer newest-first, collapsing runs of the same `op`
 /// into a single group whose `count` carries the run length and
 /// whose `latest_*` fields show the most-recent event in the run.
-/// Returns up to `cap` groups.
-fn group_activity<'a, I>(events: I, cap: usize) -> Vec<ActivityGroup>
+/// Fills `out` with up to `cap` groups.
+///
+/// Caller-owned `out` so the spine `Vec<ActivityGroup>` survives
+/// across renders. Cleared on entry; re-filled in place. The inner
+/// `SharedString` fields can still be `drain(..)`-ed by the caller
+/// without losing the spine capacity.
+fn group_activity<'a, I>(events: I, cap: usize, out: &mut Vec<ActivityGroup>)
 where
     I: IntoIterator<Item = &'a SseActivityEvent>,
     I::IntoIter: DoubleEndedIterator,
 {
-    let mut out: Vec<ActivityGroup> = Vec::with_capacity(cap);
+    out.clear();
     for evt in events.into_iter().rev() {
         if let Some(last) = out.last_mut() {
             if last.op == evt.op {
@@ -535,7 +530,6 @@ where
             count: 1,
         });
     }
-    out
 }
 
 /// Map a row's age (seconds since `now_ts`) to a multiplicative alpha
@@ -616,7 +610,8 @@ mod tests {
             evt("refs", "Store", 2),
             evt("refs", "Index", 3),
         ];
-        let groups = group_activity(&events, 8);
+        let mut groups = Vec::new();
+        group_activity(&events, 8, &mut groups);
         // Expected (newest first): refs ×2 (latest=Index), sym ×1, outline ×3 (latest=c)
         assert_eq!(groups.len(), 3);
         assert_eq!(groups[0].op, "refs");
@@ -634,7 +629,8 @@ mod tests {
         let events: Vec<SseActivityEvent> = (0..20)
             .map(|i| evt(&format!("op-{i}"), "q", i as u64))
             .collect();
-        let groups = group_activity(&events, 5);
+        let mut groups = Vec::new();
+        group_activity(&events, 5, &mut groups);
         // Each event has a unique op, so groups equal events. We expect
         // exactly 5 (the cap) — the *newest* 5.
         assert_eq!(groups.len(), 5);
@@ -644,7 +640,30 @@ mod tests {
 
     #[test]
     fn grouping_handles_empty_input() {
-        let groups: Vec<ActivityGroup> = group_activity(&[] as &[SseActivityEvent], 8);
+        let mut groups: Vec<ActivityGroup> = Vec::new();
+        group_activity(&[] as &[SseActivityEvent], 8, &mut groups);
         assert!(groups.is_empty());
+    }
+
+    #[test]
+    fn grouping_clears_existing_buffer_on_entry() {
+        // Buffer-reuse contract: a fresh call clears prior contents
+        // and refills in place — and the spine capacity survives so
+        // the steady-state allocation count is zero.
+        let mut groups = Vec::with_capacity(16);
+        let first = vec![evt("sym", "x", 1)];
+        group_activity(&first, 8, &mut groups);
+        assert_eq!(groups.len(), 1);
+        let cap_before = groups.capacity();
+
+        let second = vec![evt("refs", "y", 2), evt("callers", "z", 3)];
+        group_activity(&second, 8, &mut groups);
+        // Old "sym" entry must be gone — buffer was cleared, not
+        // appended.
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].op, "callers");
+        assert_eq!(groups[1].op, "refs");
+        // Spine capacity preserved (the whole point of the param flip).
+        assert!(groups.capacity() >= cap_before);
     }
 }
