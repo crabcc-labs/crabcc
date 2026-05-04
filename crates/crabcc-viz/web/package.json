@@ -5,23 +5,34 @@
   "description": "React + TypeScript frontend for crabcc-viz /live dashboard. Bundled via esbuild into a single self-contained HTML file the Rust crate include_str!'s at compile time.",
   "type": "module",
   "scripts": {
-    "build": "bun run codegen && node esbuild.config.mjs",
-    "dev": "bun run codegen && node esbuild.config.mjs --watch",
+    "build": "bun run codegen && bun run tailwind:build && node esbuild.config.mjs",
+    "dev": "bun run codegen && bun run tailwind:build && node esbuild.config.mjs --watch",
+    "tailwind:build": "tailwindcss -i src/tailwind.input.css -o src/tailwind.generated.css --minify",
+    "tailwind:watch": "tailwindcss -i src/tailwind.input.css -o src/tailwind.generated.css --watch",
     "typecheck": "tsgo --noEmit",
     "test": "bun test src",
     "codegen": "openapi-typescript ../openapi.yaml -o src/api.gen.ts",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist src/tailwind.generated.css"
   },
   "dependencies": {
+    "@radix-ui/react-slot": "^1.1.0",
+    "class-variance-authority": "^0.7.0",
+    "clsx": "^2.1.0",
+    "d3-force": "^3.0.0",
     "lucide-react": "^1.14.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "tailwind-merge": "^3.0.0"
   },
   "devDependencies": {
+    "@happy-dom/global-registrator": "^20.0.0",
+    "@tailwindcss/cli": "^4.0.0",
+    "@types/d3-force": "^3.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@typescript/native-preview": "^7.0.0-dev",
     "esbuild": "^0.28.0",
-    "openapi-typescript": "^7.0.0"
+    "openapi-typescript": "^7.0.0",
+    "tailwindcss": "^4.0.0"
   }
 }

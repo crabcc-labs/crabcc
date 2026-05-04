@@ -6,6 +6,165 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+## [3.0.0-rc.2] — 2026-05-04
+
+Follow-on RC. Pulls in the Track B (web `/live` dashboard shadcn
+refresh) groundwork that landed after rc.1, plus a small test-
+infra fix. No desktop / CLI / MCP code changes — the desktop
+crate binary is identical to rc.1.
+
+### Added — Track B (web dashboard shadcn refresh)
+- **Tailwind v4 foundation** wired into `crates/crabcc-viz/web`
+  with the `d3-force` dep regression fixed (#344).
+- `cn()` className-merge helper landed; the `Header.tsx`
+  component is the first visible surface ported to Tailwind
+  utility classes (#345).
+- shadcn-style **`Button` drop-in component** + Header icon-row
+  using it (#346). First reusable shadcn primitive in the
+  `crabcc-viz/web` tree; future component ports (Card, Dialog,
+  Input) build on the same registry.
+
+### Fixed
+- `crabcc-viz/web` test suite was failing on `document` not
+  defined; registered `@happy-dom/global-registrator` so vitest
+  has a DOM under each test (#352).
+
+### Notes
+4 commits ahead of rc.1, all on the web side. The desktop crate
+is unchanged — anyone building from this tag gets the same
+binary as rc.1 but with the React `/live` dashboard partially on
+the new shadcn / Tailwind stack.
+
+## [3.0.0-rc.1] — 2026-05-04
+
+The native-desktop release candidate. `crabcc-desktop` ships with
+a complete in-window notification surface, real macOS Notification
+Center banners, and an auto-managed docker-compose backend stack
+— so on a fresh machine the desktop binary alone is enough to
+boot the live dashboard. Major version bump because the desktop
+crate is a brand-new top-level surface, not because of breaking
+changes to `crabcc serve` / CLI / MCP.
+
+90 commits ahead of `main`; ~30 PRs landed in the wrap-up sprint
+on top of the existing dashboard skeleton.
+
+### Added — Track A (desktop dashboard)
+- **Six routes** mounted in a header-nav shell: Home, Agents,
+  Logs, System, Knowledge, Commands — plus K-Graph (#318, #334,
+  #339, #341) and Tool-call Timeline (#312) added in the
+  wrap-up sprint.
+- **Home dashboard** — KPI strip + activity / agents / services
+  tile row + spawn form + force-directed relations graph.
+  Activity tile groups consecutive same-op rows, recency-fades
+  by age, click op-badge to pin the op-filter (#286, #279).
+- **Agents route** — per-card Kill button (#280), substring
+  filter + status pills (#283), click-to-expand log tail.
+- **Logs route** — telemetry tail with level pills, click any
+  row's level badge to drill in (#284).
+- **System route** — Services + OTLP + Ollama + profiles +
+  models + kills, single filter narrows every section (#283).
+- **Knowledge route** — memory drawer browser, ingest form,
+  wing-pin filter, wing distribution summary (#285).
+- **Commands launchpad** — click-to-run for the 13 no-arg HTTP
+  probes that map 1:1 to existing `Client` methods, inline
+  result block, type-aware Debug-format dump with copy-to-
+  clipboard (#314, #315).
+- **A.5.5 relations-graph node-detail drawer** (#300).
+
+### Added — Track C.0 (in-window toast strip)
+- 5 levels (Success / Info / Warning / Danger / Primary), per-
+  level auto-dismiss intervals from the design brief
+  (#308, #309).
+- Auto-emit on six submit-result paths (memory ingest / agent
+  launch / agent kill × ok / err) and on agent Running → Exited
+  transitions (#309, #328).
+- Edge-trigger emit on prefetch + telemetry/memory poll
+  failures with surgical recovery toasts (one ack per failure
+  window, not per cycle) (#310).
+- Header `● alerts` mute toggle — clears visible deque,
+  history still records (#313).
+- Append-only history log capped at 50; footer renders
+  `[dismiss all] · history (N) · expand · clear`; click
+  `expand` to see the full audit list inline (#316, #319, #340).
+- Header `↗ system` toggle for selective Notification Center
+  delivery — keep in-window, suppress system banners (#330).
+- Per-row `↗ system` tag echoing the system-echo state (#327).
+
+### Added — Track C.1 / C.1.1 / C.2 (native macOS surfaces)
+- **Dock badge + menu-bar status item** — running-agents count
+  reflected on both surfaces, change-detection sentinels skip
+  redundant AppKit round-trips (#272, #281).
+- **Rich-notification banners** via `osascript` — every visible
+  toast also fires a system banner through Notification Center
+  (#325). Sidesteps the `.app` bundle requirement of
+  `UNUserNotificationCenter`; future C.2.1 ships a real bundle.
+
+### Added — Backend stack lifecycle
+- **Auto-start on launch** — `services::ensure_stack_started`
+  runs `docker compose up -d` for the dev stack if `/api/health`
+  isn't already responding. Six-variant outcome enum surfaces
+  via the toast strip with timing
+  (#322, #323, #338).
+- **Opt-in graceful shutdown** — SIGINT handler running
+  `docker compose down` when
+  `CRABCC_DESKTOP_STOP_SERVICES_ON_EXIT=1` (#337).
+- **`task services-up / -down / -status / -logs`** — manual
+  lifecycle ops (#336).
+
+### Added — Server-side companions
+- `/api/seed-graph` nodes now carry `kind` / `file` / `line` /
+  `signature` (#320, closes #301).
+- `/api/agents/launch` accepts a `profile` field (#331,
+  closes #306).
+- `SseActivityEvent` carries an `agent_id` (#333, closes #311).
+
+### Performance
+- **Bench harness** with criterion — three apply benches +
+  graph_layout 50/500-node fixtures (#287).
+- **`SharedString` flip** on hot wire types — 10.6× / 5.5× /
+  2.4× cumulative wins on apply benches (#288, #289).
+- **Cached gpui ElementIds** on `SseAgent` at decode time
+  instead of per-render `format!()` (#290).
+- **Bounded flume channels** with drop-newest + warn-log
+  overflow policy; memory provably bounded (#291).
+- **Wild-linker tricks** on DashboardHome render loop — drop
+  redundant `.collect::<Vec<_>>()` × 3 + `group_activity`
+  buffer reuse (#302).
+- **Brand-string cache** in Shell — 2 fewer per-render allocs
+  (#304).
+- **Per-render `format!()` → `'static str` / `NamedInteger`**
+  for alerts toggle + toast dismiss id + activity-op badge id
+  — net ~14 fewer heap allocs per render (#342).
+- SSE client reuse + thread audit (#282).
+
+### Internal / chores
+- Dedicated `desktop-ci.yml` workflow with `paths:` filter so
+  the standalone crate gates fmt / check / clippy / bench
+  compile without re-running on every workspace change (#292,
+  #303).
+- Per-crate `crates/crabcc-desktop/Taskfile.yml` (#292).
+- Bigger default window 1600×1000 + scrollable body (#305).
+- Design brief / architecture docs migrated to private
+  `peterlodri-sec/crabcc-docs` submodule under `desktop/`;
+  new `desktop/ARCHITECTURE.md` with full data-flow chart
+  (#342).
+- `crabcc-desktop` is **workspace-excluded** by design —
+  `gpui-component`'s `tree-sitter = "0.25"` would force a
+  six-grammar coordinated bump on `crabcc-core`'s `0.22`.
+  Standalone keeps the gpui ecosystem moving at its own
+  cadence.
+
+### Notes for the RC
+
+- C.2 currently attributes notifications to "Script Editor"
+  (osascript path). Promotion to `crabcc-desktop` attribution
+  + `UNNotificationCategory` actions lands in C.2.1 with a
+  proper `.app` bundle.
+- Track B (Tailwind / shadcn for `crabcc-viz/web`) — not
+  started.
+- Apple-Dev-gated tracks (App Group, entitlements, APNs) —
+  not started.
+
 ## [2.11.0] — 2026-04-30
 
 Operations + ergonomics. macOS-first session focused on the

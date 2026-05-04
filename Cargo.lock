@@ -908,7 +908,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-chrome"
-version = "2.11.0"
+version = "3.0.0-rc.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -923,7 +923,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-cli"
-version = "2.11.0"
+version = "3.0.0-rc.2"
 dependencies = [
  "anyhow",
  "bullmq-rs",
@@ -956,7 +956,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-core"
-version = "2.11.0"
+version = "3.0.0-rc.2"
 dependencies = [
  "ahash",
  "anyhow",
@@ -993,7 +993,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-fetch"
-version = "2.11.0"
+version = "3.0.0-rc.2"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1009,7 +1009,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-mcp"
-version = "2.11.0"
+version = "3.0.0-rc.2"
 dependencies = [
  "anyhow",
  "crabcc-core",
@@ -1023,7 +1023,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-memory"
-version = "2.11.0"
+version = "3.0.0-rc.2"
 dependencies = [
  "anyhow",
  "crabcc-core",
@@ -1040,7 +1040,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-memory-bench"
-version = "2.11.0"
+version = "3.0.0-rc.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -1052,7 +1052,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-viz"
-version = "2.11.0"
+version = "3.0.0-rc.2"
 dependencies = [
  "anyhow",
  "crabcc-core",

@@ -581,6 +581,13 @@ pub fn run_with_profile(
 pub fn run(req: AgentRequest<'_>) -> Result<()> {
     let home = home_dir()?;
     let run_dir = RunDir::create(&home)?;
+    // Stamp every subsequent track::record call in this process with
+    // the run id (#311). Activity events emitted from inside the
+    // agent run get an `agent_id` so the dashboard's Timeline route
+    // can group consecutive same-agent rows. Direct CLI / IDE / MCP
+    // calls in other processes leave this unset, which decodes as
+    // None on the wire.
+    crabcc_core::track::set_active_agent_id(Some(run_dir.id.clone()));
     println!(
         "crabcc agent: id={}  log={}",
         run_dir.id,

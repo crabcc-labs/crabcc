@@ -77,7 +77,10 @@ pub fn run(cfg: GuardConfig) -> Result<()> {
     // marks them 'crashed' but doesn't write a kill event; do that here
     // so the audit trail is complete.
     let active = agent_runs_db::list_runs(&conn, true, 1024)?;
-    let mut actions: Vec<Action> = Vec::new();
+    // Worst case: every active run requires an action. Hint at the
+    // upper bound so the inner push loop avoids the 4 → 8 → 16 …
+    // doubling chain even when sweep counts spike.
+    let mut actions: Vec<Action> = Vec::with_capacity(active.len());
     for row in active {
         let pid = row.pid;
         let log_path = row.log_path.clone();

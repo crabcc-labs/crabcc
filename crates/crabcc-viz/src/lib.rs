@@ -497,6 +497,78 @@ struct GraphSnapshot {
 struct NodeOut {
     id: String,
     depth: usize,
+    /// Symbol kind when the node id resolves to an indexed symbol —
+    /// `function` / `struct` / `enum` / `trait` / `const` / `type` /
+    /// `macro`. `None` for nodes whose id couldn't be matched (call
+    /// targets the indexer didn't catch — extern crate fns, std, etc).
+    /// Added in #301 so the desktop graph drawer can render a kind
+    /// badge without a follow-up RPC.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kind: Option<String>,
+    /// Repo-relative file path of the symbol's defining site.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file: Option<String>,
+    /// 1-based line number of the symbol's defining site.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line: Option<u32>,
+    /// Single-line signature (e.g. `pub fn open(path: &Path) -> Result<Store>`).
+    /// `None` when the indexer didn't capture one (rare for fns,
+    /// common for type aliases / consts depending on language plugin).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signature: Option<String>,
+}
+
+impl NodeOut {
+    /// Build a `NodeOut` and try to enrich it from the symbol index.
+    /// Looks up `id` via [`crabcc_core::query::find_symbol`] and takes
+    /// the first match (callers / call targets are referenced by name,
+    /// so multiple definitions with the same name simply pick one
+    /// deterministic choice — same trade-off `crabcc sym` makes).
+    fn from_id_with_store(id: String, depth: usize, store: &Store) -> Self {
+        let metadata = crabcc_core::query::find_symbol(store, &id)
+            .ok()
+            .and_then(|hits| hits.into_iter().next());
+        match metadata {
+            Some(sym) => Self {
+                id,
+                depth,
+                kind: Some(symbol_kind_str(&sym.kind).to_string()),
+                file: Some(sym.file),
+                line: Some(sym.line_start),
+                signature: sym.signature,
+            },
+            None => Self {
+                id,
+                depth,
+                kind: None,
+                file: None,
+                line: None,
+                signature: None,
+            },
+        }
+    }
+}
+
+/// Map [`crabcc_core::types::SymbolKind`] to the wire string used in
+/// the seed-graph response. Mirrors the enum's `#[serde(rename_all =
+/// "snake_case")]` Serialize impl exactly so the wire shape is
+/// identical to whatever `crabcc_core` emits elsewhere. Keep in
+/// lockstep with the openapi spec's `GraphNode.kind` enum.
+fn symbol_kind_str(k: &crabcc_core::types::SymbolKind) -> &'static str {
+    use crabcc_core::types::SymbolKind as K;
+    match k {
+        K::Function => "function",
+        K::Method => "method",
+        K::Class => "class",
+        K::Struct => "struct",
+        K::Enum => "enum",
+        K::Trait => "trait",
+        K::Interface => "interface",
+        K::Const => "const",
+        K::Var => "var",
+        K::Type => "type",
+        K::Macro => "macro",
+    }
 }
 
 #[derive(Serialize)]
@@ -538,15 +610,17 @@ fn graph_snapshot(root: &Path, query: &str) -> Result<GraphSnapshot> {
 
     // The frontier from `incoming` / `outgoing` excludes the root itself.
     // Add it back at depth 0 so the canvas has a recognizable focus point.
-    let mut nodes: Vec<NodeOut> = std::iter::once(NodeOut {
-        id: q.root.clone(),
-        depth: 0,
-    })
-    .chain(frontier.into_iter().map(|h| NodeOut {
-        id: h.name,
-        depth: h.depth,
-    }))
-    .collect();
+    // Each node is enriched with kind / file / line / signature via
+    // `NodeOut::from_id_with_store` (#301) so the desktop drawer can
+    // render the full symbol header without a follow-up RPC.
+    let mut nodes: Vec<NodeOut> =
+        std::iter::once(NodeOut::from_id_with_store(q.root.clone(), 0, &store))
+            .chain(
+                frontier
+                    .into_iter()
+                    .map(|h| NodeOut::from_id_with_store(h.name, h.depth, &store)),
+            )
+            .collect();
     let truncated = nodes.len() > MAX_NODES;
     if truncated {
         nodes.truncate(MAX_NODES);
@@ -613,6 +687,12 @@ struct ActivityEvent {
     op: String,
     query: String,
     results: usize,
+    /// Agent run id when the originating `track::record` call ran
+    /// inside an agent process. `None` for direct CLI / IDE / MCP
+    /// calls. Forwarded straight from the on-disk usage.log entry —
+    /// see `crabcc_core::track::Entry::agent_id` (#311).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_id: Option<String>,
 }
 
 // =====================================================================
@@ -879,6 +959,7 @@ fn activity_tail(root: &Path, query: &str) -> Result<ActivitySnapshot> {
             op: e.op,
             query: e.query,
             results: e.results,
+            agent_id: e.agent_id,
         })
         .collect();
     // The on-disk log is naturally append-ordered, but we re-sort defensively
@@ -1189,6 +1270,12 @@ fn seed_graph(root: &Path, query: &str) -> Result<SeedSnapshot> {
         });
     }
     let graph = CallGraph::load(&graph_path)?;
+    // Open the symbol store too — node enrichment (#301) needs it to
+    // map each id to kind/file/line/signature. `Result` is propagated
+    // because a missing store means no index, and an unenriched seed
+    // graph is worse UX than the empty-state hint.
+    let db = root.join(".crabcc").join("index.db");
+    let store = Store::open(&db).with_context(|| format!("opening store at {}", db.display()))?;
 
     // Combined-degree ranking: a node's "importance" for the seed view
     // is the sum of its outgoing + incoming edge counts. This biases
@@ -1242,10 +1329,10 @@ fn seed_graph(root: &Path, query: &str) -> Result<SeedSnapshot> {
 
     let nodes: Vec<NodeOut> = node_set
         .iter()
-        .map(|id| NodeOut {
-            id: id.clone(),
+        .map(|id| {
             // Seeds are "depth 0" (queried-equivalent), neighbors are 1.
-            depth: if seeds.contains(id) { 0 } else { 1 },
+            let depth = if seeds.contains(id) { 0 } else { 1 };
+            NodeOut::from_id_with_store(id.clone(), depth, &store)
         })
         .collect();
     let mut edges: Vec<EdgeOut> = Vec::new();
@@ -1502,7 +1589,7 @@ fn agent_log(id: &str, query: &str) -> Result<AgentLog> {
 }
 
 fn agents_launch(mut request: Request, root: &Path) -> Result<()> {
-    // Parse JSON body: `{ "prompt": "...", "model"?: "...", "no_refresh"?: bool }`.
+    // Parse JSON body: `{ "prompt": "...", "model"?, "profile"?, "no_refresh"? }`.
     let mut body = String::new();
     if let Err(e) = request.as_reader().read_to_string(&mut body) {
         return respond_status(request, 400, &format!("read body: {e}"));
@@ -1514,6 +1601,12 @@ fn agents_launch(mut request: Request, root: &Path) -> Result<()> {
         model: Option<String>,
         #[serde(default)]
         no_refresh: bool,
+        /// Profile id from `/api/agent-profiles` — bare filename
+        /// without the `.profile.toml` suffix. Forwarded to the
+        /// spawned CLI as `--profile internal/<id>`. Added in #306;
+        /// `None` means "use the CLI's default".
+        #[serde(default)]
+        profile: Option<String>,
     }
     let req: LaunchReq = match serde_json::from_str(&body) {
         Ok(r) => r,
@@ -1521,6 +1614,25 @@ fn agents_launch(mut request: Request, root: &Path) -> Result<()> {
     };
     if req.prompt.trim().is_empty() {
         return respond_status(request, 400, "prompt must be non-empty");
+    }
+    // Validate the profile id shape before spawning. The CLI's
+    // `--profile internal/<id>` parser accepts only `[A-Za-z0-9_-]`
+    // and we pre-pend `internal/` here, so reject anything outside
+    // that alphabet up-front — a child failure exits silently
+    // (stderr is sunk to /dev/null) and the launch endpoint can't
+    // surface it.
+    if let Some(p) = req.profile.as_deref() {
+        if p.is_empty()
+            || !p
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return respond_status(
+                request,
+                400,
+                &format!("profile id must match [A-Za-z0-9_-]+ (got '{p}')"),
+            );
+        }
     }
 
     // Spawn `crabcc agent --run …` as a detached subprocess so the
@@ -1535,6 +1647,12 @@ fn agents_launch(mut request: Request, root: &Path) -> Result<()> {
     cmd.arg("agent").arg("--run").arg(&req.prompt);
     if let Some(m) = &req.model {
         cmd.arg("--model").arg(m);
+    }
+    if let Some(p) = &req.profile {
+        // Server-emitted profile ids are bare filenames; the CLI flag
+        // wants the `internal/<id>` namespace prefix. Pre-pend here
+        // so desktop / web clients don't need to know the namespace.
+        cmd.arg("--profile").arg(format!("internal/{p}"));
     }
     if req.no_refresh {
         cmd.arg("--no-refresh");

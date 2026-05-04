@@ -13,10 +13,20 @@ members = [
     # triggers a nightly libc ICE under -Z polonius + -Z randomize-layout.
     # Build standalone: cd apps/crabcc-telegram && cargo build --release
     # Track: https://github.com/rust-lang/rust/issues (libc ICE on nightly)
+    #
+    # crates/crabcc-desktop: also excluded — gpui-component pulls a hard
+    # dep on `tree-sitter = "0.25"` (links = "tree-sitter", so cargo
+    # enforces a single version workspace-wide), and crabcc-core is on
+    # tree-sitter 0.22 with its grammar fleet at 0.21. Joining the
+    # workspace would force a coordinated tree-sitter-22→25 bump across
+    # six grammar crates. The desktop crate talks to the rest of crabcc
+    # over HTTP/SSE (loopback only), so no path dep is required —
+    # standalone build keeps each side on its own pace.
+    # Build: cd crates/crabcc-desktop && cargo run --release
 ]
 
 [workspace.package]
-version = "2.11.0"
+version = "3.0.0-rc.2"
 edition = "2021"
 rust-version = "1.87"
 license = "MIT"
