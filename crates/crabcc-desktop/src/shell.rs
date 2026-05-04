@@ -589,6 +589,25 @@ impl Render for Shell {
                     .child(SharedString::new_static(active.label())),
             );
 
+        // Theme segment — surfaces the active palette name in the
+        // status bar's right rail alongside the route. The header's
+        // `◐ <palette>` cycle button is the canonical control;
+        // mirroring the value here makes it visible from any route
+        // without hovering the cycle button.
+        let palette_name = state_for_brand.palette_name();
+        let theme_segment = h_flex()
+            .gap_1p5()
+            .child(
+                div()
+                    .text_color(muted)
+                    .child(SharedString::new_static("theme")),
+            )
+            .child(
+                div()
+                    .text_color(foreground)
+                    .child(SharedString::new_static(palette_name)),
+            );
+
         let status_bar = h_flex()
             .gap_4()
             .px_5()
@@ -599,6 +618,7 @@ impl Render for Shell {
             .child(services_segment)
             .child(agents_segment)
             .child(div().flex_1())
+            .child(theme_segment)
             .child(route_segment);
 
         v_flex()
