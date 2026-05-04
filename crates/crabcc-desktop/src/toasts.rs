@@ -349,14 +349,24 @@ impl Render for ToastStrip {
                                 // in-window but no banner fires; the
                                 // tag would be a lie.
                                 .child(if echo_to_system {
+                                    let echo_tag_id = gpui::ElementId::NamedInteger(
+                                        SharedString::new_static("toast-echo-tag"),
+                                        t.id,
+                                    );
                                     div()
+                                        .id(echo_tag_id)
                                         .px_1()
                                         .text_color(muted)
-                                        .child(SharedString::new_static(
-                                            "\u{2197} system",
-                                        ))
+                                        .tooltip(|window, cx| {
+                                            Tooltip::new(
+                                                "Also delivered to macOS Notification Center",
+                                            )
+                                            .build(window, cx)
+                                        })
+                                        .child(SharedString::new_static("\u{2197} system"))
+                                        .into_any_element()
                                 } else {
-                                    div()
+                                    div().into_any_element()
                                 })
                                 .child(
                                     div()
