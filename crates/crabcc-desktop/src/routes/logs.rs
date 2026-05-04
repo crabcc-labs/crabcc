@@ -12,8 +12,8 @@
 //! filter pattern.
 
 use gpui::{
-    div, prelude::*, px, Context, Entity, Hsla, IntoElement, MouseButton, Render, SharedString,
-    Window,
+    div, prelude::*, px, Context, Entity, Focusable, Hsla, IntoElement, MouseButton, Render,
+    SharedString, Window,
 };
 use gpui_component::{
     h_flex,
@@ -145,7 +145,7 @@ impl LogsRoute {
 }
 
 impl Render for LogsRoute {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.state.read(cx);
         let muted = cx.theme().muted_foreground;
         let border = cx.theme().border;
@@ -185,9 +185,19 @@ impl Render for LogsRoute {
                     .child(SharedString::from(count_label)),
             );
 
+        // Brighten the wrapper border to `primary` while focused —
+        // gives the user a visible "you're typing here" cue without
+        // touching gpui-component's own input chrome.
+        let primary = cx.theme().primary;
+        let filter_focused = self
+            .query_input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window);
+        let filter_border = if filter_focused { primary } else { border };
         let search_field = div()
             .border_1()
-            .border_color(border)
+            .border_color(filter_border)
             .rounded_md()
             .px_2()
             .py_1()
@@ -195,7 +205,6 @@ impl Render for LogsRoute {
 
         // ── Level pills ────────────────────────────────────────────
         let foreground = cx.theme().foreground;
-        let primary = cx.theme().primary;
         let active_filter = self.level_filter;
         let entity_for_pill = cx.entity();
         let pill_hover_bg = cx.theme().secondary;

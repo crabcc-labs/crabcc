@@ -10,8 +10,8 @@
 //! case-insensitive). Mirrors the Agents-route filter pattern.
 
 use gpui::{
-    div, prelude::*, px, Context, Entity, Hsla, IntoElement, MouseButton, Render, SharedString,
-    Window,
+    div, prelude::*, px, Context, Entity, Focusable, Hsla, IntoElement, MouseButton, Render,
+    SharedString, Window,
 };
 use gpui_component::{
     h_flex,
@@ -206,22 +206,37 @@ impl Render for KnowledgeRoute {
 
         let form = h_flex()
             .gap_2()
-            .child(
+            .child({
+                // Wrapper border brightens to `primary` while
+                // focused — same focus-indicator pattern as the
+                // other route filters.
+                let ingest_focused = self
+                    .ingest_input
+                    .read(cx)
+                    .focus_handle(cx)
+                    .is_focused(window);
+                let ingest_border = if ingest_focused { primary } else { border };
                 div()
                     .flex_1()
                     .border_1()
-                    .border_color(border)
+                    .border_color(ingest_border)
                     .rounded_md()
                     .px_2()
                     .py_1()
-                    .child(Input::new(&self.ingest_input).appearance(false)),
-            )
+                    .child(Input::new(&self.ingest_input).appearance(false))
+            })
             .child(submit_btn);
 
+        let filter_focused = self
+            .filter_input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window);
+        let filter_border = if filter_focused { primary } else { border };
         let filter_field = div()
             .flex_1()
             .border_1()
-            .border_color(border)
+            .border_color(filter_border)
             .rounded_md()
             .px_2()
             .py_1()

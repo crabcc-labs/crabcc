@@ -25,7 +25,10 @@
 //! | agent_models     | `provider`, `name`, `params?`, `file`               |
 //! | agent_kills      | `run_id`, `reason`, `detail?`                       |
 
-use gpui::{div, prelude::*, px, Context, Entity, Hsla, IntoElement, Render, SharedString, Window};
+use gpui::{
+    div, prelude::*, px, Context, Entity, Focusable, Hsla, IntoElement, Render, SharedString,
+    Window,
+};
 use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -66,10 +69,11 @@ impl SystemRoute {
 }
 
 impl Render for SystemRoute {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let state = self.state.read(cx);
         let muted = cx.theme().muted_foreground;
         let border = cx.theme().border;
+        let primary = cx.theme().primary;
         let success = cx.theme().success;
         let danger = cx.theme().danger;
         let warning = cx.theme().warning;
@@ -88,9 +92,18 @@ impl Render for SystemRoute {
         // / profiles / models / kills uniformly. Sits below the
         // header so it's visible without scrolling, no matter which
         // section the user's eye is on.
+        // Brighten the wrapper border to `primary` while focused —
+        // gives the user a "you're typing here" cue without touching
+        // gpui-component's own input chrome.
+        let filter_focused = self
+            .query_input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window);
+        let filter_border = if filter_focused { primary } else { border };
         let filter_field = div()
             .border_1()
-            .border_color(border)
+            .border_color(filter_border)
             .rounded_md()
             .px_2()
             .py_1()
