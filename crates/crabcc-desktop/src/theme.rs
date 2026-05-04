@@ -26,7 +26,7 @@
 
 use std::path::PathBuf;
 
-use gpui::{rgb, App, Hsla};
+use gpui::{rgb, App, Global, Hsla};
 use gpui_component::theme::Theme;
 
 /// All tokens needed to skin both the gpui-component core
@@ -77,6 +77,39 @@ pub struct Palette {
     /// Deep BG colour for the cyberpunk gradient stops
     /// (`#0a0f1e`).
     pub cyber_bg_deep: u32,
+}
+
+/// Register the active palette as a gpui global so render paths
+/// can read the cyberpunk accents (`cyber_cyan` / `cyber_pink` /
+/// etc.) without re-deriving them. gpui-component's `Theme` only
+/// covers the core tokens — the cyber-* fields live here.
+impl Global for Palette {}
+
+impl Palette {
+    /// Convenience accessors — return the cyberpunk-accent colour
+    /// values as `Hsla`. Per-route code reads these directly via
+    /// `cx.global::<Palette>().cyber_cyan_hsla()` instead of
+    /// converting from the raw `u32` at every site.
+    #[inline]
+    pub fn cyber_cyan_hsla(&self) -> Hsla {
+        rgb(self.cyber_cyan).into()
+    }
+    #[inline]
+    pub fn cyber_pink_hsla(&self) -> Hsla {
+        rgb(self.cyber_pink).into()
+    }
+    #[inline]
+    pub fn cyber_amber_hsla(&self) -> Hsla {
+        rgb(self.cyber_amber).into()
+    }
+    #[inline]
+    pub fn agent_text_hsla(&self) -> Hsla {
+        rgb(self.agent_text).into()
+    }
+    #[inline]
+    pub fn agent_muted_hsla(&self) -> Hsla {
+        rgb(self.agent_muted).into()
+    }
 }
 
 impl Palette {
@@ -333,6 +366,10 @@ fn apply(cx: &mut App, palette: Palette) {
     theme.primary = rgb(palette.primary).into();
     theme.success = rgb(palette.success).into();
     theme.danger = rgb(palette.danger).into();
+    // Stash the full Palette as a gpui global so render code can
+    // reach the cyberpunk accents without re-deriving them. Replaces
+    // any prior palette set by an earlier `apply` call.
+    cx.set_global(palette);
 }
 
 /// Convenience wrapper — converts a `u32` palette token to an

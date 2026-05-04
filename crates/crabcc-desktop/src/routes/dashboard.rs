@@ -90,6 +90,11 @@ impl Render for DashboardHome {
         let card = cx.theme().secondary;
         let muted = cx.theme().muted_foreground;
         let border = cx.theme().border;
+        // Cyberpunk accents from the active `Palette` global. Used
+        // for the running-agent dot below — under any palette this
+        // pops more than the default text colour, mirroring the
+        // web's cyan-coded "ok / live" treatment.
+        let cyber_cyan = cx.global::<crate::theme::Palette>().cyber_cyan_hsla();
 
         // ── KPI strip ─────────────────────────────────────────────
         let index_kpi = match state.bootstrap.as_ref().and_then(|b| b.index.as_ref()) {
@@ -281,6 +286,10 @@ impl Render for DashboardHome {
                         AgentStatus::Running => "●",
                         AgentStatus::Exited => "○",
                     };
+                    let dot_color = match a.status {
+                        AgentStatus::Running => cyber_cyan,
+                        AgentStatus::Exited => muted,
+                    };
                     let kill_btn: gpui::AnyElement = if matches!(a.status, AgentStatus::Running) {
                         let id_for_click = a.id.clone();
                         let state_for_click = agents_state.clone();
@@ -306,7 +315,12 @@ impl Render for DashboardHome {
                     };
                     h_flex()
                             .gap_2()
-                            .child(SharedString::from(dot.to_string()))
+                            // Running dot picks up the palette's
+                            // cyber_cyan accent — bright cyan under
+                            // CYBERPUNK_NEON / WEB_DARK / WEB_LIGHT,
+                            // mid-grey under MONO, saturated cyan
+                            // under HIGH_CONTRAST. Exited stays muted.
+                            .child(div().text_color(dot_color).child(SharedString::from(dot.to_string())))
                             // a.id is now SharedString — clone is a refcount
                             // bump, no allocation per render.
                             .child(a.id.clone())
