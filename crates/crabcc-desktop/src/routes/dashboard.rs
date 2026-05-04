@@ -169,9 +169,13 @@ impl Render for DashboardHome {
                     // gpui requires stateful elements to declare
                     // an id; suffixing with the row index keeps
                     // it unique per render pass without an
-                    // extra alloc per group.
-                    let badge_id: gpui::ElementId =
-                        SharedString::from(format!("activity-op-{idx}")).into();
+                    // extra alloc per group. `NamedInteger` pairs
+                    // the static-backed name with the index
+                    // directly — zero alloc per row per render.
+                    let badge_id = gpui::ElementId::NamedInteger(
+                        SharedString::new_static("activity-op"),
+                        idx as u64,
+                    );
                     let badge_pinned = active_pin.as_deref() == Some(g.op.as_str());
                     let badge_border = if badge_pinned {
                         primary

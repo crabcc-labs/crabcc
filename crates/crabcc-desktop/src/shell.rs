@@ -235,16 +235,23 @@ impl Render for Shell {
         // on toggle. Clicking flips `AppState::toasts_muted` and
         // clears any visible toasts on transition into mute (see
         // `AppState::toggle_toast_mute`).
+        //
+        // Both labels are pre-baked as `&'static str` literals so the
+        // render path picks one with a branch — no `format!()` +
+        // `SharedString::from(String)` per frame.
         let muted_state = state_for_brand.toasts_muted;
-        let alerts_glyph = if muted_state { "\u{25CB}" } else { "\u{25CF}" };
-        let alerts_color = if muted_state { muted } else { primary };
+        let (alerts_label, alerts_color) = if muted_state {
+            (SharedString::new_static("\u{25CB} alerts"), muted)
+        } else {
+            (SharedString::new_static("\u{25CF} alerts"), primary)
+        };
         let state_for_alerts = self.state.clone();
         let alerts_btn = div()
             .id("toasts-mute-toggle")
             .px_2()
             .py_1()
             .text_color(alerts_color)
-            .child(SharedString::from(format!("{alerts_glyph} alerts")))
+            .child(alerts_label)
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 state_for_alerts.update(cx, |s, cx| {
                     s.toggle_toast_mute();

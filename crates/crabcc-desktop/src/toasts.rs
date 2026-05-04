@@ -282,8 +282,14 @@ impl Render for ToastStrip {
                             let state_clone = state_for_dismiss.clone();
                             // Element id must be unique per render pass; the
                             // monotonic toast id makes that trivial.
-                            let dismiss_id: gpui::ElementId =
-                                SharedString::from(format!("toast-dismiss-{}", t.id)).into();
+                            // `NamedInteger` keeps the per-render allocation
+                            // at zero — the static-backed name pairs with
+                            // the toast id directly, no `format!()` /
+                            // `SharedString::from(String)` round-trip.
+                            let dismiss_id = gpui::ElementId::NamedInteger(
+                                SharedString::new_static("toast-dismiss"),
+                                t.id,
+                            );
                             h_flex()
                                 .gap_3()
                                 .px_3()
