@@ -19,7 +19,8 @@
 //! collapses the panel.
 
 use gpui::{
-    div, prelude::*, px, Context, Entity, IntoElement, MouseButton, Render, SharedString, Window,
+    div, prelude::*, px, Context, Entity, Focusable, IntoElement, MouseButton, Render,
+    SharedString, Window,
 };
 use gpui_component::{
     h_flex,
@@ -164,7 +165,7 @@ impl AgentsRoute {
 }
 
 impl Render for AgentsRoute {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Cross-route nav handoff: a previous render of another route
         // (e.g. Timeline → Agents via the agent-pin pill's link) may
         // have staged an id to pre-select. Consume up-front so the
@@ -230,11 +231,22 @@ impl Render for AgentsRoute {
             );
 
         // ── Filter input ────────────────────────────────────────────
+        // Brighten the wrapper border to `primary` when the inner
+        // `InputState` has the window's focus — gives the user a
+        // visible "you're typing here" cue. The wrapper itself is a
+        // plain div, so we read the inner focus handle and switch
+        // the border colour ourselves.
+        let filter_focused = self
+            .query_input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window);
+        let filter_border = if filter_focused { primary } else { border };
         let search_field = div()
             .mx_5()
             .mt_3()
             .border_1()
-            .border_color(border)
+            .border_color(filter_border)
             .rounded_md()
             .px_2()
             .py_1()
