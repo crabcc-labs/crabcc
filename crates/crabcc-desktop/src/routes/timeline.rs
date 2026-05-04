@@ -30,8 +30,8 @@
 //!     [`VISIBLE_LIMIT`] so dense bursts don't blow paint cost.
 
 use gpui::{
-    div, prelude::*, px, ClipboardItem, Context, Entity, Hsla, IntoElement, MouseButton, Render,
-    SharedString, Window,
+    div, prelude::*, px, ClipboardItem, Context, Entity, Focusable, Hsla, IntoElement, MouseButton,
+    Render, SharedString, Window,
 };
 use gpui_component::{
     h_flex,
@@ -285,7 +285,7 @@ fn truncate(s: &str, max: usize) -> String {
 }
 
 impl Render for TimelineRoute {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Cross-route nav handoffs: a previous render of another
         // route (dashboard → Timeline, agents → Timeline) may have
         // staged an agent_pin and/or op_pin to apply on entry. Both
@@ -403,11 +403,19 @@ impl Render for TimelineRoute {
         }
 
         // ── Filter input + pills ──────────────────────────────────
+        // Wrapper border brightens to `primary` while focused — same
+        // focus-indicator pattern as the other route filters.
+        let filter_focused = self
+            .query_input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window);
+        let filter_border = if filter_focused { primary } else { border };
         let filter_field = div()
             .mx_5()
             .mt_3()
             .border_1()
-            .border_color(border)
+            .border_color(filter_border)
             .rounded_md()
             .px_2()
             .py_1()

@@ -17,8 +17,8 @@
 //! the prior run and replaces both `running_command` + `last_command_run`.
 
 use gpui::{
-    div, prelude::*, px, ClipboardItem, Context, Entity, Hsla, IntoElement, MouseButton, Render,
-    SharedString, Window,
+    div, prelude::*, px, ClipboardItem, Context, Entity, Focusable, Hsla, IntoElement, MouseButton,
+    Render, SharedString, Window,
 };
 use gpui_component::{
     h_flex,
@@ -128,7 +128,7 @@ impl CommandsRoute {
 }
 
 impl Render for CommandsRoute {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let muted = cx.theme().muted_foreground;
         let border = cx.theme().border;
         let card = cx.theme().secondary;
@@ -186,9 +186,18 @@ impl Render for CommandsRoute {
             )
             .child(running_label);
 
+        // Wrapper border brightens to `primary` while the input is
+        // focused — same focus-indicator pattern as the other route
+        // filters.
+        let filter_focused = self
+            .query_input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window);
+        let filter_border = if filter_focused { primary } else { border };
         let search_field = div()
             .border_1()
-            .border_color(border)
+            .border_color(filter_border)
             .rounded_md()
             .px_2()
             .py_1()
