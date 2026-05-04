@@ -774,6 +774,8 @@ fn kpi_card_with_nav(
     primary: gpui::Hsla,
 ) -> gpui::Stateful<gpui::Div> {
     let nav_state = state.clone();
+    let nav_tooltip: SharedString =
+        SharedString::from(format!("Open {} route", label.to_lowercase()));
     div()
         .id(nav_id)
         .min_w(px(180.0))
@@ -782,6 +784,9 @@ fn kpi_card_with_nav(
         .border_1()
         .border_color(border)
         .rounded_md()
+        .cursor_pointer()
+        .hover(move |s| s.border_color(primary))
+        .tooltip(move |window, cx| Tooltip::new(nav_tooltip.clone()).build(window, cx))
         .child(
             v_flex()
                 .gap_1()
