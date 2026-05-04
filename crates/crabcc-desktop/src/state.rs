@@ -288,6 +288,12 @@ pub struct AppState {
     /// reads-and-clears it via `take_pending_timeline_agent_pin` so
     /// the pin survives exactly one navigation handoff.
     pub pending_timeline_agent_pin: Option<SharedString>,
+    /// Staging slot for a one-shot Agents-route selection. Set by
+    /// `navigate_to_agents_with_selection` (e.g. the Timeline's
+    /// "→ Agents" affordance); the Agents route reads-and-clears it
+    /// via `take_pending_agents_selected_id` and pre-expands the
+    /// matching row's log-tail panel without an extra click.
+    pub pending_agents_selected_id: Option<SharedString>,
     /// Worker plumbing for one-shot HTTP submits — see [`WorkerHandles`].
     /// `Option` only because `Default` can't fabricate a real flume
     /// channel; `state::build` populates it before the view ever
@@ -937,6 +943,22 @@ impl AppState {
         self.pending_timeline_agent_pin.take()
     }
 
+    /// Navigate to the Agents route and stage `agent_id` so the route
+    /// pre-selects that row (expanding its log-tail panel) on next
+    /// render. Used by the Timeline's "→ Agents" cross-link.
+    pub fn navigate_to_agents_with_selection(&mut self, agent_id: SharedString) {
+        self.pending_agents_selected_id = Some(agent_id);
+        self.route = Route::Agents;
+    }
+
+    /// Read-and-clear the pending Agents-route selection. Same one-
+    /// shot semantics as `take_pending_timeline_agent_pin` — applied
+    /// once and then cleared so subsequent renders don't keep
+    /// overriding manual deselection.
+    pub fn take_pending_agents_selected_id(&mut self) -> Option<SharedString> {
+        self.pending_agents_selected_id.take()
+    }
+
     pub fn agents_running(&self) -> u32 {
         use crate::api::types::AgentStatus;
         self.agents
@@ -1539,5 +1561,40 @@ mod tests {
         // every Timeline render would re-apply the pin and the user
         // could never clear it.
         assert_eq!(s.take_pending_timeline_agent_pin(), None);
+    }
+
+    #[test]
+    fn navigate_to_agents_with_selection_sets_route_and_stages_id() {
+        let mut s = AppState::new();
+        assert!(s.pending_agents_selected_id.is_none());
+        s.navigate_to_agents_with_selection("agent-deadbeef".into());
+        assert_eq!(s.route, Route::Agents);
+        assert_eq!(
+            s.pending_agents_selected_id.as_deref(),
+            Some("agent-deadbeef")
+        );
+    }
+
+    #[test]
+    fn take_pending_agents_selected_id_is_one_shot() {
+        let mut s = AppState::new();
+        s.navigate_to_agents_with_selection("a".into());
+        assert_eq!(s.take_pending_agents_selected_id().as_deref(), Some("a"));
+        assert_eq!(s.take_pending_agents_selected_id(), None);
+    }
+
+    #[test]
+    fn timeline_and_agents_handoff_slots_are_independent() {
+        // Setting one navigation handoff must not stomp the other —
+        // both can coexist mid-render even though we never use them
+        // together in the UI today (defends against future refactors).
+        let mut s = AppState::new();
+        s.navigate_to_timeline_with_agent_pin("a".into());
+        s.navigate_to_agents_with_selection("b".into());
+        // Latest call wins for `route`; the slots themselves are
+        // independent.
+        assert_eq!(s.route, Route::Agents);
+        assert_eq!(s.pending_timeline_agent_pin.as_deref(), Some("a"));
+        assert_eq!(s.pending_agents_selected_id.as_deref(), Some("b"));
     }
 }

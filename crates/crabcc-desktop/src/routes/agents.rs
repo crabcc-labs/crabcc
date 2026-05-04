@@ -164,6 +164,23 @@ impl AgentsRoute {
 
 impl Render for AgentsRoute {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Cross-route nav handoff: a previous render of another route
+        // (e.g. Timeline → Agents via the agent-pin pill's link) may
+        // have staged an id to pre-select. Consume up-front so the
+        // log-tail fetch fires from the same render path as a manual
+        // click. One-shot — subsequent renders don't fight a manual
+        // deselect.
+        let pending_select = self
+            .state
+            .update(cx, |s, _| s.take_pending_agents_selected_id());
+        if let Some(id) = pending_select {
+            // Skip the "click again to toggle off" branch in
+            // `select_agent` by ensuring we're not already on this id.
+            if self.selected_id.as_deref() != Some(id.as_ref()) {
+                self.select_agent(id, cx);
+            }
+        }
+
         let muted = cx.theme().muted_foreground;
         let foreground = cx.theme().foreground;
         let border = cx.theme().border;
