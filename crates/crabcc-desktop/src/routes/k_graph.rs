@@ -10,33 +10,29 @@
 //!     are wing-coloured rounded-rect pills (NOT circles, the
 //!     relations graph's primary), edges are thin solid lines, and
 //!     the selected node carries a foreground-coloured ring. Click a
-//!     node to select; click empty canvas to deselect.
+//!     node to select; click empty canvas to deselect. The top-N
+//!     highest-degree drawers (degree ≥ 3, capped at 8) get their
+//!     title painted under the pill so the dense knots are
+//!     identifiable without scrolling the list below. The canvas
+//!     supports **wheel-zoom** + **drag-to-pan** (same shape as
+//!     `routes::graph`); a "Reset view" affordance appears in the
+//!     header whenever the view is off the identity transform.
 //!   * the **wing-grouped list** below the canvas — same data, easier
 //!     to scan at scale.
 //!   * a **right-rail Drawer Detail** panel on the active selection
 //!     (incoming + outgoing edge lists, `via` annotation).
-//!
-//! What's deliberately not here yet:
-//!
-//!   * Pan / zoom on the canvas. The relations graph has it; the
-//!     memory graph rarely tops a few hundred drawers, so a static
-//!     fit-to-bounds layout is enough for v1. Promote when the
-//!     deque outgrows the visible canvas at typical density.
-//!   * Dashed edges. gpui's `PathBuilder` doesn't expose a dash
-//!     pattern; faking it via short segments is a polish item.
-//!     Edge muting (alpha 0.45) is enough differentiation today.
 //!
 //! State is stored on `AppState::memory_graph` (lazy fetch on first
 //! render via `submit_memory_graph`; manual refresh button re-runs
 //! the same path). Errors land on `AppState::memory_graph_error` and
 //! render inline.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use gpui::{
-    canvas, div, point, prelude::*, px, Bounds, Context, Entity, Hsla, IntoElement, MouseButton,
-    PathBuilder, Pixels, Render, SharedString, Window,
+    canvas, div, point, prelude::*, px, App, Bounds, Context, Entity, Hsla, IntoElement,
+    MouseButton, PathBuilder, Pixels, Render, SharedString, TextRun, Window,
 };
 use gpui_component::{h_flex, v_flex, ActiveTheme};
 
@@ -65,6 +61,32 @@ const CANVAS_HEIGHT: f32 = 380.0;
 /// equivalent — keeps paint cost bounded under deep memory; a
 /// follow-up search/filter input lifts this if needed.
 const SECTION_ROW_LIMIT: usize = 80;
+
+/// Pan / zoom constants — same shape as `routes::graph` so the two
+/// canvases feel identical under the hand. Tweaks here should mirror
+/// there.
+const MIN_ZOOM: f32 = 0.5;
+const MAX_ZOOM: f32 = 4.0;
+/// Sensitivity in `zoom_factor = exp(SCROLL_K * dy_px)`. 0.005 means
+/// a 100-pixel scroll roughly halves or doubles the zoom.
+const SCROLL_K: f32 = 0.005;
+/// Press-vs-drag pixel threshold (Manhattan). Below this, mouse-up
+/// falls through to click-selection; above, the gesture is committed
+/// to a pan and the click is suppressed.
+const DRAG_THRESHOLD_PX: f32 = 4.0;
+
+#[derive(Clone, Copy)]
+struct DragState {
+    /// Window-coord cursor position when the press started.
+    start_win: gpui::Point<Pixels>,
+    /// View pan at the moment the press started — drag updates pan
+    /// relative to this so the drag adds to the pre-drag offset.
+    start_pan: (f32, f32),
+    /// True once movement has crossed `DRAG_THRESHOLD_PX`. Once set
+    /// the press is committed to drag-pan and the mouse-up does not
+    /// trigger click-selection.
+    moved: bool,
+}
 
 pub struct KnowledgeGraphRoute {
     state: Entity<AppState>,
@@ -96,6 +118,17 @@ pub struct KnowledgeGraphRoute {
     /// handler. Both fire on the gpui main thread sequentially — the
     /// mutex is just type-system glue across the two closures.
     last_canvas_bounds: Arc<Mutex<Option<Bounds<Pixels>>>>,
+    /// Linear zoom factor around the canvas centre. 1.0 is the
+    /// identity transform; higher spreads pills out, lower packs
+    /// them in. Pill visual size is fixed in pixels so only positions
+    /// transform — same convention as `routes::graph`.
+    zoom: f32,
+    /// Pan offset in unit (post-zoom) coords. Added to the visible
+    /// position after the zoom transform; (0, 0) is the identity.
+    pan: (f32, f32),
+    /// `Some(_)` while the left button is held inside the canvas;
+    /// `None` otherwise.
+    drag: Option<DragState>,
 }
 
 impl KnowledgeGraphRoute {
@@ -109,6 +142,71 @@ impl KnowledgeGraphRoute {
             layout_fingerprint: 0,
             node_ids: Vec::new(),
             last_canvas_bounds: Arc::new(Mutex::new(None)),
+            zoom: 1.0,
+            pan: (0.0, 0.0),
+            drag: None,
+        }
+    }
+
+    fn adjust_zoom(&mut self, dy_px: f32) {
+        self.zoom = next_zoom(self.zoom, dy_px);
+    }
+
+    fn reset_view(&mut self) {
+        self.zoom = 1.0;
+        self.pan = (0.0, 0.0);
+    }
+
+    fn at_identity(&self) -> bool {
+        is_identity_view(self.zoom, self.pan)
+    }
+
+    fn drag_start(&mut self, win_pos: gpui::Point<Pixels>) {
+        self.drag = Some(DragState {
+            start_win: win_pos,
+            start_pan: self.pan,
+            moved: false,
+        });
+    }
+
+    /// Active drag tick. Returns `true` if pan was updated (the
+    /// caller uses this to decide whether to `cx.notify()`).
+    fn drag_update(&mut self, win_pos: gpui::Point<Pixels>) -> bool {
+        let Some(drag) = self.drag else {
+            return false;
+        };
+        let bounds = match self.last_canvas_bounds.lock().ok().and_then(|g| *g) {
+            Some(b) => b,
+            None => return false,
+        };
+        let w = f32::from(bounds.size.width);
+        let h = f32::from(bounds.size.height);
+        if w <= 0.0 || h <= 0.0 {
+            return false;
+        }
+        let dx_px = f32::from(win_pos.x - drag.start_win.x);
+        let dy_px = f32::from(win_pos.y - drag.start_win.y);
+        if !drag.moved && dx_px.abs() + dy_px.abs() < DRAG_THRESHOLD_PX {
+            return false;
+        }
+        let new_pan = (drag.start_pan.0 + dx_px / w, drag.start_pan.1 + dy_px / h);
+        self.drag = Some(DragState {
+            moved: true,
+            ..drag
+        });
+        self.pan = new_pan;
+        true
+    }
+
+    /// Press release. Returns `Some(win_pos)` if this should be
+    /// treated as a click (drag never crossed the threshold). Returns
+    /// `None` for drags or if no press was tracked.
+    fn drag_end(&mut self, win_pos: gpui::Point<Pixels>) -> Option<gpui::Point<Pixels>> {
+        let drag = self.drag.take()?;
+        if drag.moved {
+            None
+        } else {
+            Some(win_pos)
         }
     }
 
@@ -171,8 +269,9 @@ impl KnowledgeGraphRoute {
     }
 
     /// Convert a window-relative click position into the layout
-    /// index of the nearest pill (within the hit tolerance). `None`
-    /// if the click missed every pill.
+    /// index of the nearest pill (within the hit tolerance), inverting
+    /// the zoom + pan transform along the way. `None` if the click
+    /// missed every pill.
     fn hit_test(&self, win_pos: gpui::Point<Pixels>) -> Option<usize> {
         let bounds = self.last_canvas_bounds.lock().ok()?.as_ref().copied()?;
         let layout = self.layout.as_ref()?;
@@ -183,17 +282,23 @@ impl KnowledgeGraphRoute {
         if w <= 0.0 || h <= 0.0 {
             return None;
         }
-        // Pills are axis-aligned rectangles; a hit is any (x, y)
-        // inside the bounding box plus the tolerance in each axis.
-        let half_w = PILL_WIDTH * 0.5 + HIT_PADDING_PX;
-        let half_h = PILL_HEIGHT * 0.5 + HIT_PADDING_PX;
+        // Invert paint's visible→unit transform:
+        //   visible = 0.5 + (orig - 0.5) * zoom + pan
+        // ⇒ orig = 0.5 + (visible - pan - 0.5) / zoom.
+        let visible_x = local_x / w;
+        let visible_y = local_y / h;
+        let u_x = 0.5 + (visible_x - self.pan.0 - 0.5) / self.zoom;
+        let u_y = 0.5 + (visible_y - self.pan.1 - 0.5) / self.zoom;
+        // Hit half-extents are fixed in pixels (pill visual size doesn't
+        // scale with zoom), so in unit space they shrink by 1/zoom on
+        // each axis — divide by `zoom` along with `w` / `h`.
+        let half_w_u = (PILL_WIDTH * 0.5 + HIT_PADDING_PX) / (w * self.zoom);
+        let half_h_u = (PILL_HEIGHT * 0.5 + HIT_PADDING_PX) / (h * self.zoom);
         let mut best: Option<(usize, f32)> = None;
         for (i, &(ux, uy)) in layout.positions.iter().enumerate() {
-            let cx = ux * w;
-            let cy = uy * h;
-            let dx = (local_x - cx).abs();
-            let dy = (local_y - cy).abs();
-            if dx <= half_w && dy <= half_h {
+            let dx = (ux - u_x).abs();
+            let dy = (uy - u_y).abs();
+            if dx <= half_w_u && dy <= half_h_u {
                 // Tie-break by Manhattan distance — closer click wins.
                 let nd = dx + dy;
                 if best.map(|(_, b)| nd < b).unwrap_or(true) {
@@ -330,12 +435,16 @@ impl Render for KnowledgeGraphRoute {
                     &self.node_ids,
                     &g.nodes,
                     self.selected.as_ref(),
+                    self.zoom,
+                    self.pan,
+                    self.at_identity(),
                     self.last_canvas_bounds.clone(),
                     cx.entity(),
                     foreground,
                     muted,
                     border,
                     secondary,
+                    primary,
                     theme,
                 );
 
@@ -667,12 +776,16 @@ fn render_canvas(
     node_ids: &[SharedString],
     nodes: &[MemoryGraphNode],
     selected: Option<&SharedString>,
+    zoom: f32,
+    pan: (f32, f32),
+    at_identity: bool,
     bounds_share: Arc<Mutex<Option<Bounds<Pixels>>>>,
     view: Entity<KnowledgeGraphRoute>,
     foreground: Hsla,
     muted: Hsla,
     border: Hsla,
     secondary: Hsla,
+    primary: Hsla,
     theme: &gpui_component::Theme,
 ) -> gpui::AnyElement {
     let Some(layout) = layout else {
@@ -693,12 +806,26 @@ fn render_canvas(
     let selected_idx: Option<usize> =
         selected.and_then(|sel| node_ids.iter().position(|id| id == sel));
 
+    // Hub labels: pick the highest-degree drawers and render their
+    // title under the pill. Single-degree drawers vastly outnumber
+    // hubs, so labelling them all turns the canvas into a wall of
+    // text — capping at `MAX_HUB_LABELS` with a `MIN_HUB_DEGREE`
+    // floor keeps the labels useful (shows the dense knots) without
+    // overwhelming the visual at typical density.
+    let hubs = pick_hub_labels(layout, nodes);
+
+    // Neighbour set for the active selection — mirrors the relations
+    // graph's `GraphView::neighbours` pattern. Empty when nothing is
+    // selected, in which case paint takes the unfocused path (every
+    // pill at full intensity).
+    let neighbours = neighbours_of(selected_idx, &layout.edge_indices);
+
     let layout_clone = layout.clone();
     let node_tones_clone = node_tones.clone();
 
     let canvas_el = canvas(
         move |_bounds, _, _| (),
-        move |bounds: Bounds<Pixels>, _, window, _| {
+        move |bounds: Bounds<Pixels>, _, window, cx| {
             if let Ok(mut guard) = bounds_share.lock() {
                 *guard = Some(bounds);
             }
@@ -707,26 +834,129 @@ fn render_canvas(
                 &layout_clone,
                 &node_tones_clone,
                 selected_idx,
+                &neighbours,
+                &hubs,
+                zoom,
+                pan,
                 foreground,
                 muted,
                 window,
+                cx,
             );
         },
     )
     .size_full();
 
-    let entity_for_click = view.clone();
+    // The interactive container owns the press / move / release set
+    // and scroll wheel — same shape as `routes::graph::GraphView`'s
+    // canvas wrapper. Mouse-down records drag origin; on-up either
+    // commits the click (no movement) or drops the gesture.
+    let entity_for_down = view.clone();
+    let entity_for_move = view.clone();
+    let entity_for_up = view.clone();
+    let entity_for_up_out = view.clone();
+    let entity_for_scroll = view.clone();
     let canvas_container = div()
         .id("k-graph-canvas")
         .size_full()
         .child(canvas_el)
         .on_mouse_down(MouseButton::Left, move |event, _, cx| {
             let pos = event.position;
-            entity_for_click.update(cx, |this, cx| {
-                this.handle_canvas_click(pos);
+            entity_for_down.update(cx, |this, cx| {
+                this.drag_start(pos);
                 cx.notify();
             });
+        })
+        .on_mouse_move(move |event, _, cx| {
+            // Hover moves don't matter — only relevant while held.
+            if event.pressed_button != Some(MouseButton::Left) {
+                return;
+            }
+            let pos = event.position;
+            entity_for_move.update(cx, |this, cx| {
+                if this.drag_update(pos) {
+                    cx.notify();
+                }
+            });
+        })
+        .on_mouse_up(MouseButton::Left, move |event, _, cx| {
+            let pos = event.position;
+            entity_for_up.update(cx, |this, cx| {
+                if let Some(click_pos) = this.drag_end(pos) {
+                    this.handle_canvas_click(click_pos);
+                }
+                cx.notify();
+            });
+        })
+        .on_mouse_up_out(MouseButton::Left, move |_, _, cx| {
+            // Mouse released outside the canvas — drop the gesture
+            // without firing a click.
+            entity_for_up_out.update(cx, |this, cx| {
+                this.drag = None;
+                cx.notify();
+            });
+        })
+        .on_scroll_wheel(move |event, _, cx| {
+            // 16px line-height proxy — macOS trackpads ignore it
+            // (already pixel-precise), legacy line-based wheels use it.
+            let dy = f32::from(event.delta.pixel_delta(px(16.0)).y);
+            if dy != 0.0 {
+                entity_for_scroll.update(cx, |this, cx| {
+                    this.adjust_zoom(dy);
+                    cx.notify();
+                });
+            }
         });
+
+    // ── Header row: counts, zoom %, reset-view ──────────────────────
+    let mut header = h_flex()
+        .gap_2()
+        .child(
+            div()
+                .text_color(muted)
+                .text_xs()
+                .child(SharedString::new_static("CANVAS")),
+        )
+        .child(
+            div()
+                .text_color(muted)
+                .text_xs()
+                .child(SharedString::from(format!(
+                    "{} pills · {} cross-refs",
+                    layout.positions.len(),
+                    layout.edge_indices.len()
+                ))),
+        );
+    if (zoom - 1.0).abs() > f32::EPSILON {
+        header = header.child(
+            div()
+                .text_color(muted)
+                .text_xs()
+                .child(SharedString::from(format!("· {:.0}% zoom", zoom * 100.0))),
+        );
+    }
+    if !at_identity {
+        let entity_for_reset = view.clone();
+        header = header.child(
+            div()
+                .id("k-graph-reset-view")
+                .ml_2()
+                .px_2()
+                .py_0p5()
+                .border_1()
+                .border_color(border)
+                .rounded_md()
+                .text_color(primary)
+                .text_xs()
+                .child(SharedString::new_static("Reset view"))
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    entity_for_reset.update(cx, |this, cx| {
+                        this.reset_view();
+                        cx.notify();
+                    });
+                }),
+        );
+    }
 
     v_flex()
         .mx_5()
@@ -738,26 +968,7 @@ fn render_canvas(
         .rounded_md()
         .bg(secondary)
         .gap_2()
-        .child(
-            h_flex()
-                .gap_2()
-                .child(
-                    div()
-                        .text_color(muted)
-                        .text_xs()
-                        .child(SharedString::new_static("CANVAS")),
-                )
-                .child(
-                    div()
-                        .text_color(muted)
-                        .text_xs()
-                        .child(SharedString::from(format!(
-                            "{} pills · {} cross-refs",
-                            layout.positions.len(),
-                            layout.edge_indices.len()
-                        ))),
-                ),
-        )
+        .child(header)
         .child(div().h(px(CANVAS_HEIGHT)).child(canvas_container))
         .into_any_element()
 }
@@ -770,6 +981,122 @@ fn render_canvas(
 /// fragmenting too much on short edges.
 const DASH_ON_PX: f32 = 5.0;
 const DASH_OFF_PX: f32 = 4.0;
+
+/// Maximum number of hub labels painted on the canvas. Beyond this
+/// the labels overlap each other on dense graphs — the wing-grouped
+/// list below already covers full disclosure.
+const MAX_HUB_LABELS: usize = 8;
+/// Minimum degree (incoming + outgoing edges) a node needs before
+/// it earns a label. A drawer with one or two edges isn't really a
+/// hub; labelling it just adds noise. 3+ matches the graph-orphans
+/// CLI heuristic.
+const MIN_HUB_DEGREE: usize = 3;
+/// Title font size used for hub labels. Smaller than the route's body
+/// (text-xs ≈ 11) so labels don't compete with the pill itself —
+/// reads as annotation, not a primary control.
+const HUB_LABEL_FONT_SIZE: f32 = 9.0;
+/// Vertical gap between the bottom of a hub pill and the top of its
+/// label. Kept small (2 px) so the label visually anchors to the
+/// pill instead of looking like an unrelated row underneath.
+const HUB_LABEL_GAP_PX: f32 = 2.0;
+/// Maximum hub-label character count. Drawer titles can run long
+/// (the API caps at 80 chars); on the canvas a long label crowds
+/// neighbouring pills, so we ellipsize at this width.
+const HUB_LABEL_MAX_CHARS: usize = 28;
+
+/// One hub label scheduled for paint — pre-resolved layout index +
+/// truncated title so the paint closure does no allocations beyond
+/// the per-glyph shape pass.
+#[derive(Clone)]
+struct HubLabel {
+    index: usize,
+    title: SharedString,
+}
+
+/// Apply a wheel tick to `current` zoom and clamp into bounds.
+/// Exponential mapping (so a single scroll click multiplies /
+/// divides instead of adding). Pure so the tests can drive it
+/// without standing up an `Entity<AppState>`.
+fn next_zoom(current: f32, dy_px: f32) -> f32 {
+    let factor = (SCROLL_K * dy_px).exp();
+    (current * factor).clamp(MIN_ZOOM, MAX_ZOOM)
+}
+
+/// True iff zoom == 1 and pan == (0, 0) within float tolerance.
+fn is_identity_view(zoom: f32, pan: (f32, f32)) -> bool {
+    (zoom - 1.0).abs() <= f32::EPSILON && pan.0.abs() <= f32::EPSILON && pan.1.abs() <= f32::EPSILON
+}
+
+/// Layout indices adjacent to `selected` in the undirected edge
+/// list. Returns an empty set when nothing is selected so the paint
+/// path treats it as "no halo, no dimming."
+fn neighbours_of(selected: Option<usize>, edges: &[(usize, usize)]) -> HashSet<usize> {
+    let Some(i) = selected else {
+        return HashSet::new();
+    };
+    edges
+        .iter()
+        .filter_map(|&(a, b)| {
+            if a == i {
+                Some(b)
+            } else if b == i {
+                Some(a)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Pick the up-to-`MAX_HUB_LABELS` highest-degree drawers (by edge
+/// count from `layout.edge_indices`) with degree ≥ `MIN_HUB_DEGREE`,
+/// returning their layout index + a shortened title ready for paint.
+fn pick_hub_labels(layout: &Layout, nodes: &[MemoryGraphNode]) -> Vec<HubLabel> {
+    if nodes.is_empty() || layout.positions.is_empty() {
+        return Vec::new();
+    }
+    let mut degrees: Vec<usize> = vec![0; layout.positions.len()];
+    for &(a, b) in &layout.edge_indices {
+        if let Some(d) = degrees.get_mut(a) {
+            *d += 1;
+        }
+        if let Some(d) = degrees.get_mut(b) {
+            *d += 1;
+        }
+    }
+    let mut ranked: Vec<(usize, usize)> = degrees
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &d)| (d >= MIN_HUB_DEGREE).then_some((i, d)))
+        .collect();
+    // Highest degree first; stable ordering by index for ties keeps
+    // the label set deterministic across re-renders.
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    ranked.truncate(MAX_HUB_LABELS);
+    ranked
+        .into_iter()
+        .filter_map(|(i, _)| {
+            let title = nodes.get(i)?.title.as_ref();
+            Some(HubLabel {
+                index: i,
+                title: SharedString::from(truncate_label(title)),
+            })
+        })
+        .collect()
+}
+
+/// Trim `s` to fit within `HUB_LABEL_MAX_CHARS`, appending an
+/// ellipsis when truncated. Operates on chars (not bytes) so
+/// multi-byte glyphs don't get sliced mid-codepoint.
+fn truncate_label(s: &str) -> String {
+    let count = s.chars().count();
+    if count <= HUB_LABEL_MAX_CHARS {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(HUB_LABEL_MAX_CHARS - 1).collect();
+    out.push('…');
+    out
+}
 
 /// Paint pass for the memory canvas. Differentiated from the
 /// relations graph in three ways:
@@ -785,25 +1112,45 @@ const DASH_OFF_PX: f32 = 4.0;
 ///     relations graph's `primary` purple — same idea (highlighted
 ///     pill stands out) but a deliberately different hue so a user
 ///     bouncing between routes never confuses the two graphs.
+#[allow(clippy::too_many_arguments)]
 fn paint_k_graph(
     bounds: Bounds<Pixels>,
     layout: &Layout,
     node_tones: &[Hsla],
     selected: Option<usize>,
+    neighbours: &HashSet<usize>,
+    hubs: &[HubLabel],
+    zoom: f32,
+    pan: (f32, f32),
     foreground: Hsla,
     muted: Hsla,
     window: &mut Window,
+    cx: &mut App,
 ) {
     let ox = f32::from(bounds.origin.x);
     let oy = f32::from(bounds.origin.y);
     let w = f32::from(bounds.size.width);
     let h = f32::from(bounds.size.height);
 
-    let to_px = |(ux, uy): (f32, f32)| point(px(ox + ux * w), px(oy + uy * h));
+    // Zoom + pan transform: visible = 0.5 + (orig - 0.5) * zoom + pan.
+    // Inverse lives in `hit_test`. Out-of-bounds paint calls clip
+    // automatically — gpui doesn't error.
+    let to_px = |(ux, uy): (f32, f32)| {
+        let evx = 0.5 + (ux - 0.5) * zoom + pan.0;
+        let evy = 0.5 + (uy - 0.5) * zoom + pan.1;
+        point(px(ox + evx * w), px(oy + evy * h))
+    };
 
     // Edges first so pills paint on top. Dashed via manual segment
     // walk — see `paint_dashed_edge`.
+    //
+    // When a node is selected, edges incident to it brighten and
+    // non-incident edges dim further — same neighbour-halo idea as
+    // the relations graph (`routes/graph.rs`) but adapted to the
+    // dashed pen.
     let edge_color = with_alpha(muted, 0.45);
+    let edge_color_dim = with_alpha(muted, 0.18);
+    let edge_color_hot = with_alpha(foreground, 0.7);
     for &(a, b) in &layout.edge_indices {
         if let (Some(p1), Some(p2)) = (layout.positions.get(a), layout.positions.get(b)) {
             // Convert unit-coord endpoints to canvas pixels here so
@@ -811,19 +1158,32 @@ fn paint_k_graph(
             // dash period regardless of canvas size).
             let p1_px = to_px(*p1);
             let p2_px = to_px(*p2);
-            paint_dashed_edge(p1_px, p2_px, edge_color, window);
+            let color = match selected {
+                Some(s) if a == s || b == s => edge_color_hot,
+                Some(_) => edge_color_dim,
+                None => edge_color,
+            };
+            paint_dashed_edge(p1_px, p2_px, color, window);
         }
     }
 
     // Pills. Each gets its wing colour at base alpha; the selected
     // pill paints again with a 2-px foreground ring (drawn as a
-    // slightly larger filled quad below the inner fill).
+    // slightly larger filled quad below the inner fill). Non-neighbour
+    // pills dim when a selection is active so the eye traces the
+    // selected node's connection ring without the rest of the
+    // canvas competing.
     let half_w = PILL_WIDTH * 0.5;
     let half_h = PILL_HEIGHT * 0.5;
     for (i, &(ux, uy)) in layout.positions.iter().enumerate() {
-        let centre = point(px(ox + ux * w), px(oy + uy * h));
-        let tone = node_tones.get(i).copied().unwrap_or(muted);
-        if Some(i) == selected {
+        let centre = to_px((ux, uy));
+        let mut tone = node_tones.get(i).copied().unwrap_or(muted);
+        let is_selected = Some(i) == selected;
+        let is_neighbour = neighbours.contains(&i);
+        if selected.is_some() && !is_selected && !is_neighbour {
+            tone = with_alpha(tone, 0.25);
+        }
+        if is_selected {
             // Foreground ring: a slightly larger quad in foreground
             // colour painted first, then the wing-coloured pill on
             // top — cheap "ring around pill" without a stroked path.
@@ -844,6 +1204,57 @@ fn paint_k_graph(
         };
         window
             .paint_quad(gpui::fill(pill_bounds, tone).corner_radii(gpui::Corners::all(px(half_h))));
+    }
+
+    // Hub labels last so they paint over the pills (the title sits
+    // just below each hub pill, centred horizontally on the pill).
+    // Foreground at 75% alpha — readable but doesn't compete with
+    // selection-ring brightness. Non-neighbour hubs dim alongside
+    // their pills when something else is selected.
+    let label_color = with_alpha(foreground, 0.75);
+    let label_color_dim = with_alpha(foreground, 0.25);
+    let font = window.text_style().font();
+    for hub in hubs {
+        let Some((ux, uy)) = layout.positions.get(hub.index).copied() else {
+            continue;
+        };
+        let centre = to_px((ux, uy));
+        let centre_x = f32::from(centre.x);
+        let centre_y = f32::from(centre.y);
+        let is_selected = Some(hub.index) == selected;
+        let is_neighbour = neighbours.contains(&hub.index);
+        let color = if selected.is_some() && !is_selected && !is_neighbour {
+            label_color_dim
+        } else {
+            label_color
+        };
+        let run = TextRun {
+            len: hub.title.len(),
+            font: font.clone(),
+            color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let line = window.text_system().shape_line(
+            hub.title.clone(),
+            px(HUB_LABEL_FONT_SIZE),
+            &[run],
+            None,
+        );
+        let label_w = f32::from(line.width());
+        let origin = point(
+            px(centre_x - label_w * 0.5),
+            px(centre_y + half_h + HUB_LABEL_GAP_PX),
+        );
+        let _ = line.paint(
+            origin,
+            px(HUB_LABEL_FONT_SIZE),
+            gpui::TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
     }
 }
 
@@ -902,5 +1313,150 @@ fn paint_dashed_edge(
             window.paint_path(path, color);
         }
         t += period;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph_layout::Layout;
+
+    fn mk_node(id: &str, title: &str) -> MemoryGraphNode {
+        MemoryGraphNode {
+            id: SharedString::from(id.to_string()),
+            title: SharedString::from(title.to_string()),
+            kind: SharedString::from("project".to_string()),
+            ts: 0,
+            len: 0,
+        }
+    }
+
+    #[test]
+    fn pick_hub_labels_filters_by_min_degree() {
+        // 4 nodes: 0 connected to 1,2,3 (degree 3) and 1↔2 (each
+        // earns one more, ending at 2). Only node 0 should label.
+        let nodes = vec![
+            mk_node("a", "Alpha"),
+            mk_node("b", "Bravo"),
+            mk_node("c", "Charlie"),
+            mk_node("d", "Delta"),
+        ];
+        let layout = Layout {
+            positions: vec![(0.5, 0.5), (0.1, 0.1), (0.9, 0.1), (0.5, 0.9)],
+            edge_indices: vec![(0, 1), (0, 2), (0, 3), (1, 2)],
+        };
+        let hubs = pick_hub_labels(&layout, &nodes);
+        assert_eq!(hubs.len(), 1);
+        assert_eq!(hubs[0].index, 0);
+        assert_eq!(hubs[0].title.as_ref(), "Alpha");
+    }
+
+    #[test]
+    fn pick_hub_labels_caps_at_max() {
+        // Build a star with 12 leaves (degree-1) around 1 hub
+        // (degree 12) — only the hub qualifies, but also build 9
+        // mutually-connected nodes so we exceed `MAX_HUB_LABELS`.
+        let mut nodes: Vec<MemoryGraphNode> = (0..12)
+            .map(|i| mk_node(&format!("n{i}"), &format!("Node {i}")))
+            .collect();
+        // Push 9 hub nodes, each connected to 3 distinct leaves.
+        nodes.extend((12..21).map(|i| mk_node(&format!("h{i}"), &format!("Hub {i}"))));
+        let positions = (0..nodes.len())
+            .map(|i| (i as f32 / nodes.len() as f32, 0.5))
+            .collect();
+        let mut edge_indices: Vec<(usize, usize)> = Vec::new();
+        for hub in 12..21 {
+            for leaf in 0..3 {
+                edge_indices.push((hub, leaf));
+            }
+        }
+        let layout = Layout {
+            positions,
+            edge_indices,
+        };
+        let hubs = pick_hub_labels(&layout, &nodes);
+        assert_eq!(hubs.len(), MAX_HUB_LABELS);
+    }
+
+    #[test]
+    fn truncate_label_passes_short_strings_through() {
+        assert_eq!(truncate_label("Short title"), "Short title");
+    }
+
+    #[test]
+    fn truncate_label_ellipsizes_long_strings() {
+        let long = "a".repeat(60);
+        let trimmed = truncate_label(&long);
+        let expected_chars = HUB_LABEL_MAX_CHARS;
+        assert_eq!(trimmed.chars().count(), expected_chars);
+        assert!(trimmed.ends_with('…'));
+    }
+
+    #[test]
+    fn is_identity_view_passes_at_origin() {
+        assert!(is_identity_view(1.0, (0.0, 0.0)));
+    }
+
+    #[test]
+    fn is_identity_view_fails_for_non_identity() {
+        assert!(!is_identity_view(2.0, (0.0, 0.0)));
+        assert!(!is_identity_view(1.0, (0.1, 0.0)));
+        assert!(!is_identity_view(1.0, (0.0, -0.1)));
+    }
+
+    #[test]
+    fn next_zoom_clamps_to_max() {
+        // A massive positive dy must not exceed MAX_ZOOM.
+        let z = next_zoom(1.0, 100_000.0);
+        assert!((z - MAX_ZOOM).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn next_zoom_clamps_to_min() {
+        let z = next_zoom(1.0, -100_000.0);
+        assert!((z - MIN_ZOOM).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn next_zoom_zero_dy_is_noop() {
+        let z = next_zoom(1.7, 0.0);
+        assert!((z - 1.7).abs() < 1e-6);
+    }
+
+    #[test]
+    fn neighbours_of_returns_empty_when_no_selection() {
+        let edges = vec![(0, 1), (1, 2)];
+        assert!(neighbours_of(None, &edges).is_empty());
+    }
+
+    #[test]
+    fn neighbours_of_finds_both_endpoints() {
+        // Star: 0 connected to 1, 2, 3. Self-loops and reverse
+        // direction both count.
+        let edges = vec![(0, 1), (2, 0), (3, 0), (1, 2)];
+        let n = neighbours_of(Some(0), &edges);
+        assert_eq!(n.len(), 3);
+        assert!(n.contains(&1));
+        assert!(n.contains(&2));
+        assert!(n.contains(&3));
+    }
+
+    #[test]
+    fn neighbours_of_excludes_disconnected_nodes() {
+        let edges = vec![(0, 1), (2, 3)];
+        let n = neighbours_of(Some(0), &edges);
+        assert_eq!(n.len(), 1);
+        assert!(n.contains(&1));
+        assert!(!n.contains(&2));
+        assert!(!n.contains(&3));
+    }
+
+    #[test]
+    fn truncate_label_respects_codepoints() {
+        // Multibyte characters — must not slice mid-codepoint.
+        let s = "α".repeat(60);
+        let trimmed = truncate_label(&s);
+        assert_eq!(trimmed.chars().count(), HUB_LABEL_MAX_CHARS);
+        assert!(trimmed.ends_with('…'));
     }
 }

@@ -37,6 +37,12 @@ pub struct DashboardHome {
     /// before grouping. UI affordance per route, not on AppState
     /// (same call as the substring filters).
     activity_op_pin: Option<SharedString>,
+    /// Active agent-pin on the Activity tile — set by clicking an
+    /// `agt` badge, cleared by clicking the active badge again or
+    /// the header pin pill's `×`. ANDed with `activity_op_pin` when
+    /// both are set, so the user can narrow to "this op AND this
+    /// agent" — common during a multi-step debug.
+    activity_agent_pin: Option<SharedString>,
     /// Reusable scratch buffer for `group_activity`. Cleared and
     /// refilled on every render — keeps the spine allocation across
     /// SSE-driven `notify()`s instead of allocating fresh each frame.
@@ -57,7 +63,18 @@ impl DashboardHome {
             graph_view,
             spawn_sheet,
             activity_op_pin: None,
+            activity_agent_pin: None,
             activity_buffer: Vec::with_capacity(8),
+        }
+    }
+
+    /// Toggle activity agent-pin. Same shape as `pin_activity_op` —
+    /// click the active id again to clear.
+    fn pin_activity_agent(&mut self, id: SharedString) {
+        if self.activity_agent_pin.as_deref() == Some(id.as_ref()) {
+            self.activity_agent_pin = None;
+        } else {
+            self.activity_agent_pin = Some(id);
         }
     }
 
@@ -134,13 +151,18 @@ impl Render for DashboardHome {
         let theme = cx.theme();
         let primary = theme.primary;
         let active_pin = self.activity_op_pin.clone();
-        let activity_iter = state
-            .recent_activity
-            .iter()
-            .filter(|e| match active_pin.as_deref() {
+        let active_agent_pin = self.activity_agent_pin.clone();
+        let activity_iter = state.recent_activity.iter().filter(|e| {
+            let op_match = match active_pin.as_deref() {
                 None => true,
                 Some(pinned) => e.op == pinned,
-            });
+            };
+            let agent_match = match active_agent_pin.as_deref() {
+                None => true,
+                Some(pinned) => e.agent_id.as_deref() == Some(pinned),
+            };
+            op_match && agent_match
+        });
         group_activity(activity_iter, 8, &mut self.activity_buffer);
         let groups_empty = self.activity_buffer.is_empty();
         // Use `last_event_ts` as a wall-clock proxy. Same trick as the
@@ -148,51 +170,100 @@ impl Render for DashboardHome {
         // the dep tree for a tiny display tweak.
         let now_ts = state.last_event_ts.unwrap_or(0);
         let entity_for_op = cx.entity();
-        let activity_body: gpui::AnyElement = if groups_empty && active_pin.is_some() {
-            div()
-                .text_color(muted)
-                .child(SharedString::from(format!(
-                    "no \u{201C}{}\u{201D} activity in buffer",
-                    active_pin.as_deref().unwrap_or("")
-                )))
-                .into_any_element()
-        } else {
-            v_flex()
-                .gap_1()
-                .children(self.activity_buffer.drain(..).enumerate().map(|(idx, g)| {
-                    let op_color = op_color(&g.op, theme);
-                    // Recency fade — newer rows render full alpha,
-                    // older rows fade toward the floor. Applied to
-                    // both the op-badge and the query text so the
-                    // whole row dims as one unit. Muted-side meta
-                    // already lives at low contrast, so leave it.
-                    let age = (now_ts - g.latest_ts).max(0);
-                    let alpha = fade_alpha_for_age(age);
-                    let faded_op = with_alpha(op_color, alpha);
-                    let faded_fg = with_alpha(theme.foreground, alpha);
-                    // Click-to-pin on the op badge. Active op
-                    // renders with a primary-colour border so
-                    // it's recognisable even when the badge
-                    // colour itself is muted (e.g. `outline`).
-                    // gpui requires stateful elements to declare
-                    // an id; suffixing with the row index keeps
-                    // it unique per render pass without an
-                    // extra alloc per group. `NamedInteger` pairs
-                    // the static-backed name with the index
-                    // directly — zero alloc per row per render.
-                    let badge_id = gpui::ElementId::NamedInteger(
-                        SharedString::new_static("activity-op"),
-                        idx as u64,
-                    );
-                    let badge_pinned = active_pin.as_deref() == Some(g.op.as_str());
-                    let badge_border = if badge_pinned {
-                        primary
-                    } else {
-                        gpui::transparent_black()
-                    };
-                    let entity = entity_for_op.clone();
-                    let click_op = g.op.clone();
-                    h_flex()
+        let activity_body: gpui::AnyElement =
+            if groups_empty && (active_pin.is_some() || active_agent_pin.is_some()) {
+                // Empty under an active pin — explain which one(s) so the
+                // user doesn't think the buffer drained.
+                let mut parts: Vec<String> = Vec::new();
+                if let Some(op) = active_pin.as_deref() {
+                    parts.push(format!("op={op}"));
+                }
+                if let Some(id) = active_agent_pin.as_deref() {
+                    let trimmed: String = id.chars().take(8).collect();
+                    parts.push(format!("agt={trimmed}"));
+                }
+                div()
+                    .text_color(muted)
+                    .child(SharedString::from(format!(
+                        "no activity matches {}",
+                        parts.join(" + ")
+                    )))
+                    .into_any_element()
+            } else {
+                v_flex()
+                    .gap_1()
+                    .children(self.activity_buffer.drain(..).enumerate().map(|(idx, g)| {
+                        let op_color = op_color(&g.op, theme);
+                        // Recency fade — newer rows render full alpha,
+                        // older rows fade toward the floor. Applied to
+                        // both the op-badge and the query text so the
+                        // whole row dims as one unit. Muted-side meta
+                        // already lives at low contrast, so leave it.
+                        let age = (now_ts - g.latest_ts).max(0);
+                        let alpha = fade_alpha_for_age(age);
+                        let faded_op = with_alpha(op_color, alpha);
+                        let faded_fg = with_alpha(theme.foreground, alpha);
+                        // Click-to-pin on the op badge. Active op
+                        // renders with a primary-colour border so
+                        // it's recognisable even when the badge
+                        // colour itself is muted (e.g. `outline`).
+                        // gpui requires stateful elements to declare
+                        // an id; suffixing with the row index keeps
+                        // it unique per render pass without an
+                        // extra alloc per group. `NamedInteger` pairs
+                        // the static-backed name with the index
+                        // directly — zero alloc per row per render.
+                        let badge_id = gpui::ElementId::NamedInteger(
+                            SharedString::new_static("activity-op"),
+                            idx as u64,
+                        );
+                        let badge_pinned = active_pin.as_deref() == Some(g.op.as_str());
+                        let badge_border = if badge_pinned {
+                            primary
+                        } else {
+                            gpui::transparent_black()
+                        };
+                        let entity = entity_for_op.clone();
+                        let click_op = g.op.clone();
+                        // Agent badge — only renders when the activity buffer
+                        // tagged this run with an agent_id (#311). Truncated
+                        // to 8 chars to keep row width predictable; the full
+                        // id is one route-switch away on Timeline. Click to
+                        // pin / unpin filtering to this agent (parallel to
+                        // op-pin on the op badge).
+                        let active_agent_pin_for_badge = active_agent_pin.clone();
+                        let agent_badge: gpui::AnyElement = match g.agent_id.as_ref() {
+                            Some(id) => {
+                                let trimmed: String = id.chars().take(8).collect();
+                                let agent_pinned =
+                                    active_agent_pin_for_badge.as_deref() == Some(id.as_ref());
+                                let badge_color = if agent_pinned { primary } else { muted };
+                                let click_id = id.clone();
+                                let entity_for_agent = entity_for_op.clone();
+                                let badge_id = gpui::ElementId::NamedInteger(
+                                    SharedString::new_static("activity-agent"),
+                                    idx as u64,
+                                );
+                                div()
+                                    .id(badge_id)
+                                    .px_1()
+                                    .border_1()
+                                    .border_color(badge_color)
+                                    .rounded_md()
+                                    .text_color(badge_color)
+                                    .child(SharedString::from(format!("agt {trimmed}")))
+                                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                        let id = click_id.clone();
+                                        entity_for_agent.update(cx, |this, cx| {
+                                            this.pin_activity_agent(id);
+                                            cx.notify();
+                                        });
+                                    })
+                                    .into_any_element()
+                            }
+                            None => div().into_any_element(),
+                        };
+                        h_flex()
                                 .gap_2()
                                 // Op badge — fixed-width column so the
                                 // query text aligns across rows.
@@ -216,9 +287,11 @@ impl Render for DashboardHome {
                                 )
                                 .child(
                                     div()
+                                        .flex_1()
                                         .text_color(faded_fg)
                                         .child(SharedString::from(truncate(&g.latest_query, 60))),
                                 )
+                                .child(agent_badge)
                                 .child(
                                     div()
                                         .text_color(muted)
@@ -229,38 +302,88 @@ impl Render for DashboardHome {
                                         })),
                                 )
                                 .into_any_element()
-                }))
-                .into_any_element()
-        };
-        // Header pin-pill — only renders when an op is pinned. Acts as
-        // the canonical clear-affordance (clicking the pinned badge
-        // also toggles, but the pill is the place a user looks when
-        // narrowing feels stuck).
-        let pin_pill: gpui::AnyElement = match active_pin.as_ref() {
-            None => div().into_any_element(),
-            Some(op) => {
-                let entity_for_clear = cx.entity();
-                h_flex()
-                    .gap_2()
-                    .child(
-                        div()
-                            .id("activity-op-pin-clear")
-                            .px_2()
-                            .py_0p5()
-                            .border_1()
-                            .border_color(primary)
-                            .rounded_md()
-                            .text_color(primary)
-                            .child(SharedString::from(format!("{op} \u{00D7}")))
-                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                entity_for_clear.update(cx, |this, cx| {
-                                    this.activity_op_pin = None;
-                                    cx.notify();
-                                });
-                            }),
-                    )
+                    }))
                     .into_any_element()
-            }
+            };
+        // Header pin-pills — render whenever an op or agent is pinned.
+        // Each pill is the canonical clear-affordance (clicking the
+        // pinned badge in a row also toggles, but a row may scroll
+        // away — the pill is the stable home for "I'm filtered, get
+        // me out").
+        let mut pin_row = h_flex().gap_2();
+        let mut have_pill = false;
+        if let Some(op) = active_pin.as_ref() {
+            let entity_for_clear = cx.entity();
+            pin_row = pin_row.child(
+                div()
+                    .id("activity-op-pin-clear")
+                    .px_2()
+                    .py_0p5()
+                    .border_1()
+                    .border_color(primary)
+                    .rounded_md()
+                    .text_color(primary)
+                    .child(SharedString::from(format!("{op} \u{00D7}")))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        entity_for_clear.update(cx, |this, cx| {
+                            this.activity_op_pin = None;
+                            cx.notify();
+                        });
+                    }),
+            );
+            have_pill = true;
+        }
+        if let Some(id) = active_agent_pin.as_ref() {
+            let entity_for_clear = cx.entity();
+            let trimmed: String = id.chars().take(8).collect();
+            pin_row = pin_row.child(
+                div()
+                    .id("activity-agent-pin-clear")
+                    .px_2()
+                    .py_0p5()
+                    .border_1()
+                    .border_color(primary)
+                    .rounded_md()
+                    .text_color(primary)
+                    .child(SharedString::from(format!("agt {trimmed} \u{00D7}")))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        entity_for_clear.update(cx, |this, cx| {
+                            this.activity_agent_pin = None;
+                            cx.notify();
+                        });
+                    }),
+            );
+            // Cross-route dive — pre-applies the same agent_pin on
+            // the Timeline route via the AppState handoff slot, so
+            // the user lands on Timeline already filtered to this
+            // agent. The dashboard tile shows 8 grouped rows; the
+            // Timeline shows the per-call detail.
+            let id_for_nav = id.clone();
+            let state_for_nav = self.state.clone();
+            pin_row = pin_row.child(
+                div()
+                    .id("activity-agent-pin-to-timeline")
+                    .px_2()
+                    .py_0p5()
+                    .border_1()
+                    .border_color(border)
+                    .rounded_md()
+                    .text_color(muted)
+                    .child(SharedString::new_static("\u{2192} Timeline"))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        let id = id_for_nav.clone();
+                        state_for_nav.update(cx, |s, cx| {
+                            s.navigate_to_timeline_with_agent_pin(id);
+                            cx.notify();
+                        });
+                    }),
+            );
+            have_pill = true;
+        }
+        let pin_pill: gpui::AnyElement = if have_pill {
+            pin_row.into_any_element()
+        } else {
+            div().into_any_element()
         };
         let activity_tile = tile(
             "Recent activity",
@@ -596,6 +719,13 @@ fn fmt_age_short(secs: i64) -> String {
 /// same-op events have been collapsed.
 struct ActivityGroup {
     op: SharedString,
+    /// `agent_id` of the run this group represents (`Some(_)` once
+    /// #311 lands an agent-tagged event into the buffer). Two
+    /// consecutive same-`op` events with different `agent_id` values
+    /// must NOT fold together — otherwise the row's count + latest_*
+    /// would silently mix cross-agent activity. `None` matches `None`
+    /// (CLI / MCP rows without an agent owner).
+    agent_id: Option<SharedString>,
     latest_query: SharedString,
     latest_results: u64,
     /// Timestamp of the freshest event in the run. Drives the
@@ -605,10 +735,14 @@ struct ActivityGroup {
     count: usize,
 }
 
-/// Walk the buffer newest-first, collapsing runs of the same `op`
-/// into a single group whose `count` carries the run length and
-/// whose `latest_*` fields show the most-recent event in the run.
-/// Fills `out` with up to `cap` groups.
+/// Walk the buffer newest-first, collapsing runs of the same `(op,
+/// agent_id)` pair into a single group whose `count` carries the run
+/// length and whose `latest_*` fields show the most-recent event in
+/// the run. Fills `out` with up to `cap` groups.
+///
+/// Splitting on `agent_id` matters once #311 tags events: without it,
+/// two agents both running `sym Store` in succession fold into one
+/// row, hiding which one did what.
 ///
 /// Caller-owned `out` so the spine `Vec<ActivityGroup>` survives
 /// across renders. Cleared on entry; re-filled in place. The inner
@@ -622,10 +756,18 @@ where
     out.clear();
     for evt in events.into_iter().rev() {
         if let Some(last) = out.last_mut() {
-            if last.op == evt.op {
-                // Same op as the previous-newest group — extend it.
-                // We already stored the *latest* (newest) event of the
-                // run in `latest_*` since that came first in our walk.
+            // Compare by ref text so `Some("a") == Some("a")` even
+            // across SharedString clones; None matches None.
+            let same_agent = match (last.agent_id.as_deref(), evt.agent_id.as_deref()) {
+                (Some(a), Some(b)) => a == b,
+                (None, None) => true,
+                _ => false,
+            };
+            if last.op == evt.op && same_agent {
+                // Same op + agent as the previous-newest group — extend
+                // it. We already stored the *latest* (newest) event of
+                // the run in `latest_*` since that came first in our
+                // walk.
                 last.count += 1;
                 continue;
             }
@@ -635,6 +777,7 @@ where
         }
         out.push(ActivityGroup {
             op: evt.op.clone(),
+            agent_id: evt.agent_id.clone(),
             latest_query: evt.query.clone(),
             latest_results: evt.results,
             latest_ts: evt.ts,
@@ -735,6 +878,73 @@ mod tests {
         let mut groups: Vec<ActivityGroup> = Vec::new();
         group_activity(&[] as &[SseActivityEvent], 8, &mut groups);
         assert!(groups.is_empty());
+    }
+
+    fn evt_a(op: &str, q: &str, results: u64, agent: Option<&str>) -> SseActivityEvent {
+        SseActivityEvent {
+            ts: 0,
+            op: op.into(),
+            query: q.into(),
+            results,
+            agent_id: agent.map(|s| s.into()),
+        }
+    }
+
+    #[test]
+    fn grouping_breaks_on_agent_change_even_with_same_op() {
+        // Agent A and Agent B both run sym Store consecutively.
+        // Without agent-aware grouping these would fold into one row,
+        // hiding which agent did what. Buffer is oldest → newest.
+        let events = vec![
+            evt_a("sym", "Store", 1, Some("agent-a")),
+            evt_a("sym", "Store", 2, Some("agent-b")),
+        ];
+        let mut groups = Vec::new();
+        group_activity(&events, 8, &mut groups);
+        // Newest-first: agent-b row, then agent-a row. Two distinct
+        // groups even though `op` matches.
+        assert_eq!(groups.len(), 2);
+        assert_eq!(
+            groups[0].agent_id.as_deref().map(|s| s.to_string()),
+            Some("agent-b".into())
+        );
+        assert_eq!(
+            groups[1].agent_id.as_deref().map(|s| s.to_string()),
+            Some("agent-a".into())
+        );
+        assert_eq!(groups[0].count, 1);
+        assert_eq!(groups[1].count, 1);
+    }
+
+    #[test]
+    fn grouping_folds_same_op_within_one_agent() {
+        // Same op + same agent over 3 events should fold to one
+        // group of count 3.
+        let events = vec![
+            evt_a("sym", "a", 1, Some("agent-a")),
+            evt_a("sym", "b", 2, Some("agent-a")),
+            evt_a("sym", "c", 3, Some("agent-a")),
+        ];
+        let mut groups = Vec::new();
+        group_activity(&events, 8, &mut groups);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].count, 3);
+        assert_eq!(groups[0].latest_query, "c");
+    }
+
+    #[test]
+    fn grouping_breaks_when_only_one_side_has_agent_id() {
+        // Some(_) and None must not fold even when op matches —
+        // mixing CLI invocations into an agent's run obscures both.
+        let events = vec![
+            evt_a("sym", "x", 1, None),
+            evt_a("sym", "y", 2, Some("agent-a")),
+        ];
+        let mut groups = Vec::new();
+        group_activity(&events, 8, &mut groups);
+        assert_eq!(groups.len(), 2);
+        assert!(groups[0].agent_id.is_some());
+        assert!(groups[1].agent_id.is_none());
     }
 
     #[test]

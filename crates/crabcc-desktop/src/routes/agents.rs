@@ -164,6 +164,23 @@ impl AgentsRoute {
 
 impl Render for AgentsRoute {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Cross-route nav handoff: a previous render of another route
+        // (e.g. Timeline → Agents via the agent-pin pill's link) may
+        // have staged an id to pre-select. Consume up-front so the
+        // log-tail fetch fires from the same render path as a manual
+        // click. One-shot — subsequent renders don't fight a manual
+        // deselect.
+        let pending_select = self
+            .state
+            .update(cx, |s, _| s.take_pending_agents_selected_id());
+        if let Some(id) = pending_select {
+            // Skip the "click again to toggle off" branch in
+            // `select_agent` by ensuring we're not already on this id.
+            if self.selected_id.as_deref() != Some(id.as_ref()) {
+                self.select_agent(id, cx);
+            }
+        }
+
         let muted = cx.theme().muted_foreground;
         let foreground = cx.theme().foreground;
         let border = cx.theme().border;
@@ -346,15 +363,43 @@ impl Render for AgentsRoute {
                         div().into_any_element()
                     };
 
-                    // First row: status dot, id, runtime [· model], kill.
-                    // `model` is omitted when None — rendering "· —"
-                    // for an unknown model is just noise. Same for the
-                    // separator between runtime and model: only present
-                    // when there's a model to separate from.
+                    // First row: status dot, id, runtime [· model],
+                    // → Timeline, kill. `model` is omitted when None —
+                    // rendering "· —" for an unknown model is just noise.
                     let head_meta = match &model {
                         Some(m) => format!("· {runtime} · {m}"),
                         None => format!("· {runtime}"),
                     };
+
+                    // "→ Timeline" cross-link — navigates to Timeline
+                    // pre-pinned to this agent. Same handoff slot the
+                    // dashboard's agent-pin uses, so the user lands on
+                    // Timeline already filtered to this agent. Renders
+                    // for both running AND exited agents — the Timeline
+                    // buffer covers historical events, so a recently-
+                    // exited agent's calls are still useful to inspect.
+                    let id_for_nav = a.id.clone();
+                    let state_for_nav = agents_state.clone();
+                    let timeline_link_id: gpui::ElementId =
+                        a.derived.timeline_link_id.clone().into();
+                    let timeline_btn = div()
+                        .id(timeline_link_id)
+                        .px_2()
+                        .py_0p5()
+                        .border_1()
+                        .border_color(border)
+                        .rounded_md()
+                        .text_color(muted)
+                        .child(SharedString::new_static("\u{2192} Timeline"))
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            cx.stop_propagation();
+                            let id = id_for_nav.clone();
+                            state_for_nav.update(cx, |s, cx| {
+                                s.navigate_to_timeline_with_agent_pin(id);
+                                cx.notify();
+                            });
+                        });
+
                     let head_row = h_flex()
                         .gap_2()
                         .child(
@@ -368,6 +413,7 @@ impl Render for AgentsRoute {
                                 // bump, no alloc per render.
                                 .child(a.id.clone()))
                         .child(div().text_color(muted).child(SharedString::from(head_meta)))
+                        .child(timeline_btn)
                         .child(kill_btn);
 
                     // Second row: only chips that have real data.
