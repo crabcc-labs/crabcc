@@ -6,6 +6,35 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+## [3.0.0-rc.2] — 2026-05-04
+
+Follow-on RC. Pulls in the Track B (web `/live` dashboard shadcn
+refresh) groundwork that landed after rc.1, plus a small test-
+infra fix. No desktop / CLI / MCP code changes — the desktop
+crate binary is identical to rc.1.
+
+### Added — Track B (web dashboard shadcn refresh)
+- **Tailwind v4 foundation** wired into `crates/crabcc-viz/web`
+  with the `d3-force` dep regression fixed (#344).
+- `cn()` className-merge helper landed; the `Header.tsx`
+  component is the first visible surface ported to Tailwind
+  utility classes (#345).
+- shadcn-style **`Button` drop-in component** + Header icon-row
+  using it (#346). First reusable shadcn primitive in the
+  `crabcc-viz/web` tree; future component ports (Card, Dialog,
+  Input) build on the same registry.
+
+### Fixed
+- `crabcc-viz/web` test suite was failing on `document` not
+  defined; registered `@happy-dom/global-registrator` so vitest
+  has a DOM under each test (#352).
+
+### Notes
+4 commits ahead of rc.1, all on the web side. The desktop crate
+is unchanged — anyone building from this tag gets the same
+binary as rc.1 but with the React `/live` dashboard partially on
+the new shadcn / Tailwind stack.
+
 ## [3.0.0-rc.1] — 2026-05-04
 
 The native-desktop release candidate. `crabcc-desktop` ships with
