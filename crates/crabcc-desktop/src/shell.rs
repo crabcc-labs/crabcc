@@ -94,11 +94,11 @@ impl Shell {
         // it needs window. Same construction shape as the other
         // input-bearing routes.
         let timeline = cx.new(|cx| TimelineRoute::new(state.clone(), window, cx));
-        // KnowledgeGraphRoute is a stub today — no focusable widgets
-        // because the canvas isn't rendered yet (server-side
-        // `/api/memory/graph` blocks #297). Owns no TextInput, so
-        // `window` is not threaded in.
-        let k_graph = cx.new(|cx| KnowledgeGraphRoute::new(state.clone(), cx));
+        // KnowledgeGraphRoute now owns a filter TextInput (post-#341
+        // canvas + filter strip), so it needs `window` to register
+        // the focus handle — same construction as the other
+        // input-bearing routes.
+        let k_graph = cx.new(|cx| KnowledgeGraphRoute::new(state.clone(), window, cx));
         // No `window` argument — the strip has no focusable widgets
         // (yet). When the "Settings" entrypoint lands in slice 2+
         // it'll need `window` for that widget.
