@@ -279,6 +279,7 @@ impl Render for Shell {
                     } else {
                         gpui::transparent_black()
                     })
+                    .cursor_pointer()
                     .hover(move |s| s.bg(hover_bg))
                     .child(tab_inner)
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
@@ -313,6 +314,7 @@ impl Render for Shell {
             .py_1()
             .rounded_md()
             .text_color(alerts_color)
+            .cursor_pointer()
             .hover(move |s| s.bg(hover_bg))
             .child(alerts_label)
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
@@ -339,6 +341,7 @@ impl Render for Shell {
             .py_1()
             .rounded_md()
             .text_color(echo_color)
+            .cursor_pointer()
             .hover(move |s| s.bg(hover_bg))
             .child(SharedString::new_static("\u{2197} system"))
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
@@ -363,6 +366,7 @@ impl Render for Shell {
             .py_1()
             .rounded_md()
             .text_color(muted)
+            .cursor_pointer()
             .hover(move |s| s.bg(hover_bg))
             .child(palette_label)
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
@@ -399,6 +403,7 @@ impl Render for Shell {
             .py_1()
             .rounded_md()
             .text_color(settings_color)
+            .cursor_pointer()
             .hover(move |s| s.bg(hover_bg))
             .child(SharedString::new_static("\u{2699}"))
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
