@@ -366,6 +366,11 @@ impl AgentSpawnSheet {
                         .border_color(if is_selected { primary } else { border })
                         .rounded_md()
                         .text_color(if is_selected { foreground } else { muted })
+                        .cursor_pointer()
+                        .hover(move |s| s.border_color(primary).text_color(foreground))
+                        .tooltip(|window, cx| {
+                            Tooltip::new("Click to select / unselect profile").build(window, cx)
+                        })
                         .child(
                             div()
                                 .text_color(if is_selected { foreground } else { muted })
