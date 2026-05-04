@@ -1,94 +1,246 @@
 //! Theme palette mirroring the `crabcc-viz/web` dashboard.
 //!
-//! The desktop crate uses gpui-component's default theme out of the
-//! box. The web dashboard at `/live` ships a custom light/dark
-//! palette pinned at the top of `crates/crabcc-viz/web/src/styles.css`
-//! plus a cyberpunk-skin overlay on a few routes. To make the two
-//! surfaces visually consistent, this module overrides the relevant
-//! `ThemeColor` fields after `gpui_component::init` has run.
-//!
 //! Strategy:
 //!
-//! - Match the web's dark-mode core palette token-for-token. The web
-//!   ships both light and dark; the desktop binary follows the OS
-//!   appearance (gpui-component's `Theme::sync_system_appearance`),
-//!   so we override BOTH branches and let the runtime pick.
-//! - Only touch the tokens that diverge from gpui-component's
-//!   defaults — leave `info`, `warning`, `accent`, `secondary`-fg
-//!   etc. alone unless the web specifies them.
-//! - The cyberpunk-panel accents (cyan #6df0ff, hot-pink #ff2a6d,
-//!   amber #ff8c2a, agent-text #c8d4ff) are panel-specific in the
-//!   web; they're surfaced here as `pub const`s so per-route widgets
-//!   can opt into them without leaking them into the global theme.
+//! - Every palette ships as a single `Palette` const. No
+//!   `if dark { ... } else { ... }` branching inside `install` —
+//!   the runtime picks one of two presets based on OS appearance,
+//!   or honours an explicit `CRABCC_DESKTOP_PALETTE` env override.
+//! - Adding a new palette = one `pub const NAME: Palette = Self {
+//!   ... };`. The render path doesn't change.
+//! - The cyberpunk-panel accents (cyan / hot-pink / amber /
+//!   agent-text / agent-muted / deep-bg) live ON the palette as
+//!   first-class tokens so per-route widgets can read them
+//!   uniformly via `cx.theme().cyber_cyan()` (see helpers below).
+//!
+//! Override at runtime:
+//!
+//! ```sh
+//! CRABCC_DESKTOP_PALETTE=cyberpunk_neon cargo run --release
+//! ```
+//!
+//! Available palette names: `web_dark`, `web_light`,
+//! `cyberpunk_neon`. Unknown values fall back to the OS-appearance
+//! pair.
 
 use gpui::{rgb, App, Hsla};
 use gpui_component::theme::Theme;
 
-/// Cyberpunk accent — main cyan glow used by the Ollama key panel,
-/// services panel "ok" state, agent code blocks, and various
-/// interactive accent treatments on the web.
-pub const CYBER_CYAN: u32 = 0x6df0ff;
-/// Cyberpunk accent — hot-pink button border + filled hover state
-/// used by the Ollama key panel reveal/copy buttons on the web.
-pub const CYBER_PINK: u32 = 0xff2a6d;
-/// Cyberpunk accent — amber warning used for `key-mode.warn`,
-/// `service-state.down`, the "down" path on services-panel rows.
-pub const CYBER_AMBER: u32 = 0xff8c2a;
-/// Cyberpunk accent — agent text body colour (`#c8d4ff`) used as
-/// the foreground inside the agent panels and table headers.
-pub const AGENT_TEXT: u32 = 0xc8d4ff;
-/// Cyberpunk accent — muted blue body colour (`#8aa0d8`) used for
-/// secondary metadata rows on the agent / services panels.
-pub const AGENT_MUTED: u32 = 0x8aa0d8;
-/// Background of the cyberpunk key-row gradient — left + right
-/// stops both use this near-black value.
-pub const CYBER_BG_DEEP: u32 = 0x0a0f1e;
+/// All tokens needed to skin both the gpui-component core
+/// (`background` / `foreground` / etc.) and the cyberpunk panel
+/// accents in one shot. Stored as `u32` hex so palette
+/// definitions stay declarative — `install` converts to `Hsla`
+/// at apply time.
+#[derive(Debug, Clone, Copy)]
+pub struct Palette {
+    /// Window background — gpui-component's `background`.
+    /// Mirrors `--bg` in styles.css.
+    pub background: u32,
+    /// Default text colour — gpui-component's `foreground`.
+    /// Mirrors `--fg`.
+    pub foreground: u32,
+    /// Secondary text colour — gpui-component's
+    /// `muted_foreground`. Mirrors `--muted`.
+    pub muted_foreground: u32,
+    /// Elevated panel surface — gpui-component's `secondary`.
+    /// Mirrors `--panel`.
+    pub secondary: u32,
+    /// Border / divider colour. Mirrors `--border`.
+    pub border: u32,
+    /// Brand / accent colour. Mirrors `--accent`.
+    pub primary: u32,
+    /// Success / live state. Mirrors `--live-ok`.
+    pub success: u32,
+    /// Destructive / down state. Brighter than the web's
+    /// destructive since the dashboard is Notification-Center-
+    /// adjacent and competes with system-banner red.
+    pub danger: u32,
 
-/// Apply the web-mirroring palette to gpui-component's global
-/// theme. Call from `main` after `gpui_component::init(cx)`.
-///
-/// Overrides BOTH the dark and light paths (the runtime's
-/// `sync_system_appearance` flips between them); each token is
-/// pinned to the corresponding `--var` in `styles.css`.
-pub fn install(cx: &mut App) {
-    let theme = Theme::global_mut(cx);
+    // ── Cyberpunk panel accents — opt-in, per-route ─────────
+    /// Cyan glow used by the Ollama key reveal/copy row, the
+    /// services-state "ok" rows, and code blocks on the agent
+    /// panels (`#6df0ff` in the web).
+    pub cyber_cyan: u32,
+    /// Hot-pink button accent on the Ollama key reveal/copy
+    /// buttons (`#ff2a6d`).
+    pub cyber_pink: u32,
+    /// Amber warning — `key-mode.warn`, `service-state.down`,
+    /// and the down path on the services panel (`#ff8c2a`).
+    pub cyber_amber: u32,
+    /// Agent-panel body text (`#c8d4ff`).
+    pub agent_text: u32,
+    /// Agent-panel muted metadata (`#8aa0d8`).
+    pub agent_muted: u32,
+    /// Deep BG colour for the cyberpunk gradient stops
+    /// (`#0a0f1e`).
+    pub cyber_bg_deep: u32,
+}
 
-    // The dark-mode CSS vars from styles.css :root + @media. Picked
-    // because the OS dark-mode is the typical crabcc operator
-    // setup (terminal-adjacent surface, low ambient light).
-    if theme.is_dark() {
-        theme.background = rgb(0x0e0e10).into(); // --bg
-        theme.foreground = rgb(0xe8e8e8).into(); // --fg
-        theme.muted_foreground = rgb(0x8a8a8a).into(); // --muted
-                                                       // Web's `--panel` maps to gpui-component's `secondary`
-                                                       // — that's the elevated-panel background used by the
-                                                       // existing tile / card surfaces.
-        theme.secondary = rgb(0x161618).into();
-        theme.border = rgb(0x2a2a2c).into();
-        theme.primary = rgb(0xff8c42).into(); // --accent
-        theme.success = rgb(0x2ecc71).into(); // --live-ok
-        theme.danger = rgb(0xff5757).into(); // brighter than the
-                                             // web's destructive
-                                             // since the dashboard
-                                             // is Notification-Center-
-                                             // adjacent.
-    } else {
-        theme.background = rgb(0xfafafa).into();
-        theme.foreground = rgb(0x1a1a1a).into();
-        theme.muted_foreground = rgb(0x6a6a6a).into();
-        theme.secondary = rgb(0xffffff).into();
-        theme.border = rgb(0xe3e3e3).into();
-        theme.primary = rgb(0xd35400).into();
-        theme.success = rgb(0x27ae60).into();
-        theme.danger = rgb(0xc0392b).into();
+impl Palette {
+    /// Mirrors `crates/crabcc-viz/web/src/styles.css` dark-mode
+    /// `:root` + `@media (prefers-color-scheme: dark)`. Default
+    /// when the OS reports dark appearance.
+    pub const WEB_DARK: Self = Self {
+        background: 0x0e0e10,
+        foreground: 0xe8e8e8,
+        muted_foreground: 0x8a8a8a,
+        secondary: 0x161618,
+        border: 0x2a2a2c,
+        primary: 0xff8c42,
+        success: 0x2ecc71,
+        danger: 0xff5757,
+        cyber_cyan: 0x6df0ff,
+        cyber_pink: 0xff2a6d,
+        cyber_amber: 0xff8c2a,
+        agent_text: 0xc8d4ff,
+        agent_muted: 0x8aa0d8,
+        cyber_bg_deep: 0x0a0f1e,
+    };
+
+    /// Mirrors the web's light-mode `:root` block. Default when
+    /// the OS reports light appearance.
+    pub const WEB_LIGHT: Self = Self {
+        background: 0xfafafa,
+        foreground: 0x1a1a1a,
+        muted_foreground: 0x6a6a6a,
+        secondary: 0xffffff,
+        border: 0xe3e3e3,
+        primary: 0xd35400,
+        success: 0x27ae60,
+        danger: 0xc0392b,
+        // Cyberpunk accents are visually identical in both modes
+        // on the web (panels are dark-on-light by design); reuse
+        // the dark-mode values.
+        cyber_cyan: 0x6df0ff,
+        cyber_pink: 0xff2a6d,
+        cyber_amber: 0xff8c2a,
+        agent_text: 0xc8d4ff,
+        agent_muted: 0x8aa0d8,
+        cyber_bg_deep: 0x0a0f1e,
+    };
+
+    /// Pure cyberpunk preset — applies the panel accents to the
+    /// CORE tokens too, so the whole window picks up the neon
+    /// theme. Useful for screen-recording demos and the
+    /// "cyberpunk skin" toggle in a future settings panel.
+    pub const CYBERPUNK_NEON: Self = Self {
+        background: 0x0a0f1e,
+        foreground: 0xc8d4ff,
+        muted_foreground: 0x8aa0d8,
+        secondary: 0x11193a,
+        border: 0x1a2348,
+        primary: 0x6df0ff,
+        success: 0x6df0ff,
+        danger: 0xff2a6d,
+        cyber_cyan: 0x6df0ff,
+        cyber_pink: 0xff2a6d,
+        cyber_amber: 0xff8c2a,
+        agent_text: 0xc8d4ff,
+        agent_muted: 0x8aa0d8,
+        cyber_bg_deep: 0x0a0f1e,
+    };
+
+    /// Resolve a palette name (lower-snake-case) to a const ref.
+    /// Unknown names return `None`. Used by the env-var picker
+    /// and any future settings-panel dropdown.
+    pub fn by_name(name: &str) -> Option<Self> {
+        match name {
+            "web_dark" => Some(Self::WEB_DARK),
+            "web_light" => Some(Self::WEB_LIGHT),
+            "cyberpunk_neon" => Some(Self::CYBERPUNK_NEON),
+            _ => None,
+        }
     }
 }
 
-/// Convenience wrapper — converts one of the cyberpunk-accent
-/// `u32` consts to an `Hsla`. Lets per-route code write
-/// `theme::cyber(theme::CYBER_CYAN)` instead of the slightly
-/// noisier `gpui::rgb(theme::CYBER_CYAN).into()`.
+/// Env var that overrides the OS-appearance default. Recognised
+/// values: any name accepted by [`Palette::by_name`].
+pub const PALETTE_ENV: &str = "CRABCC_DESKTOP_PALETTE";
+
+/// Apply the right palette to gpui-component's global theme.
+/// Call from `main` after `gpui_component::init(cx)`.
+///
+/// 1. If `CRABCC_DESKTOP_PALETTE` is set and resolves, use that.
+/// 2. Otherwise pick `WEB_DARK` / `WEB_LIGHT` per OS appearance.
+pub fn install(cx: &mut App) {
+    let palette = std::env::var(PALETTE_ENV)
+        .ok()
+        .and_then(|n| Palette::by_name(&n))
+        .unwrap_or_else(|| {
+            if Theme::global(cx).is_dark() {
+                Palette::WEB_DARK
+            } else {
+                Palette::WEB_LIGHT
+            }
+        });
+    apply(cx, palette);
+}
+
+/// Direct apply, bypassing the env-var + appearance picker. Used
+/// by tests and by future settings-panel "preview" code.
+pub fn install_with(cx: &mut App, palette: Palette) {
+    apply(cx, palette);
+}
+
+fn apply(cx: &mut App, palette: Palette) {
+    let theme = Theme::global_mut(cx);
+    theme.background = rgb(palette.background).into();
+    theme.foreground = rgb(palette.foreground).into();
+    theme.muted_foreground = rgb(palette.muted_foreground).into();
+    theme.secondary = rgb(palette.secondary).into();
+    theme.border = rgb(palette.border).into();
+    theme.primary = rgb(palette.primary).into();
+    theme.success = rgb(palette.success).into();
+    theme.danger = rgb(palette.danger).into();
+}
+
+/// Convenience wrapper — converts a `u32` palette token to an
+/// `Hsla`. Per-route widgets that read cyberpunk accents directly
+/// (e.g. `palette::cyber_cyan(theme)`) can use this without
+/// importing `gpui::rgb` everywhere.
 #[inline]
 pub fn cyber(hex: u32) -> Hsla {
     rgb(hex).into()
+}
+
+// Backwards-compatible re-exports for the const-named accents
+// shipped in the first slice (#356). Keep these so unconverted
+// call sites compile without churn — point at the same hex
+// values Palette::WEB_DARK uses.
+pub const CYBER_CYAN: u32 = Palette::WEB_DARK.cyber_cyan;
+pub const CYBER_PINK: u32 = Palette::WEB_DARK.cyber_pink;
+pub const CYBER_AMBER: u32 = Palette::WEB_DARK.cyber_amber;
+pub const AGENT_TEXT: u32 = Palette::WEB_DARK.agent_text;
+pub const AGENT_MUTED: u32 = Palette::WEB_DARK.agent_muted;
+pub const CYBER_BG_DEEP: u32 = Palette::WEB_DARK.cyber_bg_deep;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn by_name_round_trip() {
+        // Pin the wire-name set so future renames break tests.
+        assert!(Palette::by_name("web_dark").is_some());
+        assert!(Palette::by_name("web_light").is_some());
+        assert!(Palette::by_name("cyberpunk_neon").is_some());
+        // Unknowns return None — `install` falls back to the
+        // OS-appearance default in that case.
+        assert!(Palette::by_name("WEB_DARK").is_none());
+        assert!(Palette::by_name("oops").is_none());
+        assert!(Palette::by_name("").is_none());
+    }
+
+    #[test]
+    fn legacy_consts_match_web_dark() {
+        // The pre-refactor const surface (CYBER_CYAN etc.) keeps
+        // working; pin to WEB_DARK values so a future palette
+        // edit doesn't silently drift the legacy import sites.
+        assert_eq!(CYBER_CYAN, Palette::WEB_DARK.cyber_cyan);
+        assert_eq!(CYBER_PINK, Palette::WEB_DARK.cyber_pink);
+        assert_eq!(CYBER_AMBER, Palette::WEB_DARK.cyber_amber);
+        assert_eq!(AGENT_TEXT, Palette::WEB_DARK.agent_text);
+        assert_eq!(AGENT_MUTED, Palette::WEB_DARK.agent_muted);
+        assert_eq!(CYBER_BG_DEEP, Palette::WEB_DARK.cyber_bg_deep);
+    }
 }
