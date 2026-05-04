@@ -42,6 +42,7 @@ use gpui_component::{
 
 use crate::api::types::SseActivityEvent;
 use crate::routes::empty::empty_state;
+use crate::routes::time::format_time;
 use std::collections::HashSet;
 
 use crate::state::AppState;
@@ -262,17 +263,6 @@ impl TimelineRoute {
 /// same second are rare enough to merge intentionally.
 fn same_event(a: &SseActivityEvent, b: &SseActivityEvent) -> bool {
     a.ts == b.ts && a.op == b.op && a.query == b.query
-}
-
-/// `HH:MM:SS` from a unix-seconds timestamp. UTC; matches `routes::logs`
-/// for consistency. Local-zone formatting needs a `chrono` / `time`
-/// dep — not worth it for a developer-facing list.
-fn format_time(unix_seconds: i64) -> String {
-    let day = unix_seconds.rem_euclid(86_400);
-    let h = day / 3600;
-    let m = (day / 60) % 60;
-    let s = day % 60;
-    format!("{h:02}:{m:02}:{s:02}")
 }
 
 fn truncate(s: &str, max: usize) -> String {
@@ -1011,12 +1001,6 @@ mod tests {
         // First (max-1) chars + ellipsis. 4 chars of "toolongtohandle"
         // is "tool".
         assert_eq!(truncate("toolongtohandle", 5), "tool…");
-    }
-
-    #[test]
-    fn format_time_pads_components() {
-        assert_eq!(format_time(0), "00:00:00");
-        assert_eq!(format_time(3661), "01:01:01");
     }
 
     fn evt_a(ts: i64, op: &str, agent: Option<&str>) -> SseActivityEvent {

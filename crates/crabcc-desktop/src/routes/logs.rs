@@ -25,6 +25,7 @@ use serde_json::Value;
 
 use crate::api::types::{LogLevel, TelemetryEvent};
 use crate::routes::empty::empty_state;
+use crate::routes::time::format_time;
 use crate::state::AppState;
 
 const VISIBLE_ROWS: usize = 80;
@@ -413,17 +414,6 @@ fn level_label(level: LogLevel) -> &'static str {
         LogLevel::Warn => "WARN",
         LogLevel::Error => "ERROR",
     }
-}
-
-/// Pretty time-of-day from a unix-seconds timestamp. UTC; formatting in
-/// the user's local zone needs a date crate (`chrono` / `time`) and
-/// isn't worth the dep weight for a developer-facing log tail.
-fn format_time(unix_seconds: i64) -> String {
-    let day = unix_seconds.rem_euclid(86_400);
-    let h = day / 3600;
-    let m = (day / 60) % 60;
-    let s = day % 60;
-    format!("{h:02}:{m:02}:{s:02}")
 }
 
 fn preview(fields: &Value) -> String {
