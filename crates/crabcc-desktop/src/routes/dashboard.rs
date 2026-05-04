@@ -346,13 +346,67 @@ impl Render for DashboardHome {
         };
         let services_tile = tile("Services", card, border, muted, services_body);
 
+        // Memory tile — preview of the last 5 drawers; mirrors the
+        // web `<DashTile title="memory drawers">` pattern (link to
+        // /knowledge for the full surface). Three states match the
+        // web: backend-not-bootstrapped, empty, populated.
+        let memory_body: gpui::AnyElement = match state.memory_recent.as_ref() {
+            None => div()
+                .text_color(muted)
+                .child(SharedString::new_static("loading…"))
+                .into_any_element(),
+            Some(rep) if !rep.present => div()
+                .text_color(muted)
+                .child(SharedString::new_static(
+                    "no drawer db — run `crabcc memory init`",
+                ))
+                .into_any_element(),
+            Some(rep) if rep.drawers.is_empty() => div()
+                .text_color(muted)
+                .child(SharedString::new_static("no recent drawers"))
+                .into_any_element(),
+            Some(rep) => v_flex()
+                .gap_1()
+                .children(rep.drawers.iter().take(5).map(|d| {
+                    let age_secs = (now_ts - d.created_at).max(0);
+                    let age = fmt_age_short(age_secs);
+                    h_flex()
+                        .gap_2()
+                        // Wing badge — colour-cue keyed off the wing
+                        // value's first byte, matching the home
+                        // activity tile's op-colour treatment.
+                        .child(
+                            div()
+                                .px_1()
+                                .border_1()
+                                .border_color(muted)
+                                .rounded_md()
+                                .text_color(muted)
+                                .child(d.wing.clone()),
+                        )
+                        .child(div().flex_1().child(d.source_id.clone()))
+                        .child(div().text_color(muted).child(SharedString::from(age)))
+                        .into_any_element()
+                }))
+                .into_any_element(),
+        };
+        let memory_meta: Option<gpui::Div> =
+            state.memory_recent.as_ref().filter(|r| r.present).map(|r| {
+                div()
+                    .text_color(muted)
+                    .text_xs()
+                    .child(SharedString::from(format!("{} total", r.drawers.len())))
+            });
+        let memory_tile = tile_with_meta("Memory", memory_meta, card, border, muted, memory_body);
+
         let tile_row = h_flex()
             .gap_3()
             .px_5()
             .py_2()
             .child(activity_tile)
             .child(agents_tile)
-            .child(services_tile);
+            .child(services_tile)
+            .child(memory_tile);
 
         // ── Spawn-agent CTA ────────────────────────────────────────
         // The launch flow lives in `AgentSpawnSheet` now (#294). The
@@ -497,6 +551,21 @@ fn truncate(s: &str, max: usize) -> String {
         let mut out: String = s.chars().take(max - 1).collect();
         out.push('…');
         out
+    }
+}
+
+/// Compact age formatter — mirrors the web's `fmtAge` selector
+/// (`crabcc-viz/web/src/components/dashboard/selectors.ts`).
+/// `<1m → "Xs"`, `<1h → "Xm"`, `<1d → "Xh"`, else `"Xd"`.
+fn fmt_age_short(secs: i64) -> String {
+    if secs < 60 {
+        format!("{secs}s")
+    } else if secs < 3_600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h", secs / 3_600)
+    } else {
+        format!("{}d", secs / 86_400)
     }
 }
 
