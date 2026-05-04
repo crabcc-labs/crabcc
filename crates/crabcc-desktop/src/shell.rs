@@ -544,6 +544,26 @@ impl Render for Shell {
                 .child(SharedString::new_static("\u{25CB} agents 0"))
                 .into_any_element()
         };
+        // Right-aligned route segment: "route Logs" with the
+        // active route's label. Anchors the foot of the window
+        // with a "you are here" reminder, mirroring the brand
+        // line's role at the top — same convention as VSCode's
+        // status bar's right rail. Spacer between segments uses
+        // `flex_1` so the route segment hugs the right edge
+        // regardless of window width.
+        let route_segment = h_flex()
+            .gap_1p5()
+            .child(
+                div()
+                    .text_color(muted)
+                    .child(SharedString::new_static("route")),
+            )
+            .child(
+                div()
+                    .text_color(foreground)
+                    .child(SharedString::new_static(active.label())),
+            );
+
         let status_bar = h_flex()
             .gap_4()
             .px_5()
@@ -552,7 +572,9 @@ impl Render for Shell {
             .border_color(border)
             .text_xs()
             .child(services_segment)
-            .child(agents_segment);
+            .child(agents_segment)
+            .child(div().flex_1())
+            .child(route_segment);
 
         v_flex()
             .size_full()
