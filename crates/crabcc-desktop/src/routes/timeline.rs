@@ -362,6 +362,31 @@ impl Render for TimelineRoute {
                         });
                     }),
             );
+            // Reverse cross-link — Timeline shows the agent's calls,
+            // but Agents shows the log tail / kill / pid / runtime.
+            // From a pinned-agent context "→ Agents" is a one-click
+            // dive into the operational view.
+            let id_for_nav = id.clone();
+            let state_for_nav = self.state.clone();
+            header = header.child(
+                div()
+                    .id("timeline-agent-pin-to-agents")
+                    .px_2()
+                    .py_0p5()
+                    .border_1()
+                    .border_color(border)
+                    .rounded_md()
+                    .text_color(muted)
+                    .text_xs()
+                    .child(SharedString::new_static("\u{2192} Agents"))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        let id = id_for_nav.clone();
+                        state_for_nav.update(cx, |s, cx| {
+                            s.navigate_to_agents_with_selection(id);
+                            cx.notify();
+                        });
+                    }),
+            );
         }
 
         // ── Filter input + pills ──────────────────────────────────
