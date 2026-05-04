@@ -13,18 +13,14 @@
 //!     node to select; click empty canvas to deselect. The top-N
 //!     highest-degree drawers (degree ≥ 3, capped at 8) get their
 //!     title painted under the pill so the dense knots are
-//!     identifiable without scrolling the list below.
+//!     identifiable without scrolling the list below. The canvas
+//!     supports **wheel-zoom** + **drag-to-pan** (same shape as
+//!     `routes::graph`); a "Reset view" affordance appears in the
+//!     header whenever the view is off the identity transform.
 //!   * the **wing-grouped list** below the canvas — same data, easier
 //!     to scan at scale.
 //!   * a **right-rail Drawer Detail** panel on the active selection
 //!     (incoming + outgoing edge lists, `via` annotation).
-//!
-//! What's deliberately not here yet:
-//!
-//!   * Pan / zoom on the canvas. The relations graph has it; the
-//!     memory graph rarely tops a few hundred drawers, so a static
-//!     fit-to-bounds layout is enough for v1. Promote when the
-//!     deque outgrows the visible canvas at typical density.
 //!
 //! State is stored on `AppState::memory_graph` (lazy fetch on first
 //! render via `submit_memory_graph`; manual refresh button re-runs
@@ -66,6 +62,32 @@ const CANVAS_HEIGHT: f32 = 380.0;
 /// follow-up search/filter input lifts this if needed.
 const SECTION_ROW_LIMIT: usize = 80;
 
+/// Pan / zoom constants — same shape as `routes::graph` so the two
+/// canvases feel identical under the hand. Tweaks here should mirror
+/// there.
+const MIN_ZOOM: f32 = 0.5;
+const MAX_ZOOM: f32 = 4.0;
+/// Sensitivity in `zoom_factor = exp(SCROLL_K * dy_px)`. 0.005 means
+/// a 100-pixel scroll roughly halves or doubles the zoom.
+const SCROLL_K: f32 = 0.005;
+/// Press-vs-drag pixel threshold (Manhattan). Below this, mouse-up
+/// falls through to click-selection; above, the gesture is committed
+/// to a pan and the click is suppressed.
+const DRAG_THRESHOLD_PX: f32 = 4.0;
+
+#[derive(Clone, Copy)]
+struct DragState {
+    /// Window-coord cursor position when the press started.
+    start_win: gpui::Point<Pixels>,
+    /// View pan at the moment the press started — drag updates pan
+    /// relative to this so the drag adds to the pre-drag offset.
+    start_pan: (f32, f32),
+    /// True once movement has crossed `DRAG_THRESHOLD_PX`. Once set
+    /// the press is committed to drag-pan and the mouse-up does not
+    /// trigger click-selection.
+    moved: bool,
+}
+
 pub struct KnowledgeGraphRoute {
     state: Entity<AppState>,
     /// Tracks whether we've fired the initial fetch yet. The route
@@ -96,6 +118,17 @@ pub struct KnowledgeGraphRoute {
     /// handler. Both fire on the gpui main thread sequentially — the
     /// mutex is just type-system glue across the two closures.
     last_canvas_bounds: Arc<Mutex<Option<Bounds<Pixels>>>>,
+    /// Linear zoom factor around the canvas centre. 1.0 is the
+    /// identity transform; higher spreads pills out, lower packs
+    /// them in. Pill visual size is fixed in pixels so only positions
+    /// transform — same convention as `routes::graph`.
+    zoom: f32,
+    /// Pan offset in unit (post-zoom) coords. Added to the visible
+    /// position after the zoom transform; (0, 0) is the identity.
+    pan: (f32, f32),
+    /// `Some(_)` while the left button is held inside the canvas;
+    /// `None` otherwise.
+    drag: Option<DragState>,
 }
 
 impl KnowledgeGraphRoute {
@@ -109,6 +142,71 @@ impl KnowledgeGraphRoute {
             layout_fingerprint: 0,
             node_ids: Vec::new(),
             last_canvas_bounds: Arc::new(Mutex::new(None)),
+            zoom: 1.0,
+            pan: (0.0, 0.0),
+            drag: None,
+        }
+    }
+
+    fn adjust_zoom(&mut self, dy_px: f32) {
+        self.zoom = next_zoom(self.zoom, dy_px);
+    }
+
+    fn reset_view(&mut self) {
+        self.zoom = 1.0;
+        self.pan = (0.0, 0.0);
+    }
+
+    fn at_identity(&self) -> bool {
+        is_identity_view(self.zoom, self.pan)
+    }
+
+    fn drag_start(&mut self, win_pos: gpui::Point<Pixels>) {
+        self.drag = Some(DragState {
+            start_win: win_pos,
+            start_pan: self.pan,
+            moved: false,
+        });
+    }
+
+    /// Active drag tick. Returns `true` if pan was updated (the
+    /// caller uses this to decide whether to `cx.notify()`).
+    fn drag_update(&mut self, win_pos: gpui::Point<Pixels>) -> bool {
+        let Some(drag) = self.drag else {
+            return false;
+        };
+        let bounds = match self.last_canvas_bounds.lock().ok().and_then(|g| *g) {
+            Some(b) => b,
+            None => return false,
+        };
+        let w = f32::from(bounds.size.width);
+        let h = f32::from(bounds.size.height);
+        if w <= 0.0 || h <= 0.0 {
+            return false;
+        }
+        let dx_px = f32::from(win_pos.x - drag.start_win.x);
+        let dy_px = f32::from(win_pos.y - drag.start_win.y);
+        if !drag.moved && dx_px.abs() + dy_px.abs() < DRAG_THRESHOLD_PX {
+            return false;
+        }
+        let new_pan = (drag.start_pan.0 + dx_px / w, drag.start_pan.1 + dy_px / h);
+        self.drag = Some(DragState {
+            moved: true,
+            ..drag
+        });
+        self.pan = new_pan;
+        true
+    }
+
+    /// Press release. Returns `Some(win_pos)` if this should be
+    /// treated as a click (drag never crossed the threshold). Returns
+    /// `None` for drags or if no press was tracked.
+    fn drag_end(&mut self, win_pos: gpui::Point<Pixels>) -> Option<gpui::Point<Pixels>> {
+        let drag = self.drag.take()?;
+        if drag.moved {
+            None
+        } else {
+            Some(win_pos)
         }
     }
 
@@ -171,8 +269,9 @@ impl KnowledgeGraphRoute {
     }
 
     /// Convert a window-relative click position into the layout
-    /// index of the nearest pill (within the hit tolerance). `None`
-    /// if the click missed every pill.
+    /// index of the nearest pill (within the hit tolerance), inverting
+    /// the zoom + pan transform along the way. `None` if the click
+    /// missed every pill.
     fn hit_test(&self, win_pos: gpui::Point<Pixels>) -> Option<usize> {
         let bounds = self.last_canvas_bounds.lock().ok()?.as_ref().copied()?;
         let layout = self.layout.as_ref()?;
@@ -183,17 +282,23 @@ impl KnowledgeGraphRoute {
         if w <= 0.0 || h <= 0.0 {
             return None;
         }
-        // Pills are axis-aligned rectangles; a hit is any (x, y)
-        // inside the bounding box plus the tolerance in each axis.
-        let half_w = PILL_WIDTH * 0.5 + HIT_PADDING_PX;
-        let half_h = PILL_HEIGHT * 0.5 + HIT_PADDING_PX;
+        // Invert paint's visible→unit transform:
+        //   visible = 0.5 + (orig - 0.5) * zoom + pan
+        // ⇒ orig = 0.5 + (visible - pan - 0.5) / zoom.
+        let visible_x = local_x / w;
+        let visible_y = local_y / h;
+        let u_x = 0.5 + (visible_x - self.pan.0 - 0.5) / self.zoom;
+        let u_y = 0.5 + (visible_y - self.pan.1 - 0.5) / self.zoom;
+        // Hit half-extents are fixed in pixels (pill visual size doesn't
+        // scale with zoom), so in unit space they shrink by 1/zoom on
+        // each axis — divide by `zoom` along with `w` / `h`.
+        let half_w_u = (PILL_WIDTH * 0.5 + HIT_PADDING_PX) / (w * self.zoom);
+        let half_h_u = (PILL_HEIGHT * 0.5 + HIT_PADDING_PX) / (h * self.zoom);
         let mut best: Option<(usize, f32)> = None;
         for (i, &(ux, uy)) in layout.positions.iter().enumerate() {
-            let cx = ux * w;
-            let cy = uy * h;
-            let dx = (local_x - cx).abs();
-            let dy = (local_y - cy).abs();
-            if dx <= half_w && dy <= half_h {
+            let dx = (ux - u_x).abs();
+            let dy = (uy - u_y).abs();
+            if dx <= half_w_u && dy <= half_h_u {
                 // Tie-break by Manhattan distance — closer click wins.
                 let nd = dx + dy;
                 if best.map(|(_, b)| nd < b).unwrap_or(true) {
@@ -330,12 +435,16 @@ impl Render for KnowledgeGraphRoute {
                     &self.node_ids,
                     &g.nodes,
                     self.selected.as_ref(),
+                    self.zoom,
+                    self.pan,
+                    self.at_identity(),
                     self.last_canvas_bounds.clone(),
                     cx.entity(),
                     foreground,
                     muted,
                     border,
                     secondary,
+                    primary,
                     theme,
                 );
 
@@ -667,12 +776,16 @@ fn render_canvas(
     node_ids: &[SharedString],
     nodes: &[MemoryGraphNode],
     selected: Option<&SharedString>,
+    zoom: f32,
+    pan: (f32, f32),
+    at_identity: bool,
     bounds_share: Arc<Mutex<Option<Bounds<Pixels>>>>,
     view: Entity<KnowledgeGraphRoute>,
     foreground: Hsla,
     muted: Hsla,
     border: Hsla,
     secondary: Hsla,
+    primary: Hsla,
     theme: &gpui_component::Theme,
 ) -> gpui::AnyElement {
     let Some(layout) = layout else {
@@ -723,6 +836,8 @@ fn render_canvas(
                 selected_idx,
                 &neighbours,
                 &hubs,
+                zoom,
+                pan,
                 foreground,
                 muted,
                 window,
@@ -732,18 +847,116 @@ fn render_canvas(
     )
     .size_full();
 
-    let entity_for_click = view.clone();
+    // The interactive container owns the press / move / release set
+    // and scroll wheel — same shape as `routes::graph::GraphView`'s
+    // canvas wrapper. Mouse-down records drag origin; on-up either
+    // commits the click (no movement) or drops the gesture.
+    let entity_for_down = view.clone();
+    let entity_for_move = view.clone();
+    let entity_for_up = view.clone();
+    let entity_for_up_out = view.clone();
+    let entity_for_scroll = view.clone();
     let canvas_container = div()
         .id("k-graph-canvas")
         .size_full()
         .child(canvas_el)
         .on_mouse_down(MouseButton::Left, move |event, _, cx| {
             let pos = event.position;
-            entity_for_click.update(cx, |this, cx| {
-                this.handle_canvas_click(pos);
+            entity_for_down.update(cx, |this, cx| {
+                this.drag_start(pos);
                 cx.notify();
             });
+        })
+        .on_mouse_move(move |event, _, cx| {
+            // Hover moves don't matter — only relevant while held.
+            if event.pressed_button != Some(MouseButton::Left) {
+                return;
+            }
+            let pos = event.position;
+            entity_for_move.update(cx, |this, cx| {
+                if this.drag_update(pos) {
+                    cx.notify();
+                }
+            });
+        })
+        .on_mouse_up(MouseButton::Left, move |event, _, cx| {
+            let pos = event.position;
+            entity_for_up.update(cx, |this, cx| {
+                if let Some(click_pos) = this.drag_end(pos) {
+                    this.handle_canvas_click(click_pos);
+                }
+                cx.notify();
+            });
+        })
+        .on_mouse_up_out(MouseButton::Left, move |_, _, cx| {
+            // Mouse released outside the canvas — drop the gesture
+            // without firing a click.
+            entity_for_up_out.update(cx, |this, cx| {
+                this.drag = None;
+                cx.notify();
+            });
+        })
+        .on_scroll_wheel(move |event, _, cx| {
+            // 16px line-height proxy — macOS trackpads ignore it
+            // (already pixel-precise), legacy line-based wheels use it.
+            let dy = f32::from(event.delta.pixel_delta(px(16.0)).y);
+            if dy != 0.0 {
+                entity_for_scroll.update(cx, |this, cx| {
+                    this.adjust_zoom(dy);
+                    cx.notify();
+                });
+            }
         });
+
+    // ── Header row: counts, zoom %, reset-view ──────────────────────
+    let mut header = h_flex()
+        .gap_2()
+        .child(
+            div()
+                .text_color(muted)
+                .text_xs()
+                .child(SharedString::new_static("CANVAS")),
+        )
+        .child(
+            div()
+                .text_color(muted)
+                .text_xs()
+                .child(SharedString::from(format!(
+                    "{} pills · {} cross-refs",
+                    layout.positions.len(),
+                    layout.edge_indices.len()
+                ))),
+        );
+    if (zoom - 1.0).abs() > f32::EPSILON {
+        header = header.child(
+            div()
+                .text_color(muted)
+                .text_xs()
+                .child(SharedString::from(format!("· {:.0}% zoom", zoom * 100.0))),
+        );
+    }
+    if !at_identity {
+        let entity_for_reset = view.clone();
+        header = header.child(
+            div()
+                .id("k-graph-reset-view")
+                .ml_2()
+                .px_2()
+                .py_0p5()
+                .border_1()
+                .border_color(border)
+                .rounded_md()
+                .text_color(primary)
+                .text_xs()
+                .child(SharedString::new_static("Reset view"))
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    entity_for_reset.update(cx, |this, cx| {
+                        this.reset_view();
+                        cx.notify();
+                    });
+                }),
+        );
+    }
 
     v_flex()
         .mx_5()
@@ -755,26 +968,7 @@ fn render_canvas(
         .rounded_md()
         .bg(secondary)
         .gap_2()
-        .child(
-            h_flex()
-                .gap_2()
-                .child(
-                    div()
-                        .text_color(muted)
-                        .text_xs()
-                        .child(SharedString::new_static("CANVAS")),
-                )
-                .child(
-                    div()
-                        .text_color(muted)
-                        .text_xs()
-                        .child(SharedString::from(format!(
-                            "{} pills · {} cross-refs",
-                            layout.positions.len(),
-                            layout.edge_indices.len()
-                        ))),
-                ),
-        )
+        .child(header)
         .child(div().h(px(CANVAS_HEIGHT)).child(canvas_container))
         .into_any_element()
 }
@@ -817,6 +1011,20 @@ const HUB_LABEL_MAX_CHARS: usize = 28;
 struct HubLabel {
     index: usize,
     title: SharedString,
+}
+
+/// Apply a wheel tick to `current` zoom and clamp into bounds.
+/// Exponential mapping (so a single scroll click multiplies /
+/// divides instead of adding). Pure so the tests can drive it
+/// without standing up an `Entity<AppState>`.
+fn next_zoom(current: f32, dy_px: f32) -> f32 {
+    let factor = (SCROLL_K * dy_px).exp();
+    (current * factor).clamp(MIN_ZOOM, MAX_ZOOM)
+}
+
+/// True iff zoom == 1 and pan == (0, 0) within float tolerance.
+fn is_identity_view(zoom: f32, pan: (f32, f32)) -> bool {
+    (zoom - 1.0).abs() <= f32::EPSILON && pan.0.abs() <= f32::EPSILON && pan.1.abs() <= f32::EPSILON
 }
 
 /// Layout indices adjacent to `selected` in the undirected edge
@@ -912,6 +1120,8 @@ fn paint_k_graph(
     selected: Option<usize>,
     neighbours: &HashSet<usize>,
     hubs: &[HubLabel],
+    zoom: f32,
+    pan: (f32, f32),
     foreground: Hsla,
     muted: Hsla,
     window: &mut Window,
@@ -922,7 +1132,14 @@ fn paint_k_graph(
     let w = f32::from(bounds.size.width);
     let h = f32::from(bounds.size.height);
 
-    let to_px = |(ux, uy): (f32, f32)| point(px(ox + ux * w), px(oy + uy * h));
+    // Zoom + pan transform: visible = 0.5 + (orig - 0.5) * zoom + pan.
+    // Inverse lives in `hit_test`. Out-of-bounds paint calls clip
+    // automatically — gpui doesn't error.
+    let to_px = |(ux, uy): (f32, f32)| {
+        let evx = 0.5 + (ux - 0.5) * zoom + pan.0;
+        let evy = 0.5 + (uy - 0.5) * zoom + pan.1;
+        point(px(ox + evx * w), px(oy + evy * h))
+    };
 
     // Edges first so pills paint on top. Dashed via manual segment
     // walk — see `paint_dashed_edge`.
@@ -959,7 +1176,7 @@ fn paint_k_graph(
     let half_w = PILL_WIDTH * 0.5;
     let half_h = PILL_HEIGHT * 0.5;
     for (i, &(ux, uy)) in layout.positions.iter().enumerate() {
-        let centre = point(px(ox + ux * w), px(oy + uy * h));
+        let centre = to_px((ux, uy));
         let mut tone = node_tones.get(i).copied().unwrap_or(muted);
         let is_selected = Some(i) == selected;
         let is_neighbour = neighbours.contains(&i);
@@ -1001,8 +1218,9 @@ fn paint_k_graph(
         let Some((ux, uy)) = layout.positions.get(hub.index).copied() else {
             continue;
         };
-        let centre_x = ox + ux * w;
-        let centre_y = oy + uy * h;
+        let centre = to_px((ux, uy));
+        let centre_x = f32::from(centre.x);
+        let centre_y = f32::from(centre.y);
         let is_selected = Some(hub.index) == selected;
         let is_neighbour = neighbours.contains(&hub.index);
         let color = if selected.is_some() && !is_selected && !is_neighbour {
@@ -1172,6 +1390,37 @@ mod tests {
         let expected_chars = HUB_LABEL_MAX_CHARS;
         assert_eq!(trimmed.chars().count(), expected_chars);
         assert!(trimmed.ends_with('…'));
+    }
+
+    #[test]
+    fn is_identity_view_passes_at_origin() {
+        assert!(is_identity_view(1.0, (0.0, 0.0)));
+    }
+
+    #[test]
+    fn is_identity_view_fails_for_non_identity() {
+        assert!(!is_identity_view(2.0, (0.0, 0.0)));
+        assert!(!is_identity_view(1.0, (0.1, 0.0)));
+        assert!(!is_identity_view(1.0, (0.0, -0.1)));
+    }
+
+    #[test]
+    fn next_zoom_clamps_to_max() {
+        // A massive positive dy must not exceed MAX_ZOOM.
+        let z = next_zoom(1.0, 100_000.0);
+        assert!((z - MAX_ZOOM).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn next_zoom_clamps_to_min() {
+        let z = next_zoom(1.0, -100_000.0);
+        assert!((z - MIN_ZOOM).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn next_zoom_zero_dy_is_noop() {
+        let z = next_zoom(1.7, 0.0);
+        assert!((z - 1.7).abs() < 1e-6);
     }
 
     #[test]
