@@ -618,6 +618,8 @@ fn wing_section(
                 } else {
                     gpui::transparent_black()
                 })
+                .cursor_pointer()
+                .hover(move |s| s.border_color(wing_col))
                 .child(
                     div()
                         .min_w(px(220.0))
@@ -731,6 +733,11 @@ fn render_detail(
         .rounded_md()
         .text_color(primary)
         .text_xs()
+        .cursor_pointer()
+        .hover(move |s| s.border_color(primary))
+        .tooltip(|window, cx| {
+            Tooltip::new("Open Knowledge filtered to this drawer").build(window, cx)
+        })
         .child(SharedString::new_static("\u{2192} Knowledge"))
         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
             let id = nav_id.clone();
