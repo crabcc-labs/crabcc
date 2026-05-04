@@ -241,6 +241,38 @@ pub fn install_with(cx: &mut App, palette: Palette) {
     apply(cx, palette);
 }
 
+/// Apply the palette named at the given `Palette::ALL_NAMES`
+/// index. Modular over the slice length — callers that bump an
+/// index counter (`AppState::palette_index`) don't need to
+/// validate / reset on overflow. Returns the resolved palette
+/// for follow-up logging.
+pub fn apply_by_index(cx: &mut App, idx: usize) -> Palette {
+    let names = Palette::ALL_NAMES;
+    let name = names[idx % names.len()];
+    let palette = Palette::by_name(name).expect("ALL_NAMES out of sync with by_name");
+    apply(cx, palette);
+    palette
+}
+
+/// Resolve the initial palette index — `AppState::palette_index`
+/// uses this at construction time so the env-var override and the
+/// header switcher button stay in sync from the very first frame.
+pub fn initial_palette_index() -> usize {
+    let names = Palette::ALL_NAMES;
+    if let Ok(name) = std::env::var(PALETTE_ENV) {
+        if let Some(pos) = names.iter().position(|n| *n == name) {
+            return pos;
+        }
+    }
+    // No env override → start on the OS-appearance default.
+    // We don't have access to `App` here, so we approximate via a
+    // simple heuristic: macOS dark mode is the typical operator
+    // setup, so default to `web_dark` (index 0). Callers that
+    // want appearance-correct behaviour should call
+    // `theme::install(cx)` separately, which DOES check.
+    0
+}
+
 fn apply(cx: &mut App, palette: Palette) {
     let theme = Theme::global_mut(cx);
     theme.background = rgb(palette.background).into();

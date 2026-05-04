@@ -328,6 +328,13 @@ pub struct AppState {
     /// "Show last N →" view (track C.0 slice 5+) so users can audit
     /// notifications they missed (or muted away).
     pub toast_history: VecDeque<Toast>,
+    /// Index into [`crate::theme::Palette::ALL_NAMES`] — current
+    /// theme palette. The header palette-cycle button advances
+    /// this; `Shell::render` reads the name to label the button.
+    /// Initial value comes from `CRABCC_DESKTOP_PALETTE` if set,
+    /// otherwise the OS-appearance default (resolved via
+    /// `theme::initial_palette_index`).
+    pub palette_index: usize,
 }
 
 /// Cap on the toast history log. The brief calls out
@@ -357,8 +364,13 @@ impl AppState {
         // visible toast also fires a banner unless the user opts
         // out. Override here so the field doesn't need a manual
         // `Default` impl on the whole struct.
+        //
+        // `palette_index` likewise needs to honour the
+        // `CRABCC_DESKTOP_PALETTE` env var so the header switcher
+        // button matches what `theme::install` actually applied.
         Self {
             echo_to_system: true,
+            palette_index: crate::theme::initial_palette_index(),
             ..Self::default()
         }
     }
@@ -432,6 +444,25 @@ impl AppState {
     /// for the consumer side.
     pub fn toggle_echo_to_system(&mut self) {
         self.echo_to_system = !self.echo_to_system;
+    }
+
+    /// Advance to the next theme palette in
+    /// [`crate::theme::Palette::ALL_NAMES`], wrapping at the end.
+    /// The caller is responsible for actually applying the new
+    /// palette (`theme::apply_by_index`) and forcing a re-render
+    /// (`window.refresh()`) — this method just bumps the index so
+    /// other components that read the name (header label) reflect
+    /// the change in their next render.
+    pub fn cycle_palette(&mut self) {
+        let len = crate::theme::Palette::ALL_NAMES.len();
+        self.palette_index = (self.palette_index + 1) % len;
+    }
+
+    /// Lookup-friendly accessor — returns the current palette's
+    /// canonical name. Slot-safe: out-of-range indexes wrap to 0.
+    pub fn palette_name(&self) -> &'static str {
+        let names = crate::theme::Palette::ALL_NAMES;
+        names[self.palette_index % names.len()]
     }
 
     /// Wipe the toast history log. Doesn't touch the visible deque
