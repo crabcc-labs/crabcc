@@ -11,6 +11,7 @@ use crabcc_desktop::api::DEFAULT_BASE_URL;
 use crabcc_desktop::services::{self, BootstrapOutcome};
 use crabcc_desktop::shell::Shell;
 use crabcc_desktop::state;
+use crabcc_desktop::theme as crabcc_theme;
 use crabcc_desktop::toasts::ToastLevel;
 use gpui::{prelude::*, px, size, App, Bounds, TitlebarOptions, WindowBounds, WindowOptions};
 use gpui_component::Root;
@@ -60,6 +61,12 @@ fn main() {
 
     gpui_platform::application().run(move |cx: &mut App| {
         gpui_component::init(cx);
+        // Mirror the web dashboard's palette so the desktop and the
+        // `/live` browser surface read as the same product. Has to
+        // run AFTER `gpui_component::init` (which seeds the default
+        // theme) and BEFORE the window opens — the theme is global
+        // and reads at first render.
+        crabcc_theme::install(cx);
 
         // Default to a roomier window than A.6's 1280×800 so the
         // dashboard's KPI strip + 3-tile row + spawn row + relations

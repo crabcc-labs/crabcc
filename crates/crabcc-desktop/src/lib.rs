@@ -8,6 +8,7 @@
 //!   - `graph_layout`   — pure-compute force-directed layout (A.5)
 //!   - `shell`          — top-level header + nav + body switcher (A.6)
 //!   - `native`         — native-OS hooks (dock badge today; menu bar / tray TBD)
+//!   - `theme`          — palette mirroring `crabcc-viz/web` (track B alignment)
 //!   - `theme_helpers`  — small tone helpers shared across routes
 
 pub mod api;
@@ -18,5 +19,6 @@ pub mod services;
 pub mod shell;
 pub mod sse;
 pub mod state;
+pub mod theme;
 pub mod theme_helpers;
 pub mod toasts;
