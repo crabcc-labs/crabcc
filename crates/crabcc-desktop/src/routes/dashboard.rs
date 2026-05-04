@@ -670,6 +670,7 @@ impl Render for DashboardHome {
         let primary = cx.theme().primary;
         let success = cx.theme().success;
         let danger = cx.theme().danger;
+        let foreground = cx.theme().foreground;
         let view_entity = cx.entity();
         let launch_btn = div()
             .id("agent-launch-open-sheet")
@@ -679,6 +680,9 @@ impl Render for DashboardHome {
             .border_color(primary)
             .rounded_md()
             .text_color(primary)
+            .cursor_pointer()
+            .hover(move |s| s.bg(primary).text_color(foreground))
+            .tooltip(|window, cx| Tooltip::new("Open agent spawn sheet").build(window, cx))
             .child(SharedString::new_static("Launch agent…"))
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 view_entity.update(cx, |this, cx| this.open_spawn_sheet(cx));
