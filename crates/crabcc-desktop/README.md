@@ -239,13 +239,49 @@ HTML reports land under `target/criterion/`. Diff between two runs
 via `cargo bench -- --save-baseline X` then
 `cargo bench -- --baseline X`.
 
+## In-window notifications + native banners
+
+Track C.0 + C.2 surfaces — see also "Routes" diagram above.
+
+| Surface | What | Where |
+|---|---|---|
+| Toast strip | 5 levels (success / info / warning / danger / primary) stacked under the header. Click `×` to dismiss; auto-dismiss intervals: success 5s, info 3s, warning + danger persist, primary 8s. | `src/toasts.rs` |
+| Auto-emit | Submit results (ingest / launch / kill × ok / err), prefetch errors, telemetry + memory poll edge-triggers (one warning per failure window, success on recovery), agent Running → Exited transitions. | `state::AppState::apply` |
+| History | Append-only audit log of every push including muted (cap 50). Footer `[dismiss all] · history (N) · expand · clear` toggles inline expanded view. | `src/toasts.rs` |
+| Mute | Header `● alerts` button. Mute clears the visible deque, suppresses new pushes (history still records). | `state::toggle_toast_mute` |
+| System echo | Header `↗ system` button. When on, every visible toast also fires a banner via Notification Center. When off, in-window only. | `state::toggle_echo_to_system` + `Shell::render` |
+| macOS banner | `osascript -e 'display notification ...'` from `native::deliver_notification`. Sidesteps the `.app` bundle requirement of `UNUserNotificationCenter`; future C.2.1 ships a real bundle. | `src/native.rs` |
+
+## Backend stack lifecycle
+
+`crabcc-desktop` auto-starts the docker-compose stack on launch
+(see `src/services.rs`). On a fresh checkout the binary alone is
+enough to bring up `crabcc serve` + dependent containers.
+
+| Phase | Behaviour |
+|---|---|
+| Auto-start | `services::ensure_stack_started` — fast-path probe `/api/health` → if down, `docker info` → `docker compose -f install/dev/docker-compose.yml up -d` → wait for health (30s deadline). Surfaces outcome on the toast strip. |
+| Skip | `CRABCC_DESKTOP_SKIP_SERVICES=1` — bypass entirely (devs running `crabcc serve` from another shell). |
+| Stop on exit | `CRABCC_DESKTOP_STOP_SERVICES_ON_EXIT=1` — opt-in SIGINT handler runs `docker compose down` on Ctrl-C. Off by default since most users have other consumers of the stack. |
+| Manual ops | `task services-up` / `services-down` / `services-status` / `services-logs`. |
+
+## Architecture
+
+Full data-flow chart — workers, channels, toast lifecycle,
+services lifecycle — lives in the **private** companion repo at
+[`docs/desktop/ARCHITECTURE.md`](https://github.com/peterlodri-sec/crabcc-docs/blob/main/desktop/ARCHITECTURE.md)
+(checked out as a git submodule of the parent repo at `docs/`).
+
 ## Tracking
 
 | Phase | Status |
 |---|---|
 | Track A — desktop dashboard | feature-complete (#214) |
 | Track B — Tailwind / shadcn | not started (B.1+) |
-| Track C — UN notifications | dock badge + status item shipped (C.1, C.1.1); rest TODO |
+| Track C.0 — in-window toast strip | shipped (slices 1-6 + dismiss-all + system tag + echo toggle) |
+| Track C.1 / C.1.1 — dock badge + status item | shipped |
+| Track C.2 — macOS rich notifications | first wedge shipped (osascript). C.2.1 bundles as `.app` for `UNUserNotificationCenter` + actions; not started |
+| Track C.3+ — App Group + entitlements + APNs | Apple-Dev-gated; not started |
 
 Living roadmap: PR [#214](https://github.com/peterlodri-sec/crabcc/pull/214).
 
