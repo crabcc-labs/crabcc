@@ -723,8 +723,13 @@ fn render_node_drawer(
         .child(
             div()
                 .id("graph-drawer-close")
-                .px_1()
+                .px_2()
+                .py_0p5()
+                .rounded_md()
                 .text_color(muted)
+                .cursor_pointer()
+                .hover(move |s| s.bg(secondary))
+                .tooltip(|window, cx| Tooltip::new("Close detail panel").build(window, cx))
                 .child(SharedString::new_static("×"))
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     cx.stop_propagation();
@@ -754,6 +759,8 @@ fn render_node_drawer(
                     .pl_2()
                     .text_color(foreground)
                     .text_xs()
+                    .cursor_pointer()
+                    .hover(move |s| s.text_color(primary))
                     .child(id_for(n))
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         cx.stop_propagation();
@@ -834,6 +841,9 @@ fn render_node_drawer(
             .border_color(border)
             .rounded_md()
             .text_color(primary)
+            .cursor_pointer()
+            .hover(move |s| s.border_color(primary))
+            .tooltip(|window, cx| Tooltip::new("Copy node id to clipboard").build(window, cx))
             .child(SharedString::new_static("Copy id"))
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 cx.stop_propagation();
