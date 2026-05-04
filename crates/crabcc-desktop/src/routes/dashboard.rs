@@ -331,6 +331,31 @@ impl Render for DashboardHome {
                         });
                     }),
             );
+            // Op-pin → Timeline cross-link, mirroring the agent-pin
+            // version below. The dashboard tile shows 8 grouped rows;
+            // Timeline shows the per-call detail. From a pinned-op
+            // dashboard view, this lands the user on Timeline already
+            // op-filtered.
+            let op_for_nav = op.clone();
+            let state_for_nav = self.state.clone();
+            pin_row = pin_row.child(
+                div()
+                    .id("activity-op-pin-to-timeline")
+                    .px_2()
+                    .py_0p5()
+                    .border_1()
+                    .border_color(border)
+                    .rounded_md()
+                    .text_color(muted)
+                    .child(SharedString::new_static("\u{2192} Timeline"))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        let op = op_for_nav.clone();
+                        state_for_nav.update(cx, |s, cx| {
+                            s.navigate_to_timeline_with_op_pin(op);
+                            cx.notify();
+                        });
+                    }),
+            );
             have_pill = true;
         }
         if let Some(id) = active_agent_pin.as_ref() {
