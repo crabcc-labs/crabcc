@@ -38,6 +38,7 @@ use gpui::{
 };
 use gpui_component::{h_flex, tooltip::Tooltip, v_flex, ActiveTheme};
 
+use crate::routes::time::format_time;
 use crate::state::AppState;
 
 /// Toast level — selects accent colour and (eventually) the
@@ -265,6 +266,7 @@ impl Render for ToastStrip {
                         ToastLevel::Danger => theme.danger,
                         ToastLevel::Primary => theme.primary,
                     };
+                    let ts_label = SharedString::from(format_time(t.created_at));
                     h_flex()
                         .gap_2()
                         .child(
@@ -274,6 +276,11 @@ impl Render for ToastStrip {
                                 .child(SharedString::new_static(t.level.glyph())),
                         )
                         .child(div().flex_1().text_color(muted).child(t.message.clone()))
+                        // `HH:MM:SS` of when the toast was pushed —
+                        // gives the audit log enough context to
+                        // correlate with the activity feed without
+                        // expanding the row's data model.
+                        .child(div().text_xs().text_color(muted).child(ts_label))
                         .into_any_element()
                 }))
                 .into_any_element()
