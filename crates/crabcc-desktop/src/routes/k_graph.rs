@@ -10,7 +10,10 @@
 //!     are wing-coloured rounded-rect pills (NOT circles, the
 //!     relations graph's primary), edges are thin solid lines, and
 //!     the selected node carries a foreground-coloured ring. Click a
-//!     node to select; click empty canvas to deselect.
+//!     node to select; click empty canvas to deselect. The top-N
+//!     highest-degree drawers (degree ≥ 3, capped at 8) get their
+//!     title painted under the pill so the dense knots are
+//!     identifiable without scrolling the list below.
 //!   * the **wing-grouped list** below the canvas — same data, easier
 //!     to scan at scale.
 //!   * a **right-rail Drawer Detail** panel on the active selection
@@ -22,9 +25,6 @@
 //!     memory graph rarely tops a few hundred drawers, so a static
 //!     fit-to-bounds layout is enough for v1. Promote when the
 //!     deque outgrows the visible canvas at typical density.
-//!   * Dashed edges. gpui's `PathBuilder` doesn't expose a dash
-//!     pattern; faking it via short segments is a polish item.
-//!     Edge muting (alpha 0.45) is enough differentiation today.
 //!
 //! State is stored on `AppState::memory_graph` (lazy fetch on first
 //! render via `submit_memory_graph`; manual refresh button re-runs
@@ -35,8 +35,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use gpui::{
-    canvas, div, point, prelude::*, px, Bounds, Context, Entity, Hsla, IntoElement, MouseButton,
-    PathBuilder, Pixels, Render, SharedString, Window,
+    canvas, div, point, prelude::*, px, App, Bounds, Context, Entity, Hsla, IntoElement,
+    MouseButton, PathBuilder, Pixels, Render, SharedString, TextRun, Window,
 };
 use gpui_component::{h_flex, v_flex, ActiveTheme};
 
@@ -693,12 +693,20 @@ fn render_canvas(
     let selected_idx: Option<usize> =
         selected.and_then(|sel| node_ids.iter().position(|id| id == sel));
 
+    // Hub labels: pick the highest-degree drawers and render their
+    // title under the pill. Single-degree drawers vastly outnumber
+    // hubs, so labelling them all turns the canvas into a wall of
+    // text — capping at `MAX_HUB_LABELS` with a `MIN_HUB_DEGREE`
+    // floor keeps the labels useful (shows the dense knots) without
+    // overwhelming the visual at typical density.
+    let hubs = pick_hub_labels(layout, nodes);
+
     let layout_clone = layout.clone();
     let node_tones_clone = node_tones.clone();
 
     let canvas_el = canvas(
         move |_bounds, _, _| (),
-        move |bounds: Bounds<Pixels>, _, window, _| {
+        move |bounds: Bounds<Pixels>, _, window, cx| {
             if let Ok(mut guard) = bounds_share.lock() {
                 *guard = Some(bounds);
             }
@@ -707,9 +715,11 @@ fn render_canvas(
                 &layout_clone,
                 &node_tones_clone,
                 selected_idx,
+                &hubs,
                 foreground,
                 muted,
                 window,
+                cx,
             );
         },
     )
@@ -771,6 +781,87 @@ fn render_canvas(
 const DASH_ON_PX: f32 = 5.0;
 const DASH_OFF_PX: f32 = 4.0;
 
+/// Maximum number of hub labels painted on the canvas. Beyond this
+/// the labels overlap each other on dense graphs — the wing-grouped
+/// list below already covers full disclosure.
+const MAX_HUB_LABELS: usize = 8;
+/// Minimum degree (incoming + outgoing edges) a node needs before
+/// it earns a label. A drawer with one or two edges isn't really a
+/// hub; labelling it just adds noise. 3+ matches the graph-orphans
+/// CLI heuristic.
+const MIN_HUB_DEGREE: usize = 3;
+/// Title font size used for hub labels. Smaller than the route's body
+/// (text-xs ≈ 11) so labels don't compete with the pill itself —
+/// reads as annotation, not a primary control.
+const HUB_LABEL_FONT_SIZE: f32 = 9.0;
+/// Vertical gap between the bottom of a hub pill and the top of its
+/// label. Kept small (2 px) so the label visually anchors to the
+/// pill instead of looking like an unrelated row underneath.
+const HUB_LABEL_GAP_PX: f32 = 2.0;
+/// Maximum hub-label character count. Drawer titles can run long
+/// (the API caps at 80 chars); on the canvas a long label crowds
+/// neighbouring pills, so we ellipsize at this width.
+const HUB_LABEL_MAX_CHARS: usize = 28;
+
+/// One hub label scheduled for paint — pre-resolved layout index +
+/// truncated title so the paint closure does no allocations beyond
+/// the per-glyph shape pass.
+#[derive(Clone)]
+struct HubLabel {
+    index: usize,
+    title: SharedString,
+}
+
+/// Pick the up-to-`MAX_HUB_LABELS` highest-degree drawers (by edge
+/// count from `layout.edge_indices`) with degree ≥ `MIN_HUB_DEGREE`,
+/// returning their layout index + a shortened title ready for paint.
+fn pick_hub_labels(layout: &Layout, nodes: &[MemoryGraphNode]) -> Vec<HubLabel> {
+    if nodes.is_empty() || layout.positions.is_empty() {
+        return Vec::new();
+    }
+    let mut degrees: Vec<usize> = vec![0; layout.positions.len()];
+    for &(a, b) in &layout.edge_indices {
+        if let Some(d) = degrees.get_mut(a) {
+            *d += 1;
+        }
+        if let Some(d) = degrees.get_mut(b) {
+            *d += 1;
+        }
+    }
+    let mut ranked: Vec<(usize, usize)> = degrees
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &d)| (d >= MIN_HUB_DEGREE).then_some((i, d)))
+        .collect();
+    // Highest degree first; stable ordering by index for ties keeps
+    // the label set deterministic across re-renders.
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    ranked.truncate(MAX_HUB_LABELS);
+    ranked
+        .into_iter()
+        .filter_map(|(i, _)| {
+            let title = nodes.get(i)?.title.as_ref();
+            Some(HubLabel {
+                index: i,
+                title: SharedString::from(truncate_label(title)),
+            })
+        })
+        .collect()
+}
+
+/// Trim `s` to fit within `HUB_LABEL_MAX_CHARS`, appending an
+/// ellipsis when truncated. Operates on chars (not bytes) so
+/// multi-byte glyphs don't get sliced mid-codepoint.
+fn truncate_label(s: &str) -> String {
+    let count = s.chars().count();
+    if count <= HUB_LABEL_MAX_CHARS {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(HUB_LABEL_MAX_CHARS - 1).collect();
+    out.push('…');
+    out
+}
+
 /// Paint pass for the memory canvas. Differentiated from the
 /// relations graph in three ways:
 ///
@@ -785,14 +876,17 @@ const DASH_OFF_PX: f32 = 4.0;
 ///     relations graph's `primary` purple — same idea (highlighted
 ///     pill stands out) but a deliberately different hue so a user
 ///     bouncing between routes never confuses the two graphs.
+#[allow(clippy::too_many_arguments)]
 fn paint_k_graph(
     bounds: Bounds<Pixels>,
     layout: &Layout,
     node_tones: &[Hsla],
     selected: Option<usize>,
+    hubs: &[HubLabel],
     foreground: Hsla,
     muted: Hsla,
     window: &mut Window,
+    cx: &mut App,
 ) {
     let ox = f32::from(bounds.origin.x);
     let oy = f32::from(bounds.origin.y);
@@ -844,6 +938,47 @@ fn paint_k_graph(
         };
         window
             .paint_quad(gpui::fill(pill_bounds, tone).corner_radii(gpui::Corners::all(px(half_h))));
+    }
+
+    // Hub labels last so they paint over the pills (the title sits
+    // just below each hub pill, centred horizontally on the pill).
+    // Foreground at 75% alpha — readable but doesn't compete with
+    // selection-ring brightness.
+    let label_color = with_alpha(foreground, 0.75);
+    let font = window.text_style().font();
+    for hub in hubs {
+        let Some((ux, uy)) = layout.positions.get(hub.index).copied() else {
+            continue;
+        };
+        let centre_x = ox + ux * w;
+        let centre_y = oy + uy * h;
+        let run = TextRun {
+            len: hub.title.len(),
+            font: font.clone(),
+            color: label_color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let line = window.text_system().shape_line(
+            hub.title.clone(),
+            px(HUB_LABEL_FONT_SIZE),
+            &[run],
+            None,
+        );
+        let label_w = f32::from(line.width());
+        let origin = point(
+            px(centre_x - label_w * 0.5),
+            px(centre_y + half_h + HUB_LABEL_GAP_PX),
+        );
+        let _ = line.paint(
+            origin,
+            px(HUB_LABEL_FONT_SIZE),
+            gpui::TextAlign::Left,
+            None,
+            window,
+            cx,
+        );
     }
 }
 
@@ -902,5 +1037,91 @@ fn paint_dashed_edge(
             window.paint_path(path, color);
         }
         t += period;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph_layout::Layout;
+
+    fn mk_node(id: &str, title: &str) -> MemoryGraphNode {
+        MemoryGraphNode {
+            id: SharedString::from(id.to_string()),
+            title: SharedString::from(title.to_string()),
+            kind: SharedString::from("project".to_string()),
+            ts: 0,
+            len: 0,
+        }
+    }
+
+    #[test]
+    fn pick_hub_labels_filters_by_min_degree() {
+        // 4 nodes: 0 connected to 1,2,3 (degree 3) and 1↔2 (each
+        // earns one more, ending at 2). Only node 0 should label.
+        let nodes = vec![
+            mk_node("a", "Alpha"),
+            mk_node("b", "Bravo"),
+            mk_node("c", "Charlie"),
+            mk_node("d", "Delta"),
+        ];
+        let layout = Layout {
+            positions: vec![(0.5, 0.5), (0.1, 0.1), (0.9, 0.1), (0.5, 0.9)],
+            edge_indices: vec![(0, 1), (0, 2), (0, 3), (1, 2)],
+        };
+        let hubs = pick_hub_labels(&layout, &nodes);
+        assert_eq!(hubs.len(), 1);
+        assert_eq!(hubs[0].index, 0);
+        assert_eq!(hubs[0].title.as_ref(), "Alpha");
+    }
+
+    #[test]
+    fn pick_hub_labels_caps_at_max() {
+        // Build a star with 12 leaves (degree-1) around 1 hub
+        // (degree 12) — only the hub qualifies, but also build 9
+        // mutually-connected nodes so we exceed `MAX_HUB_LABELS`.
+        let mut nodes: Vec<MemoryGraphNode> = (0..12)
+            .map(|i| mk_node(&format!("n{i}"), &format!("Node {i}")))
+            .collect();
+        // Push 9 hub nodes, each connected to 3 distinct leaves.
+        nodes.extend((12..21).map(|i| mk_node(&format!("h{i}"), &format!("Hub {i}"))));
+        let positions = (0..nodes.len())
+            .map(|i| (i as f32 / nodes.len() as f32, 0.5))
+            .collect();
+        let mut edge_indices: Vec<(usize, usize)> = Vec::new();
+        for hub in 12..21 {
+            for leaf in 0..3 {
+                edge_indices.push((hub, leaf));
+            }
+        }
+        let layout = Layout {
+            positions,
+            edge_indices,
+        };
+        let hubs = pick_hub_labels(&layout, &nodes);
+        assert_eq!(hubs.len(), MAX_HUB_LABELS);
+    }
+
+    #[test]
+    fn truncate_label_passes_short_strings_through() {
+        assert_eq!(truncate_label("Short title"), "Short title");
+    }
+
+    #[test]
+    fn truncate_label_ellipsizes_long_strings() {
+        let long = "a".repeat(60);
+        let trimmed = truncate_label(&long);
+        let expected_chars = HUB_LABEL_MAX_CHARS;
+        assert_eq!(trimmed.chars().count(), expected_chars);
+        assert!(trimmed.ends_with('…'));
+    }
+
+    #[test]
+    fn truncate_label_respects_codepoints() {
+        // Multibyte characters — must not slice mid-codepoint.
+        let s = "α".repeat(60);
+        let trimmed = truncate_label(&s);
+        assert_eq!(trimmed.chars().count(), HUB_LABEL_MAX_CHARS);
+        assert!(trimmed.ends_with('…'));
     }
 }
