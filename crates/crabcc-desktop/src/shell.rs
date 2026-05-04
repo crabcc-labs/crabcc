@@ -283,6 +283,36 @@ impl Render for Shell {
                 });
             });
 
+        // Palette switcher — cycles through `Palette::ALL_NAMES`
+        // on click, applies the new palette to the global theme,
+        // and fires `window.refresh()` so every observed entity
+        // re-renders with the new colours. The label is the
+        // canonical palette name (`web_dark`, `cyberpunk_neon`,
+        // …) so the user can always see which palette is active.
+        let palette_label =
+            SharedString::from(format!("\u{25D0} {}", state_for_brand.palette_name(),));
+        let state_for_palette = self.state.clone();
+        let palette_btn = div()
+            .id("palette-cycle")
+            .px_2()
+            .py_1()
+            .text_color(muted)
+            .child(palette_label)
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                state_for_palette.update(cx, |s, cx| {
+                    s.cycle_palette();
+                    cx.notify();
+                });
+                let idx = state_for_palette.read(cx).palette_index;
+                crate::theme::apply_by_index(cx, idx);
+                // Mutating the global theme doesn't auto-trigger
+                // a redraw — entity observation only fires for
+                // entity-shaped state. Force the whole window to
+                // repaint so every cached ColourEntity-equivalent
+                // picks up the new tokens.
+                window.refresh();
+            });
+
         let header = h_flex()
             .gap_6()
             .px_5()
@@ -302,7 +332,8 @@ impl Render for Shell {
             )
             .child(nav)
             .child(alerts_btn)
-            .child(echo_btn);
+            .child(echo_btn)
+            .child(palette_btn);
 
         let body: AnyElement = match active {
             Route::Home => self.home.clone().into_any_element(),
