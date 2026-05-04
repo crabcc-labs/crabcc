@@ -108,48 +108,14 @@ main.layout-main {
   white-space: pre-wrap; word-break: break-word;
 }
 /* ── Modal dialog (re-index) ─────────────────────────────────────── */
-.modal {
-  position: fixed; inset: 0;
-  background: rgba(0, 0, 0, 0.5);
-  display: flex; align-items: center; justify-content: center;
-  z-index: 100;
-}
-.modal-body {
-  background: var(--panel); color: var(--fg);
-  border: 1px solid var(--border); border-radius: 8px;
-  width: 80vw; max-width: 780px; max-height: 80vh;
-  display: flex; flex-direction: column;
-}
-.modal-body header {
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 14px 18px; border-bottom: 1px solid var(--border);
-}
-.modal-body header button {
-  background: none; border: 1px solid var(--border); color: var(--fg);
-  border-radius: 4px; padding: 2px 8px; cursor: pointer;
-}
-.modal-content {
-  padding: 14px 18px; overflow: auto; flex: 1;
-}
-.modal-body footer {
-  padding: 10px 18px; border-top: 1px solid var(--border);
-  display: flex; justify-content: flex-end; gap: 8px;
-}
-.modal-body footer .run {
-  background: var(--accent); color: white; border: none;
-  border-radius: 4px; padding: 6px 14px; cursor: pointer; font-weight: 600;
-}
-.modal-body footer .run:disabled { opacity: 0.6; cursor: not-allowed; }
-.reindex-stats, .reindex-logs {
-  font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace;
-  background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
-  padding: 8px; margin: 8px 0;
-}
-.reindex-logs { max-height: 300px; overflow: auto; white-space: pre-wrap; }
-.modal-content h4 {
-  font-size: 11px; text-transform: uppercase; color: var(--muted);
-  letter-spacing: .06em; margin: 14px 0 6px;
-}
+/*
+ * .modal-* + .reindex-* rules migrated to Tailwind utilities in
+ * `ReindexDialog.tsx` (track B.4). The Run button is now the
+ * shadcn `<Button>` (default variant); the close button is
+ * `<Button variant="outline" size="icon">`. ReindexDialog was the
+ * only consumer of `.modal-*`, so the deletes are localized and
+ * no other component needs touching.
+ */
 
 /* ========================================================================
    Telemetry panel + debug pane — issue #90 dashboard surface.
