@@ -829,11 +829,22 @@ fn tile_with_nav(
     body: impl IntoElement,
 ) -> gpui::Div {
     let nav_state = state.clone();
+    let nav_tooltip: SharedString =
+        SharedString::from(format!("Open {} route", title.to_lowercase()));
+    // Tile header sits on `card_bg`, so hover tints to `border`
+    // (the lighter neighbour) — reads as a "raised" interactive
+    // surface, same convention as the toast strip footer (#407).
     let header = h_flex().items_center().justify_between().child(
         div()
             .id(nav_id)
+            .px_1p5()
+            .py_0p5()
+            .rounded_md()
             .text_xs()
             .text_color(primary)
+            .cursor_pointer()
+            .hover(move |s| s.bg(border))
+            .tooltip(move |window, cx| Tooltip::new(nav_tooltip.clone()).build(window, cx))
             .child(SharedString::from(format!(
                 "{} \u{2192}",
                 title.to_uppercase()
