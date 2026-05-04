@@ -31,6 +31,7 @@
 //! the same path). Errors land on `AppState::memory_graph_error` and
 //! render inline.
 
+use std::collections::HashSet;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
@@ -38,7 +39,11 @@ use gpui::{
     canvas, div, point, prelude::*, px, Bounds, Context, Entity, Hsla, IntoElement, MouseButton,
     PathBuilder, Pixels, Render, SharedString, Window,
 };
-use gpui_component::{h_flex, v_flex, ActiveTheme};
+use gpui_component::{
+    h_flex,
+    input::{Input, InputEvent, InputState},
+    v_flex, ActiveTheme,
+};
 
 use crate::api::types::{GraphEdge, GraphNode, GraphSnapshot, MemoryGraphEdge, MemoryGraphNode};
 use crate::graph_layout::{self, Layout};
@@ -96,11 +101,34 @@ pub struct KnowledgeGraphRoute {
     /// handler. Both fire on the gpui main thread sequentially — the
     /// mutex is just type-system glue across the two closures.
     last_canvas_bounds: Arc<Mutex<Option<Bounds<Pixels>>>>,
+    /// gpui-component InputState — owns the filter text + focus
+    /// handle. Substring matched against drawer title + id.
+    query_input: Entity<InputState>,
+    /// Lower-cased mirror of the input's value, kept in sync via
+    /// `InputEvent::Change`. Avoids re-lowercasing on every match
+    /// check during render.
+    query_lower: String,
+    /// Active wing pill set. Empty = all wings allowed (default);
+    /// non-empty = only nodes whose wing is in the set survive
+    /// the filter. Multi-select via click on a wing pill.
+    wing_filter: HashSet<SharedString>,
 }
 
 impl KnowledgeGraphRoute {
-    pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
+    pub fn new(state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         cx.observe(&state, |_, _, cx| cx.notify()).detach();
+        let query_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("filter by title or id…"));
+        cx.subscribe_in(&query_input, window, |this, st, event, _, cx| {
+            if let InputEvent::Change = event {
+                this.query_lower = st.read(cx).value().to_string().to_lowercase();
+                // Force a layout recompute since the visible node
+                // set just changed shape.
+                this.layout = None;
+                cx.notify();
+            }
+        })
+        .detach();
         Self {
             state,
             fetched_once: false,
@@ -109,7 +137,34 @@ impl KnowledgeGraphRoute {
             layout_fingerprint: 0,
             node_ids: Vec::new(),
             last_canvas_bounds: Arc::new(Mutex::new(None)),
+            query_input,
+            query_lower: String::new(),
+            wing_filter: HashSet::new(),
         }
+    }
+
+    /// Predicate: does `n` survive the current filter set? Wing
+    /// filter is a positive whitelist (empty = allow all);
+    /// query_lower must appear as a substring of the lower-cased
+    /// title or id when set.
+    fn node_matches(&self, n: &MemoryGraphNode) -> bool {
+        if !self.wing_filter.is_empty() && !self.wing_filter.contains(&n.kind) {
+            return false;
+        }
+        if self.query_lower.is_empty() {
+            return true;
+        }
+        let q = self.query_lower.as_str();
+        n.title.to_lowercase().contains(q) || n.id.to_lowercase().contains(q)
+    }
+
+    fn toggle_wing(&mut self, wing: SharedString) {
+        if !self.wing_filter.remove(&wing) {
+            self.wing_filter.insert(wing);
+        }
+        // Layout shape changed — drop the cached layout so the next
+        // render rebuilds from the filtered subset.
+        self.layout = None;
     }
 
     fn ensure_fetch(&mut self, cx: &mut Context<Self>) {
@@ -316,19 +371,53 @@ impl Render for KnowledgeGraphRoute {
                 ))
                 .into_any_element(),
             Some(g) => {
-                // Build / refresh the cached layout BEFORE the
-                // closures capture the route entity; the layout
-                // mutation is route-state, the canvas only reads.
-                self.ensure_layout(&g.nodes, &g.edges);
+                // Apply the filter pre-pass: prune nodes that don't
+                // match query + wing filter, then drop edges whose
+                // endpoints fell out. The canvas + list + edge index
+                // all operate on the filtered subset, which keeps
+                // the visual experience consistent — a hidden node
+                // never appears in any tail.
+                let filtered_nodes: Vec<MemoryGraphNode> =
+                    g.nodes.iter().filter(|n| self.node_matches(n)).cloned().collect();
+                let kept_ids: HashSet<&SharedString> =
+                    filtered_nodes.iter().map(|n| &n.id).collect();
+                let filtered_edges: Vec<MemoryGraphEdge> = g
+                    .edges
+                    .iter()
+                    .filter(|e| kept_ids.contains(&e.src) && kept_ids.contains(&e.dst))
+                    .cloned()
+                    .collect();
 
-                let edges_for_node = build_edge_index(&g.edges);
-                let by_wing = group_by_wing(&g.nodes);
+                // Build / refresh the cached layout from the FILTERED
+                // subset. Filter changes invalidate the cache (`layout
+                // = None` in toggle_wing / on InputEvent::Change).
+                self.ensure_layout(&filtered_nodes, &filtered_edges);
+
+                let edges_for_node = build_edge_index(&filtered_edges);
+                let by_wing = group_by_wing(&filtered_nodes);
+
+                // ── Filter strip (above canvas) ───────────────────
+                // Wing pills + substring input. Both narrow the
+                // canvas + list together via `node_matches`.
+                let filter_strip = render_filter_strip(
+                    &g.nodes,
+                    &self.wing_filter,
+                    &self.query_input,
+                    filtered_nodes.len(),
+                    g.nodes.len(),
+                    cx.entity(),
+                    muted,
+                    foreground,
+                    border,
+                    secondary,
+                    theme,
+                );
 
                 // ── Canvas (top) ──────────────────────────────────
                 let canvas_block = render_canvas(
                     self.layout.as_ref(),
                     &self.node_ids,
-                    &g.nodes,
+                    &filtered_nodes,
                     self.selected.as_ref(),
                     self.last_canvas_bounds.clone(),
                     cx.entity(),
@@ -367,7 +456,10 @@ impl Render for KnowledgeGraphRoute {
                     ));
                 }
 
-                // Right rail: selected drawer detail.
+                // Right rail: selected drawer detail. Always uses
+                // the FULL graph (not the filtered subset) so a node
+                // selected before the filter narrowed still resolves
+                // — otherwise stale-selection state would dead-end.
                 let detail_panel = render_detail(
                     self.selected.as_ref(),
                     &g.nodes,
@@ -381,6 +473,7 @@ impl Render for KnowledgeGraphRoute {
 
                 v_flex()
                     .size_full()
+                    .child(filter_strip)
                     .child(canvas_block)
                     .child(
                         h_flex()
@@ -849,6 +942,112 @@ fn paint_k_graph(
 
 fn with_alpha(c: Hsla, a: f32) -> Hsla {
     Hsla { a, ..c }
+}
+
+/// Filter strip rendered above the canvas. Two pieces:
+///
+///   * Wing pills, derived from the unique `kind` values present
+///     in the unfiltered response. Click toggles in/out of
+///     `wing_filter`. Active pills get a filled bg in the wing's
+///     own colour; inactive pills are outlined-only.
+///   * Substring input matched against title + id (lowercase).
+///
+/// A counter line shows `N of M visible` so the user can tell at
+/// a glance how aggressive the current filter is.
+#[allow(clippy::too_many_arguments)]
+fn render_filter_strip(
+    nodes: &[MemoryGraphNode],
+    wing_filter: &HashSet<SharedString>,
+    query_input: &Entity<InputState>,
+    visible_count: usize,
+    total_count: usize,
+    view: Entity<KnowledgeGraphRoute>,
+    muted: Hsla,
+    foreground: Hsla,
+    border: Hsla,
+    secondary: Hsla,
+    theme: &gpui_component::Theme,
+) -> gpui::Div {
+    // Unique wings, sorted alphabetically so the pill order is
+    // stable across renders. BTreeSet would also work; HashSet +
+    // sort keeps the iteration explicit.
+    let mut wings: Vec<SharedString> = nodes
+        .iter()
+        .map(|n| n.kind.clone())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    wings.sort_by(|a, b| a.as_ref().cmp(b.as_ref()));
+
+    let pill_iter = wings.into_iter().map(|wing| {
+        let is_active = wing_filter.contains(&wing);
+        let tone = wing_color(&wing, theme);
+        let bg = if is_active {
+            with_alpha(tone, 0.18)
+        } else {
+            gpui::transparent_black()
+        };
+        let id_str = format!("k-graph-wing-pill-{}", wing);
+        let entity = view.clone();
+        let wing_for_click = wing.clone();
+        div()
+            .id(SharedString::from(id_str))
+            .px_2()
+            .py_0p5()
+            .border_1()
+            .border_color(if is_active { tone } else { border })
+            .rounded_md()
+            .text_color(if is_active { foreground } else { muted })
+            .bg(bg)
+            .text_xs()
+            .child(SharedString::from(wing.to_string()))
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                let target = wing_for_click.clone();
+                entity.update(cx, |this, cx| {
+                    this.toggle_wing(target);
+                    cx.notify();
+                });
+            })
+            .into_any_element()
+    });
+
+    let pill_row = h_flex().gap_2().children(pill_iter);
+
+    let search_field = div()
+        .flex_1()
+        .border_1()
+        .border_color(border)
+        .rounded_md()
+        .px_2()
+        .py_1()
+        .child(Input::new(query_input).appearance(false));
+
+    let counter = div()
+        .text_color(muted)
+        .text_xs()
+        .child(SharedString::from(format!(
+            "{visible_count} of {total_count} visible"
+        )));
+
+    v_flex()
+        .mx_5()
+        .mt_3()
+        .gap_2()
+        .px_3()
+        .py_2()
+        .border_1()
+        .border_color(border)
+        .rounded_md()
+        .bg(secondary)
+        .child(
+            h_flex()
+                .gap_2()
+                .items_center()
+                .child(pill_row)
+                .child(div().flex_1())
+                .child(counter),
+        )
+        .child(search_field)
 }
 
 /// Walk the segment from `p1` to `p2` in `DASH_ON_PX + DASH_OFF_PX`
