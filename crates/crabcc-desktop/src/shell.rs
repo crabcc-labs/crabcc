@@ -25,6 +25,7 @@ use crate::routes::{
 };
 use crate::settings::SettingsPanel;
 use crate::state::{AppState, Route};
+use crate::theme::Palette;
 use crate::toasts::ToastStrip;
 
 pub struct Shell {
@@ -217,6 +218,18 @@ impl Render for Shell {
             }
         }
 
+        // Live-count badges next to the Agents / System tabs.
+        // Mirrors the dock badge + Home dashboard tiles so the user
+        // can read state at a glance from any route. Cyber accents
+        // come from the active palette (`cyber_cyan` for healthy
+        // running counts, `cyber_amber` for degraded services) so
+        // the badges follow palette switches without their own
+        // colour table.
+        let palette = cx.global::<Palette>();
+        let badge_running = palette.cyber_cyan_hsla();
+        let badge_degraded = palette.cyber_amber_hsla();
+        let services_status = state_for_brand.services_reachable();
+
         // Build the nav strip. Each entry captures the AppState entity
         // by clone and updates `route` on click — the shell observes
         // the entity and re-renders, dispatching a new body view.
@@ -226,6 +239,29 @@ impl Render for Shell {
                 let is_active = route == active;
                 let label = route.label();
                 let state = self.state.clone();
+
+                // Optional live-count badge — `Some((text, colour))`
+                // when the route has a glanceable signal worth
+                // surfacing without leaving the current view.
+                let badge: Option<(SharedString, gpui::Hsla)> = match route {
+                    Route::Agents if running > 0 => {
+                        Some((SharedString::from(running.to_string()), badge_running))
+                    }
+                    Route::System => match services_status {
+                        Some((up, total)) if up < total => {
+                            Some((SharedString::from(format!("{up}/{total}")), badge_degraded))
+                        }
+                        _ => None,
+                    },
+                    _ => None,
+                };
+
+                let mut tab_inner = h_flex().gap_2().child(SharedString::new_static(label));
+                if let Some((badge_text, badge_color)) = badge {
+                    tab_inner =
+                        tab_inner.child(div().text_xs().text_color(badge_color).child(badge_text));
+                }
+
                 div()
                     .id(label)
                     .px_2()
@@ -237,7 +273,7 @@ impl Render for Shell {
                     } else {
                         gpui::transparent_black()
                     })
-                    .child(SharedString::new_static(label))
+                    .child(tab_inner)
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         state.update(cx, |s, cx| {
                             s.set_route(route);
