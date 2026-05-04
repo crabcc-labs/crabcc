@@ -192,14 +192,28 @@ impl Render for KnowledgeRoute {
         // Capture an entity handle for the click handler to read +
         // call `submit_ingest` through. Cloning is cheap.
         let route_entity = cx.entity();
-        let submit_btn = div()
+        let foreground = cx.theme().foreground;
+        // Only earn the cursor + hover treatment when there's
+        // actually something to submit — empty prompt should look
+        // and act inert (same pattern as the spawn-sheet Launch
+        // button #426 / Commands runnable chips #413).
+        let mut submit_btn = div()
             .id("memory-ingest-submit")
             .px_3()
             .py_1()
             .border_1()
             .border_color(submit_color)
             .rounded_md()
-            .text_color(submit_color)
+            .text_color(submit_color);
+        if !submit_disabled {
+            submit_btn = submit_btn
+                .cursor_pointer()
+                .hover(move |s| s.bg(primary).text_color(foreground))
+                .tooltip(|window, cx| {
+                    Tooltip::new("Ingest into the memory backend").build(window, cx)
+                });
+        }
+        let submit_btn = submit_btn
             .child(SharedString::new_static("Ingest"))
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                 route_entity.update(cx, |this, cx| this.submit(window, cx));
@@ -267,6 +281,9 @@ impl Render for KnowledgeRoute {
                             .border_color(primary)
                             .rounded_md()
                             .text_color(primary)
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(secondary))
+                            .tooltip(|window, cx| Tooltip::new("Clear wing pin").build(window, cx))
                             .child(SharedString::from(format!("{wing} \u{00D7}")))
                             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                 entity_for_clear.update(cx, |this, cx| {
