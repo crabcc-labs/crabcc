@@ -130,6 +130,10 @@ pub struct AgentDerived {
     pub kill_id_home: SharedString,
     /// Refresh button inside the expanded log panel.
     pub log_refresh_id: SharedString,
+    /// "→ Timeline" cross-link on the Agents route per-row. Click
+    /// navigates to Timeline + pre-applies the agent_pin via
+    /// `AppState::navigate_to_timeline_with_agent_pin`.
+    pub timeline_link_id: SharedString,
 }
 
 impl AgentDerived {
@@ -141,6 +145,7 @@ impl AgentDerived {
             kill_id_agents_route: format!("agents-route-kill-{id}").into(),
             kill_id_home: format!("kill-{id}").into(),
             log_refresh_id: format!("agent-log-refresh-{id}").into(),
+            timeline_link_id: format!("agent-timeline-link-{id}").into(),
         }
     }
 }
