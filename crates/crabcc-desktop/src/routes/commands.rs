@@ -349,7 +349,16 @@ fn command_row(
     };
     let chip_view = view.clone();
     let chip_runnable = runnable;
-    let chip = div()
+    // Only runnable rows get cursor + hover. CLI-shape rows are
+    // display-only — pretending they're clickable would set up a
+    // disappointing click. The hover for runnable rows borrows
+    // `border` (the dim row-border on non-runnable rows) so a
+    // hovered runnable chip "pre-glows" with its non-runnable
+    // sibling's border, then settles back when the mouse leaves.
+    // Inverse direction would be more idiomatic but `primary` is
+    // the stronger colour and we're already using it for the
+    // active border — overlapping reads as "more active".
+    let mut chip = div()
         .id(SharedString::from(chip_id_str))
         .min_w(px(280.0))
         .px_2()
@@ -358,7 +367,13 @@ fn command_row(
         .border_1()
         .border_color(chip_border)
         .rounded_md()
-        .text_color(foreground)
+        .text_color(foreground);
+    if runnable.is_some() {
+        chip = chip
+            .cursor_pointer()
+            .hover(move |s| s.bg(card).border_color(primary).text_color(primary));
+    }
+    let chip = chip
         .child(SharedString::from(format!("crabcc {}", cmd.invocation)))
         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
             if let Some(r) = chip_runnable {
@@ -423,6 +438,8 @@ fn command_row(
                                 .rounded_md()
                                 .text_color(muted)
                                 .text_xs()
+                                .cursor_pointer()
+                                .hover(move |s| s.border_color(primary).text_color(primary))
                                 .child(SharedString::new_static("Copy"))
                                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                     cx.stop_propagation();
