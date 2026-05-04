@@ -40,6 +40,7 @@ use gpui_component::{
 };
 
 use crate::api::types::SseActivityEvent;
+use crate::routes::empty::empty_state;
 use std::collections::HashSet;
 
 use crate::state::AppState;
@@ -513,17 +514,25 @@ impl Render for TimelineRoute {
         // collapsing a 30-step agent run from 30 lines down to 1 —
         // and expands inline when the user toggles it.
         let timeline_block: gpui::AnyElement = if visible_with_color.is_empty() {
-            v_flex()
-                .px_5()
-                .py_4()
-                .child(div().text_color(muted).child(SharedString::new_static(
-                    if self.query_lower.is_empty() && self.op_pin.is_none() {
-                        "no activity yet"
-                    } else {
-                        "no activity matches the current filter"
-                    },
-                )))
+            if self.query_lower.is_empty() && self.op_pin.is_none() {
+                empty_state(
+                    "\u{25CC}",
+                    "No activity yet",
+                    "Tool calls + agent runs stream in here as they happen.",
+                    muted,
+                    foreground,
+                )
                 .into_any_element()
+            } else {
+                empty_state(
+                    "\u{1F50D}",
+                    "No activity matches the filter",
+                    "Try widening the query or clearing the op pin.",
+                    muted,
+                    foreground,
+                )
+                .into_any_element()
+            }
         } else {
             let runs = group_into_runs(visible_with_color);
             let mut list = v_flex().gap_0p5().px_5().py_2();
