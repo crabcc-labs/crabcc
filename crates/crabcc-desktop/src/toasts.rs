@@ -36,7 +36,7 @@
 use gpui::{
     div, prelude::*, px, relative, Context, Entity, MouseButton, Render, SharedString, Window,
 };
-use gpui_component::{h_flex, v_flex, ActiveTheme};
+use gpui_component::{h_flex, tooltip::Tooltip, v_flex, ActiveTheme};
 
 use crate::state::AppState;
 
@@ -363,8 +363,13 @@ impl Render for ToastStrip {
                                         .id(dismiss_id)
                                         .px_2()
                                         .text_color(muted)
+                                        .cursor_pointer()
+                                        .tooltip(|window, cx| {
+                                            Tooltip::new("Dismiss").build(window, cx)
+                                        })
                                         .child(SharedString::new_static("\u{00D7}"))
                                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                            cx.stop_propagation();
                                             state_clone.update(cx, |s, cx| {
                                                 s.dismiss_toast(id_for_click);
                                                 cx.notify();
