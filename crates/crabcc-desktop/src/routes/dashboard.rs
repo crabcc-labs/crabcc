@@ -133,14 +133,49 @@ impl Render for DashboardHome {
             .map(|(up, total)| format!("{up}/{total} reachable"))
             .unwrap_or_else(|| "—".into());
 
+        // Bind `primary` here (rather than after the tile-row prep
+        // block) so the navigable KPI cards below can pick it up for
+        // their label colour. The later block redundantly binds
+        // `theme.primary` from a re-borrow; that's fine.
+        let kpi_primary = cx.theme().primary;
         let kpi_strip = h_flex()
             .gap_3()
             .px_5()
             .py_4()
+            // INDEX stays static — there's no dedicated Index route;
+            // the system-wide stats are bundled into the System view
+            // alongside services / OTLP / kills.
             .child(kpi_card("INDEX", index_kpi, card, border, muted))
-            .child(kpi_card("ACTIVITY", activity_kpi, card, border, muted))
-            .child(kpi_card("AGENTS", agents_kpi, card, border, muted))
-            .child(kpi_card("SERVICES", services_kpi, card, border, muted));
+            .child(kpi_card_with_nav(
+                "ACTIVITY",
+                "kpi-activity-nav",
+                Route::Timeline,
+                activity_kpi,
+                self.state.clone(),
+                card,
+                border,
+                kpi_primary,
+            ))
+            .child(kpi_card_with_nav(
+                "AGENTS",
+                "kpi-agents-nav",
+                Route::Agents,
+                agents_kpi,
+                self.state.clone(),
+                card,
+                border,
+                kpi_primary,
+            ))
+            .child(kpi_card_with_nav(
+                "SERVICES",
+                "kpi-services-nav",
+                Route::System,
+                services_kpi,
+                self.state.clone(),
+                card,
+                border,
+                kpi_primary,
+            ));
 
         // ── Tile row ──────────────────────────────────────────────
         // Groups consecutive same-op rows into a single visual line so
@@ -677,6 +712,53 @@ fn kpi_card(
                 .child(SharedString::from(label.to_uppercase())),
         )
         .child(div().text_xl().child(SharedString::from(value)))
+}
+
+/// KPI card variant whose label is a clickable nav target. Same
+/// visual shape as `kpi_card` but the label uses `primary` colour
+/// with a trailing `→` to signal "this drills into the full route."
+/// Body click target is the whole card so the user doesn't have to
+/// aim at the small label.
+#[allow(clippy::too_many_arguments)]
+fn kpi_card_with_nav(
+    label: &'static str,
+    nav_id: &'static str,
+    nav_route: Route,
+    value: String,
+    state: Entity<AppState>,
+    card_bg: gpui::Hsla,
+    border: gpui::Hsla,
+    primary: gpui::Hsla,
+) -> gpui::Stateful<gpui::Div> {
+    let nav_state = state.clone();
+    div()
+        .id(nav_id)
+        .min_w(px(180.0))
+        .p_3()
+        .bg(card_bg)
+        .border_1()
+        .border_color(border)
+        .rounded_md()
+        .child(
+            v_flex()
+                .gap_1()
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(primary)
+                        .child(SharedString::from(format!(
+                            "{} \u{2192}",
+                            label.to_uppercase()
+                        ))),
+                )
+                .child(div().text_xl().child(SharedString::from(value))),
+        )
+        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+            nav_state.update(cx, |s, cx| {
+                s.set_route(nav_route);
+                cx.notify();
+            });
+        })
 }
 
 fn tile(
