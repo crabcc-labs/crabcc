@@ -285,6 +285,18 @@ fn truncate(s: &str, max: usize) -> String {
 
 impl Render for TimelineRoute {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Cross-route nav handoff: a previous render of another route
+        // (e.g. dashboard → Timeline) may have staged an agent_id to
+        // pin on entry. Consume it via `take_*` so it applies exactly
+        // once, then stays cleared until staged again. Done up-front
+        // so the subsequent `cx.theme()` borrow is unambiguous.
+        let pending_pin = self
+            .state
+            .update(cx, |s, _| s.take_pending_timeline_agent_pin());
+        if let Some(id) = pending_pin {
+            self.agent_pin = Some(id);
+        }
+
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let foreground = theme.foreground;
