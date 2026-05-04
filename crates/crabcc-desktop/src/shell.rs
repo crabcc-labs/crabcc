@@ -490,6 +490,70 @@ impl Render for Shell {
             Route::KnowledgeGraph => self.k_graph.clone().into_any_element(),
         };
 
+        // Status bar — thin strip pinned at the bottom of the
+        // window, surfacing service health + running-agents count
+        // alongside the in-window route. Same data the nav badges
+        // and dock badge already carry, but at the foot of the
+        // window it's the second canonical place a user looks for
+        // overall app state. Renders nothing fancy — just two
+        // glyph-prefixed counts in muted text with cyber accents
+        // when the values are interesting.
+        let services_segment: AnyElement = match state_for_brand.services_reachable() {
+            Some((up, total)) => {
+                let (color, glyph) = if up < total {
+                    (badge_degraded, "\u{25CF}")
+                } else {
+                    (badge_running, "\u{25CF}")
+                };
+                h_flex()
+                    .gap_1p5()
+                    .child(
+                        div()
+                            .text_color(color)
+                            .child(SharedString::new_static(glyph)),
+                    )
+                    .child(
+                        div()
+                            .text_color(muted)
+                            .child(SharedString::from(format!("services {up}/{total}"))),
+                    )
+                    .into_any_element()
+            }
+            None => div()
+                .text_color(muted)
+                .child(SharedString::new_static("services —"))
+                .into_any_element(),
+        };
+        let agents_segment: AnyElement = if running > 0 {
+            h_flex()
+                .gap_1p5()
+                .child(
+                    div()
+                        .text_color(badge_running)
+                        .child(SharedString::new_static("\u{25CF}")),
+                )
+                .child(
+                    div()
+                        .text_color(muted)
+                        .child(SharedString::from(format!("agents {running}"))),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .text_color(muted)
+                .child(SharedString::new_static("\u{25CB} agents 0"))
+                .into_any_element()
+        };
+        let status_bar = h_flex()
+            .gap_4()
+            .px_5()
+            .py_1()
+            .border_t_1()
+            .border_color(border)
+            .text_xs()
+            .child(services_segment)
+            .child(agents_segment);
+
         v_flex()
             .size_full()
             .bg(bg)
@@ -518,6 +582,11 @@ impl Render for Shell {
                     .overflow_y_scroll()
                     .child(body),
             )
+            // Status bar — pinned at the foot of the window. Sits
+            // between the scrollable body and the about-modal
+            // overlay so it's always visible regardless of route
+            // scroll state.
+            .child(status_bar)
             // About modal — overlay layered on top of everything
             // when open. Renders an empty `div` when closed, so
             // it claims no layout in the common case.
