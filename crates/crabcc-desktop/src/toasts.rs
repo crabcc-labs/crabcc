@@ -282,7 +282,8 @@ impl Render for ToastStrip {
                             };
                             let id_for_click = t.id;
                             let state_clone = state_for_dismiss.clone();
-                            // Element id must be unique per render pass; the
+                            let state_for_box = state_for_dismiss.clone();
+                            // Element ids must be unique per render pass; the
                             // monotonic toast id makes that trivial.
                             // `NamedInteger` keeps the per-render allocation
                             // at zero — the static-backed name pairs with
@@ -290,6 +291,10 @@ impl Render for ToastStrip {
                             // `SharedString::from(String)` round-trip.
                             let dismiss_id = gpui::ElementId::NamedInteger(
                                 SharedString::new_static("toast-dismiss"),
+                                t.id,
+                            );
+                            let box_id = gpui::ElementId::NamedInteger(
+                                SharedString::new_static("toast-box"),
                                 t.id,
                             );
                             // Remaining-time fraction for the progress
@@ -368,12 +373,27 @@ impl Render for ToastStrip {
                                 None => div().h(px(2.0)).into_any_element(),
                             };
 
+                            // Whole toast box becomes a click target —
+                            // dismisses on click anywhere on the row,
+                            // not just the small × glyph. The × stays
+                            // in the row for discoverability; both
+                            // handlers fire `dismiss_toast`, which is
+                            // idempotent (the second fires through a
+                            // no-op `retain` since the toast is gone).
                             v_flex()
+                                .id(box_id)
                                 .border_1()
                                 .border_color(accent)
                                 .rounded_md()
                                 .bg(bg)
                                 .overflow_hidden()
+                                .cursor_pointer()
+                                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                    state_for_box.update(cx, |s, cx| {
+                                        s.dismiss_toast(id_for_click);
+                                        cx.notify();
+                                    });
+                                })
                                 .child(row)
                                 .child(bar)
                                 .into_any_element()
