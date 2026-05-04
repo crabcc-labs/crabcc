@@ -24,6 +24,8 @@
 //! back to the OS-appearance pair. Full list lives at
 //! [`Palette::ALL_NAMES`].
 
+use std::path::PathBuf;
+
 use gpui::{rgb, App, Hsla};
 use gpui_component::theme::Theme;
 
@@ -255,8 +257,16 @@ pub fn apply_by_index(cx: &mut App, idx: usize) -> Palette {
 }
 
 /// Resolve the initial palette index — `AppState::palette_index`
-/// uses this at construction time so the env-var override and the
-/// header switcher button stay in sync from the very first frame.
+/// uses this at construction time so the env-var override / last
+/// persisted choice / header switcher button all stay in sync
+/// from the very first frame.
+///
+/// Preference order:
+///   1. `CRABCC_DESKTOP_PALETTE` env var (explicit override).
+///   2. Persisted choice from `~/.config/crabcc-desktop/palette`
+///      (the last value the user clicked through the header
+///      switcher).
+///   3. Default (`web_dark`).
 pub fn initial_palette_index() -> usize {
     let names = Palette::ALL_NAMES;
     if let Ok(name) = std::env::var(PALETTE_ENV) {
@@ -264,13 +274,53 @@ pub fn initial_palette_index() -> usize {
             return pos;
         }
     }
-    // No env override → start on the OS-appearance default.
-    // We don't have access to `App` here, so we approximate via a
-    // simple heuristic: macOS dark mode is the typical operator
-    // setup, so default to `web_dark` (index 0). Callers that
-    // want appearance-correct behaviour should call
-    // `theme::install(cx)` separately, which DOES check.
+    if let Some(name) = load_persisted_palette() {
+        if let Some(pos) = names.iter().position(|n| *n == name) {
+            return pos;
+        }
+    }
     0
+}
+
+/// Resolve the on-disk path for the persisted palette name.
+///
+/// Honours `XDG_CONFIG_HOME` if set; otherwise falls back to
+/// `$HOME/.config`. Returns `None` if neither is available
+/// (CI / sandboxed runs) — callers no-op on `None` so the
+/// surface stays best-effort.
+fn config_path() -> Option<PathBuf> {
+    if let Some(xdg) = std::env::var_os("XDG_CONFIG_HOME") {
+        return Some(PathBuf::from(xdg).join("crabcc-desktop").join("palette"));
+    }
+    std::env::var_os("HOME").map(|h| {
+        PathBuf::from(h)
+            .join(".config")
+            .join("crabcc-desktop")
+            .join("palette")
+    })
+}
+
+/// Read the persisted palette name. Returns `None` if no file
+/// exists or the read fails — callers fall back to the next
+/// preference rung.
+fn load_persisted_palette() -> Option<String> {
+    let path = config_path()?;
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Persist the palette name. Best-effort: silently swallows IO
+/// errors (the in-memory state still reflects the user's choice
+/// for this session, just won't survive restart). Creates the
+/// parent dir on demand.
+pub fn save_persisted_palette(name: &str) {
+    let Some(path) = config_path() else { return };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, name);
 }
 
 fn apply(cx: &mut App, palette: Palette) {

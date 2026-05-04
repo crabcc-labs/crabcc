@@ -304,7 +304,14 @@ impl Render for Shell {
                     cx.notify();
                 });
                 let idx = state_for_palette.read(cx).palette_index;
-                crate::theme::apply_by_index(cx, idx);
+                let palette = crate::theme::apply_by_index(cx, idx);
+                let _ = palette; // logged inside apply if ever needed
+                                 // Persist the user's choice so it survives restart.
+                                 // Best-effort: errors swallowed inside (sandbox /
+                                 // missing $HOME). Source of truth for next launch
+                                 // is `theme::initial_palette_index`.
+                let name = state_for_palette.read(cx).palette_name();
+                crate::theme::save_persisted_palette(name);
                 // Mutating the global theme doesn't auto-trigger
                 // a redraw — entity observation only fires for
                 // entity-shaped state. Force the whole window to
