@@ -132,6 +132,11 @@ pub struct TimelineRoute {
     /// Active op-pin (None = all ops). Click an op pill to set; click
     /// the active pill again to clear.
     op_pin: Option<SharedString>,
+    /// Active agent-pin (None = all agents). Click an `agt` badge on
+    /// a row to set; click the active badge or the header pill `×`
+    /// to clear. ANDed with `op_pin` and `query_lower` — narrows to
+    /// "events from this specific agent run".
+    agent_pin: Option<SharedString>,
     /// Pinned events — deep-copied so they survive eviction from the
     /// `recent_activity` ring. Dedup is by `(ts, op, query)` since
     /// `SseActivityEvent` has no stable id today.
@@ -163,6 +168,7 @@ impl TimelineRoute {
             query_input,
             query_lower: String::new(),
             op_pin: None,
+            agent_pin: None,
             pinned: Vec::new(),
             selected: None,
             collapsed_agents: HashSet::new(),
@@ -179,9 +185,22 @@ impl TimelineRoute {
         self.collapsed_agents.contains(id)
     }
 
+    fn toggle_agent_pin(&mut self, id: SharedString) {
+        if self.agent_pin.as_deref() == Some(id.as_ref()) {
+            self.agent_pin = None;
+        } else {
+            self.agent_pin = Some(id);
+        }
+    }
+
     fn matches(&self, e: &SseActivityEvent) -> bool {
         if let Some(p) = &self.op_pin {
             if e.op.as_ref() != p.as_ref() {
+                return false;
+            }
+        }
+        if let Some(p) = &self.agent_pin {
+            if e.agent_id.as_deref() != Some(p.as_ref()) {
                 return false;
             }
         }
@@ -189,7 +208,15 @@ impl TimelineRoute {
             return true;
         }
         let q = self.query_lower.as_str();
-        e.op.to_lowercase().contains(q) || e.query.to_lowercase().contains(q)
+        // `agent_id` joins `op` + `query` as a substring-match field
+        // so typing an id prefix into the filter input surfaces a
+        // specific agent's events without first having to find one
+        // and click its badge.
+        e.op.to_lowercase().contains(q)
+            || e.query.to_lowercase().contains(q)
+            || e.agent_id
+                .as_deref()
+                .is_some_and(|id| id.to_lowercase().contains(q))
     }
 
     fn toggle_op_pin(&mut self, op: SharedString) {
@@ -282,7 +309,7 @@ impl Render for TimelineRoute {
         let total_buffered = self.state.read(cx).recent_activity.len();
 
         // ── Header ────────────────────────────────────────────────
-        let header = h_flex()
+        let mut header = h_flex()
             .gap_3()
             .px_5()
             .py_3()
@@ -299,6 +326,31 @@ impl Render for TimelineRoute {
                 visible.len(),
                 self.pinned.len()
             ))));
+        // Active agent-pin pill — visible whenever an agent is pinned
+        // so the user can clear it from the persistent header rather
+        // than having to find a row carrying that agent first.
+        if let Some(id) = self.agent_pin.clone() {
+            let trimmed: String = id.chars().take(8).collect();
+            let entity_for_clear = cx.entity();
+            header = header.child(
+                div()
+                    .id("timeline-agent-pin-clear")
+                    .px_2()
+                    .py_0p5()
+                    .border_1()
+                    .border_color(primary)
+                    .rounded_md()
+                    .text_color(primary)
+                    .text_xs()
+                    .child(SharedString::from(format!("agt {trimmed} \u{00D7}")))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        entity_for_clear.update(cx, |this, cx| {
+                            this.agent_pin = None;
+                            cx.notify();
+                        });
+                    }),
+            );
+        }
 
         // ── Filter input + pills ──────────────────────────────────
         let filter_field = div()
@@ -649,17 +701,33 @@ impl TimelineRoute {
         // Agent badge — only renders when the server (post-#311)
         // tagged this row with an agent run id. Truncated to keep
         // the row dense; the inspector pane shows the full id.
+        // Click pins / unpins this agent (parallel to op_pin via
+        // header pills). Active pin renders foreground-bright so the
+        // active filter is visually obvious from across the list.
+        let agent_pin_view = cx.entity();
         let agent_badge: gpui::AnyElement = match event.agent_id.as_ref() {
             Some(id) => {
                 let trimmed: String = id.chars().take(8).collect();
+                let is_pinned_agent = self.agent_pin.as_deref() == Some(id.as_ref());
+                let badge_color = if is_pinned_agent { foreground } else { muted };
+                let click_id = id.clone();
                 div()
+                    .id(SharedString::from(format!("{row_id}-agent-pin")))
                     .px_1()
                     .border_1()
-                    .border_color(muted)
+                    .border_color(badge_color)
                     .rounded_md()
-                    .text_color(muted)
+                    .text_color(badge_color)
                     .text_xs()
                     .child(SharedString::from(format!("agt {trimmed}")))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        cx.stop_propagation();
+                        let id = click_id.clone();
+                        agent_pin_view.update(cx, |this, cx| {
+                            this.toggle_agent_pin(id);
+                            cx.notify();
+                        });
+                    })
                     .into_any_element()
             }
             None => div().into_any_element(),
@@ -948,6 +1016,89 @@ mod tests {
             (evt_a(2, "refs", Some("a1")), col()),
         ];
         assert!(group_into_runs(two)[0].foldable());
+    }
+
+    /// Build a TimelineRoute-shaped value just for `matches`. The
+    /// route normally needs an `Entity<AppState>` + `Entity<InputState>`
+    /// from a real `Window`/`Cx`; for a pure-logic test on `matches`
+    /// we only need the four filter fields (`op_pin`, `agent_pin`,
+    /// `query_lower`, plus the `pinned`/`selected`/`collapsed_agents`
+    /// the method ignores). Helper avoids touching gpui plumbing.
+    struct MatchesShape {
+        op_pin: Option<SharedString>,
+        agent_pin: Option<SharedString>,
+        query_lower: String,
+    }
+
+    impl MatchesShape {
+        fn matches(&self, e: &SseActivityEvent) -> bool {
+            if let Some(p) = &self.op_pin {
+                if e.op.as_ref() != p.as_ref() {
+                    return false;
+                }
+            }
+            if let Some(p) = &self.agent_pin {
+                if e.agent_id.as_deref() != Some(p.as_ref()) {
+                    return false;
+                }
+            }
+            if self.query_lower.is_empty() {
+                return true;
+            }
+            let q = self.query_lower.as_str();
+            e.op.to_lowercase().contains(q)
+                || e.query.to_lowercase().contains(q)
+                || e.agent_id
+                    .as_deref()
+                    .is_some_and(|id| id.to_lowercase().contains(q))
+        }
+    }
+
+    #[test]
+    fn matches_filters_by_agent_pin() {
+        let shape = MatchesShape {
+            op_pin: None,
+            agent_pin: Some("agent-a".into()),
+            query_lower: String::new(),
+        };
+        assert!(shape.matches(&evt_a(1, "sym", Some("agent-a"))));
+        assert!(!shape.matches(&evt_a(1, "sym", Some("agent-b"))));
+        // No agent_id → never matches an agent_pin.
+        assert!(!shape.matches(&evt_a(1, "sym", None)));
+    }
+
+    #[test]
+    fn matches_query_substring_finds_agent_id() {
+        // The substring filter joins op + query + agent_id, so typing
+        // an agent prefix surfaces that agent without needing to
+        // click a badge first.
+        let shape = MatchesShape {
+            op_pin: None,
+            agent_pin: None,
+            query_lower: "agent".to_string(),
+        };
+        assert!(shape.matches(&evt_a(1, "sym", Some("agent-deadbeef"))));
+        // Op match still works.
+        let shape2 = MatchesShape {
+            op_pin: None,
+            agent_pin: None,
+            query_lower: "ref".to_string(),
+        };
+        assert!(shape2.matches(&evt_a(1, "refs", None)));
+    }
+
+    #[test]
+    fn matches_op_and_agent_are_anded() {
+        let shape = MatchesShape {
+            op_pin: Some("sym".into()),
+            agent_pin: Some("agent-a".into()),
+            query_lower: String::new(),
+        };
+        assert!(shape.matches(&evt_a(1, "sym", Some("agent-a"))));
+        // Wrong op even though agent matches.
+        assert!(!shape.matches(&evt_a(1, "refs", Some("agent-a"))));
+        // Wrong agent even though op matches.
+        assert!(!shape.matches(&evt_a(1, "sym", Some("agent-b"))));
     }
 
     #[test]
