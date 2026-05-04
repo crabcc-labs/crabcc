@@ -19,7 +19,7 @@ use gpui_component::{h_flex, v_flex, ActiveTheme};
 use crate::api::types::{AgentStatus, SseActivityEvent};
 use crate::routes::agent_spawn_sheet::AgentSpawnSheet;
 use crate::routes::graph::GraphView;
-use crate::state::AppState;
+use crate::state::{AppState, Route};
 use crate::theme_helpers::op_color;
 
 pub struct DashboardHome {
@@ -410,11 +410,15 @@ impl Render for DashboardHome {
         } else {
             div().into_any_element()
         };
-        let activity_tile = tile(
+        let activity_tile = tile_with_nav(
             "Recent activity",
+            "activity-tile-heading-nav",
+            Route::Timeline,
+            self.state.clone(),
             card,
             border,
             muted,
+            primary,
             v_flex().gap_2().child(pin_pill).child(activity_body),
         );
 
@@ -425,11 +429,15 @@ impl Render for DashboardHome {
         // shared `AppState` entity.
         let danger = cx.theme().danger;
         let agents_state = self.state.clone();
-        let agents_tile = tile(
+        let agents_tile = tile_with_nav(
             "Agents",
+            "agents-tile-heading-nav",
+            Route::Agents,
+            self.state.clone(),
             card,
             border,
             muted,
+            primary,
             v_flex()
                 .gap_1()
                 .children(state.agents.iter().take(8).map(|a| {
@@ -679,6 +687,55 @@ fn tile(
     body: impl IntoElement,
 ) -> gpui::Div {
     tile_with_meta::<gpui::Div>(title, None, card_bg, border, muted, body)
+}
+
+/// Like `tile` but the heading is clickable and navigates to
+/// `nav_route`. Used for tiles that condense data also viewable in
+/// a dedicated route (Recent activity → Timeline; Agents tile →
+/// Agents route). The heading text picks up `primary` colour as a
+/// hover-affordance hint without a fixed underline — gpui doesn't
+/// give us cheap per-element :hover yet.
+#[allow(clippy::too_many_arguments)]
+fn tile_with_nav(
+    title: &'static str,
+    nav_id: &'static str,
+    nav_route: Route,
+    state: Entity<AppState>,
+    card_bg: gpui::Hsla,
+    border: gpui::Hsla,
+    muted: gpui::Hsla,
+    primary: gpui::Hsla,
+    body: impl IntoElement,
+) -> gpui::Div {
+    let nav_state = state.clone();
+    let header = h_flex().items_center().justify_between().child(
+        div()
+            .id(nav_id)
+            .text_xs()
+            .text_color(primary)
+            .child(SharedString::from(format!(
+                "{} \u{2192}",
+                title.to_uppercase()
+            )))
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                nav_state.update(cx, |s, cx| {
+                    s.set_route(nav_route);
+                    cx.notify();
+                });
+            }),
+    );
+    let _ = muted;
+    v_flex()
+        .flex_1()
+        .min_h(px(220.0))
+        .p_3()
+        .gap_2()
+        .bg(card_bg)
+        .border_1()
+        .border_color(border)
+        .rounded_md()
+        .child(header)
+        .child(body)
 }
 
 /// Tile variant with an optional metadata pill rendered on the
