@@ -258,6 +258,7 @@ impl Render for DashboardHome {
             "Recent activity",
             card,
             border,
+            muted,
             v_flex().gap_2().child(pin_pill).child(activity_body),
         );
 
@@ -272,6 +273,7 @@ impl Render for DashboardHome {
             "Agents",
             card,
             border,
+            muted,
             v_flex()
                 .gap_1()
                 .children(state.agents.iter().take(8).map(|a| {
@@ -342,7 +344,7 @@ impl Render for DashboardHome {
                     .child(SharedString::new_static("loading…")),
             ),
         };
-        let services_tile = tile("Services", card, border, services_body);
+        let services_tile = tile("Services", card, border, muted, services_body);
 
         let tile_row = h_flex()
             .gap_3()
@@ -422,6 +424,11 @@ fn kpi_card(
     border: gpui::Hsla,
     muted: gpui::Hsla,
 ) -> gpui::Div {
+    // Mirrors the web's `.dash-tile-title` pattern — small,
+    // uppercase, muted. Web also uses `letter-spacing: .06em`,
+    // but gpui has no letter-spacing API in this version, so
+    // uppercase + muted-fg carry the visual hierarchy alone.
+    // Followed by a larger value line for the actual stat.
     v_flex()
         .min_w(px(180.0))
         .p_3()
@@ -434,7 +441,7 @@ fn kpi_card(
             div()
                 .text_xs()
                 .text_color(muted)
-                .child(SharedString::new_static(label)),
+                .child(SharedString::from(label.to_uppercase())),
         )
         .child(div().text_xl().child(SharedString::from(value)))
 }
@@ -443,8 +450,33 @@ fn tile(
     title: &'static str,
     card_bg: gpui::Hsla,
     border: gpui::Hsla,
+    muted: gpui::Hsla,
     body: impl IntoElement,
 ) -> gpui::Div {
+    tile_with_meta::<gpui::Div>(title, None, card_bg, border, muted, body)
+}
+
+/// Tile variant with an optional metadata pill rendered on the
+/// right of the header row — mirrors the web `<DashTile>`'s
+/// `meta` prop. Used for "X total" / "X/Y up" badges.
+fn tile_with_meta<E: IntoElement>(
+    title: &'static str,
+    meta: Option<E>,
+    card_bg: gpui::Hsla,
+    border: gpui::Hsla,
+    muted: gpui::Hsla,
+    body: impl IntoElement,
+) -> gpui::Div {
+    let header = h_flex().items_center().justify_between().child(
+        div()
+            .text_xs()
+            .text_color(muted)
+            .child(SharedString::from(title.to_uppercase())),
+    );
+    let header = match meta {
+        Some(m) => header.child(m),
+        None => header,
+    };
     v_flex()
         .flex_1()
         .min_h(px(220.0))
@@ -454,7 +486,7 @@ fn tile(
         .border_1()
         .border_color(border)
         .rounded_md()
-        .child(div().text_sm().child(SharedString::new_static(title)))
+        .child(header)
         .child(body)
 }
 

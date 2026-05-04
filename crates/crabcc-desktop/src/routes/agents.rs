@@ -292,20 +292,26 @@ impl Render for AgentsRoute {
                         AgentStatus::Running => success,
                         AgentStatus::Exited => muted,
                     };
-                    let runtime = a.runtime.clone().unwrap_or_else(|| "—".into());
-                    let model = a.model.clone().unwrap_or_else(|| "—".into());
-                    let pid = a.pid.map(|p| p.to_string()).unwrap_or_else(|| "—".into());
-                    // Best-effort start-time formatter. We avoid pulling
-                    // chrono just for this — `started_ts` is unix-seconds,
-                    // and "Xs ago" is what a glance-pane wants anyway.
+                    let runtime = a
+                        .runtime
+                        .clone()
+                        .unwrap_or_else(|| "subprocess (host)".into());
+                    let model = a.model.clone(); // Option — we hide the chip when None.
+                    let pid = a.pid; // Option — hidden in the row when None.
+                                     // Best-effort start-time formatter. We avoid pulling
+                                     // chrono just for this — `started_ts` is unix-seconds,
+                                     // and "Xs ago" is what a glance-pane wants anyway.
                     let age = relative_age(a.started_ts, state.last_event_ts);
-                    let log_kib = a.log_bytes as f64 / 1024.0;
-                    let root_short = a
+                    let log_label = format_log_size(a.log_bytes);
+                    // Drop the absolute path; show the leaf so the meta
+                    // row stays readable. None → omit the chip rather
+                    // than render "root: —".
+                    let root_short: Option<SharedString> = a
                         .root
                         .as_ref()
                         .and_then(|r| r.rsplit('/').next())
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| "—".into());
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string().into());
 
                     // Kill button — running agents only. Mirrors the
                     // Home Agents-tile pattern (#234) but lifted into
@@ -340,7 +346,15 @@ impl Render for AgentsRoute {
                         div().into_any_element()
                     };
 
-                    // First row: status, id, runtime · model · kill button.
+                    // First row: status dot, id, runtime [· model], kill.
+                    // `model` is omitted when None — rendering "· —"
+                    // for an unknown model is just noise. Same for the
+                    // separator between runtime and model: only present
+                    // when there's a model to separate from.
+                    let head_meta = match &model {
+                        Some(m) => format!("· {runtime} · {m}"),
+                        None => format!("· {runtime}"),
+                    };
                     let head_row = h_flex()
                         .gap_2()
                         .child(
@@ -353,35 +367,51 @@ impl Render for AgentsRoute {
                                 // a.id is SharedString — clone is a refcount
                                 // bump, no alloc per render.
                                 .child(a.id.clone()))
-                        .child(
-                            div()
-                                .text_color(muted)
-                                .child(SharedString::from(format!("· {runtime} · {model}"))),
-                        )
+                        .child(div().text_color(muted).child(SharedString::from(head_meta)))
                         .child(kill_btn);
 
-                    // Second row: pid, age, log kib, root.
-                    let meta_row = h_flex()
-                        .gap_3()
-                        .text_color(muted)
-                        .child(SharedString::from(format!("pid {pid}")))
-                        .child(SharedString::from(age))
-                        .child(SharedString::from(format!("{log_kib:.1} KiB log")))
-                        .child(SharedString::from(format!("root: {root_short}")));
-
-                    // Optional prompt-preview row. Empty when the agent
-                    // didn't carry one (e.g. legacy launches).
-                    let prompt_row: gpui::AnyElement = if a.prompt_preview.trim().is_empty() {
+                    // Second row: only chips that have real data.
+                    // Previously this row rendered "pid — — 0.0 KiB log
+                    // root: —" for any agent whose meta.json hadn't
+                    // landed yet. Now each chip is conditional and we
+                    // drop the row entirely if every chip is missing.
+                    let mut meta_chips: Vec<SharedString> = Vec::with_capacity(4);
+                    if let Some(p) = pid {
+                        meta_chips.push(format!("pid {p}").into());
+                    }
+                    meta_chips.push(age.into());
+                    meta_chips.push(log_label.into());
+                    if let Some(r) = root_short {
+                        meta_chips.push(SharedString::from(format!("root: {r}")));
+                    }
+                    let meta_row: gpui::AnyElement = if meta_chips.is_empty() {
                         div().into_any_element()
                     } else {
-                        div()
-                            .text_color(primary)
-                            .child(SharedString::from(format!(
-                                "\u{201C}{}\u{201D}",
-                                a.prompt_preview.clone()
-                            )))
-                            .into_any_element()
+                        let mut row = h_flex().gap_3().text_color(muted);
+                        for chip in meta_chips {
+                            row = row.child(chip);
+                        }
+                        row.into_any_element()
                     };
+
+                    // Prompt preview — always rendered. An empty preview
+                    // shows "(no prompt recorded)" so the user knows the
+                    // launch path was the dry-run / legacy one rather
+                    // than the agent failing silently.
+                    let prompt_text = if a.prompt_preview.trim().is_empty() {
+                        SharedString::new_static("(no prompt recorded)")
+                    } else {
+                        SharedString::from(format!("\u{201C}{}\u{201D}", a.prompt_preview.clone()))
+                    };
+                    let prompt_color = if a.prompt_preview.trim().is_empty() {
+                        muted
+                    } else {
+                        primary
+                    };
+                    let prompt_row: gpui::AnyElement = div()
+                        .text_color(prompt_color)
+                        .child(prompt_text)
+                        .into_any_element();
 
                     // Expanded log-tail panel — only rendered when this
                     // card is the selection. Reads from `state.agent_log`
@@ -491,15 +521,20 @@ impl Render for AgentsRoute {
 /// to avoid adding a real time crate just for one display string. The
 /// drift vs wall-clock is at most one SSE poll interval, which is
 /// invisible at this granularity.
+///
+/// Returns "just started" instead of "—" when started_ts is missing
+/// (older runs without meta.json, or the brief race between RunDir
+/// creation and write_meta) — the agent IS visible in the list, so
+/// it just started; "—" suggests "data is broken" which it isn't.
 fn relative_age(started_ts: i64, now_ts: Option<i64>) -> String {
-    let Some(now) = now_ts else {
-        return "—".into();
-    };
-    if started_ts == 0 {
-        return "—".into();
+    if started_ts == 0 || now_ts.is_none() {
+        return "just started".into();
     }
+    let now = now_ts.unwrap();
     let secs = (now - started_ts).max(0);
-    if secs < 60 {
+    if secs < 5 {
+        "just started".into()
+    } else if secs < 60 {
         format!("{secs}s ago")
     } else if secs < 3600 {
         format!("{}m ago", secs / 60)
@@ -508,6 +543,24 @@ fn relative_age(started_ts: i64, now_ts: Option<i64>) -> String {
     } else {
         format!("{}d ago", secs / 86_400)
     }
+}
+
+/// Human-friendly log-size chip. Empty logs get a plain "no output yet"
+/// instead of "0.0 KiB log" — the size is what makes that string useful,
+/// and zero is the absence of data, not a useful size.
+fn format_log_size(bytes: u64) -> String {
+    if bytes == 0 {
+        return "no output yet".into();
+    }
+    if bytes < 1024 {
+        return format!("{bytes} B log");
+    }
+    let kib = bytes as f64 / 1024.0;
+    if kib < 1024.0 {
+        return format!("{kib:.1} KiB log");
+    }
+    let mib = kib / 1024.0;
+    format!("{mib:.1} MiB log")
 }
 
 /// Trim the log body to the last `LOG_TAIL_BYTES`, preserving UTF-8
@@ -526,4 +579,72 @@ fn log_tail(body: &str) -> Result<String, String> {
         cut += 1;
     }
     Ok(format!("…{}", &body[cut..]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── relative_age ─────────────────────────────────────────────────
+
+    #[test]
+    fn relative_age_unknown_started_returns_just_started() {
+        // started_ts == 0 means meta.json hadn't landed; we still see
+        // the run on disk, so "just started" is the truthful label.
+        assert_eq!(relative_age(0, Some(1_700_000_000)), "just started");
+    }
+
+    #[test]
+    fn relative_age_no_clock_proxy_returns_just_started() {
+        assert_eq!(relative_age(1_700_000_000, None), "just started");
+    }
+
+    #[test]
+    fn relative_age_under_5s_buckets_to_just_started() {
+        assert_eq!(relative_age(1_000, Some(1_002)), "just started");
+        assert_eq!(relative_age(1_000, Some(1_004)), "just started");
+    }
+
+    #[test]
+    fn relative_age_seconds_minutes_hours_days() {
+        assert_eq!(relative_age(1_000, Some(1_010)), "10s ago");
+        assert_eq!(relative_age(1_000, Some(1_059)), "59s ago");
+        assert_eq!(relative_age(1_000, Some(1_120)), "2m ago");
+        assert_eq!(relative_age(1_000, Some(1_000 + 7_200)), "2h ago");
+        assert_eq!(relative_age(1_000, Some(1_000 + 86_400 * 3)), "3d ago");
+    }
+
+    #[test]
+    fn relative_age_negative_clock_skew_clamps_to_just_started() {
+        // Clock skew between agent host and dashboard host can make
+        // started_ts > now_ts; saturating to 0 prevents "-3s ago".
+        assert_eq!(relative_age(2_000, Some(1_000)), "just started");
+    }
+
+    // ── format_log_size ─────────────────────────────────────────────
+
+    #[test]
+    fn format_log_size_zero_is_no_output_yet() {
+        assert_eq!(format_log_size(0), "no output yet");
+    }
+
+    #[test]
+    fn format_log_size_small_in_bytes() {
+        assert_eq!(format_log_size(1), "1 B log");
+        assert_eq!(format_log_size(512), "512 B log");
+        assert_eq!(format_log_size(1023), "1023 B log");
+    }
+
+    #[test]
+    fn format_log_size_kib() {
+        assert_eq!(format_log_size(1024), "1.0 KiB log");
+        assert_eq!(format_log_size(1024 * 12 + 256), "12.2 KiB log");
+        assert_eq!(format_log_size(1024 * 1023), "1023.0 KiB log");
+    }
+
+    #[test]
+    fn format_log_size_mib() {
+        assert_eq!(format_log_size(1024 * 1024), "1.0 MiB log");
+        assert_eq!(format_log_size(1024 * 1024 * 5 + 100 * 1024), "5.1 MiB log");
+    }
 }
