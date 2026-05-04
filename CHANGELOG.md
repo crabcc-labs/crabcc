@@ -6,6 +6,69 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+## [3.0.0-rc.3] — 2026-05-04
+
+Desktop theme + layout alignment release. The GPUI binary now
+reads as the same product as the web dashboard at `/live` —
+core palette mirrored token-for-token, tile typography aligned,
+five named theme presets with live switching + persistence, and
+a proper settings panel with an about modal. 13 commits since
+v3.0.0-rc.2.
+
+### Added — desktop theme system
+- **5 named palettes** wired through a single `Palette` struct
+  + `Palette::ALL_NAMES` registry: `web_dark`, `web_light`,
+  `cyberpunk_neon`, `mono`, `high_contrast` (#356, #357, #359).
+- **`CRABCC_DESKTOP_PALETTE` env var** for explicit override at
+  process start (#357).
+- **Live theme switcher** — `◐ <palette_name>` button in the
+  header cycles through palettes on click; `window.refresh()`
+  forces every observed entity to repaint without restart
+  (#361).
+- **Persistence** to `~/.config/crabcc-desktop/palette` —
+  user's selection survives restart. Preference order:
+  env var > persisted file > default (#362).
+- **`Palette` as gpui `Global`** — per-route widgets read
+  cyberpunk accents directly via `cx.global::<Palette>()`
+  without re-deriving (#368).
+- **First cyberpunk-accent applications**: running-agent dots
+  on the Home tile pick up `cyber_cyan` (#368); services
+  reachable / down indicators use `cyber_cyan` / `cyber_amber`
+  (#369). Palette-aware — flips correctly with each preset.
+
+### Added — desktop layout alignment
+- **Tile + KPI typography** — uppercase + muted-fg titles +
+  optional metadata pill on the right (mirrors the web's
+  `.dash-tile-title` rule) (#363).
+- **Memory drawers preview tile** on the Home dashboard —
+  three states (loading / not-bootstrapped / empty / 5-row
+  preview) mirroring the web `<DashTile title="memory
+  drawers">` (#365). New `fmt_age_short` helper matches the
+  web's `fmtAge` selector exactly.
+
+### Added — desktop settings + about
+- **Inline `SettingsPanel`** opened via the header `⚙` gear
+  button (#366). Three sections shipped:
+  - **THEME** — palette picker (jumps directly to a chosen
+    palette, persists, auto-closes the panel).
+  - **ALERTS** — `mute alerts` + `echo to Notification
+    Center` toggle rows mirroring the header buttons (#372).
+  - **About link** — opens the about modal.
+- **`AboutModal`** overlay surface (#372) — version + repo +
+  `CARGO_PKG_DESCRIPTION` blurb + curated `BUILT WITH`
+  dependency rollup (gpui ecosystem, HTTP / serialisation,
+  native macOS bindings, etc.). Backdrop click closes.
+
+### Notes for the RC
+
+- The cyberpunk-skinned web panels (Ollama key, Services,
+  Agents) still use legacy CSS — palette-strategy decision
+  pending before they migrate.
+- Per-route cyberpunk treatments on the desktop are first
+  applications only — Knowledge wing colours, kill button,
+  KPI card left-borders are easy follow-ups via the same
+  `cx.global::<Palette>()` pattern.
+
 ## [3.0.0-rc.2] — 2026-05-04
 
 Follow-on RC. Pulls in the Track B (web `/live` dashboard shadcn
