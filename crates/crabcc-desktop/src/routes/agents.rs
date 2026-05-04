@@ -534,6 +534,7 @@ impl Render for AgentsRoute {
                     };
 
                     let card_border = if is_selected { primary } else { border };
+                    let card_hover_bg = cx.theme().secondary;
                     let entity_click = entity_for_click.clone();
                     let id_for_click = a.id.clone();
                     v_flex()
@@ -544,6 +545,8 @@ impl Render for AgentsRoute {
                         .border_1()
                         .border_color(card_border)
                         .rounded_md()
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(card_hover_bg))
                         .child(head_row)
                         .child(meta_row)
                         .child(prompt_row)
