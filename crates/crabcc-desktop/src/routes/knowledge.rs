@@ -52,13 +52,13 @@ impl KnowledgeRoute {
         cx.subscribe_in(
             &ingest_input,
             window,
-            |this, state, event, _, cx| match event {
+            |this, state, event, window, cx| match event {
                 InputEvent::Change => {
                     this.pending_text = state.read(cx).value().to_string();
                     cx.notify();
                 }
                 InputEvent::PressEnter { .. } => {
-                    this.submit(cx);
+                    this.submit(window, cx);
                 }
                 _ => {}
             },
@@ -120,7 +120,7 @@ impl KnowledgeRoute {
         }
     }
 
-    fn submit(&mut self, cx: &mut Context<Self>) {
+    fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.pending_text.trim();
         if text.is_empty() {
             return;
@@ -133,11 +133,17 @@ impl KnowledgeRoute {
         // Fire-and-forget — `submit_ingest` spawns its own thread; the
         // result lands back through the worker channel as
         // `AppEvent::MemoryIngestResult` (+ a follow-up
-        // `MemoryRefresh` on success). Input text is intentionally
-        // NOT cleared here — `InputState::set_value` needs a Window
-        // reference we don't have inside the click handler. The user
-        // can backspace if they want a fresh slate.
+        // `MemoryRefresh` on success). Clear the input synchronously
+        // so a user ingesting several drawers in a row doesn't have
+        // to manually backspace each time. If submit_ingest fails,
+        // the status line below the form surfaces the error and the
+        // user can re-enter — losing one accidental empty buffer is
+        // a fair trade for the multi-ingest workflow.
         self.state.read(cx).submit_ingest(req);
+        self.pending_text.clear();
+        self.ingest_input.update(cx, |st, sub_cx| {
+            st.set_value("", window, sub_cx);
+        });
         cx.notify();
     }
 }
@@ -194,8 +200,8 @@ impl Render for KnowledgeRoute {
             .rounded_md()
             .text_color(submit_color)
             .child(SharedString::new_static("Ingest"))
-            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                route_entity.update(cx, |this, cx| this.submit(cx));
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                route_entity.update(cx, |this, cx| this.submit(window, cx));
             });
 
         let form = h_flex()
