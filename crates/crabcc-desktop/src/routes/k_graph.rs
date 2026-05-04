@@ -31,7 +31,7 @@
 //! the same path). Errors land on `AppState::memory_graph_error` and
 //! render inline.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use gpui::{
@@ -701,6 +701,12 @@ fn render_canvas(
     // overwhelming the visual at typical density.
     let hubs = pick_hub_labels(layout, nodes);
 
+    // Neighbour set for the active selection — mirrors the relations
+    // graph's `GraphView::neighbours` pattern. Empty when nothing is
+    // selected, in which case paint takes the unfocused path (every
+    // pill at full intensity).
+    let neighbours = neighbours_of(selected_idx, &layout.edge_indices);
+
     let layout_clone = layout.clone();
     let node_tones_clone = node_tones.clone();
 
@@ -715,6 +721,7 @@ fn render_canvas(
                 &layout_clone,
                 &node_tones_clone,
                 selected_idx,
+                &neighbours,
                 &hubs,
                 foreground,
                 muted,
@@ -812,6 +819,27 @@ struct HubLabel {
     title: SharedString,
 }
 
+/// Layout indices adjacent to `selected` in the undirected edge
+/// list. Returns an empty set when nothing is selected so the paint
+/// path treats it as "no halo, no dimming."
+fn neighbours_of(selected: Option<usize>, edges: &[(usize, usize)]) -> HashSet<usize> {
+    let Some(i) = selected else {
+        return HashSet::new();
+    };
+    edges
+        .iter()
+        .filter_map(|&(a, b)| {
+            if a == i {
+                Some(b)
+            } else if b == i {
+                Some(a)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 /// Pick the up-to-`MAX_HUB_LABELS` highest-degree drawers (by edge
 /// count from `layout.edge_indices`) with degree ≥ `MIN_HUB_DEGREE`,
 /// returning their layout index + a shortened title ready for paint.
@@ -882,6 +910,7 @@ fn paint_k_graph(
     layout: &Layout,
     node_tones: &[Hsla],
     selected: Option<usize>,
+    neighbours: &HashSet<usize>,
     hubs: &[HubLabel],
     foreground: Hsla,
     muted: Hsla,
@@ -897,7 +926,14 @@ fn paint_k_graph(
 
     // Edges first so pills paint on top. Dashed via manual segment
     // walk — see `paint_dashed_edge`.
+    //
+    // When a node is selected, edges incident to it brighten and
+    // non-incident edges dim further — same neighbour-halo idea as
+    // the relations graph (`routes/graph.rs`) but adapted to the
+    // dashed pen.
     let edge_color = with_alpha(muted, 0.45);
+    let edge_color_dim = with_alpha(muted, 0.18);
+    let edge_color_hot = with_alpha(foreground, 0.7);
     for &(a, b) in &layout.edge_indices {
         if let (Some(p1), Some(p2)) = (layout.positions.get(a), layout.positions.get(b)) {
             // Convert unit-coord endpoints to canvas pixels here so
@@ -905,19 +941,32 @@ fn paint_k_graph(
             // dash period regardless of canvas size).
             let p1_px = to_px(*p1);
             let p2_px = to_px(*p2);
-            paint_dashed_edge(p1_px, p2_px, edge_color, window);
+            let color = match selected {
+                Some(s) if a == s || b == s => edge_color_hot,
+                Some(_) => edge_color_dim,
+                None => edge_color,
+            };
+            paint_dashed_edge(p1_px, p2_px, color, window);
         }
     }
 
     // Pills. Each gets its wing colour at base alpha; the selected
     // pill paints again with a 2-px foreground ring (drawn as a
-    // slightly larger filled quad below the inner fill).
+    // slightly larger filled quad below the inner fill). Non-neighbour
+    // pills dim when a selection is active so the eye traces the
+    // selected node's connection ring without the rest of the
+    // canvas competing.
     let half_w = PILL_WIDTH * 0.5;
     let half_h = PILL_HEIGHT * 0.5;
     for (i, &(ux, uy)) in layout.positions.iter().enumerate() {
         let centre = point(px(ox + ux * w), px(oy + uy * h));
-        let tone = node_tones.get(i).copied().unwrap_or(muted);
-        if Some(i) == selected {
+        let mut tone = node_tones.get(i).copied().unwrap_or(muted);
+        let is_selected = Some(i) == selected;
+        let is_neighbour = neighbours.contains(&i);
+        if selected.is_some() && !is_selected && !is_neighbour {
+            tone = with_alpha(tone, 0.25);
+        }
+        if is_selected {
             // Foreground ring: a slightly larger quad in foreground
             // colour painted first, then the wing-coloured pill on
             // top — cheap "ring around pill" without a stroked path.
@@ -943,8 +992,10 @@ fn paint_k_graph(
     // Hub labels last so they paint over the pills (the title sits
     // just below each hub pill, centred horizontally on the pill).
     // Foreground at 75% alpha — readable but doesn't compete with
-    // selection-ring brightness.
+    // selection-ring brightness. Non-neighbour hubs dim alongside
+    // their pills when something else is selected.
     let label_color = with_alpha(foreground, 0.75);
+    let label_color_dim = with_alpha(foreground, 0.25);
     let font = window.text_style().font();
     for hub in hubs {
         let Some((ux, uy)) = layout.positions.get(hub.index).copied() else {
@@ -952,10 +1003,17 @@ fn paint_k_graph(
         };
         let centre_x = ox + ux * w;
         let centre_y = oy + uy * h;
+        let is_selected = Some(hub.index) == selected;
+        let is_neighbour = neighbours.contains(&hub.index);
+        let color = if selected.is_some() && !is_selected && !is_neighbour {
+            label_color_dim
+        } else {
+            label_color
+        };
         let run = TextRun {
             len: hub.title.len(),
             font: font.clone(),
-            color: label_color,
+            color,
             background_color: None,
             underline: None,
             strikethrough: None,
@@ -1114,6 +1172,34 @@ mod tests {
         let expected_chars = HUB_LABEL_MAX_CHARS;
         assert_eq!(trimmed.chars().count(), expected_chars);
         assert!(trimmed.ends_with('…'));
+    }
+
+    #[test]
+    fn neighbours_of_returns_empty_when_no_selection() {
+        let edges = vec![(0, 1), (1, 2)];
+        assert!(neighbours_of(None, &edges).is_empty());
+    }
+
+    #[test]
+    fn neighbours_of_finds_both_endpoints() {
+        // Star: 0 connected to 1, 2, 3. Self-loops and reverse
+        // direction both count.
+        let edges = vec![(0, 1), (2, 0), (3, 0), (1, 2)];
+        let n = neighbours_of(Some(0), &edges);
+        assert_eq!(n.len(), 3);
+        assert!(n.contains(&1));
+        assert!(n.contains(&2));
+        assert!(n.contains(&3));
+    }
+
+    #[test]
+    fn neighbours_of_excludes_disconnected_nodes() {
+        let edges = vec![(0, 1), (2, 3)];
+        let n = neighbours_of(Some(0), &edges);
+        assert_eq!(n.len(), 1);
+        assert!(n.contains(&1));
+        assert!(!n.contains(&2));
+        assert!(!n.contains(&3));
     }
 
     #[test]
