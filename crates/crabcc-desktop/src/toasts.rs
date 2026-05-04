@@ -156,6 +156,11 @@ impl Render for ToastStrip {
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let bg = theme.secondary;
+        // Hover bg for the footer "dismiss all / expand / clear"
+        // links. The strip itself sits on the shell background
+        // (`theme.background`), so `secondary` reads as a subtle
+        // raised tint — same chrome the header buttons use.
+        let hover_bg = theme.secondary;
         let state_for_dismiss = self.state.clone();
         let state_for_clear = self.state.clone();
         let state_for_dismiss_all = self.state.clone();
@@ -177,7 +182,11 @@ impl Render for ToastStrip {
             footer_row = footer_row.child(
                 div()
                     .id("toast-dismiss-all")
+                    .px_2()
+                    .rounded_md()
                     .text_color(muted)
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hover_bg))
                     .child(SharedString::new_static("dismiss all"))
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         state_for_dismiss_all.update(cx, |s, cx| {
@@ -200,7 +209,11 @@ impl Render for ToastStrip {
                 .child(
                     div()
                         .id("toast-history-expand")
+                        .px_2()
+                        .rounded_md()
                         .text_color(muted)
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(hover_bg))
                         .child(SharedString::new_static(expand_label))
                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                             entity_for_expand.update(cx, |this, cx| {
@@ -213,7 +226,11 @@ impl Render for ToastStrip {
                 .child(
                     div()
                         .id("toast-history-clear")
+                        .px_2()
+                        .rounded_md()
                         .text_color(muted)
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(hover_bg))
                         .child(SharedString::new_static("clear"))
                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                             state_for_clear.update(cx, |s, cx| {
