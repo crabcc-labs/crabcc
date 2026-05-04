@@ -28,6 +28,7 @@ use gpui_component::{
 };
 
 use crate::api::types::{AgentStatus, SseAgent};
+use crate::routes::empty::empty_state;
 use crate::state::AppState;
 
 /// How many trailing bytes of the agent log to render. The server
@@ -627,43 +628,6 @@ fn log_tail(body: &str) -> Result<String, String> {
         cut += 1;
     }
     Ok(format!("…{}", &body[cut..]))
-}
-
-/// Centered empty-state block: large glyph + headline + hint.
-/// Sits at the route body level (not nested inside a tile) so the
-/// vertical centering reads against the route's full height.
-fn empty_state(
-    glyph: &'static str,
-    headline: &'static str,
-    hint: &str,
-    muted: gpui::Hsla,
-    foreground: gpui::Hsla,
-) -> gpui::Div {
-    div()
-        .flex()
-        .flex_col()
-        .items_center()
-        .justify_center()
-        .gap_2()
-        .px_5()
-        .py_8()
-        .child(
-            div()
-                .text_2xl()
-                .text_color(muted)
-                .child(SharedString::new_static(glyph)),
-        )
-        .child(
-            div()
-                .text_color(foreground)
-                .child(SharedString::new_static(headline)),
-        )
-        .child(
-            div()
-                .text_xs()
-                .text_color(muted)
-                .child(SharedString::from(hint.to_string())),
-        )
 }
 
 #[cfg(test)]
