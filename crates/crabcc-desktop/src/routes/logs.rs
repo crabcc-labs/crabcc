@@ -198,6 +198,7 @@ impl Render for LogsRoute {
         let primary = cx.theme().primary;
         let active_filter = self.level_filter;
         let entity_for_pill = cx.entity();
+        let pill_hover_bg = cx.theme().secondary;
         let pill_row = h_flex()
             .gap_2()
             .children(LevelFilter::ALL.into_iter().map(|f| {
@@ -211,6 +212,8 @@ impl Render for LogsRoute {
                     .border_color(if is_active { primary } else { border })
                     .rounded_md()
                     .text_color(if is_active { foreground } else { muted })
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(pill_hover_bg))
                     .child(SharedString::new_static(f.label()))
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         entity.update(cx, |this, cx| {
@@ -361,6 +364,8 @@ fn row(
                 })
                 .rounded_md()
                 .text_color(level_color)
+                .cursor_pointer()
+                .hover(move |s| s.border_color(primary))
                 .child(SharedString::from(level_label(evt.level)))
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     entity.update(cx, |this, cx| {
