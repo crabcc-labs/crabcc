@@ -192,6 +192,24 @@ impl Render for DashboardHome {
                     };
                     let entity = entity_for_op.clone();
                     let click_op = g.op.clone();
+                    // Agent badge — only renders when the activity buffer
+                    // tagged this run with an agent_id (#311). Truncated
+                    // to 8 chars to keep row width predictable; the full
+                    // id is one route-switch away on Timeline.
+                    let agent_badge: gpui::AnyElement = match g.agent_id.as_deref() {
+                        Some(id) => {
+                            let trimmed: String = id.chars().take(8).collect();
+                            div()
+                                .px_1()
+                                .border_1()
+                                .border_color(muted)
+                                .rounded_md()
+                                .text_color(muted)
+                                .child(SharedString::from(format!("agt {trimmed}")))
+                                .into_any_element()
+                        }
+                        None => div().into_any_element(),
+                    };
                     h_flex()
                                 .gap_2()
                                 // Op badge — fixed-width column so the
@@ -216,9 +234,11 @@ impl Render for DashboardHome {
                                 )
                                 .child(
                                     div()
+                                        .flex_1()
                                         .text_color(faded_fg)
                                         .child(SharedString::from(truncate(&g.latest_query, 60))),
                                 )
+                                .child(agent_badge)
                                 .child(
                                     div()
                                         .text_color(muted)
@@ -596,6 +616,13 @@ fn fmt_age_short(secs: i64) -> String {
 /// same-op events have been collapsed.
 struct ActivityGroup {
     op: SharedString,
+    /// `agent_id` of the run this group represents (`Some(_)` once
+    /// #311 lands an agent-tagged event into the buffer). Two
+    /// consecutive same-`op` events with different `agent_id` values
+    /// must NOT fold together — otherwise the row's count + latest_*
+    /// would silently mix cross-agent activity. `None` matches `None`
+    /// (CLI / MCP rows without an agent owner).
+    agent_id: Option<SharedString>,
     latest_query: SharedString,
     latest_results: u64,
     /// Timestamp of the freshest event in the run. Drives the
@@ -605,10 +632,14 @@ struct ActivityGroup {
     count: usize,
 }
 
-/// Walk the buffer newest-first, collapsing runs of the same `op`
-/// into a single group whose `count` carries the run length and
-/// whose `latest_*` fields show the most-recent event in the run.
-/// Fills `out` with up to `cap` groups.
+/// Walk the buffer newest-first, collapsing runs of the same `(op,
+/// agent_id)` pair into a single group whose `count` carries the run
+/// length and whose `latest_*` fields show the most-recent event in
+/// the run. Fills `out` with up to `cap` groups.
+///
+/// Splitting on `agent_id` matters once #311 tags events: without it,
+/// two agents both running `sym Store` in succession fold into one
+/// row, hiding which one did what.
 ///
 /// Caller-owned `out` so the spine `Vec<ActivityGroup>` survives
 /// across renders. Cleared on entry; re-filled in place. The inner
@@ -622,10 +653,18 @@ where
     out.clear();
     for evt in events.into_iter().rev() {
         if let Some(last) = out.last_mut() {
-            if last.op == evt.op {
-                // Same op as the previous-newest group — extend it.
-                // We already stored the *latest* (newest) event of the
-                // run in `latest_*` since that came first in our walk.
+            // Compare by ref text so `Some("a") == Some("a")` even
+            // across SharedString clones; None matches None.
+            let same_agent = match (last.agent_id.as_deref(), evt.agent_id.as_deref()) {
+                (Some(a), Some(b)) => a == b,
+                (None, None) => true,
+                _ => false,
+            };
+            if last.op == evt.op && same_agent {
+                // Same op + agent as the previous-newest group — extend
+                // it. We already stored the *latest* (newest) event of
+                // the run in `latest_*` since that came first in our
+                // walk.
                 last.count += 1;
                 continue;
             }
@@ -635,6 +674,7 @@ where
         }
         out.push(ActivityGroup {
             op: evt.op.clone(),
+            agent_id: evt.agent_id.clone(),
             latest_query: evt.query.clone(),
             latest_results: evt.results,
             latest_ts: evt.ts,
@@ -735,6 +775,73 @@ mod tests {
         let mut groups: Vec<ActivityGroup> = Vec::new();
         group_activity(&[] as &[SseActivityEvent], 8, &mut groups);
         assert!(groups.is_empty());
+    }
+
+    fn evt_a(op: &str, q: &str, results: u64, agent: Option<&str>) -> SseActivityEvent {
+        SseActivityEvent {
+            ts: 0,
+            op: op.into(),
+            query: q.into(),
+            results,
+            agent_id: agent.map(|s| s.into()),
+        }
+    }
+
+    #[test]
+    fn grouping_breaks_on_agent_change_even_with_same_op() {
+        // Agent A and Agent B both run sym Store consecutively.
+        // Without agent-aware grouping these would fold into one row,
+        // hiding which agent did what. Buffer is oldest → newest.
+        let events = vec![
+            evt_a("sym", "Store", 1, Some("agent-a")),
+            evt_a("sym", "Store", 2, Some("agent-b")),
+        ];
+        let mut groups = Vec::new();
+        group_activity(&events, 8, &mut groups);
+        // Newest-first: agent-b row, then agent-a row. Two distinct
+        // groups even though `op` matches.
+        assert_eq!(groups.len(), 2);
+        assert_eq!(
+            groups[0].agent_id.as_deref().map(|s| s.to_string()),
+            Some("agent-b".into())
+        );
+        assert_eq!(
+            groups[1].agent_id.as_deref().map(|s| s.to_string()),
+            Some("agent-a".into())
+        );
+        assert_eq!(groups[0].count, 1);
+        assert_eq!(groups[1].count, 1);
+    }
+
+    #[test]
+    fn grouping_folds_same_op_within_one_agent() {
+        // Same op + same agent over 3 events should fold to one
+        // group of count 3.
+        let events = vec![
+            evt_a("sym", "a", 1, Some("agent-a")),
+            evt_a("sym", "b", 2, Some("agent-a")),
+            evt_a("sym", "c", 3, Some("agent-a")),
+        ];
+        let mut groups = Vec::new();
+        group_activity(&events, 8, &mut groups);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].count, 3);
+        assert_eq!(groups[0].latest_query, "c");
+    }
+
+    #[test]
+    fn grouping_breaks_when_only_one_side_has_agent_id() {
+        // Some(_) and None must not fold even when op matches —
+        // mixing CLI invocations into an agent's run obscures both.
+        let events = vec![
+            evt_a("sym", "x", 1, None),
+            evt_a("sym", "y", 2, Some("agent-a")),
+        ];
+        let mut groups = Vec::new();
+        group_activity(&events, 8, &mut groups);
+        assert_eq!(groups.len(), 2);
+        assert!(groups[0].agent_id.is_some());
+        assert!(groups[1].agent_id.is_none());
     }
 
     #[test]
