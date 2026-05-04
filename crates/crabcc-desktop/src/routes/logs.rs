@@ -109,6 +109,12 @@ pub struct LogsRoute {
     query_lower: String,
     /// Level pill state, ANDed with `query_lower` for visibility.
     level_filter: LevelFilter,
+    /// Active target-pin (None = all targets). Set by clicking a
+    /// row's `target` cell, cleared by clicking the same target or
+    /// the header pill. Exact-match on the full module path so the
+    /// user doesn't need to type the namespace into the substring
+    /// filter to drill into one module's logs.
+    target_pin: Option<SharedString>,
 }
 
 impl LogsRoute {
@@ -128,12 +134,26 @@ impl LogsRoute {
             query_input,
             query_lower: String::new(),
             level_filter: LevelFilter::All,
+            target_pin: None,
+        }
+    }
+
+    fn toggle_target_pin(&mut self, target: SharedString) {
+        if self.target_pin.as_deref() == Some(target.as_ref()) {
+            self.target_pin = None;
+        } else {
+            self.target_pin = Some(target);
         }
     }
 
     fn event_matches(&self, evt: &TelemetryEvent) -> bool {
         if !self.level_filter.matches(evt) {
             return false;
+        }
+        if let Some(pin) = self.target_pin.as_deref() {
+            if evt.target.as_ref() != pin {
+                return false;
+            }
         }
         if self.query_lower.is_empty() {
             return true;
@@ -210,30 +230,58 @@ impl Render for LogsRoute {
         let active_filter = self.level_filter;
         let entity_for_pill = cx.entity();
         let pill_hover_bg = cx.theme().secondary;
+        let level_pills = LevelFilter::ALL.into_iter().map(|f| {
+            let is_active = f == active_filter;
+            let entity = entity_for_pill.clone();
+            div()
+                .id(SharedString::new_static(f.id()))
+                .px_2()
+                .py_0p5()
+                .border_1()
+                .border_color(if is_active { primary } else { border })
+                .rounded_md()
+                .text_color(if is_active { foreground } else { muted })
+                .cursor_pointer()
+                .hover(move |s| s.bg(pill_hover_bg))
+                .child(SharedString::new_static(f.label()))
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    entity.update(cx, |this, cx| {
+                        this.level_filter = f;
+                        cx.notify();
+                    });
+                })
+                .into_any_element()
+        });
+        // Target-pin clear pill — only renders when an active target
+        // is pinned, mirroring the dashboard's pin-pill pattern. Click
+        // clears the pin without having to scroll to find a row carrying
+        // the pinned target (which would scroll off as new logs arrive).
+        let target_clear_pill: Option<gpui::AnyElement> = self.target_pin.clone().map(|t| {
+            let entity_for_clear = cx.entity();
+            let label = SharedString::from(format!("{} \u{00D7}", truncate(&t, 32)));
+            div()
+                .id("logs-target-pin-clear")
+                .px_2()
+                .py_0p5()
+                .border_1()
+                .border_color(primary)
+                .rounded_md()
+                .text_color(primary)
+                .cursor_pointer()
+                .hover(move |s| s.bg(pill_hover_bg))
+                .child(label)
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    entity_for_clear.update(cx, |this, cx| {
+                        this.target_pin = None;
+                        cx.notify();
+                    });
+                })
+                .into_any_element()
+        });
         let pill_row = h_flex()
             .gap_2()
-            .children(LevelFilter::ALL.into_iter().map(|f| {
-                let is_active = f == active_filter;
-                let entity = entity_for_pill.clone();
-                div()
-                    .id(SharedString::new_static(f.id()))
-                    .px_2()
-                    .py_0p5()
-                    .border_1()
-                    .border_color(if is_active { primary } else { border })
-                    .rounded_md()
-                    .text_color(if is_active { foreground } else { muted })
-                    .cursor_pointer()
-                    .hover(move |s| s.bg(pill_hover_bg))
-                    .child(SharedString::new_static(f.label()))
-                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                        entity.update(cx, |this, cx| {
-                            this.level_filter = f;
-                            cx.notify();
-                        });
-                    })
-                    .into_any_element()
-            }));
+            .children(level_pills)
+            .children(target_clear_pill);
 
         let body: gpui::AnyElement = if state.telemetry.is_empty() {
             empty_state(
@@ -252,6 +300,9 @@ impl Render for LogsRoute {
             let mut bits: Vec<String> = Vec::new();
             if self.level_filter != LevelFilter::All {
                 bits.push(format!("level {}", self.level_filter.label()));
+            }
+            if let Some(t) = self.target_pin.as_deref() {
+                bits.push(format!("target {t}"));
             }
             if !self.query_lower.is_empty() {
                 bits.push(format!("\u{201C}{}\u{201D}", self.query_lower));
@@ -277,6 +328,7 @@ impl Render for LogsRoute {
             // `level_filter` without recomputing on every iteration.
             let entity = cx.entity();
             let active_level = self.level_filter;
+            let target_pin = self.target_pin.clone();
             v_flex()
                 .gap_1()
                 .children(
@@ -293,7 +345,9 @@ impl Render for LogsRoute {
                                 warning,
                                 danger,
                                 primary,
+                                foreground,
                                 active_level,
+                                target_pin.as_ref(),
                                 entity.clone(),
                             )
                             .into_any_element()
@@ -325,7 +379,9 @@ fn row(
     warning: Hsla,
     danger: Hsla,
     primary: Hsla,
+    foreground: Hsla,
     active_level: LevelFilter,
+    target_pin: Option<&SharedString>,
     entity: Entity<LogsRoute>,
 ) -> gpui::Div {
     let level_color = match evt.level {
@@ -381,26 +437,47 @@ fn row(
                     Tooltip::new("Pin / unpin level filter").build(window, cx)
                 })
                 .child(SharedString::from(level_label(evt.level)))
-                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                    entity.update(cx, |this, cx| {
-                        // Toggle: same level → All; otherwise pin.
-                        this.level_filter = if this.level_filter == target_filter {
-                            LevelFilter::All
-                        } else {
-                            target_filter
-                        };
-                        cx.notify();
-                    });
+                .on_mouse_down(MouseButton::Left, {
+                    let entity = entity.clone();
+                    move |_, _, cx| {
+                        entity.update(cx, |this, cx| {
+                            // Toggle: same level → All; otherwise pin.
+                            this.level_filter = if this.level_filter == target_filter {
+                                LevelFilter::All
+                            } else {
+                                target_filter
+                            };
+                            cx.notify();
+                        });
+                    }
                 }),
         )
         // Target (e.g. `crabcc::core::store`). Truncated to keep the
-        // body column wide.
-        .child(
+        // body column wide. Click toggles a target-pin: a stronger
+        // narrow than the substring filter (exact match on the full
+        // path) which is what you usually want when drilling into one
+        // module's logs. Pinned target renders with `foreground` for
+        // affordance, mirroring the level-badge pattern above.
+        .child({
+            let target_id: gpui::ElementId =
+                SharedString::from(format!("logs-row-target-{idx}")).into();
+            let target_clicked = evt.target.clone();
+            let entity_for_target = entity.clone();
+            let target_active =
+                target_pin.is_some_and(|p| p.as_ref() == evt.target.as_ref());
             div()
+                .id(target_id)
                 .w(px(220.0))
-                .text_color(muted)
-                .child(SharedString::from(truncate(&evt.target, 32))),
-        )
+                .text_color(if target_active { foreground } else { muted })
+                .child(SharedString::from(truncate(&evt.target, 32)))
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    let t = target_clicked.clone();
+                    entity_for_target.update(cx, |this, cx| {
+                        this.toggle_target_pin(t);
+                        cx.notify();
+                    });
+                })
+        })
         // Message preview from `fields.message` if present, else a
         // compact JSON dump.
         .child(SharedString::from(truncate(&preview(&evt.fields), 240)))
