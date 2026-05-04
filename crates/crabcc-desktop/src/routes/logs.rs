@@ -23,6 +23,7 @@ use gpui_component::{
 use serde_json::Value;
 
 use crate::api::types::{LogLevel, TelemetryEvent};
+use crate::routes::empty::empty_state;
 use crate::state::AppState;
 
 const VISIBLE_ROWS: usize = 80;
@@ -221,13 +222,14 @@ impl Render for LogsRoute {
             }));
 
         let body: gpui::AnyElement = if state.telemetry.is_empty() {
-            div()
-                .text_color(muted)
-                .min_h(px(60.0))
-                .child(SharedString::new_static(
-                    "no events yet — telemetry poller fires every 3s",
-                ))
-                .into_any_element()
+            empty_state(
+                "\u{25CC}",
+                "No events yet",
+                "Telemetry poller fires every 3s — events will appear here.",
+                muted,
+                cx.theme().foreground,
+            )
+            .into_any_element()
         } else if visible.is_empty() {
             // Telemetry has rows but none match the filter(s). Distinct
             // copy from the empty-tail state so the user doesn't read
@@ -247,11 +249,14 @@ impl Render for LogsRoute {
             } else {
                 bits.join(" + ")
             };
-            div()
-                .text_color(muted)
-                .min_h(px(60.0))
-                .child(SharedString::from(format!("no events match {what}")))
-                .into_any_element()
+            empty_state(
+                "\u{1F50D}",
+                "No events match the filter",
+                &format!("Nothing matches {what} — try widening the level or query."),
+                muted,
+                cx.theme().foreground,
+            )
+            .into_any_element()
         } else {
             // Capture the entity once outside the per-row map so each
             // row's level-badge click handler can update the route's

@@ -7,6 +7,7 @@ pub mod agent_spawn_sheet;
 pub mod agents;
 pub mod commands;
 pub mod dashboard;
+pub mod empty;
 pub mod graph;
 pub mod k_graph;
 pub mod knowledge;
