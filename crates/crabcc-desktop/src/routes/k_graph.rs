@@ -38,6 +38,7 @@ use gpui_component::{h_flex, v_flex, ActiveTheme};
 
 use crate::api::types::{GraphEdge, GraphNode, GraphSnapshot, MemoryGraphEdge, MemoryGraphNode};
 use crate::graph_layout::{self, Layout};
+use crate::routes::empty::empty_state;
 use crate::state::AppState;
 
 /// Pill dimensions for memory-graph nodes — wider than tall so the
@@ -423,14 +424,14 @@ impl Render for KnowledgeGraphRoute {
                 .text_color(muted)
                 .child(SharedString::new_static("Loading memory graph…"))
                 .into_any_element(),
-            Some(g) if g.nodes.is_empty() => div()
-                .mx_5()
-                .mt_4()
-                .text_color(muted)
-                .child(SharedString::new_static(
-                    "No drawers in the memory backend yet — run `crabcc memory ingest` to populate.",
-                ))
-                .into_any_element(),
+            Some(g) if g.nodes.is_empty() => empty_state(
+                "\u{25CC}",
+                "No drawers in the memory backend yet",
+                "Run `crabcc memory ingest` from the CLI to populate the graph.",
+                muted,
+                foreground,
+            )
+            .into_any_element(),
             Some(g) => {
                 // Build / refresh the cached layout BEFORE the
                 // closures capture the route entity; the layout
@@ -460,17 +461,12 @@ impl Render for KnowledgeGraphRoute {
                 );
 
                 let view_for_select = cx.entity();
-                let mut sections = v_flex()
-                    .flex_1()
-                    .gap_3()
-                    .px_5()
-                    .py_3()
-                    .child(
-                        div()
-                            .text_color(muted)
-                            .text_xs()
-                            .child(SharedString::new_static("DRAWERS BY WING")),
-                    );
+                let mut sections = v_flex().flex_1().gap_3().px_5().py_3().child(
+                    div()
+                        .text_color(muted)
+                        .text_xs()
+                        .child(SharedString::new_static("DRAWERS BY WING")),
+                );
                 for (wing, drawers) in by_wing {
                     let wing_color = wing_color(&wing, theme);
                     sections = sections.child(wing_section(
@@ -503,12 +499,7 @@ impl Render for KnowledgeGraphRoute {
                 v_flex()
                     .size_full()
                     .child(canvas_block)
-                    .child(
-                        h_flex()
-                            .size_full()
-                            .child(sections)
-                            .child(detail_panel),
-                    )
+                    .child(h_flex().size_full().child(sections).child(detail_panel))
                     .into_any_element()
             }
         };
