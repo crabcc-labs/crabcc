@@ -252,12 +252,20 @@ impl Render for ToastStrip {
         // history is a log, not active surface. Renders only when
         // toggled open and history is non-empty.
         let history_panel: gpui::AnyElement = if expanded && history_len > 0 {
+            // Section title — same `text_xs` muted-uppercase shape
+            // the settings panel uses (#372 / #393), so the panel
+            // reads as a section, not a loose dump of rows.
+            let title = div()
+                .text_xs()
+                .text_color(muted)
+                .child(SharedString::from(format!("TOAST HISTORY ({history_len})")));
             v_flex()
                 .px_5()
                 .py_1()
                 .gap_1()
                 .border_t_1()
                 .border_color(theme.border)
+                .child(title)
                 .children(state.toast_history.iter().rev().map(|t| {
                     let accent = match t.level {
                         ToastLevel::Success => theme.success,
