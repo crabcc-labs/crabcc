@@ -345,6 +345,31 @@ impl Render for DashboardHome {
                         });
                     }),
             );
+            // Cross-route dive — pre-applies the same agent_pin on
+            // the Timeline route via the AppState handoff slot, so
+            // the user lands on Timeline already filtered to this
+            // agent. The dashboard tile shows 8 grouped rows; the
+            // Timeline shows the per-call detail.
+            let id_for_nav = id.clone();
+            let state_for_nav = self.state.clone();
+            pin_row = pin_row.child(
+                div()
+                    .id("activity-agent-pin-to-timeline")
+                    .px_2()
+                    .py_0p5()
+                    .border_1()
+                    .border_color(border)
+                    .rounded_md()
+                    .text_color(muted)
+                    .child(SharedString::new_static("\u{2192} Timeline"))
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        let id = id_for_nav.clone();
+                        state_for_nav.update(cx, |s, cx| {
+                            s.navigate_to_timeline_with_agent_pin(id);
+                            cx.notify();
+                        });
+                    }),
+            );
             have_pill = true;
         }
         let pin_pill: gpui::AnyElement = if have_pill {
