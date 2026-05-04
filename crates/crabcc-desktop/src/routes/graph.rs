@@ -35,7 +35,7 @@ use gpui::{
     canvas, div, point, prelude::*, px, Bounds, ClipboardItem, Context, Entity, Hsla, IntoElement,
     MouseButton, PathBuilder, Pixels, Render, SharedString, Window,
 };
-use gpui_component::{h_flex, v_flex, ActiveTheme};
+use gpui_component::{h_flex, tooltip::Tooltip, v_flex, ActiveTheme};
 
 use crate::api::types::GraphSnapshot;
 use crate::graph_layout::{self, Layout};
@@ -497,6 +497,11 @@ impl Render for GraphView {
                     .border_color(border)
                     .rounded_md()
                     .text_color(primary)
+                    .cursor_pointer()
+                    .hover(move |s| s.border_color(primary))
+                    .tooltip(|window, cx| {
+                        Tooltip::new("Reset zoom + pan to identity").build(window, cx)
+                    })
                     .child(SharedString::new_static("Reset view"))
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         entity_for_reset.update(cx, |this, cx| {
