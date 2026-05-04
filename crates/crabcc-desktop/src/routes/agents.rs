@@ -269,24 +269,26 @@ impl Render for AgentsRoute {
 
         // ── Body ────────────────────────────────────────────────────
         let body: gpui::AnyElement = if state.agents.is_empty() {
-            div()
-                .px_5()
-                .py_3()
-                .text_color(muted)
-                .child(SharedString::new_static(
-                    "no agents tracked — launch one from Home or via crabcc agents",
-                ))
-                .into_any_element()
+            empty_state(
+                "\u{25CC}",
+                "No agents tracked yet",
+                "Launch one from Home, or run `crabcc agents` from the CLI.",
+                muted,
+                cx.theme().foreground,
+            )
+            .into_any_element()
         } else if visible.is_empty() {
-            div()
-                .px_5()
-                .py_3()
-                .text_color(muted)
-                .child(SharedString::from(format!(
-                    "no agents match \u{201C}{}\u{201D}",
+            empty_state(
+                "\u{1F50D}",
+                "No agents match the filter",
+                &format!(
+                    "Nothing matches \u{201C}{}\u{201D} — try a shorter query.",
                     self.query_lower
-                )))
-                .into_any_element()
+                ),
+                muted,
+                cx.theme().foreground,
+            )
+            .into_any_element()
         } else {
             let selected_id = self.selected_id.clone();
             let agent_log = state.agent_log.as_ref();
@@ -625,6 +627,43 @@ fn log_tail(body: &str) -> Result<String, String> {
         cut += 1;
     }
     Ok(format!("…{}", &body[cut..]))
+}
+
+/// Centered empty-state block: large glyph + headline + hint.
+/// Sits at the route body level (not nested inside a tile) so the
+/// vertical centering reads against the route's full height.
+fn empty_state(
+    glyph: &'static str,
+    headline: &'static str,
+    hint: &str,
+    muted: gpui::Hsla,
+    foreground: gpui::Hsla,
+) -> gpui::Div {
+    div()
+        .flex()
+        .flex_col()
+        .items_center()
+        .justify_center()
+        .gap_2()
+        .px_5()
+        .py_8()
+        .child(
+            div()
+                .text_2xl()
+                .text_color(muted)
+                .child(SharedString::new_static(glyph)),
+        )
+        .child(
+            div()
+                .text_color(foreground)
+                .child(SharedString::new_static(headline)),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(muted)
+                .child(SharedString::from(hint.to_string())),
+        )
 }
 
 #[cfg(test)]
