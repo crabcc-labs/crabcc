@@ -427,6 +427,8 @@ fn drawer_row(
         .border_color(border)
         .rounded_md()
         .text_color(muted)
+        .cursor_pointer()
+        .hover(move |s| s.border_color(primary).text_color(primary))
         .child(SharedString::new_static("\u{2192} K-Graph"))
         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
             let id = nav_id.clone();
@@ -464,6 +466,8 @@ fn drawer_row(
                         .border_1()
                         .border_color(badge_border)
                         .rounded_md()
+                        .cursor_pointer()
+                        .hover(move |s| s.border_color(primary))
                         .child(location)
                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                             let wing = pin_wing.clone();
