@@ -148,6 +148,11 @@ impl Render for Shell {
         let muted = cx.theme().muted_foreground;
         let foreground = cx.theme().foreground;
         let primary = cx.theme().primary;
+        // Shared hover background for clickable header items + nav tabs.
+        // The `secondary` token is the panel-ish surface used by the
+        // settings panel + tile bodies, so it already reads as
+        // "interactive surface" in every palette.
+        let hover_bg = cx.theme().secondary;
 
         let state_for_brand = self.state.read(cx);
         // Lazily format on the first frame where bootstrap is `Some`.
@@ -266,6 +271,7 @@ impl Render for Shell {
                     .id(label)
                     .px_2()
                     .py_1()
+                    .rounded_md()
                     .text_color(if is_active { foreground } else { muted })
                     .border_b_2()
                     .border_color(if is_active {
@@ -273,6 +279,7 @@ impl Render for Shell {
                     } else {
                         gpui::transparent_black()
                     })
+                    .hover(move |s| s.bg(hover_bg))
                     .child(tab_inner)
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         state.update(cx, |s, cx| {
@@ -304,7 +311,9 @@ impl Render for Shell {
             .id("toasts-mute-toggle")
             .px_2()
             .py_1()
+            .rounded_md()
             .text_color(alerts_color)
+            .hover(move |s| s.bg(hover_bg))
             .child(alerts_label)
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 state_for_alerts.update(cx, |s, cx| {
@@ -328,7 +337,9 @@ impl Render for Shell {
             .id("toasts-echo-toggle")
             .px_2()
             .py_1()
+            .rounded_md()
             .text_color(echo_color)
+            .hover(move |s| s.bg(hover_bg))
             .child(SharedString::new_static("\u{2197} system"))
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 state_for_echo.update(cx, |s, cx| {
@@ -350,7 +361,9 @@ impl Render for Shell {
             .id("palette-cycle")
             .px_2()
             .py_1()
+            .rounded_md()
             .text_color(muted)
+            .hover(move |s| s.bg(hover_bg))
             .child(palette_label)
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                 state_for_palette.update(cx, |s, cx| {
@@ -384,7 +397,9 @@ impl Render for Shell {
             .id("settings-toggle")
             .px_2()
             .py_1()
+            .rounded_md()
             .text_color(settings_color)
+            .hover(move |s| s.bg(hover_bg))
             .child(SharedString::new_static("\u{2699}"))
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 settings_entity.update(cx, |panel, cx| {
