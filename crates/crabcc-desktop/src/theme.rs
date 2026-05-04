@@ -20,8 +20,9 @@
 //! ```
 //!
 //! Available palette names: `web_dark`, `web_light`,
-//! `cyberpunk_neon`. Unknown values fall back to the OS-appearance
-//! pair.
+//! `cyberpunk_neon`, `mono`, `high_contrast`. Unknown values fall
+//! back to the OS-appearance pair. Full list lives at
+//! [`Palette::ALL_NAMES`].
 
 use gpui::{rgb, App, Hsla};
 use gpui_component::theme::Theme;
@@ -140,6 +141,51 @@ impl Palette {
         cyber_bg_deep: 0x0a0f1e,
     };
 
+    /// Greyscale preset — useful on screen-sharing calls where
+    /// notification overlays + accent colours pull focus from
+    /// whatever the operator is presenting. Foreground is at the
+    /// brightness ramp the WCAG AA contrast checker likes against
+    /// the dark background, primary stays a slightly-warm grey so
+    /// the active nav still reads as "selected".
+    pub const MONO: Self = Self {
+        background: 0x111111,
+        foreground: 0xe6e6e6,
+        muted_foreground: 0x8e8e8e,
+        secondary: 0x1a1a1a,
+        border: 0x2c2c2c,
+        primary: 0xc4c4c4,
+        success: 0xa0a0a0,
+        danger: 0xb8b8b8,
+        cyber_cyan: 0xc4c4c4,
+        cyber_pink: 0xb8b8b8,
+        cyber_amber: 0xaaaaaa,
+        agent_text: 0xe6e6e6,
+        agent_muted: 0x8e8e8e,
+        cyber_bg_deep: 0x0a0a0a,
+    };
+
+    /// High-contrast preset — pure black background + near-white
+    /// foreground + saturated brand colour. Tuned for low-vision
+    /// operators and bright-environment use (sun on the laptop
+    /// screen). The cyberpunk accents stay vivid since they're
+    /// already saturated; the core ramp is harder.
+    pub const HIGH_CONTRAST: Self = Self {
+        background: 0x000000,
+        foreground: 0xffffff,
+        muted_foreground: 0xb0b0b0,
+        secondary: 0x0a0a0a,
+        border: 0x404040,
+        primary: 0xff8c42,
+        success: 0x00ff00,
+        danger: 0xff3030,
+        cyber_cyan: 0x00f0ff,
+        cyber_pink: 0xff2a6d,
+        cyber_amber: 0xff8c2a,
+        agent_text: 0xffffff,
+        agent_muted: 0xb0b0b0,
+        cyber_bg_deep: 0x000000,
+    };
+
     /// Resolve a palette name (lower-snake-case) to a const ref.
     /// Unknown names return `None`. Used by the env-var picker
     /// and any future settings-panel dropdown.
@@ -148,9 +194,22 @@ impl Palette {
             "web_dark" => Some(Self::WEB_DARK),
             "web_light" => Some(Self::WEB_LIGHT),
             "cyberpunk_neon" => Some(Self::CYBERPUNK_NEON),
+            "mono" => Some(Self::MONO),
+            "high_contrast" => Some(Self::HIGH_CONTRAST),
             _ => None,
         }
     }
+
+    /// All registered palette names in display order. Used by the
+    /// future settings-panel dropdown so a UI can render every
+    /// option without tracking the list separately.
+    pub const ALL_NAMES: &'static [&'static str] = &[
+        "web_dark",
+        "web_light",
+        "cyberpunk_neon",
+        "mono",
+        "high_contrast",
+    ];
 }
 
 /// Env var that overrides the OS-appearance default. Recognised
@@ -221,9 +280,13 @@ mod tests {
     #[test]
     fn by_name_round_trip() {
         // Pin the wire-name set so future renames break tests.
-        assert!(Palette::by_name("web_dark").is_some());
-        assert!(Palette::by_name("web_light").is_some());
-        assert!(Palette::by_name("cyberpunk_neon").is_some());
+        // ALL_NAMES is the canonical list — every entry must
+        // resolve via `by_name`; nothing else should.
+        for name in Palette::ALL_NAMES {
+            assert!(Palette::by_name(name).is_some(), "{name} should resolve",);
+        }
+        assert_eq!(Palette::ALL_NAMES.len(), 5);
+
         // Unknowns return None — `install` falls back to the
         // OS-appearance default in that case.
         assert!(Palette::by_name("WEB_DARK").is_none());
