@@ -16,6 +16,7 @@ pub mod graph_layout;
 pub mod native;
 pub mod routes;
 pub mod services;
+pub mod settings;
 pub mod shell;
 pub mod sse;
 pub mod state;

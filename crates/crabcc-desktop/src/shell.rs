@@ -22,6 +22,7 @@ use crate::routes::{
     k_graph::KnowledgeGraphRoute, knowledge::KnowledgeRoute, logs::LogsRoute, system::SystemRoute,
     timeline::TimelineRoute,
 };
+use crate::settings::SettingsPanel;
 use crate::state::{AppState, Route};
 use crate::toasts::ToastStrip;
 
@@ -40,6 +41,10 @@ pub struct Shell {
     /// `AppState::toasts` is empty so the layout stays unchanged
     /// for the common case.
     toasts: Entity<ToastStrip>,
+    /// Inline settings panel — opens via the header gear button.
+    /// Mounted just below the toast strip; renders nothing when
+    /// closed so the body keeps full height.
+    settings: Entity<SettingsPanel>,
     /// Most-recent value passed to `native::set_dock_badge`, so the
     /// render path can skip the AppKit call when the count hasn't
     /// changed. `u32::MAX` is the sentinel "never set yet" — picked
@@ -103,6 +108,7 @@ impl Shell {
         // (yet). When the "Settings" entrypoint lands in slice 2+
         // it'll need `window` for that widget.
         let toasts = cx.new(|cx| ToastStrip::new(state.clone(), cx));
+        let settings = cx.new(|cx| SettingsPanel::new(state.clone(), cx));
         Self {
             state,
             home,
@@ -114,6 +120,7 @@ impl Shell {
             timeline,
             k_graph,
             toasts,
+            settings,
             last_badge_count: u32::MAX,
             last_status_count: u32::MAX,
             cached_brand: None,
@@ -320,6 +327,25 @@ impl Render for Shell {
                 window.refresh();
             });
 
+        // Settings gear — toggles the inline settings panel mounted
+        // between the toast strip and the body. Unicode `⚙` is the
+        // canonical gear glyph.
+        let settings_open = self.settings.read(cx).is_open();
+        let settings_color = if settings_open { primary } else { muted };
+        let settings_entity = self.settings.clone();
+        let settings_btn = div()
+            .id("settings-toggle")
+            .px_2()
+            .py_1()
+            .text_color(settings_color)
+            .child(SharedString::new_static("\u{2699}"))
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                settings_entity.update(cx, |panel, cx| {
+                    panel.toggle();
+                    cx.notify();
+                });
+            });
+
         let header = h_flex()
             .gap_6()
             .px_5()
@@ -340,7 +366,8 @@ impl Render for Shell {
             .child(nav)
             .child(alerts_btn)
             .child(echo_btn)
-            .child(palette_btn);
+            .child(palette_btn)
+            .child(settings_btn);
 
         let body: AnyElement = match active {
             Route::Home => self.home.clone().into_any_element(),
@@ -361,6 +388,11 @@ impl Render for Shell {
             // Renders nothing when `state.toasts` is empty so it
             // claims zero layout in the common case.
             .child(self.toasts.clone())
+            // Settings panel — opens via the header gear button.
+            // Renders nothing when closed so the body keeps full
+            // height; when open, it sits just below the strip with
+            // its own border-top + bg.
+            .child(self.settings.clone())
             // Wrap the body in an overflow_y_scroll container so dense
             // routes (System sections, Knowledge drawers, Logs tail) +
             // the tall Home dashboard scroll under a small window
