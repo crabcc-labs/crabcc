@@ -28,31 +28,13 @@ body {
   font: 13px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 .layout { display: flex; flex-direction: column; height: 100%; }
-header {
-  display: flex; gap: 14px; align-items: center;
-  padding: 8px 14px;
-  border-bottom: 1px solid var(--border);
-  background: var(--panel);
-}
-header .brand { font-weight: 700; color: var(--accent); letter-spacing: .04em; }
-header .crumb { color: var(--muted); font-size: 12px; flex: 1; }
-header .crumb b { color: var(--fg); font-weight: 600; }
-header .live { display: inline-flex; gap: 6px; align-items: center; color: var(--live-off); }
-/* Lucide Circle inherits currentColor for both stroke + fill (when fill="currentColor").
-   Setting color on the parent flips both at once. */
-header .live.on { color: var(--live-ok); }
-header .live .dot { display: block; }
-header .nav-strip .nav-link-ico { opacity: .8; vertical-align: -2px; margin-right: 4px; }
-header .actions { display: flex; gap: 6px; }
-header .actions button, header .actions a {
-  background: var(--panel); color: var(--fg);
-  border: 1px solid var(--border); border-radius: 4px;
-  padding: 4px 10px; font: inherit; cursor: pointer;
-  text-decoration: none;
-}
-header .actions button:hover, header .actions a:hover {
-  background: var(--bg); border-color: var(--accent);
-}
+/*
+ * Header rules migrated to Tailwind utilities in `Header.tsx`
+ * (track B.2). Removed: parent flex layout, .brand, .crumb,
+ * .live, .dot, .nav-link-ico, .actions, .actions button|a (incl.
+ * :hover). Their Tailwind equivalents now drive the rendered
+ * header — see `cn()` builder calls in Header.tsx.
+ */
 main {
   flex: 1; min-height: 0;
   display: flex; flex-direction: column;
@@ -708,57 +690,14 @@ main.layout-main {
 /* ========================================================================
    Header nav strip (replaces the loose actions row).
    ======================================================================== */
-header .nav-strip {
-  display: flex; gap: 2px; align-items: center;
-  margin-left: 4px;
-}
-header .nav-link {
-  padding: 4px 10px; border-radius: 4px;
-  text-decoration: none; color: var(--muted);
-  font-size: 12px; font-weight: 600;
-  letter-spacing: .03em;
-  border: 1px solid transparent;
-}
-header .nav-link:hover {
-  color: var(--fg);
-  background: var(--bg);
-  border-color: var(--border);
-}
-header .nav-link.active {
-  color: var(--accent);
-  background: var(--bg);
-  border-color: var(--border);
-}
-header .nav-link:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-header .icon-btn {
-  background: var(--panel); color: var(--fg);
-  border: 1px solid var(--border); border-radius: 4px;
-  padding: 3px 8px; font: inherit; cursor: pointer;
-  text-decoration: none; line-height: 1.1;
-  display: inline-flex; align-items: center;
-}
-header .icon-btn:hover {
-  background: var(--bg); border-color: var(--accent);
-  color: var(--accent);
-}
-header .icon-btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-/* On narrow viewports, the crumb gets squeezed first — let the nav and
-   actions stay legible. */
-@media (max-width: 1100px) {
-  header .crumb { font-size: 11px; max-width: 200px;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-}
-@media (max-width: 800px) {
-  header .crumb { display: none; }
-  header .nav-link { padding: 4px 7px; font-size: 11px; }
-}
+/*
+ * Header .nav-strip / .nav-link / .icon-btn rules + the responsive
+ * crumb media queries also migrated to Tailwind in Header.tsx
+ * (track B.2). The breakpoint values are preserved as Tailwind
+ * arbitrary-variant prefixes (`max-[1100px]:` and `max-[800px]:`)
+ * so the responsive collapse behaviour matches the prior CSS
+ * pixel-for-pixel.
+ */
 
 /* ========================================================================
    Dashboard home — info-dense tile grid.
