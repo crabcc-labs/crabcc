@@ -96,7 +96,7 @@ impl AboutModal {
 impl Render for AboutModal {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.is_open {
-            return div();
+            return div().into_any_element();
         }
 
         let theme = cx.theme();
@@ -104,6 +104,11 @@ impl Render for AboutModal {
         let primary = theme.primary;
         let border = theme.border;
         let bg = theme.secondary;
+        // `theme.background` (main app surface) is darker than the
+        // modal's `secondary` bg, so it reads as a "depressed" hover
+        // tint inside the modal — same convention as the settings
+        // panel rows in #393.
+        let hover_bg = theme.background;
         let entity_self = cx.entity();
 
         let title = h_flex()
@@ -125,6 +130,8 @@ impl Render for AboutModal {
                     .border_1()
                     .border_color(border)
                     .rounded_md()
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(hover_bg))
                     .child(SharedString::new_static("\u{00D7}"))
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         entity_for_close.update(cx, |this, cx| {
@@ -173,7 +180,13 @@ impl Render for AboutModal {
             .text_color(muted)
             .child(SharedString::new_static("MIT licensed."));
 
+        // Modal body — Stateful so the click handler can call
+        // `cx.stop_propagation()` and prevent the click from bubbling
+        // into the backdrop's "close on click" handler. Without this,
+        // clicking anywhere inside the modal (e.g. to select text in
+        // the dependency list) would dismiss the modal — surprising.
         let modal_body = v_flex()
+            .id("about-modal-body")
             .px_5()
             .py_4()
             .gap_4()
@@ -182,6 +195,9 @@ impl Render for AboutModal {
             .border_color(border)
             .rounded_lg()
             .max_w(px(640.0))
+            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                cx.stop_propagation();
+            })
             .child(title)
             .child(version_line)
             .child(description)
@@ -190,17 +206,19 @@ impl Render for AboutModal {
 
         // Backdrop dims the rest of the window. Click outside the
         // modal body closes — same gesture as the existing
-        // ReindexDialog (web). `stop_propagation` is the standard
-        // gpui pattern but we don't have a clean one here; close
-        // on backdrop click suffices.
+        // ReindexDialog (web). `cursor_pointer` telegraphs that the
+        // backdrop is interactive (an unlabelled dim region wouldn't
+        // otherwise read as clickable).
         let entity_for_backdrop = entity_self.clone();
         div()
+            .id("about-modal-backdrop")
             .absolute()
             .inset_0()
             .bg(gpui::black().opacity(0.5))
             .flex()
             .items_center()
             .justify_center()
+            .cursor_pointer()
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 entity_for_backdrop.update(cx, |this, cx| {
                     this.close();
@@ -208,5 +226,6 @@ impl Render for AboutModal {
                 });
             })
             .child(modal_body)
+            .into_any_element()
     }
 }
