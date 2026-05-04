@@ -55,6 +55,8 @@ rusqlite      = { workspace = true }
 # via serde + toml. Same dep used twice; we add it once here.
 serde         = { workspace = true }
 serde_json    = { workspace = true }
+# root_resolver — sha256-based cache key for `$CRABCC_HOME/repos/<key>/`.
+sha2          = { workspace = true }
 sonic-rs      = { workspace = true }
 toml          = { workspace = true }
 tracing       = { workspace = true }
