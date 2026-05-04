@@ -308,6 +308,13 @@ pub struct AppState {
     /// `filter_lower` field and the `InputState` text so the input
     /// shows what's actually narrowing the list.
     pub pending_knowledge_filter: Option<SharedString>,
+    /// Staging slot for a one-shot K-Graph node selection. Set by
+    /// `navigate_to_kgraph_with_selection` (e.g. the Knowledge route's
+    /// per-drawer "→ K-Graph" affordance); the K-Graph route reads-
+    /// and-clears it via `take_pending_kgraph_selected_id` and pre-
+    /// selects the matching pill so its detail + neighbour highlight
+    /// land on entry.
+    pub pending_kgraph_selected_id: Option<SharedString>,
     /// Worker plumbing for one-shot HTTP submits — see [`WorkerHandles`].
     /// `Option` only because `Default` can't fabricate a real flume
     /// channel; `state::build` populates it before the view ever
@@ -1004,6 +1011,22 @@ impl AppState {
         self.pending_knowledge_filter.take()
     }
 
+    /// Navigate to the K-Graph route and stage `node_id` so the route
+    /// pre-selects that pill on render. Used by Knowledge's per-row
+    /// "→ K-Graph" cross-link to dive from a drawer into its canvas
+    /// neighbourhood.
+    pub fn navigate_to_kgraph_with_selection(&mut self, node_id: SharedString) {
+        self.pending_kgraph_selected_id = Some(node_id);
+        self.route = Route::KnowledgeGraph;
+    }
+
+    /// Read-and-clear the pending K-Graph selection. One-shot — the
+    /// K-Graph render applies it once and the slot stays empty until
+    /// staged again.
+    pub fn take_pending_kgraph_selected_id(&mut self) -> Option<SharedString> {
+        self.pending_kgraph_selected_id.take()
+    }
+
     pub fn agents_running(&self) -> u32 {
         use crate::api::types::AgentStatus;
         self.agents
@@ -1691,5 +1714,25 @@ mod tests {
             Some("web:abc")
         );
         assert_eq!(s.take_pending_knowledge_filter(), None);
+    }
+
+    #[test]
+    fn navigate_to_kgraph_with_selection_sets_route_and_stages_id() {
+        let mut s = AppState::new();
+        assert!(s.pending_kgraph_selected_id.is_none());
+        s.navigate_to_kgraph_with_selection("doc:42".into());
+        assert_eq!(s.route, Route::KnowledgeGraph);
+        assert_eq!(s.pending_kgraph_selected_id.as_deref(), Some("doc:42"));
+    }
+
+    #[test]
+    fn take_pending_kgraph_selected_id_is_one_shot() {
+        let mut s = AppState::new();
+        s.navigate_to_kgraph_with_selection("web:abc".into());
+        assert_eq!(
+            s.take_pending_kgraph_selected_id().as_deref(),
+            Some("web:abc")
+        );
+        assert_eq!(s.take_pending_kgraph_selected_id(), None);
     }
 }
