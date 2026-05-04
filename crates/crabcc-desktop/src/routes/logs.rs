@@ -18,6 +18,7 @@ use gpui::{
 use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState},
+    tooltip::Tooltip,
     v_flex, ActiveTheme,
 };
 use serde_json::Value;
@@ -375,6 +376,9 @@ fn row(
                 .text_color(level_color)
                 .cursor_pointer()
                 .hover(move |s| s.border_color(primary))
+                .tooltip(|window, cx| {
+                    Tooltip::new("Pin / unpin level filter").build(window, cx)
+                })
                 .child(SharedString::from(level_label(evt.level)))
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     entity.update(cx, |this, cx| {

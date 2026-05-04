@@ -36,6 +36,7 @@ use gpui::{
 use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState},
+    tooltip::Tooltip,
     v_flex, ActiveTheme,
 };
 
@@ -365,6 +366,7 @@ impl Render for TimelineRoute {
                     .text_xs()
                     .cursor_pointer()
                     .hover(move |s| s.bg(secondary))
+                    .tooltip(|window, cx| Tooltip::new("Clear agent pin").build(window, cx))
                     .child(SharedString::from(format!("agt {trimmed} \u{00D7}")))
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         entity_for_clear.update(cx, |this, cx| {
@@ -391,6 +393,7 @@ impl Render for TimelineRoute {
                     .text_xs()
                     .cursor_pointer()
                     .hover(move |s| s.border_color(primary).text_color(primary))
+                    .tooltip(|window, cx| Tooltip::new("Open Agents at this id").build(window, cx))
                     .child(SharedString::new_static("\u{2192} Agents"))
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         let id = id_for_nav.clone();

@@ -16,6 +16,7 @@ use gpui::{
 use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState},
+    tooltip::Tooltip,
     v_flex, ActiveTheme,
 };
 
@@ -444,6 +445,7 @@ fn drawer_row(
         .text_color(muted)
         .cursor_pointer()
         .hover(move |s| s.border_color(primary).text_color(primary))
+        .tooltip(|window, cx| Tooltip::new("Open K-Graph at this drawer").build(window, cx))
         .child(SharedString::new_static("\u{2192} K-Graph"))
         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
             let id = nav_id.clone();
@@ -483,6 +485,10 @@ fn drawer_row(
                         .rounded_md()
                         .cursor_pointer()
                         .hover(move |s| s.border_color(primary))
+                        .tooltip(|window, cx| {
+                            Tooltip::new("Pin / unpin wing — narrows the drawer list")
+                                .build(window, cx)
+                        })
                         .child(location)
                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                             let wing = pin_wing.clone();
