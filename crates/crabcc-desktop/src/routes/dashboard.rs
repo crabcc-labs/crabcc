@@ -14,7 +14,7 @@ use gpui::{
     div, prelude::*, px, Context, Entity, Hsla, IntoElement, MouseButton, Render, SharedString,
     Window,
 };
-use gpui_component::{h_flex, v_flex, ActiveTheme};
+use gpui_component::{h_flex, tooltip::Tooltip, v_flex, ActiveTheme};
 
 use crate::api::types::{AgentStatus, SseActivityEvent};
 use crate::routes::agent_spawn_sheet::AgentSpawnSheet;
@@ -475,6 +475,7 @@ impl Render for DashboardHome {
         // agent id by clone and dispatches `submit_kill` through the
         // shared `AppState` entity.
         let danger = cx.theme().danger;
+        let foreground_for_kill = cx.theme().foreground;
         let agents_state = self.state.clone();
         let agents_tile = tile_with_nav(
             "Agents",
@@ -498,6 +499,8 @@ impl Render for DashboardHome {
                     };
                     let kill_btn: gpui::AnyElement = if matches!(a.status, AgentStatus::Running) {
                         let id_for_click = a.id.clone();
+                        let id_for_tooltip: SharedString =
+                            a.id.chars().take(8).collect::<String>().into();
                         let state_for_click = agents_state.clone();
                         // Pre-computed at SSE-decode time — no
                         // per-render `format!()` alloc. See
@@ -511,6 +514,14 @@ impl Render for DashboardHome {
                             .border_color(danger)
                             .rounded_md()
                             .text_color(danger)
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(danger).text_color(foreground_for_kill))
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(SharedString::from(format!(
+                                    "Kill agent {id_for_tooltip}"
+                                )))
+                                .build(window, cx)
+                            })
                             .child(SharedString::new_static("Kill"))
                             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                 state_for_click.read(cx).submit_kill(id_for_click.clone());

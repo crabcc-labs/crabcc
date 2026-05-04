@@ -25,6 +25,7 @@ use gpui::{
 use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState},
+    tooltip::Tooltip,
     v_flex, ActiveTheme,
 };
 
@@ -354,6 +355,8 @@ impl Render for AgentsRoute {
                     // would expand / collapse the log panel.
                     let kill_btn: gpui::AnyElement = if matches!(a.status, AgentStatus::Running) {
                         let id_for_kill = a.id.clone();
+                        let id_for_tooltip: SharedString =
+                            a.id.chars().take(8).collect::<String>().into();
                         let state_for_kill = agents_state.clone();
                         // Pre-computed at SSE-decode time — no
                         // per-render `format!()` alloc. See
@@ -368,6 +371,14 @@ impl Render for AgentsRoute {
                             .border_color(danger)
                             .rounded_md()
                             .text_color(danger)
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(danger).text_color(foreground))
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(SharedString::from(format!(
+                                    "Kill agent {id_for_tooltip}"
+                                )))
+                                .build(window, cx)
+                            })
                             .child(SharedString::new_static("Kill"))
                             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                 cx.stop_propagation();
