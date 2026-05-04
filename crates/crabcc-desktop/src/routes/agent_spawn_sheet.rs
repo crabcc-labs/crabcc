@@ -26,7 +26,8 @@
 //! `profile` field for the second. No outstanding gaps tracked here.
 
 use gpui::{
-    div, prelude::*, px, Context, Entity, IntoElement, MouseButton, Render, SharedString, Window,
+    div, prelude::*, px, Context, Entity, Focusable, IntoElement, MouseButton, Render,
+    SharedString, Window,
 };
 use gpui_component::{
     h_flex,
@@ -196,7 +197,7 @@ impl AgentSpawnSheet {
 }
 
 impl Render for AgentSpawnSheet {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         if !self.is_open {
             return div().into_any_element();
         }
@@ -238,7 +239,9 @@ impl Render for AgentSpawnSheet {
             );
 
         let body = match &self.phase {
-            SheetPhase::Idle => self.render_idle(cx, foreground, muted, border, primary, warning),
+            SheetPhase::Idle => {
+                self.render_idle(window, cx, foreground, muted, border, primary, warning)
+            }
             SheetPhase::Launching => self.render_launching(cx, primary, muted),
             SheetPhase::Streaming { id } => {
                 let id = id.clone();
@@ -307,8 +310,10 @@ impl AgentSpawnSheet {
         div().text_color(muted).text_xs().child(copy)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn render_idle(
         &self,
+        window: &mut Window,
         cx: &mut Context<Self>,
         foreground: gpui::Hsla,
         muted: gpui::Hsla,
@@ -391,10 +396,20 @@ impl AgentSpawnSheet {
         let submit_disabled = self.prompt_text.trim().is_empty();
         let submit_color = if submit_disabled { muted } else { primary };
         let submit_view = cx.entity();
+        // Wrapper border brightens to `primary` while focused — same
+        // focus-indicator pattern as the other route filter inputs
+        // (#415, #416). Sheet's prompt input lives in `render_idle`,
+        // so the focus check happens here.
+        let prompt_focused = self
+            .prompt_input
+            .read(cx)
+            .focus_handle(cx)
+            .is_focused(window);
+        let prompt_border = if prompt_focused { primary } else { border };
         let prompt_field = div()
             .flex_1()
             .border_1()
-            .border_color(border)
+            .border_color(prompt_border)
             .rounded_md()
             .px_2()
             .py_2()
