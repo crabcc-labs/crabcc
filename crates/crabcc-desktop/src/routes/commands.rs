@@ -26,6 +26,7 @@ use gpui_component::{
     v_flex, ActiveTheme,
 };
 
+use crate::routes::empty::empty_state;
 use crate::state::AppState;
 
 /// Identifier for a runnable Commands row. One variant per no-arg
@@ -213,6 +214,25 @@ impl Render for CommandsRoute {
             })
             .collect::<Vec<_>>();
 
+        // Filter narrowed everything out — surface a centered hint
+        // so the body doesn't read as a layout glitch where only the
+        // search field stayed.
+        let body: gpui::AnyElement = if sections.is_empty() && !self.query_lower.is_empty() {
+            empty_state(
+                "\u{1F50D}",
+                "No commands match the filter",
+                &format!(
+                    "Nothing matches \u{201C}{}\u{201D} — try a shorter query.",
+                    self.query_lower
+                ),
+                muted,
+                foreground,
+            )
+            .into_any_element()
+        } else {
+            v_flex().gap_4().children(sections).into_any_element()
+        };
+
         v_flex()
             .size_full()
             .px_5()
@@ -220,7 +240,7 @@ impl Render for CommandsRoute {
             .gap_4()
             .child(header)
             .child(search_field)
-            .child(v_flex().gap_4().children(sections))
+            .child(body)
     }
 }
 
