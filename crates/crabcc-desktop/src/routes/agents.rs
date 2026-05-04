@@ -340,6 +340,35 @@ impl Render for AgentsRoute {
                         div().into_any_element()
                     };
 
+                    // "→ Timeline" cross-link — navigates to Timeline
+                    // pre-pinned to this agent. Same handoff slot the
+                    // dashboard's agent-pin uses, so the user lands on
+                    // Timeline already filtered to this agent. Renders
+                    // for both running AND exited agents — the Timeline
+                    // buffer covers historical events, so a recently-
+                    // exited agent's calls are still useful to inspect.
+                    let id_for_nav = a.id.clone();
+                    let state_for_nav = agents_state.clone();
+                    let timeline_link_id: gpui::ElementId =
+                        a.derived.timeline_link_id.clone().into();
+                    let timeline_btn = div()
+                        .id(timeline_link_id)
+                        .px_2()
+                        .py_0p5()
+                        .border_1()
+                        .border_color(border)
+                        .rounded_md()
+                        .text_color(muted)
+                        .child(SharedString::new_static("\u{2192} Timeline"))
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            cx.stop_propagation();
+                            let id = id_for_nav.clone();
+                            state_for_nav.update(cx, |s, cx| {
+                                s.navigate_to_timeline_with_agent_pin(id);
+                                cx.notify();
+                            });
+                        });
+
                     // First row: status, id, runtime · model · kill button.
                     let head_row = h_flex()
                         .gap_2()
@@ -358,6 +387,7 @@ impl Render for AgentsRoute {
                                 .text_color(muted)
                                 .child(SharedString::from(format!("· {runtime} · {model}"))),
                         )
+                        .child(timeline_btn)
                         .child(kill_btn);
 
                     // Second row: pid, age, log kib, root.
