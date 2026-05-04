@@ -419,23 +419,42 @@ impl Render for Shell {
                 });
             });
 
+        // Brand block — clicking anywhere on "crabcc · live  v… repo"
+        // jumps to Home, mirroring the convention every web dashboard
+        // already trains users on. The whole block is one Stateful
+        // div so the hover tint covers both the title + the version
+        // line, not just the bigger label.
+        let state_for_brand_click = self.state.clone();
+        let brand_block = h_flex()
+            .id("brand-home")
+            .gap_3()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .cursor_pointer()
+            .hover(move |s| s.bg(hover_bg))
+            .tooltip(|window, cx| Tooltip::new("Go to Home").build(window, cx))
+            .child(
+                div()
+                    .text_lg()
+                    .text_color(foreground)
+                    .child(SharedString::new_static("crabcc · live")),
+            )
+            .child(div().text_color(muted).child(brand_sub))
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                state_for_brand_click.update(cx, |s, cx| {
+                    s.set_route(Route::Home);
+                    cx.notify();
+                });
+            });
+
         let header = h_flex()
             .gap_6()
             .px_5()
             .py_3()
             .border_b_1()
             .border_color(border)
-            .child(
-                h_flex()
-                    .gap_3()
-                    .child(
-                        div()
-                            .text_lg()
-                            .text_color(foreground)
-                            .child(SharedString::new_static("crabcc · live")),
-                    )
-                    .child(div().text_color(muted).child(brand_sub)),
-            )
+            .child(brand_block)
             .child(nav)
             .child(alerts_btn)
             .child(echo_btn)
