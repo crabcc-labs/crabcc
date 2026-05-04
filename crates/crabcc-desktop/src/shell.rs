@@ -14,7 +14,7 @@ use gpui::{
     div, prelude::*, px, AnyElement, Context, Entity, IntoElement, MouseButton, Render,
     SharedString, Window,
 };
-use gpui_component::{h_flex, v_flex, ActiveTheme};
+use gpui_component::{h_flex, tooltip::Tooltip, v_flex, ActiveTheme};
 
 use crate::about::AboutModal;
 use crate::native;
@@ -316,6 +316,7 @@ impl Render for Shell {
             .text_color(alerts_color)
             .cursor_pointer()
             .hover(move |s| s.bg(hover_bg))
+            .tooltip(|window, cx| Tooltip::new("Mute / unmute alerts").build(window, cx))
             .child(alerts_label)
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 state_for_alerts.update(cx, |s, cx| {
@@ -343,6 +344,9 @@ impl Render for Shell {
             .text_color(echo_color)
             .cursor_pointer()
             .hover(move |s| s.bg(hover_bg))
+            .tooltip(|window, cx| {
+                Tooltip::new("Echo alerts to macOS Notification Center").build(window, cx)
+            })
             .child(SharedString::new_static("\u{2197} system"))
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 state_for_echo.update(cx, |s, cx| {
@@ -368,6 +372,7 @@ impl Render for Shell {
             .text_color(muted)
             .cursor_pointer()
             .hover(move |s| s.bg(hover_bg))
+            .tooltip(|window, cx| Tooltip::new("Cycle theme palette").build(window, cx))
             .child(palette_label)
             .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                 state_for_palette.update(cx, |s, cx| {
@@ -405,6 +410,7 @@ impl Render for Shell {
             .text_color(settings_color)
             .cursor_pointer()
             .hover(move |s| s.bg(hover_bg))
+            .tooltip(|window, cx| Tooltip::new("Settings").build(window, cx))
             .child(SharedString::new_static("\u{2699}"))
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 settings_entity.update(cx, |panel, cx| {
