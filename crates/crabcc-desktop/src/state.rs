@@ -183,6 +183,23 @@ impl Route {
         }
     }
 
+    /// Window-title string for this route. Static per route so
+    /// `Shell::render`'s last-title sentinel can be a cheap
+    /// `Option<&'static str>` equality check, with no per-frame
+    /// `format!()` allocation.
+    pub fn window_title(self) -> &'static str {
+        match self {
+            Route::Home => "crabcc · live · Home",
+            Route::Agents => "crabcc · live · Agents",
+            Route::Logs => "crabcc · live · Logs",
+            Route::System => "crabcc · live · System",
+            Route::Knowledge => "crabcc · live · Knowledge",
+            Route::Commands => "crabcc · live · Commands",
+            Route::Timeline => "crabcc · live · Timeline",
+            Route::KnowledgeGraph => "crabcc · live · K-Graph",
+        }
+    }
+
     pub const ALL: [Route; 8] = [
         Route::Home,
         Route::Agents,

@@ -81,6 +81,11 @@ pub struct Shell {
     /// engaged the visible deque drops new pushes entirely (slice
     /// 4), so this sentinel naturally stops advancing.
     last_delivered_toast_id: Option<u64>,
+    /// Last `window.set_window_title` argument, so the render path
+    /// can skip the platform call when the active route hasn't
+    /// changed. `None` is the "never set" sentinel — the first
+    /// render always pushes the route-derived title.
+    last_window_title: Option<&'static str>,
 }
 
 impl Shell {
@@ -137,12 +142,13 @@ impl Shell {
             last_status_count: u32::MAX,
             cached_brand: None,
             last_delivered_toast_id: None,
+            last_window_title: None,
         }
     }
 }
 
 impl Render for Shell {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let bg = cx.theme().background;
         let border = cx.theme().border;
         let muted = cx.theme().muted_foreground;
@@ -170,6 +176,18 @@ impl Render for Shell {
             .clone()
             .unwrap_or_else(|| SharedString::new_static("loading…"));
         let active = state_for_brand.route;
+
+        // Sync the OS window title to the active route, so the
+        // taskbar / Dock-tooltip / Cmd-Tab switcher reflects what
+        // the user is looking at without having to surface the
+        // window. Static per route — `last_window_title` is a
+        // `&'static str` ptr equality check so the platform call
+        // only fires on actual route change.
+        let desired_title = active.window_title();
+        if self.last_window_title != Some(desired_title) {
+            window.set_window_title(desired_title);
+            self.last_window_title = Some(desired_title);
+        }
 
         // Sync the macOS dock badge + menu-bar status item to the
         // running-agents count. Both AppKit calls hit the window
