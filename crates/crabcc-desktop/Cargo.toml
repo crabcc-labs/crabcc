@@ -29,6 +29,7 @@ edition = "2021"
 rust-version = "1.87"
 license = "MIT"
 repository = "https://github.com/peterlodri-sec/crabcc"
+description = "GPUI-rendered native dashboard for `crabcc serve` — six-route view with live SSE bridge, force-directed relations graph, in-window toast strip, native macOS rich-notification banners, and an auto-managed docker-compose backend stack."
 
 [lib]
 # rlib so integration tests + `main.rs` consume the same `api::Client`.

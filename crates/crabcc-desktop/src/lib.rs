@@ -11,6 +11,7 @@
 //!   - `theme`          — palette mirroring `crabcc-viz/web` (track B alignment)
 //!   - `theme_helpers`  — small tone helpers shared across routes
 
+pub mod about;
 pub mod api;
 pub mod graph_layout;
 pub mod native;

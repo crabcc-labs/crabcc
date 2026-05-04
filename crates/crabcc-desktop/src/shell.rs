@@ -16,6 +16,7 @@ use gpui::{
 };
 use gpui_component::{h_flex, v_flex, ActiveTheme};
 
+use crate::about::AboutModal;
 use crate::native;
 use crate::routes::{
     agents::AgentsRoute, commands::CommandsRoute, dashboard::DashboardHome,
@@ -45,6 +46,11 @@ pub struct Shell {
     /// Mounted just below the toast strip; renders nothing when
     /// closed so the body keeps full height.
     settings: Entity<SettingsPanel>,
+    /// About modal — opened from the settings panel's
+    /// "About crabcc-desktop ›" link. Mounted at the very end
+    /// of the v_flex chain so the absolute-positioned overlay
+    /// covers everything below it.
+    about: Entity<AboutModal>,
     /// Most-recent value passed to `native::set_dock_badge`, so the
     /// render path can skip the AppKit call when the count hasn't
     /// changed. `u32::MAX` is the sentinel "never set yet" — picked
@@ -108,7 +114,11 @@ impl Shell {
         // (yet). When the "Settings" entrypoint lands in slice 2+
         // it'll need `window` for that widget.
         let toasts = cx.new(|cx| ToastStrip::new(state.clone(), cx));
-        let settings = cx.new(|cx| SettingsPanel::new(state.clone(), cx));
+        let about = cx.new(AboutModal::new);
+        let settings = cx.new(|cx| SettingsPanel::new(state.clone(), about.clone(), cx));
+        // Re-render the shell when the about modal toggles so
+        // the overlay paints / unpaints in step.
+        cx.observe(&about, |_, _, cx| cx.notify()).detach();
         Self {
             state,
             home,
@@ -121,6 +131,7 @@ impl Shell {
             k_graph,
             toasts,
             settings,
+            about,
             last_badge_count: u32::MAX,
             last_status_count: u32::MAX,
             cached_brand: None,
@@ -408,5 +419,9 @@ impl Render for Shell {
                     .overflow_y_scroll()
                     .child(body),
             )
+            // About modal — overlay layered on top of everything
+            // when open. Renders an empty `div` when closed, so
+            // it claims no layout in the common case.
+            .child(self.about.clone())
     }
 }
