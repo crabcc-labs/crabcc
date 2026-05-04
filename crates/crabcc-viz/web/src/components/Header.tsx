@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import type { Route } from "../router";
 import { Icon } from "./icons";
+import { cn } from "../lib/cn";
 
 type Props = {
   repo: string;
@@ -39,6 +40,18 @@ const NAV: ReadonlyArray<NavLink> = [
   { href: "#/knowledge", label: "knowledge", match: "knowledge", icon: BookOpen },
 ];
 
+// Tailwind class strings for the icon-button row + the responsive
+// crumb. Hoisted to module scope so the per-render shape stays
+// `&'static str`-equivalent in the React.memo path.
+const ICON_BTN_CLASSES = cn(
+  "inline-flex items-center bg-card text-foreground",
+  "border border-border rounded px-2 py-0.5 leading-tight",
+  "no-underline cursor-pointer",
+  "hover:bg-background hover:border-primary hover:text-primary",
+  "focus-visible:outline-2 focus-visible:outline-primary",
+  "focus-visible:outline-offset-1",
+);
+
 /// Memoized so a per-tick activity poll doesn't re-render the header.
 /// React.memo's default shallow-prop check is enough here — the props
 /// only change on bootstrap, route flip, or a connectivity flip.
@@ -53,40 +66,82 @@ export const Header = memo(function Header({
   onSettings,
 }: Props) {
   return (
-    <header>
-      <span className="brand">crabcc · live</span>
-      <span className={`live${live ? " on" : ""}`} title={live ? "SSE connected" : "SSE disconnected"}>
+    <header
+      className={cn(
+        "flex items-center gap-3.5 px-3.5 py-2",
+        "border-b border-border bg-card",
+      )}
+    >
+      <span className="font-bold tracking-wider text-primary">
+        crabcc · live
+      </span>
+      <span
+        className={cn(
+          "inline-flex items-center gap-1.5",
+          live ? "text-success" : "text-inactive",
+        )}
+        title={live ? "SSE connected" : "SSE disconnected"}
+      >
         {/* Filled circle when connected, outline when offline — gives a
             crisper read than the prior CSS-only background-color flip. */}
         <Icon
           of={Circle}
           size={10}
-          className="dot"
+          className="block"
           fill={live ? "currentColor" : "none"}
           aria-hidden="true"
         />
         <span>{live ? "live" : "offline"}</span>
       </span>
-      <nav className="nav-strip" aria-label="Primary">
-        {NAV.map((n) => (
-          <a
-            key={n.match}
-            href={n.href}
-            className={`nav-link${route === n.match ? " active" : ""}`}
-            aria-current={route === n.match ? "page" : undefined}
-            tabIndex={0}
-          >
-            <Icon of={n.icon} size={12} className="nav-link-ico" aria-hidden="true" />
-            {n.label}
-          </a>
-        ))}
+      <nav
+        className="flex items-center gap-0.5 ml-1"
+        aria-label="Primary"
+      >
+        {NAV.map((n) => {
+          const isActive = route === n.match;
+          return (
+            <a
+              key={n.match}
+              href={n.href}
+              className={cn(
+                "px-2.5 py-1 rounded text-xs font-semibold tracking-wider",
+                "no-underline border border-transparent",
+                "max-[800px]:px-1.5 max-[800px]:text-[11px]",
+                isActive
+                  ? "text-primary bg-background border-border"
+                  : "text-muted hover:text-foreground hover:bg-background hover:border-border",
+                "focus-visible:outline-2 focus-visible:outline-primary",
+                "focus-visible:outline-offset-2",
+              )}
+              aria-current={isActive ? "page" : undefined}
+              tabIndex={0}
+            >
+              <Icon
+                of={n.icon}
+                size={12}
+                className="opacity-80 mr-1 -translate-y-px"
+                aria-hidden="true"
+              />
+              {n.label}
+            </a>
+          );
+        })}
       </nav>
-      <span className="crumb">
-        <b>{repo}</b> · {root} · v{version}
+      <span
+        className={cn(
+          "flex-1 text-muted text-xs",
+          "max-[1100px]:text-[11px] max-[1100px]:max-w-[200px]",
+          "max-[1100px]:overflow-hidden max-[1100px]:text-ellipsis",
+          "max-[1100px]:whitespace-nowrap",
+          "max-[800px]:hidden",
+        )}
+      >
+        <b className="text-foreground font-semibold">{repo}</b> · {root} · v
+        {version}
       </span>
-      <span className="actions">
+      <span className="flex gap-1.5">
         <button
-          className="icon-btn"
+          className={ICON_BTN_CLASSES}
           onClick={onReindex}
           title="Run `crabcc index` against the server's PWD"
           aria-label="Re-index"
@@ -94,7 +149,7 @@ export const Header = memo(function Header({
           <Icon of={RefreshCw} />
         </button>
         <button
-          className="icon-btn"
+          className={ICON_BTN_CLASSES}
           onClick={onRandomQuery}
           title="Run a random crabcc query against this repo"
           aria-label="Random query"
@@ -103,7 +158,7 @@ export const Header = memo(function Header({
         </button>
         {onSettings && (
           <button
-            className="icon-btn"
+            className={ICON_BTN_CLASSES}
             onClick={onSettings}
             title="Dashboard settings"
             aria-label="Open settings"
@@ -112,7 +167,7 @@ export const Header = memo(function Header({
           </button>
         )}
         <a
-          className="icon-btn"
+          className={ICON_BTN_CLASSES}
           href="/graph"
           title="Open the interactive call-graph viewer"
           aria-label="Interactive graph"
