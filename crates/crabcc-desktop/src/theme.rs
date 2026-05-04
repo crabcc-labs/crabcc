@@ -20,9 +20,9 @@
 //! ```
 //!
 //! Available palette names: `web_dark`, `web_light`,
-//! `cyberpunk_neon`, `mono`, `high_contrast`. Unknown values fall
-//! back to the OS-appearance pair. Full list lives at
-//! [`Palette::ALL_NAMES`].
+//! `cyberpunk_neon`, `mono`, `high_contrast`, `solarized_dark`,
+//! `dracula`. Unknown values fall back to the OS-appearance pair.
+//! Full list lives at [`Palette::ALL_NAMES`].
 
 use std::path::PathBuf;
 
@@ -221,6 +221,51 @@ impl Palette {
         cyber_bg_deep: 0x000000,
     };
 
+    /// Solarized dark — Ethan Schoonover's classic dev palette
+    /// (https://ethanschoonover.com/solarized/). Balanced
+    /// blue-grey base with yellow / magenta / cyan accents.
+    /// Picked for its long-term reading comfort + recognisable
+    /// brand among developers. `primary` lands on Solarized's
+    /// blue (the brand colour), not the orange we use elsewhere.
+    pub const SOLARIZED_DARK: Self = Self {
+        background: 0x002b36,       // base03
+        foreground: 0x839496,       // base0
+        muted_foreground: 0x586e75, // base01
+        secondary: 0x073642,        // base02 — elevated panel
+        border: 0x586e75,           // base01
+        primary: 0x268bd2,          // blue
+        success: 0x859900,          // green
+        danger: 0xdc322f,           // red
+        cyber_cyan: 0x2aa198,       // cyan
+        cyber_pink: 0xd33682,       // magenta
+        cyber_amber: 0xb58900,      // yellow
+        agent_text: 0x93a1a1,       // base1
+        agent_muted: 0x657b83,      // base00
+        cyber_bg_deep: 0x002b36,
+    };
+
+    /// Dracula — the popular purple-on-dark dev palette
+    /// (https://draculatheme.com/). Distinctive purple primary +
+    /// pink danger + bright cyan. Works well for heavy-tile
+    /// surfaces because the palette has plenty of mid-saturation
+    /// colours that don't fight each other.
+    pub const DRACULA: Self = Self {
+        background: 0x282a36,       // dracula bg
+        foreground: 0xf8f8f2,       // dracula fg
+        muted_foreground: 0x6272a4, // comment
+        secondary: 0x44475a,        // current_line — elevated panel
+        border: 0x6272a4,           // comment (same as muted)
+        primary: 0xbd93f9,          // purple — dracula's brand
+        success: 0x50fa7b,          // green
+        danger: 0xff5555,           // red
+        cyber_cyan: 0x8be9fd,       // cyan
+        cyber_pink: 0xff79c6,       // pink
+        cyber_amber: 0xffb86c,      // orange (closer to amber than yellow)
+        agent_text: 0xf8f8f2,
+        agent_muted: 0x6272a4,
+        cyber_bg_deep: 0x21222c, // slightly darker than bg
+    };
+
     /// Resolve a palette name (lower-snake-case) to a const ref.
     /// Unknown names return `None`. Used by the env-var picker
     /// and any future settings-panel dropdown.
@@ -231,6 +276,8 @@ impl Palette {
             "cyberpunk_neon" => Some(Self::CYBERPUNK_NEON),
             "mono" => Some(Self::MONO),
             "high_contrast" => Some(Self::HIGH_CONTRAST),
+            "solarized_dark" => Some(Self::SOLARIZED_DARK),
+            "dracula" => Some(Self::DRACULA),
             _ => None,
         }
     }
@@ -244,6 +291,8 @@ impl Palette {
         "cyberpunk_neon",
         "mono",
         "high_contrast",
+        "solarized_dark",
+        "dracula",
     ];
 }
 
@@ -404,7 +453,7 @@ mod tests {
         for name in Palette::ALL_NAMES {
             assert!(Palette::by_name(name).is_some(), "{name} should resolve",);
         }
-        assert_eq!(Palette::ALL_NAMES.len(), 5);
+        assert_eq!(Palette::ALL_NAMES.len(), 7);
 
         // Unknowns return None — `install` falls back to the
         // OS-appearance default in that case.
