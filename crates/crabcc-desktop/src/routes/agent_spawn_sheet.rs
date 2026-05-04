@@ -32,6 +32,7 @@ use gpui::{
 use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState},
+    tooltip::Tooltip,
     v_flex, ActiveTheme,
 };
 
@@ -226,8 +227,13 @@ impl Render for AgentSpawnSheet {
             .child(
                 div()
                     .id("agent-spawn-sheet-close")
-                    .px_1()
+                    .px_2()
+                    .py_0p5()
+                    .rounded_md()
                     .text_color(muted)
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(secondary))
+                    .tooltip(|window, cx| Tooltip::new("Close").build(window, cx))
                     .child(SharedString::new_static("×"))
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         cx.stop_propagation();
@@ -415,14 +421,25 @@ impl AgentSpawnSheet {
             .py_2()
             .min_h(px(180.0))
             .child(Input::new(&self.prompt_input).appearance(false));
-        let submit_btn = div()
+        // Launch button — only earns the cursor + hover treatment
+        // when it can actually do something. With an empty prompt
+        // (`submit_disabled`), it stays muted and inert; pretending
+        // it's clickable would set up a disappointing click.
+        let mut submit_btn = div()
             .id("agent-spawn-sheet-launch")
             .px_3()
             .py_1()
             .border_1()
             .border_color(submit_color)
             .rounded_md()
-            .text_color(submit_color)
+            .text_color(submit_color);
+        if !submit_disabled {
+            submit_btn = submit_btn
+                .cursor_pointer()
+                .hover(move |s| s.bg(primary).text_color(foreground))
+                .tooltip(|window, cx| Tooltip::new("Launch agent").build(window, cx));
+        }
+        let submit_btn = submit_btn
             .child(SharedString::new_static("Launch"))
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 cx.stop_propagation();
