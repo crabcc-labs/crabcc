@@ -578,6 +578,8 @@ impl AgentSpawnSheet {
             .overflow_y_scroll()
             .child(log_text);
 
+        let secondary = cx.theme().secondary;
+
         let refresh_view = cx.entity();
         let refresh_btn = div()
             .id("agent-spawn-sheet-refresh")
@@ -587,6 +589,9 @@ impl AgentSpawnSheet {
             .border_color(border)
             .rounded_md()
             .text_color(muted)
+            .cursor_pointer()
+            .hover(move |s| s.bg(secondary))
+            .tooltip(|window, cx| Tooltip::new("Re-fetch the log tail").build(window, cx))
             .child(SharedString::new_static("Refresh log"))
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 cx.stop_propagation();
@@ -605,6 +610,9 @@ impl AgentSpawnSheet {
             .border_color(danger)
             .rounded_md()
             .text_color(danger)
+            .cursor_pointer()
+            .hover(move |s| s.bg(danger).text_color(foreground))
+            .tooltip(|window, cx| Tooltip::new("Kill running agent").build(window, cx))
             .child(SharedString::new_static("Kill"))
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 cx.stop_propagation();
@@ -620,6 +628,11 @@ impl AgentSpawnSheet {
             .border_color(border)
             .rounded_md()
             .text_color(muted)
+            .cursor_pointer()
+            .hover(move |s| s.bg(secondary))
+            .tooltip(|window, cx| {
+                Tooltip::new("Close the sheet — agent keeps running").build(window, cx)
+            })
             .child(SharedString::new_static("Detach"))
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 cx.stop_propagation();
@@ -635,6 +648,9 @@ impl AgentSpawnSheet {
             .border_color(primary)
             .rounded_md()
             .text_color(primary)
+            .cursor_pointer()
+            .hover(move |s| s.bg(primary).text_color(foreground))
+            .tooltip(|window, cx| Tooltip::new("Open this agent in Agents route").build(window, cx))
             .child(SharedString::new_static("Open in Agents route"))
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 cx.stop_propagation();
