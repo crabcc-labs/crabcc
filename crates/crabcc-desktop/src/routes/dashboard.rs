@@ -91,10 +91,13 @@ impl Render for DashboardHome {
         let muted = cx.theme().muted_foreground;
         let border = cx.theme().border;
         // Cyberpunk accents from the active `Palette` global. Used
-        // for the running-agent dot below — under any palette this
-        // pops more than the default text colour, mirroring the
-        // web's cyan-coded "ok / live" treatment.
-        let cyber_cyan = cx.global::<crate::theme::Palette>().cyber_cyan_hsla();
+        // by per-route indicators below — under any palette these
+        // pop more than the default text colour, mirroring the
+        // web's `.dash-svc-cell.ok` / `.service-state.ok|down`
+        // colour-coding.
+        let palette = cx.global::<crate::theme::Palette>();
+        let cyber_cyan = palette.cyber_cyan_hsla();
+        let cyber_amber = palette.cyber_amber_hsla();
 
         // ── KPI strip ─────────────────────────────────────────────
         let index_kpi = match state.bootstrap.as_ref().and_then(|b| b.index.as_ref()) {
@@ -341,9 +344,15 @@ impl Render for DashboardHome {
         let services_body = match state.services.as_ref() {
             Some(rep) => services_body.children(rep.services.iter().take(10).map(|s| {
                 let mark = if s.reachable { "✓" } else { "✗" };
+                let mark_color = if s.reachable { cyber_cyan } else { cyber_amber };
                 h_flex()
                     .gap_2()
-                    .child(SharedString::from(mark.to_string()))
+                    // Reachable / down indicator picks up the
+                    // palette's cyber_cyan / cyber_amber accents,
+                    // mirroring the web's `.service-state.ok|down`
+                    // treatment. Gives a per-row at-a-glance
+                    // service-health read.
+                    .child(div().text_color(mark_color).child(SharedString::from(mark.to_string())))
                     .child(s.name.clone())
                     .child(
                         div()
