@@ -20,6 +20,7 @@ use gpui_component::{
 };
 
 use crate::api::types::{MemoryDrawer, MemoryIngestRequest};
+use crate::routes::empty::empty_state;
 use crate::state::AppState;
 
 const VISIBLE_DRAWERS: usize = 50;
@@ -277,22 +278,22 @@ impl Render for KnowledgeRoute {
                 .min_h(px(60.0))
                 .child(SharedString::new_static("loading drawers…"))
                 .into_any_element(),
-            Some(resp) if !resp.present => div()
-                .text_color(muted)
-                .min_h(px(60.0))
-                .child(SharedString::new_static(
-                    "memory backend not initialised — run `crabcc memory init` \
-                     to create `.crabcc/memory.db` for this repo.",
-                ))
-                .into_any_element(),
-            Some(resp) if resp.drawers.is_empty() => div()
-                .text_color(muted)
-                .min_h(px(60.0))
-                .child(SharedString::new_static(
-                    "no drawers yet — `crabcc memory ingest` from the CLI \
-                     adds new ones.",
-                ))
-                .into_any_element(),
+            Some(resp) if !resp.present => empty_state(
+                "\u{26A0}",
+                "Memory backend not initialised",
+                "Run `crabcc memory init` to create `.crabcc/memory.db` for this repo.",
+                muted,
+                cx.theme().foreground,
+            )
+            .into_any_element(),
+            Some(resp) if resp.drawers.is_empty() => empty_state(
+                "\u{25CC}",
+                "No drawers yet",
+                "Run `crabcc memory ingest` from the CLI to add new ones.",
+                muted,
+                cx.theme().foreground,
+            )
+            .into_any_element(),
             Some(resp) => {
                 let total = resp.drawers.len();
                 let visible: Vec<&MemoryDrawer> = resp
@@ -317,13 +318,17 @@ impl Render for KnowledgeRoute {
                 let entity = cx.entity();
                 let pinned_wing = self.wing_pin.clone();
                 let list: gpui::AnyElement = if visible.is_empty() {
-                    div()
-                        .text_color(muted)
-                        .child(SharedString::from(format!(
-                            "no drawers match \u{201C}{}\u{201D}",
+                    empty_state(
+                        "\u{1F50D}",
+                        "No drawers match the filter",
+                        &format!(
+                            "Nothing matches \u{201C}{}\u{201D} — try a shorter query.",
                             self.filter_lower
-                        )))
-                        .into_any_element()
+                        ),
+                        muted,
+                        cx.theme().foreground,
+                    )
+                    .into_any_element()
                 } else {
                     v_flex()
                         .gap_1()
