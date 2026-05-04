@@ -14,6 +14,7 @@ import {
 import type { Route } from "../router";
 import { Icon } from "./icons";
 import { cn } from "../lib/cn";
+import { Button } from "./ui/button";
 
 type Props = {
   repo: string;
@@ -39,18 +40,6 @@ const NAV: ReadonlyArray<NavLink> = [
   { href: "#/system", label: "system", match: "system", icon: Server },
   { href: "#/knowledge", label: "knowledge", match: "knowledge", icon: BookOpen },
 ];
-
-// Tailwind class strings for the icon-button row + the responsive
-// crumb. Hoisted to module scope so the per-render shape stays
-// `&'static str`-equivalent in the React.memo path.
-const ICON_BTN_CLASSES = cn(
-  "inline-flex items-center bg-card text-foreground",
-  "border border-border rounded px-2 py-0.5 leading-tight",
-  "no-underline cursor-pointer",
-  "hover:bg-background hover:border-primary hover:text-primary",
-  "focus-visible:outline-2 focus-visible:outline-primary",
-  "focus-visible:outline-offset-1",
-);
 
 /// Memoized so a per-tick activity poll doesn't re-render the header.
 /// React.memo's default shallow-prop check is enough here — the props
@@ -140,40 +129,47 @@ export const Header = memo(function Header({
         {version}
       </span>
       <span className="flex gap-1.5">
-        <button
-          className={ICON_BTN_CLASSES}
+        <Button
+          variant="outline"
+          size="icon"
           onClick={onReindex}
           title="Run `crabcc index` against the server's PWD"
           aria-label="Re-index"
         >
           <Icon of={RefreshCw} />
-        </button>
-        <button
-          className={ICON_BTN_CLASSES}
+        </Button>
+        <Button
+          variant="outline"
+          size="icon"
           onClick={onRandomQuery}
           title="Run a random crabcc query against this repo"
           aria-label="Random query"
         >
           <Icon of={Zap} />
-        </button>
+        </Button>
         {onSettings && (
-          <button
-            className={ICON_BTN_CLASSES}
+          <Button
+            variant="outline"
+            size="icon"
             onClick={onSettings}
             title="Dashboard settings"
             aria-label="Open settings"
           >
             <Icon of={Settings} />
-          </button>
+          </Button>
         )}
-        <a
-          className={ICON_BTN_CLASSES}
-          href="/graph"
-          title="Open the interactive call-graph viewer"
-          aria-label="Interactive graph"
-        >
-          <Icon of={ChevronRight} size={12} />
-        </a>
+        {/* asChild lets the Button render as an <a> while keeping
+            the outline-variant styling — same anchor behaviour as
+            before, just via the new component surface. */}
+        <Button asChild variant="outline" size="icon">
+          <a
+            href="/graph"
+            title="Open the interactive call-graph viewer"
+            aria-label="Interactive graph"
+          >
+            <Icon of={ChevronRight} size={12} />
+          </a>
+        </Button>
       </span>
     </header>
   );
