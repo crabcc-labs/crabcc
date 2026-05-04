@@ -210,53 +210,11 @@ main.layout-main {
 
 /* Debug pane — shows the dashboard's own runtime state. Collapsed by
    default; expand from the bottom-right of the layout. */
-.debug-panel {
-  position: fixed;
-  bottom: 8px;
-  right: 8px;
-  z-index: 50;
-  background: var(--panel-bg, #1a1d24);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  font: 11px/1.45 ui-monospace, Menlo, Consolas, monospace;
-  max-width: 480px;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-}
-.debug-panel summary {
-  cursor: pointer;
-  padding: 6px 10px;
-  user-select: none;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.debug-panel summary::-webkit-details-marker { display: none; }
-.debug-panel[open] summary { border-bottom: 1px solid var(--border); }
-.debug-dot {
-  width: 7px; height: 7px; border-radius: 50%;
-  display: inline-block;
-}
-.debug-table {
-  border-collapse: collapse;
-  width: 100%;
-  margin: 0;
-  padding: 6px 10px;
-}
-.debug-table th {
-  text-align: left;
-  font-weight: 600;
-  color: var(--muted);
-  padding: 2px 8px 2px 10px;
-  vertical-align: top;
-  font-size: 10px;
-  text-transform: lowercase;
-  white-space: nowrap;
-}
-.debug-table td {
-  padding: 2px 10px 2px 0;
-  word-break: break-all;
-}
-.debug-table code { font-size: 10px; }
+/*
+ * .debug-* rules migrated to Tailwind utilities in DebugPanel.tsx
+ * (track B.5). DebugPanel was the only consumer of this family;
+ * deletes are localized.
+ */
 
 /* ───────── Cyberpunk skin for agent panels (issue #112 follow-up) ─────────
  * Scoped to the new dashboards (profiles / kills / models) so the rest of
