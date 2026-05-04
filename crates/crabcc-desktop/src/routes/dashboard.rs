@@ -288,6 +288,10 @@ impl Render for DashboardHome {
                                     .text_color(badge_color)
                                     .cursor_pointer()
                                     .hover(move |s| s.border_color(primary).text_color(primary))
+                                    .tooltip(|window, cx| {
+                                        Tooltip::new("Pin agent — narrows the activity tile")
+                                            .build(window, cx)
+                                    })
                                     .child(SharedString::from(format!("agt {trimmed}")))
                                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                         let id = click_id.clone();
@@ -315,6 +319,10 @@ impl Render for DashboardHome {
                                         .text_color(faded_op)
                                         .cursor_pointer()
                                         .hover(move |s| s.border_color(primary))
+                                        .tooltip(|window, cx| {
+                                            Tooltip::new("Pin op — narrows the activity tile")
+                                                .build(window, cx)
+                                        })
                                         .child(g.op.clone())
                                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                             let op = click_op.clone();
@@ -364,6 +372,7 @@ impl Render for DashboardHome {
                     .text_color(primary)
                     .cursor_pointer()
                     .hover(move |s| s.bg(card))
+                    .tooltip(|window, cx| Tooltip::new("Clear op pin").build(window, cx))
                     .child(SharedString::from(format!("{op} \u{00D7}")))
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         entity_for_clear.update(cx, |this, cx| {
@@ -390,6 +399,9 @@ impl Render for DashboardHome {
                     .text_color(muted)
                     .cursor_pointer()
                     .hover(move |s| s.border_color(primary).text_color(primary))
+                    .tooltip(|window, cx| {
+                        Tooltip::new("Open Timeline filtered to this op").build(window, cx)
+                    })
                     .child(SharedString::new_static("\u{2192} Timeline"))
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         let op = op_for_nav.clone();
@@ -415,6 +427,7 @@ impl Render for DashboardHome {
                     .text_color(primary)
                     .cursor_pointer()
                     .hover(move |s| s.bg(card))
+                    .tooltip(|window, cx| Tooltip::new("Clear agent pin").build(window, cx))
                     .child(SharedString::from(format!("agt {trimmed} \u{00D7}")))
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         entity_for_clear.update(cx, |this, cx| {
@@ -441,6 +454,9 @@ impl Render for DashboardHome {
                     .text_color(muted)
                     .cursor_pointer()
                     .hover(move |s| s.border_color(primary).text_color(primary))
+                    .tooltip(|window, cx| {
+                        Tooltip::new("Open Timeline filtered to this agent").build(window, cx)
+                    })
                     .child(SharedString::new_static("\u{2192} Timeline"))
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         let id = id_for_nav.clone();
