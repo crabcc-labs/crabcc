@@ -589,14 +589,23 @@ impl Render for Shell {
                     .child(SharedString::new_static(active.label())),
             );
 
-        // Theme segment — surfaces the active palette name in the
-        // status bar's right rail alongside the route. The header's
-        // `◐ <palette>` cycle button is the canonical control;
-        // mirroring the value here makes it visible from any route
-        // without hovering the cycle button.
+        // Theme segment — surfaces the active palette name AND
+        // doubles as a cycle-palette shortcut, mirroring the header's
+        // `◐ <palette>` button. Click-to-cycle keeps the status bar
+        // honest as a "live state + quick controls" surface, same
+        // pattern as the services / agents segments routing to System
+        // / Agents (#420).
         let palette_name = state_for_brand.palette_name();
+        let state_for_status_palette = self.state.clone();
         let theme_segment = h_flex()
+            .id("status-theme-cycle")
             .gap_1p5()
+            .px_2()
+            .py_0p5()
+            .rounded_md()
+            .cursor_pointer()
+            .hover(move |s| s.bg(hover_bg))
+            .tooltip(|window, cx| Tooltip::new("Cycle theme palette").build(window, cx))
             .child(
                 div()
                     .text_color(muted)
@@ -606,7 +615,18 @@ impl Render for Shell {
                 div()
                     .text_color(foreground)
                     .child(SharedString::new_static(palette_name)),
-            );
+            )
+            .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                state_for_status_palette.update(cx, |s, cx| {
+                    s.cycle_palette();
+                    cx.notify();
+                });
+                let idx = state_for_status_palette.read(cx).palette_index;
+                let _ = crate::theme::apply_by_index(cx, idx);
+                let name = state_for_status_palette.read(cx).palette_name();
+                crate::theme::save_persisted_palette(name);
+                window.refresh();
+            });
 
         let status_bar = h_flex()
             .gap_4()
