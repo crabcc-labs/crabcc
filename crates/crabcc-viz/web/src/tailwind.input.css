@@ -1,0 +1,73 @@
+/*
+ * Tailwind CSS v4 entry — track B.1 foundation.
+ *
+ * Generates `src/tailwind.generated.css` via the `tailwind:build`
+ * package script (`@tailwindcss/cli`); the generated file is
+ * gitignored and `src/main.tsx` imports it before the legacy
+ * `styles.css`. Keeping the legacy stylesheet in place during the
+ * migration so unconverted components keep rendering — Tailwind
+ * classes layer on top.
+ *
+ * Theme tokens here mirror the existing CSS-var palette in
+ * `styles.css:1-22` so the two systems stay visually consistent
+ * during the gradual port. Naming follows the shadcn convention
+ * (background / foreground / primary / muted / border / accent /
+ * destructive / success) so any shadcn component dropped in via
+ * `bunx shadcn add ...` lands with zero token-rename work.
+ *
+ * This file does NOT yet include shadcn's "@layer base" CSS or its
+ * cn() helper — those land in B.2 when the first shadcn component
+ * is pulled in.
+ */
+
+@import "tailwindcss";
+
+@theme {
+  /* Light-mode tokens — pinned to the values in styles.css :root. */
+  --color-background: #fafafa;
+  --color-foreground: #1a1a1a;
+  --color-muted: #6a6a6a;
+  --color-card: #ffffff;
+  --color-border: #e3e3e3;
+  --color-primary: #d35400;
+  --color-success: #27ae60;
+  --color-destructive: #c0392b;
+  /* "live-off" colour — slate grey for inactive status pills. */
+  --color-inactive: #95a5a6;
+
+  /*
+   * Font stack pinned to the existing `body` rule so unconverted
+   * components keep their rendered character. Tailwind utilities
+   * like `font-mono` resolve to this value.
+   */
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+/*
+ * Dark-mode override — Tailwind v4 picks the right palette via the
+ * `prefers-color-scheme` listener that's already on `<meta
+ * name="color-scheme" content="light dark">` in dist/live.html.
+ */
+@media (prefers-color-scheme: dark) {
+  @theme {
+    --color-background: #0e0e10;
+    --color-foreground: #e8e8e8;
+    --color-muted: #8a8a8a;
+    --color-card: #161618;
+    --color-border: #2a2a2c;
+    --color-primary: #ff8c42;
+    --color-success: #2ecc71;
+    --color-destructive: #e74c3c;
+    --color-inactive: #6a6a6c;
+  }
+}
+
+/*
+ * Keep the body's font-feature settings + monospace stack working
+ * for unconverted components. Tailwind utilities that don't set
+ * `font-family` will inherit this. Drops out of the bundle entirely
+ * once the last legacy component migrates.
+ */
+@layer base {
+  html, body, #root { height: 100%; margin: 0; padding: 0; }
+}
