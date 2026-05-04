@@ -288,6 +288,12 @@ pub struct AppState {
     /// reads-and-clears it via `take_pending_timeline_agent_pin` so
     /// the pin survives exactly one navigation handoff.
     pub pending_timeline_agent_pin: Option<SharedString>,
+    /// Staging slot for a one-shot op-name pin on the Timeline route.
+    /// Companion to `pending_timeline_agent_pin` covering the other
+    /// dashboard pin axis. Set by `navigate_to_timeline_with_op_pin`
+    /// (the dashboard's op-pin pill's "→ Timeline" sibling); Timeline's
+    /// `Render` mirrors it into `op_pin` once.
+    pub pending_timeline_op_pin: Option<SharedString>,
     /// Staging slot for a one-shot Agents-route selection. Set by
     /// `navigate_to_agents_with_selection` (e.g. the Timeline's
     /// "→ Agents" affordance); the Agents route reads-and-clears it
@@ -943,6 +949,20 @@ impl AppState {
         self.pending_timeline_agent_pin.take()
     }
 
+    /// Navigate to the Timeline route and stage `op` so the route's
+    /// `op_pin` activates on next render. Companion to the agent-pin
+    /// handoff for the other axis the dashboard activity tile pins on.
+    pub fn navigate_to_timeline_with_op_pin(&mut self, op: SharedString) {
+        self.pending_timeline_op_pin = Some(op);
+        self.route = Route::Timeline;
+    }
+
+    /// Read-and-clear the pending op pin. One-shot, same shape as
+    /// `take_pending_timeline_agent_pin`.
+    pub fn take_pending_timeline_op_pin(&mut self) -> Option<SharedString> {
+        self.pending_timeline_op_pin.take()
+    }
+
     /// Navigate to the Agents route and stage `agent_id` so the route
     /// pre-selects that row (expanding its log-tail panel) on next
     /// render. Used by the Timeline's "→ Agents" cross-link.
@@ -1561,6 +1581,36 @@ mod tests {
         // every Timeline render would re-apply the pin and the user
         // could never clear it.
         assert_eq!(s.take_pending_timeline_agent_pin(), None);
+    }
+
+    #[test]
+    fn navigate_to_timeline_with_op_pin_sets_route_and_stages_op() {
+        let mut s = AppState::new();
+        assert!(s.pending_timeline_op_pin.is_none());
+        s.navigate_to_timeline_with_op_pin("sym".into());
+        assert_eq!(s.route, Route::Timeline);
+        assert_eq!(s.pending_timeline_op_pin.as_deref(), Some("sym"));
+    }
+
+    #[test]
+    fn take_pending_timeline_op_pin_is_one_shot() {
+        let mut s = AppState::new();
+        s.navigate_to_timeline_with_op_pin("refs".into());
+        assert_eq!(s.take_pending_timeline_op_pin().as_deref(), Some("refs"));
+        assert_eq!(s.take_pending_timeline_op_pin(), None);
+    }
+
+    #[test]
+    fn timeline_agent_and_op_pin_handoffs_are_independent() {
+        // Both pins can be staged for the same Timeline render — the
+        // dashboard only ever fires one or the other, but the slots
+        // shouldn't interfere if a future entry point sets both.
+        let mut s = AppState::new();
+        s.navigate_to_timeline_with_agent_pin("a".into());
+        s.navigate_to_timeline_with_op_pin("sym".into());
+        assert_eq!(s.route, Route::Timeline);
+        assert_eq!(s.pending_timeline_agent_pin.as_deref(), Some("a"));
+        assert_eq!(s.pending_timeline_op_pin.as_deref(), Some("sym"));
     }
 
     #[test]
