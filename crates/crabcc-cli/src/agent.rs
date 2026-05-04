@@ -29,7 +29,7 @@ use anyhow::{anyhow, Context, Result};
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const AGENTS_FILE_CANDIDATES: &[&str] = &["AGENTS.md", ".crabcc/AGENTS.md"];
@@ -400,9 +400,19 @@ impl AgentRuntime for SubprocessRuntime {
         // has to come after spawn since it needs `child.id()`.
         run.write_meta(req, self.label())?;
 
-        let mut child = cmd
-            .spawn()
-            .with_context(|| format!("spawn {}", claude.display()))?;
+        // RAII guard: if this fn unwinds (panic / `?` early-return)
+        // before `child.wait()` lands, ChildGuard's Drop sends SIGTERM
+        // and reaps the child. Without this, an unwind leaves an
+        // orphan agent reparented to PID 1 — which becomes a zombie
+        // until the OS gets around to it, and shows up in `crabcc
+        // agent ls` as a "running" run that nobody is watching. The
+        // happy path takes the `Child` out of the guard before
+        // `wait()` so Drop is a no-op.
+        let mut guard = ChildGuard::new(
+            cmd.spawn()
+                .with_context(|| format!("spawn {}", claude.display()))?,
+        );
+        let child = guard.as_mut();
         run.write_pid(child.id())?;
 
         // Two background threads: one tee's stdout, the other stderr.
@@ -424,9 +434,67 @@ impl AgentRuntime for SubprocessRuntime {
         let h_err = std::thread::spawn(move || tee(stderr, log_for_err, std::io::stderr()));
 
         let status = child.wait().context("wait on agent process")?;
+        // Wait succeeded → child has exited → disarm the guard so
+        // Drop is a cheap no-op.
+        guard.disarm();
         let _ = h_out.join();
         let _ = h_err.join();
         Ok(status.code().unwrap_or(1))
+    }
+}
+
+/// RAII wrapper around `std::process::Child` that ensures we don't
+/// leak running children when the parent unwinds. Stdlib's `Child`
+/// has no equivalent of tokio's `kill_on_drop` — its `Drop` is a
+/// no-op, so a panic between `spawn()` and `wait()` orphans the
+/// agent (it gets reparented to PID 1 and shows up as a zombie /
+/// rogue "running" run forever).
+///
+/// Disarm with `disarm()` once `wait()` has succeeded; the inner
+/// `Child` is taken out and dropped without further action.
+pub(crate) struct ChildGuard(Option<Child>);
+
+impl ChildGuard {
+    pub(crate) fn new(child: Child) -> Self {
+        Self(Some(child))
+    }
+
+    /// Mutable access to the wrapped child for the happy-path flow
+    /// (taking stdout/stderr, calling wait, etc.). Panics if the
+    /// guard has already been disarmed — that's a programmer error,
+    /// not a runtime condition.
+    pub(crate) fn as_mut(&mut self) -> &mut Child {
+        self.0
+            .as_mut()
+            .expect("ChildGuard::as_mut after disarm — guard reuse is a bug")
+    }
+
+    /// Surrender ownership of the inner Child without doing any
+    /// cleanup. Call this AFTER `wait()` returns. The child will be
+    /// dropped silently — no signals, no extra wait calls.
+    pub(crate) fn disarm(mut self) {
+        let _ = self.0.take();
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if let Some(mut c) = self.0.take() {
+            // Already-exited child? `try_wait` returns Ok(Some(_)) and
+            // the descendant is already reaped — nothing to do.
+            if let Ok(Some(_)) = c.try_wait() {
+                return;
+            }
+            // Otherwise: SIGTERM, then reap. We don't escalate to
+            // SIGKILL here — `agent_guard.rs` owns the
+            // term-grace-then-kill ladder for the cron-shaped sweep
+            // path. Drop is a "best effort, don't block forever"
+            // exit, so we just kill() (SIGKILL on Unix via stdlib)
+            // and reap to avoid the zombie. That trades a "graceful"
+            // SIGTERM for predictable cleanup on unwind.
+            let _ = c.kill();
+            let _ = c.wait();
+        }
     }
 }
 
@@ -886,5 +954,103 @@ mod tests {
         tee(&b"hello, world\n"[..], &mut log, &mut out);
         assert_eq!(log, b"hello, world\n");
         assert_eq!(out, b"hello, world\n");
+    }
+
+    // ── ChildGuard ───────────────────────────────────────────────────
+    //
+    // The whole point of the guard is "if this fn unwinds before
+    // wait(), don't leak the agent". These tests cover the two
+    // axes that matter:
+    //   1. dropping a still-running guard kills + reaps the child
+    //      (no zombies, returns promptly);
+    //   2. disarm()-after-wait() makes Drop a no-op so the happy
+    //      path doesn't pay the kill() syscall every time.
+    // Unix-only because the test fixtures (`sleep`, `true`) are
+    // POSIX shell built-ins / coreutils we can rely on in CI but
+    // not on Windows.
+
+    #[cfg(unix)]
+    #[test]
+    fn child_guard_kills_running_child_on_drop() {
+        use std::time::{Duration, Instant};
+        let child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("spawn sleep");
+        let guard = ChildGuard::new(child);
+        let started = Instant::now();
+        drop(guard);
+        // Drop must NOT block on the 30-second sleep.
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "ChildGuard::drop blocked too long: {:?}",
+            elapsed
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn child_guard_disarm_skips_kill() {
+        use std::time::{Duration, Instant};
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn true");
+        // Wait for natural exit so the happy path is exercised.
+        let _ = child.wait().expect("wait true");
+        let guard = ChildGuard::new(child);
+        let started = Instant::now();
+        guard.disarm();
+        // disarm + drop on an already-waited child should be near-instant.
+        assert!(
+            started.elapsed() < Duration::from_millis(50),
+            "disarm path took too long"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn child_guard_drop_after_natural_exit_is_no_op() {
+        // Drop without disarm, but the child has already exited and
+        // been reaped via try_wait. The guard's `try_wait` branch
+        // should return Ok(Some(_)) and skip kill().
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn true");
+        let _ = child.wait().expect("wait true");
+        // Don't disarm — let Drop run. It MUST NOT panic, and MUST NOT
+        // hang on a dead child.
+        let guard = ChildGuard::new(child);
+        drop(guard);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[should_panic(expected = "ChildGuard::as_mut after disarm")]
+    fn child_guard_as_mut_after_disarm_panics() {
+        let child = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn true");
+        let mut guard = ChildGuard::new(child);
+        // Move-disarm the guard, but keep a sneaky second guard live
+        // to double-check that as_mut on a disarmed guard panics with
+        // the documented message. We need a fresh guard to call
+        // as_mut on after disarm — so create one with a new child,
+        // disarm it, then call as_mut.
+        let _ = guard.as_mut().wait();
+        // Now disarm and try to use again — but `disarm` consumes
+        // self, so we can't actually call as_mut after disarm without
+        // re-binding. Construct a second guard and disarm it via
+        // mem::take (mirrors what would happen on a programmer-error
+        // path) — the assertion is that as_mut panics on `None`.
+        let dummy = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn true");
+        let mut g2 = ChildGuard::new(dummy);
+        // Manually drop the inner Some(_) without calling disarm()
+        // (which consumes self). This simulates "guard reused after
+        // its child was taken" — the documented panic case.
+        let _ = g2.0.take();
+        let _ = g2.as_mut(); // boom
     }
 }
