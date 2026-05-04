@@ -1475,6 +1475,80 @@ struct AgentSummary {
     root: Option<String>,
 }
 
+/// Best-effort meta.json read with filesystem fallbacks. Used by both
+/// `agents_list` and `agent_info` so they treat half-written run dirs,
+/// `--dry-run` runs, and pre-`write_meta` racey snapshots identically.
+///
+/// Fallbacks:
+///   * `started_ts == 0` (or no meta.json) → `lock` mtime → `dir` mtime.
+///   * `pid` file content `"0"` (sentinel written before the real PID
+///     lands) → return `None` so the UI doesn't render "pid 0".
+struct ParsedMeta {
+    started_ts: u64,
+    runtime: String,
+    model: Option<String>,
+    prompt_preview: String,
+    prompt_chars: usize,
+    root: Option<String>,
+}
+
+fn read_agent_meta(dir: &std::path::Path) -> ParsedMeta {
+    let meta_path = dir.join("meta.json");
+    let mut started_ts = 0u64;
+    let mut runtime_label = String::from("subprocess (host)");
+    let mut model: Option<String> = None;
+    let mut prompt_preview = String::new();
+    let mut prompt_chars = 0usize;
+    let mut root: Option<String> = None;
+    if let Ok(body) = std::fs::read_to_string(&meta_path) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
+            started_ts = v["started_ts"].as_u64().unwrap_or(0);
+            runtime_label = v["runtime"].as_str().unwrap_or("?").to_string();
+            model = v["model"].as_str().map(|s| s.to_string());
+            prompt_preview = v["prompt_preview"].as_str().unwrap_or("").to_string();
+            prompt_chars = v["prompt_chars"].as_u64().unwrap_or(0) as usize;
+            root = v["root"].as_str().map(|s| s.to_string());
+        }
+    }
+    if started_ts == 0 {
+        // meta.json missing or pre-write_meta race: derive from
+        // filesystem so the UI shows a real "started Xs ago" instead
+        // of an em-dash. Try lock mtime first (created in
+        // `RunDir::create`, before spawn); fall back to dir mtime.
+        started_ts = mtime_secs(&dir.join("lock"))
+            .or_else(|| mtime_secs(dir))
+            .unwrap_or(0);
+    }
+    ParsedMeta {
+        started_ts,
+        runtime: runtime_label,
+        model,
+        prompt_preview,
+        prompt_chars,
+        root,
+    }
+}
+
+fn read_agent_pid(pid_path: &std::path::Path) -> Option<u32> {
+    let raw = std::fs::read_to_string(pid_path).ok()?;
+    let n: u32 = raw.trim().parse().ok()?;
+    // `0` is the sentinel written by `RunDir::create` before
+    // `write_pid` lands the real PID — treat as "no pid yet".
+    if n == 0 {
+        None
+    } else {
+        Some(n)
+    }
+}
+
+fn mtime_secs(p: &std::path::Path) -> Option<u64> {
+    let modified = std::fs::metadata(p).ok()?.modified().ok()?;
+    modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs())
+}
+
 fn agents_list() -> Result<AgentsList> {
     let home = runtime::home_dir()?;
     let dir = home.join(".crabcc").join("agents");
@@ -1495,42 +1569,21 @@ fn agents_list() -> Result<AgentsList> {
         let lock = p.join("lock");
         let pid_path = p.join("pid");
         let log_path = p.join("log");
-        let meta_path = p.join("meta.json");
 
         let status = if lock.exists() { "running" } else { "exited" };
-        let pid = std::fs::read_to_string(&pid_path)
-            .ok()
-            .and_then(|s| s.trim().parse::<u32>().ok());
+        let pid = read_agent_pid(&pid_path);
         let log_bytes = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
-
-        // meta.json is optional — older runs (or `--dry-run`) don't
-        // always have it. Best-effort parse; missing fields fall to
-        // sensible defaults so the UI never breaks on a half-written
-        // run dir.
-        let mut started_ts = 0u64;
-        let mut runtime_label = String::from("subprocess (host)");
-        let mut model: Option<String> = None;
-        let mut prompt_preview = String::new();
-        let mut root: Option<String> = None;
-        if let Ok(body) = std::fs::read_to_string(&meta_path) {
-            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-                started_ts = v["started_ts"].as_u64().unwrap_or(0);
-                runtime_label = v["runtime"].as_str().unwrap_or("?").to_string();
-                model = v["model"].as_str().map(|s| s.to_string());
-                prompt_preview = v["prompt_preview"].as_str().unwrap_or("").to_string();
-                root = v["root"].as_str().map(|s| s.to_string());
-            }
-        }
+        let meta = read_agent_meta(&p);
         agents.push(AgentSummary {
             id,
-            started_ts,
+            started_ts: meta.started_ts,
             status,
             pid,
-            runtime: runtime_label,
-            model,
-            prompt_preview,
+            runtime: meta.runtime,
+            model: meta.model,
+            prompt_preview: meta.prompt_preview,
             log_bytes,
-            root,
+            root: meta.root,
         });
     }
     // Most recent first; the dashboard shows running runs at the top.
@@ -1782,40 +1835,22 @@ fn agent_info(id: &str) -> Result<AgentInfo> {
     let meta_path = dir.join("meta.json");
 
     let status = if lock.exists() { "running" } else { "exited" };
-    let pid = std::fs::read_to_string(&pid_path)
-        .ok()
-        .and_then(|s| s.trim().parse::<u32>().ok());
+    let pid = read_agent_pid(&pid_path);
     let is_alive = pid.map(pid_alive).unwrap_or(false);
     let log_bytes = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
-
-    let mut started_ts = 0u64;
-    let mut runtime_label = String::from("subprocess (host)");
-    let mut model: Option<String> = None;
-    let mut prompt_preview = String::new();
-    let mut prompt_chars = 0usize;
-    let mut root: Option<String> = None;
-    if let Ok(body) = std::fs::read_to_string(&meta_path) {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-            started_ts = v["started_ts"].as_u64().unwrap_or(0);
-            runtime_label = v["runtime"].as_str().unwrap_or("?").to_string();
-            model = v["model"].as_str().map(|s| s.to_string());
-            prompt_preview = v["prompt_preview"].as_str().unwrap_or("").to_string();
-            prompt_chars = v["prompt_chars"].as_u64().unwrap_or(0) as usize;
-            root = v["root"].as_str().map(|s| s.to_string());
-        }
-    }
+    let meta = read_agent_meta(&dir);
 
     Ok(AgentInfo {
         id: id.to_string(),
         status,
         pid,
         is_alive,
-        started_ts,
-        runtime: runtime_label,
-        model,
-        prompt_chars,
-        prompt_preview,
-        root,
+        started_ts: meta.started_ts,
+        runtime: meta.runtime,
+        model: meta.model,
+        prompt_chars: meta.prompt_chars,
+        prompt_preview: meta.prompt_preview,
+        root: meta.root,
         log_bytes,
         paths: AgentPaths {
             dir: dir.display().to_string(),
@@ -3110,6 +3145,155 @@ fn strip_urls(text: &str) -> String {
     }
     out.push_str(&text[last..]);
     out
+}
+
+#[cfg(test)]
+mod agent_meta_tests {
+    //! Tests for the meta.json fallbacks added so the dashboard never
+    //! renders all-em-dash agent rows during the (sub-second) window
+    //! between `RunDir::create` and `write_meta`. The fallback chain is:
+    //!   1. read meta.json verbatim (happy path);
+    //!   2. on missing / pre-write_meta, derive `started_ts` from
+    //!      `lock` mtime → dir mtime;
+    //!   3. for the pid file, treat the literal `0` sentinel as None.
+
+    use super::*;
+    use std::fs;
+    use std::path::Path;
+
+    fn touch(p: &Path) {
+        fs::write(p, "").unwrap();
+    }
+
+    #[test]
+    fn read_agent_pid_zero_sentinel_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid = dir.path().join("pid");
+        fs::write(&pid, "0\n").unwrap();
+        assert_eq!(read_agent_pid(&pid), None);
+    }
+
+    #[test]
+    fn read_agent_pid_empty_file_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid = dir.path().join("pid");
+        fs::write(&pid, "").unwrap();
+        assert_eq!(read_agent_pid(&pid), None);
+    }
+
+    #[test]
+    fn read_agent_pid_garbage_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid = dir.path().join("pid");
+        fs::write(&pid, "not-a-number\n").unwrap();
+        assert_eq!(read_agent_pid(&pid), None);
+    }
+
+    #[test]
+    fn read_agent_pid_real_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let pid = dir.path().join("pid");
+        fs::write(&pid, "12345\n").unwrap();
+        assert_eq!(read_agent_pid(&pid), Some(12345));
+    }
+
+    #[test]
+    fn read_agent_pid_missing_file_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(read_agent_pid(&dir.path().join("pid")), None);
+    }
+
+    #[test]
+    fn read_agent_meta_falls_back_to_lock_mtime_when_meta_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        // No meta.json — simulate the race window before write_meta.
+        // Just touch a `lock` file; its mtime should drive started_ts.
+        touch(&dir.path().join("lock"));
+        let meta = read_agent_meta(dir.path());
+        // We can't predict the exact unix-second the test runs at, but
+        // it must be > 0 (i.e. SOMETHING was derived) and within the
+        // last few minutes.
+        assert!(meta.started_ts > 0, "started_ts not derived from mtime");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert!(
+            (now.saturating_sub(meta.started_ts)) < 60,
+            "started_ts={} is more than 60s before now={}",
+            meta.started_ts,
+            now
+        );
+        // Default runtime label so the UI always has SOMETHING readable.
+        assert_eq!(meta.runtime, "subprocess (host)");
+        assert!(meta.model.is_none());
+        assert!(meta.root.is_none());
+    }
+
+    #[test]
+    fn read_agent_meta_falls_back_to_dir_mtime_when_no_lock_either() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta = read_agent_meta(dir.path());
+        assert!(meta.started_ts > 0, "no fallback to dir mtime");
+    }
+
+    #[test]
+    fn read_agent_meta_happy_path_uses_meta_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let meta_json = serde_json::json!({
+            "id": "abc",
+            "started_ts": 1_700_000_000u64,
+            "runtime": "subprocess (host)",
+            "model": "claude-sonnet-4-6",
+            "prompt_preview": "hello world",
+            "prompt_chars": 11,
+            "root": "/repo/foo",
+        });
+        fs::write(
+            dir.path().join("meta.json"),
+            serde_json::to_string(&meta_json).unwrap(),
+        )
+        .unwrap();
+        // Even though there's no lock file, started_ts comes from json.
+        let meta = read_agent_meta(dir.path());
+        assert_eq!(meta.started_ts, 1_700_000_000);
+        assert_eq!(meta.runtime, "subprocess (host)");
+        assert_eq!(meta.model.as_deref(), Some("claude-sonnet-4-6"));
+        assert_eq!(meta.prompt_preview, "hello world");
+        assert_eq!(meta.prompt_chars, 11);
+        assert_eq!(meta.root.as_deref(), Some("/repo/foo"));
+    }
+
+    #[test]
+    fn read_agent_meta_partial_json_still_falls_back_for_started_ts() {
+        // meta.json present but missing started_ts — still derive
+        // from filesystem so the row never shows "—".
+        let dir = tempfile::tempdir().unwrap();
+        touch(&dir.path().join("lock"));
+        fs::write(
+            dir.path().join("meta.json"),
+            r#"{"runtime": "subprocess (host)", "model": "x"}"#,
+        )
+        .unwrap();
+        let meta = read_agent_meta(dir.path());
+        assert!(meta.started_ts > 0);
+        assert_eq!(meta.model.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn mtime_secs_returns_some_for_existing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("touch");
+        touch(&p);
+        let t = mtime_secs(&p).expect("mtime should be readable");
+        assert!(t > 0);
+    }
+
+    #[test]
+    fn mtime_secs_returns_none_for_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(mtime_secs(&dir.path().join("nope")).is_none());
+    }
 }
 
 #[cfg(test)]

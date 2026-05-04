@@ -391,11 +391,19 @@ impl AgentRuntime for SubprocessRuntime {
         // in real time; the log is a faithful rerun-able transcript.
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
+        // Write meta.json BEFORE spawn so the SSE polling layer
+        // (`/api/agents`) never observes the run with empty fields. The
+        // window between spawn and write_meta used to leave the desktop
+        // / web dashboard rendering all-em-dash rows for a few hundred
+        // ms — long enough for users to think the agent crashed.
+        // write_meta doesn't depend on the child PID; write_pid still
+        // has to come after spawn since it needs `child.id()`.
+        run.write_meta(req, self.label())?;
+
         let mut child = cmd
             .spawn()
             .with_context(|| format!("spawn {}", claude.display()))?;
         run.write_pid(child.id())?;
-        run.write_meta(req, self.label())?;
 
         // Two background threads: one tee's stdout, the other stderr.
         // Each appends to `log` and forwards to the corresponding
