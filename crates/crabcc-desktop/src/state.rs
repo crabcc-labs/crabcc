@@ -294,6 +294,14 @@ pub struct AppState {
     /// via `take_pending_agents_selected_id` and pre-expands the
     /// matching row's log-tail panel without an extra click.
     pub pending_agents_selected_id: Option<SharedString>,
+    /// Staging slot for a one-shot Knowledge-route filter string.
+    /// Set by `navigate_to_knowledge_with_filter` (e.g. the K-Graph's
+    /// "→ Knowledge" affordance from the node-detail panel); the
+    /// Knowledge route reads-and-clears it via
+    /// `take_pending_knowledge_filter`, mirroring it into both the
+    /// `filter_lower` field and the `InputState` text so the input
+    /// shows what's actually narrowing the list.
+    pub pending_knowledge_filter: Option<SharedString>,
     /// Worker plumbing for one-shot HTTP submits — see [`WorkerHandles`].
     /// `Option` only because `Default` can't fabricate a real flume
     /// channel; `state::build` populates it before the view ever
@@ -959,6 +967,23 @@ impl AppState {
         self.pending_agents_selected_id.take()
     }
 
+    /// Navigate to the Knowledge route and stage `filter` so the
+    /// route's filter input lands pre-populated. Used by the K-Graph's
+    /// "→ Knowledge" cross-link to dive from a selected canvas node
+    /// into its drawer view.
+    pub fn navigate_to_knowledge_with_filter(&mut self, filter: SharedString) {
+        self.pending_knowledge_filter = Some(filter);
+        self.route = Route::Knowledge;
+    }
+
+    /// Read-and-clear the pending Knowledge filter. One-shot — once
+    /// the Knowledge route's render has mirrored it into the
+    /// InputState + `filter_lower`, the slot stays empty until staged
+    /// again.
+    pub fn take_pending_knowledge_filter(&mut self) -> Option<SharedString> {
+        self.pending_knowledge_filter.take()
+    }
+
     pub fn agents_running(&self) -> u32 {
         use crate::api::types::AgentStatus;
         self.agents
@@ -1596,5 +1621,25 @@ mod tests {
         assert_eq!(s.route, Route::Agents);
         assert_eq!(s.pending_timeline_agent_pin.as_deref(), Some("a"));
         assert_eq!(s.pending_agents_selected_id.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn navigate_to_knowledge_with_filter_sets_route_and_stages_filter() {
+        let mut s = AppState::new();
+        assert!(s.pending_knowledge_filter.is_none());
+        s.navigate_to_knowledge_with_filter("doc:42".into());
+        assert_eq!(s.route, Route::Knowledge);
+        assert_eq!(s.pending_knowledge_filter.as_deref(), Some("doc:42"));
+    }
+
+    #[test]
+    fn take_pending_knowledge_filter_is_one_shot() {
+        let mut s = AppState::new();
+        s.navigate_to_knowledge_with_filter("web:abc".into());
+        assert_eq!(
+            s.take_pending_knowledge_filter().as_deref(),
+            Some("web:abc")
+        );
+        assert_eq!(s.take_pending_knowledge_filter(), None);
     }
 }

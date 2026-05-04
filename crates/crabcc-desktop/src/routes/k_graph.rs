@@ -481,6 +481,7 @@ impl Render for KnowledgeGraphRoute {
                     self.selected.as_ref(),
                     &g.nodes,
                     &g.edges,
+                    self.state.clone(),
                     foreground,
                     muted,
                     border,
@@ -680,6 +681,7 @@ fn render_detail(
     selected: Option<&SharedString>,
     nodes: &[MemoryGraphNode],
     edges: &[MemoryGraphEdge],
+    state: Entity<AppState>,
     foreground: Hsla,
     muted: Hsla,
     border: Hsla,
@@ -712,6 +714,30 @@ fn render_detail(
     incoming.sort_by(|a, b| a.src.as_ref().cmp(b.src.as_ref()));
     outgoing.sort_by(|a, b| a.dst.as_ref().cmp(b.dst.as_ref()));
 
+    // "→ Knowledge" cross-link — pre-filters the Knowledge route to
+    // this drawer's id. Drawer body lives there (this canvas only
+    // shows wing + cross-refs), so this is the natural dive when the
+    // user wants to read the actual content.
+    let nav_id = node.id.clone();
+    let nav_state = state.clone();
+    let knowledge_link = div()
+        .id("k-graph-detail-to-knowledge")
+        .px_2()
+        .py_0p5()
+        .border_1()
+        .border_color(border)
+        .rounded_md()
+        .text_color(primary)
+        .text_xs()
+        .child(SharedString::new_static("\u{2192} Knowledge"))
+        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+            let id = nav_id.clone();
+            nav_state.update(cx, |s, cx| {
+                s.navigate_to_knowledge_with_filter(id);
+                cx.notify();
+            });
+        });
+
     let header = v_flex()
         .gap_0p5()
         .child(
@@ -727,7 +753,8 @@ fn render_detail(
                     "wing {} · {} bytes · {}",
                     node.kind, node.len, node.id
                 ))),
-        );
+        )
+        .child(knowledge_link);
 
     let in_block = v_flex()
         .gap_0p5()

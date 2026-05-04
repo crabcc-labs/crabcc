@@ -142,7 +142,23 @@ impl KnowledgeRoute {
 }
 
 impl Render for KnowledgeRoute {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Cross-route nav handoff (e.g. K-Graph → Knowledge): a prior
+        // render staged a filter string. Mirror it into both
+        // `filter_lower` and the `InputState` text so the field shows
+        // what's actually filtering the list. One-shot — subsequent
+        // renders don't re-apply, so the user can clear it manually.
+        let pending_filter = self
+            .state
+            .update(cx, |s, _| s.take_pending_knowledge_filter());
+        if let Some(value) = pending_filter {
+            let lower = value.to_lowercase();
+            self.filter_lower = lower;
+            self.filter_input.update(cx, |st, sub_cx| {
+                st.set_value(value, window, sub_cx);
+            });
+        }
+
         let state = self.state.read(cx);
         let muted = cx.theme().muted_foreground;
         let border = cx.theme().border;
