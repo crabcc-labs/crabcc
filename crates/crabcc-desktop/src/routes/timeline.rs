@@ -363,6 +363,8 @@ impl Render for TimelineRoute {
                     .rounded_md()
                     .text_color(primary)
                     .text_xs()
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(secondary))
                     .child(SharedString::from(format!("agt {trimmed} \u{00D7}")))
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         entity_for_clear.update(cx, |this, cx| {
@@ -387,6 +389,8 @@ impl Render for TimelineRoute {
                     .rounded_md()
                     .text_color(muted)
                     .text_xs()
+                    .cursor_pointer()
+                    .hover(move |s| s.border_color(primary).text_color(primary))
                     .child(SharedString::new_static("\u{2192} Agents"))
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         let id = id_for_nav.clone();
@@ -449,6 +453,8 @@ impl Render for TimelineRoute {
                     } else {
                         gpui::transparent_black()
                     })
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(secondary))
                     .child(label)
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         let target = click_op.clone();
