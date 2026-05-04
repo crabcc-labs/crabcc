@@ -76,6 +76,11 @@ impl Render for SettingsPanel {
         let primary = theme.primary;
         let bg = theme.secondary;
         let border = theme.border;
+        // Hover bg for clickable rows. The panel itself sits on
+        // `theme.secondary`, so we use `theme.background` (the main
+        // app surface) for hover — it reads as a subtle "depressed"
+        // tint inside the panel rather than another lighter shade.
+        let hover_bg = theme.background;
         let app_state = self.state.read(cx);
         let active_idx = app_state.palette_index;
         let muted_now = app_state.toasts_muted;
@@ -114,6 +119,8 @@ impl Render for SettingsPanel {
                 .border_1()
                 .border_color(if is_active { primary } else { border })
                 .text_color(row_color)
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover_bg))
                 .child(label)
                 .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                     // Apply + persist + close. Same flow as the
@@ -151,13 +158,17 @@ impl Render for SettingsPanel {
         // the same shape (label + on/off glyph). Unlike palettes,
         // these are pure boolean toggles so we don't need a
         // multi-row picker.
+        let toggle_style = ToggleRowStyle {
+            primary,
+            fg: theme.foreground,
+            border,
+            hover_bg,
+        };
         let mute_row = make_toggle_row(
             SharedString::new_static("settings-mute-toggle"),
             "mute alerts",
             muted_now,
-            primary,
-            theme.foreground,
-            border,
+            toggle_style,
             {
                 let state = self.state.clone();
                 move |cx: &mut gpui::App| {
@@ -172,9 +183,7 @@ impl Render for SettingsPanel {
             SharedString::new_static("settings-echo-toggle"),
             "echo to Notification Center",
             echo_now,
-            primary,
-            theme.foreground,
-            border,
+            toggle_style,
             {
                 let state = self.state.clone();
                 move |cx: &mut gpui::App| {
@@ -195,7 +204,12 @@ impl Render for SettingsPanel {
         let about_entity = self.about.clone();
         let about_link = div()
             .id("settings-about-link")
+            .px_2()
+            .py_1()
+            .rounded_md()
             .text_color(muted)
+            .cursor_pointer()
+            .hover(move |s| s.bg(hover_bg))
             .child(SharedString::from(format!(
                 "About crabcc-desktop v{} \u{203A}",
                 env!("CARGO_PKG_VERSION")
@@ -230,21 +244,31 @@ impl Render for SettingsPanel {
 /// the panel and the header read identically. `on_click` is
 /// called with `&mut App` so the closure can call
 /// `state.update(...)` directly.
+/// Colour bundle for [`make_toggle_row`]. Avoids the
+/// `too_many_arguments` clippy gate now that the row carries
+/// hover-state styling on top of the active/inactive colours.
+#[derive(Clone, Copy)]
+struct ToggleRowStyle {
+    primary: gpui::Hsla,
+    fg: gpui::Hsla,
+    border: gpui::Hsla,
+    hover_bg: gpui::Hsla,
+}
+
 fn make_toggle_row<F>(
     id: SharedString,
     label: &'static str,
     on: bool,
-    primary: gpui::Hsla,
-    fg: gpui::Hsla,
-    border: gpui::Hsla,
+    style: ToggleRowStyle,
     on_click: F,
 ) -> gpui::Stateful<gpui::Div>
 where
     F: Fn(&mut gpui::App) + 'static,
 {
     let glyph = if on { "\u{25C9}" } else { "\u{25CB}" };
-    let row_color = if on { primary } else { fg };
-    let row_border = if on { primary } else { border };
+    let row_color = if on { style.primary } else { style.fg };
+    let row_border = if on { style.primary } else { style.border };
+    let hover_bg = style.hover_bg;
     let label_text = SharedString::from(format!("{glyph} {label}"));
     h_flex()
         .id(gpui::ElementId::Name(id))
@@ -255,6 +279,8 @@ where
         .border_1()
         .border_color(row_border)
         .text_color(row_color)
+        .cursor_pointer()
+        .hover(move |s| s.bg(hover_bg))
         .child(label_text)
         .on_mouse_down(MouseButton::Left, move |_, _, cx| on_click(cx))
 }
