@@ -498,52 +498,77 @@ impl Render for Shell {
         // overall app state. Renders nothing fancy — just two
         // glyph-prefixed counts in muted text with cyber accents
         // when the values are interesting.
-        let services_segment: AnyElement = match state_for_brand.services_reachable() {
-            Some((up, total)) => {
-                let (color, glyph) = if up < total {
-                    (badge_degraded, "\u{25CF}")
-                } else {
-                    (badge_running, "\u{25CF}")
-                };
-                h_flex()
-                    .gap_1p5()
-                    .child(
-                        div()
-                            .text_color(color)
-                            .child(SharedString::new_static(glyph)),
-                    )
-                    .child(
-                        div()
-                            .text_color(muted)
-                            .child(SharedString::from(format!("services {up}/{total}"))),
-                    )
-                    .into_any_element()
-            }
-            None => div()
-                .text_color(muted)
-                .child(SharedString::new_static("services —"))
-                .into_any_element(),
+        // Services segment — clickable shortcut to the System route.
+        // Tooltip telegraphs the click target since the segment
+        // itself doesn't carry a `→` hint (the foot bar should stay
+        // visually quiet when nothing is happening).
+        let (services_color, services_label) = match state_for_brand.services_reachable() {
+            Some((up, total)) if up < total => (
+                badge_degraded,
+                SharedString::from(format!("services {up}/{total}")),
+            ),
+            Some((up, total)) => (
+                badge_running,
+                SharedString::from(format!("services {up}/{total}")),
+            ),
+            None => (muted, SharedString::new_static("services —")),
         };
-        let agents_segment: AnyElement = if running > 0 {
-            h_flex()
-                .gap_1p5()
-                .child(
-                    div()
-                        .text_color(badge_running)
-                        .child(SharedString::new_static("\u{25CF}")),
-                )
-                .child(
-                    div()
-                        .text_color(muted)
-                        .child(SharedString::from(format!("agents {running}"))),
-                )
-                .into_any_element()
+        let state_for_services_jump = self.state.clone();
+        let services_segment: AnyElement = h_flex()
+            .id("status-services")
+            .gap_1p5()
+            .px_2()
+            .py_0p5()
+            .rounded_md()
+            .cursor_pointer()
+            .hover(move |s| s.bg(hover_bg))
+            .tooltip(|window, cx| Tooltip::new("View System status").build(window, cx))
+            .child(
+                div()
+                    .text_color(services_color)
+                    .child(SharedString::new_static("\u{25CF}")),
+            )
+            .child(div().text_color(muted).child(services_label))
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                state_for_services_jump.update(cx, |s, cx| {
+                    s.set_route(Route::System);
+                    cx.notify();
+                });
+            })
+            .into_any_element();
+
+        // Agents segment — clickable shortcut to the Agents route.
+        // Same chrome as services. Glyph flips to the empty `○`
+        // when no agents are running so the row reads as quiet.
+        let (agents_color, agents_glyph) = if running > 0 {
+            (badge_running, "\u{25CF}")
         } else {
-            div()
-                .text_color(muted)
-                .child(SharedString::new_static("\u{25CB} agents 0"))
-                .into_any_element()
+            (muted, "\u{25CB}")
         };
+        let agents_label = SharedString::from(format!("agents {running}"));
+        let state_for_agents_jump = self.state.clone();
+        let agents_segment: AnyElement = h_flex()
+            .id("status-agents")
+            .gap_1p5()
+            .px_2()
+            .py_0p5()
+            .rounded_md()
+            .cursor_pointer()
+            .hover(move |s| s.bg(hover_bg))
+            .tooltip(|window, cx| Tooltip::new("View Agents").build(window, cx))
+            .child(
+                div()
+                    .text_color(agents_color)
+                    .child(SharedString::new_static(agents_glyph)),
+            )
+            .child(div().text_color(muted).child(agents_label))
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                state_for_agents_jump.update(cx, |s, cx| {
+                    s.set_route(Route::Agents);
+                    cx.notify();
+                });
+            })
+            .into_any_element();
         // Right-aligned route segment: "route Logs" with the
         // active route's label. Anchors the foot of the window
         // with a "you are here" reminder, mirroring the brand
