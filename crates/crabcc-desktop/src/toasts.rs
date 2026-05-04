@@ -33,7 +33,9 @@
 //!   rich-notification side exists.
 //! - **"Settings" entrypoint** — later slice.
 
-use gpui::{div, prelude::*, px, Context, Entity, MouseButton, Render, SharedString, Window};
+use gpui::{
+    div, prelude::*, px, relative, Context, Entity, MouseButton, Render, SharedString, Window,
+};
 use gpui_component::{h_flex, v_flex, ActiveTheme};
 
 use crate::state::AppState;
@@ -290,14 +292,24 @@ impl Render for ToastStrip {
                                 SharedString::new_static("toast-dismiss"),
                                 t.id,
                             );
-                            h_flex()
+                            // Remaining-time fraction for the progress
+                            // bar (Some(_) for transient levels with a
+                            // dismiss-after, None for warning/danger
+                            // which persist until manually acked).
+                            // Goes 1.0 → 0.0 as the toast lives, so
+                            // the visible bar shrinks toward dismiss.
+                            // Render-only; the actual GC still runs
+                            // in `is_active`.
+                            let progress: Option<f32> = t.level.dismiss_after_secs().map(|secs| {
+                                let elapsed = (now - t.created_at).max(0) as f32;
+                                let total = secs as f32;
+                                ((total - elapsed) / total).clamp(0.0, 1.0)
+                            });
+
+                            let row = h_flex()
                                 .gap_3()
                                 .px_3()
                                 .py_2()
-                                .border_1()
-                                .border_color(accent)
-                                .rounded_md()
-                                .bg(bg)
                                 .child(
                                     div()
                                         .w(px(16.0))
@@ -336,7 +348,34 @@ impl Render for ToastStrip {
                                                 cx.notify();
                                             });
                                         }),
-                                )
+                                );
+
+                            // Progress bar — 2px track at the bottom
+                            // of the toast box, with the accent fill
+                            // shrinking left-to-right as time runs
+                            // out. Persistent levels (warning /
+                            // danger) render an empty placeholder so
+                            // the toast's visual height stays
+                            // consistent with transient toasts above
+                            // / below.
+                            let bar: gpui::AnyElement = match progress {
+                                Some(f) => div()
+                                    .h(px(2.0))
+                                    .w_full()
+                                    .bg(theme.border)
+                                    .child(div().h_full().w(relative(f)).bg(accent))
+                                    .into_any_element(),
+                                None => div().h(px(2.0)).into_any_element(),
+                            };
+
+                            v_flex()
+                                .border_1()
+                                .border_color(accent)
+                                .rounded_md()
+                                .bg(bg)
+                                .overflow_hidden()
+                                .child(row)
+                                .child(bar)
                                 .into_any_element()
                         }),
                 ),
