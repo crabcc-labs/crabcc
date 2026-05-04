@@ -325,6 +325,17 @@ impl Render for KnowledgeGraphRoute {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.ensure_fetch(cx);
 
+        // Cross-route nav handoff (e.g. Knowledge → K-Graph): a prior
+        // render staged a drawer id to pre-select. Apply once and let
+        // the staged slot stay empty so a manual deselect doesn't get
+        // re-overridden on the next notify tick.
+        let pending_select = self
+            .state
+            .update(cx, |s, _| s.take_pending_kgraph_selected_id());
+        if let Some(id) = pending_select {
+            self.selected = Some(id);
+        }
+
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let foreground = theme.foreground;

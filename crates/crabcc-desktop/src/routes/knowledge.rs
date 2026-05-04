@@ -341,6 +341,7 @@ impl Render for KnowledgeRoute {
                                         primary,
                                         wing_pinned,
                                         entity.clone(),
+                                        self.state.clone(),
                                     )
                                     .into_any_element()
                                 })
@@ -383,6 +384,7 @@ fn drawer_row(
     primary: Hsla,
     wing_pinned: bool,
     entity: Entity<KnowledgeRoute>,
+    state: Entity<AppState>,
 ) -> gpui::Div {
     let location: SharedString = match d.room.as_deref() {
         Some(room) if !room.is_empty() => format!("{}/{}", d.wing, room).into(),
@@ -397,6 +399,31 @@ fn drawer_row(
     let badge_id = SharedString::from(format!("knowledge-wing-{}-{}", d.id, d.wing));
     let pin_wing = d.wing.clone();
     let badge_border = if wing_pinned { primary } else { badge_bg };
+
+    // "→ K-Graph" cross-link — navigates to K-Graph with this drawer
+    // pre-selected. Mirrors the K-Graph → Knowledge link from #383
+    // closing the pair: from a drawer's body view, dive into the
+    // canvas to see who points at it / what it points at. Drawer
+    // source_id matches MemoryGraphNode.id 1:1 (server-side mapping).
+    let nav_id = d.source_id.clone();
+    let nav_state = state.clone();
+    let nav_btn_id = SharedString::from(format!("knowledge-to-kgraph-{}", d.id));
+    let kgraph_link = div()
+        .id(nav_btn_id)
+        .px_2()
+        .py_0p5()
+        .border_1()
+        .border_color(border)
+        .rounded_md()
+        .text_color(muted)
+        .child(SharedString::new_static("\u{2192} K-Graph"))
+        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+            let id = nav_id.clone();
+            nav_state.update(cx, |s, cx| {
+                s.navigate_to_kgraph_with_selection(id);
+                cx.notify();
+            });
+        });
 
     v_flex()
         .gap_1()
@@ -437,9 +464,11 @@ fn drawer_row(
                 )
                 .child(
                     div()
+                        .flex_1()
                         .text_color(muted)
                         .child(SharedString::from(format_relative(d.created_at))),
-                ),
+                )
+                .child(kgraph_link),
         )
         .child(SharedString::from(truncate(&d.body_preview, 220)))
 }
