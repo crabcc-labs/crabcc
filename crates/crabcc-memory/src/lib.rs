@@ -73,6 +73,7 @@
 
 pub mod backend;
 pub mod embed;
+pub mod loop_detect;
 pub mod mine;
 pub mod palace;
 pub mod read;
