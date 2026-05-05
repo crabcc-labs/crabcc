@@ -306,6 +306,14 @@ pub trait SamplingHandler: Send + Sync {
 /// call returns. A request id minted in `on_request` is threaded
 /// through to `on_response` so the consumer can link the two
 /// events (parent_id-style).
+///
+/// **Sub-calls.** When the handler issues a nested call internally
+/// — today, the `includeContext` summary lane firing
+/// `qwen3:4b` to compress resource snippets — it notifies via
+/// `on_subcall_request` / `on_subcall_response`. The `parent_id`
+/// is the id returned from the top-level `on_request`. Default
+/// impls are no-ops so observers that don't care about subcalls
+/// see no change in behaviour.
 pub trait SamplingObserver: Send + Sync {
     /// Returns a u64 token that identifies this in-flight request.
     /// Free-form — observers that don't care can return 0.
@@ -316,6 +324,46 @@ pub trait SamplingObserver: Send + Sync {
         result: &Result<SamplingResponse, SamplingError>,
         latency_ms: u32,
     );
+
+    /// Called when the handler is about to fire a nested sampling
+    /// call as part of fulfilling the parent. The classic case is
+    /// the `includeContext` summary lane (parent at depth N invokes
+    /// a child at depth N+1 to compress resource snippets).
+    ///
+    /// `method` is the MCP method name (today always
+    /// `"sampling/createMessage"`; reserved for future expansion).
+    /// `chosen_model` is the model resolved for the *sub*-call,
+    /// not the parent.
+    ///
+    /// Returns a sub-id which the matching `on_subcall_response`
+    /// receives. Free-form like the top-level id.
+    ///
+    /// Default impl: no-op, returns 0.
+    fn on_subcall_request(
+        &self,
+        parent_id: u64,
+        method: &str,
+        chosen_model: &str,
+        request: &SamplingRequest,
+    ) -> u64 {
+        let _ = (parent_id, method, chosen_model, request);
+        0
+    }
+
+    /// Called after the matching nested call returns. `parent_id`
+    /// echoes the top-level parent so consumers can render the
+    /// chain even if they didn't track `sub_id` mapping themselves.
+    ///
+    /// Default impl: no-op.
+    fn on_subcall_response(
+        &self,
+        sub_id: u64,
+        parent_id: u64,
+        result: &Result<SamplingResponse, SamplingError>,
+        latency_ms: u32,
+    ) {
+        let _ = (sub_id, parent_id, result, latency_ms);
+    }
 }
 
 // ───────────────────────────────────────── LiteLLM impl
@@ -476,19 +524,26 @@ impl SamplingHandler for LiteLlmSamplingHandler {
 
         let model = self.select_model(request.model_preferences.as_ref())?.clone();
 
-        // includeContext flow — best-effort; failures fall through
-        // and the original request runs un-augmented. See
-        // `MCP-SAMPLING-OFFER.md` §7.1.
-        let request = self.maybe_inject_context(request);
-
-        // Notify observer that a request is in flight. Errors from
-        // the observer are not propagated — instrumentation must
-        // never break the call.
+        // Notify observer of the parent request first. The
+        // resulting `req_id` is then threaded through to any
+        // sub-call observations the includeContext flow makes,
+        // so the inspector renders summary calls as children of
+        // the original request rather than orphan rows.
+        //
+        // Important: we deliberately notify `on_request` with the
+        // *original* (un-augmented) request so the inspector shows
+        // what the peer actually asked for; the host-injected
+        // summary becomes a separate visible row.
         let req_id = self
             .observer
             .as_ref()
             .map(|o| o.on_request(&request, &model.name));
         let started = Instant::now();
+
+        // includeContext flow — best-effort; failures fall through
+        // and the original request runs un-augmented. See
+        // `MCP-SAMPLING-OFFER.md` §7.1.
+        let request = self.maybe_inject_context(request, req_id);
 
         let result = self.do_call(&model.name, &request);
 
@@ -506,7 +561,16 @@ impl LiteLlmSamplingHandler {
     /// secondary lane, and prepend the summary to the original
     /// request. Best-effort: any failure (provider returns nothing,
     /// summary call errors) leaves the request untouched.
-    fn maybe_inject_context(&self, request: SamplingRequest) -> SamplingRequest {
+    ///
+    /// `parent_id` is the top-level request id from
+    /// [`SamplingObserver::on_request`]. Threaded through so the
+    /// summary subcall's CallEvents (when an observer is wired)
+    /// link back to the parent in the inspector.
+    fn maybe_inject_context(
+        &self,
+        request: SamplingRequest,
+        parent_id: Option<u64>,
+    ) -> SamplingRequest {
         let scope = match request.include_context {
             Some(s) if s.injects() => s,
             _ => return request,
@@ -520,7 +584,33 @@ impl LiteLlmSamplingHandler {
         }
         let corpus = concat_snippets(&snippets);
         let summary_req = build_summary_request(&corpus);
-        match self.do_call(&self.summary_model, &summary_req) {
+
+        // Sub-call observation. Pre-fired so the inspector shows a
+        // pending row immediately — the upstream call can take
+        // seconds and we want the row visible in real time.
+        let sub_id = match (self.observer.as_ref(), parent_id) {
+            (Some(o), Some(pid)) => Some((
+                o,
+                pid,
+                o.on_subcall_request(
+                    pid,
+                    "sampling/createMessage",
+                    &self.summary_model,
+                    &summary_req,
+                ),
+            )),
+            _ => None,
+        };
+        let sub_started = Instant::now();
+
+        let result = self.do_call(&self.summary_model, &summary_req);
+
+        if let Some((o, pid, sid)) = sub_id {
+            let ms = sub_started.elapsed().as_millis().min(u32::MAX as u128) as u32;
+            o.on_subcall_response(sid, pid, &result, ms);
+        }
+
+        match result {
             Ok(resp) => {
                 let summary_text = match resp.content {
                     Content::Text { text } => text,
@@ -1152,6 +1242,7 @@ mod tests {
 
     /// Recording observer used to assert lifecycle calls fire in
     /// the expected order on both success and error paths.
+    /// Tracks both top-level and sub-call events.
     struct CountingObserver {
         events: std::sync::Mutex<Vec<&'static str>>,
     }
@@ -1171,6 +1262,31 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(if result.is_ok() { "resp_ok" } else { "resp_err" });
+        }
+        fn on_subcall_request(
+            &self,
+            parent_id: u64,
+            _method: &str,
+            _model: &str,
+            _request: &SamplingRequest,
+        ) -> u64 {
+            assert_eq!(parent_id, 42, "subcall must link to parent id from on_request");
+            self.events.lock().unwrap().push("sub_req");
+            99
+        }
+        fn on_subcall_response(
+            &self,
+            sub_id: u64,
+            parent_id: u64,
+            result: &Result<SamplingResponse, SamplingError>,
+            _latency_ms: u32,
+        ) {
+            assert_eq!(sub_id, 99, "sub-id must thread through");
+            assert_eq!(parent_id, 42, "parent_id must echo");
+            self.events
+                .lock()
+                .unwrap()
+                .push(if result.is_ok() { "sub_resp_ok" } else { "sub_resp_err" });
         }
     }
 
@@ -1333,7 +1449,7 @@ mod tests {
     fn maybe_inject_context_passthrough_when_no_includeContext() {
         let h = handler_with_provider(vec![snippet("u", "c")]);
         let r = req(0, None);
-        let augmented = h.maybe_inject_context(r.clone());
+        let augmented = h.maybe_inject_context(r.clone(), None);
         // include_context = None → unchanged
         assert!(augmented.system_prompt.is_none());
     }
@@ -1343,7 +1459,7 @@ mod tests {
         let h = handler_with_provider(vec![]);
         let mut r = req(0, None);
         r.include_context = Some(IncludeContext::ThisServer);
-        let augmented = h.maybe_inject_context(r);
+        let augmented = h.maybe_inject_context(r, None);
         // No snippets to summarise → unchanged.
         assert!(augmented.system_prompt.is_none());
     }
@@ -1358,8 +1474,78 @@ mod tests {
         let mut r = req(0, None);
         r.include_context = Some(IncludeContext::ThisServer);
         let prior_system = r.system_prompt.clone();
-        let augmented = h.maybe_inject_context(r);
+        let augmented = h.maybe_inject_context(r, None);
         assert_eq!(augmented.system_prompt, prior_system);
+    }
+
+    #[test]
+    fn observer_subcall_fires_when_includeContext_with_provider() {
+        // includeContext + provider with snippets → summary lane
+        // runs (and fails on the unreachable endpoint), so we
+        // expect the subcall pair *plus* the parent pair. Total: 4
+        // events in this exact order.
+        let obs = Arc::new(CountingObserver {
+            events: std::sync::Mutex::new(vec![]),
+        });
+        let mut h = handler_with_provider(vec![snippet("u", "c")]);
+        h.observer = Some(obs.clone());
+        let mut r = req(0, Some("qwen3.5"));
+        r.include_context = Some(IncludeContext::ThisServer);
+        let _ = h.handle(r);
+        let events = obs.events.lock().unwrap();
+        assert_eq!(
+            events.as_slice(),
+            ["req", "sub_req", "sub_resp_err", "resp_err"],
+            "expected: parent-req → sub-req → sub-resp-err → parent-resp-err",
+        );
+    }
+
+    #[test]
+    fn observer_subcall_does_not_fire_when_no_includeContext() {
+        let obs = Arc::new(CountingObserver {
+            events: std::sync::Mutex::new(vec![]),
+        });
+        let mut h = handler_with_provider(vec![snippet("u", "c")]);
+        h.observer = Some(obs.clone());
+        // include_context = None → no subcall regardless of provider.
+        let _ = h.handle(req(0, Some("qwen3.5")));
+        let events = obs.events.lock().unwrap();
+        assert_eq!(
+            events.as_slice(),
+            ["req", "resp_err"],
+            "no subcall events when includeContext is unset",
+        );
+    }
+
+    #[test]
+    fn observer_subcall_does_not_fire_when_no_provider() {
+        let obs = Arc::new(CountingObserver {
+            events: std::sync::Mutex::new(vec![]),
+        });
+        // Build a handler manually so we have observer but no
+        // provider — handler_with_provider() always sets a provider.
+        let h = LiteLlmSamplingHandler {
+            endpoint: "http://127.0.0.1:1/never".into(),
+            master_key: "x".into(),
+            catalog: default_catalog(),
+            host_ram_gb: 64,
+            client: reqwest::blocking::Client::builder()
+                .timeout(Duration::from_millis(50))
+                .build()
+                .unwrap(),
+            observer: Some(obs.clone()),
+            resource_provider: None,
+            summary_model: DEFAULT_SUMMARY_MODEL.into(),
+        };
+        let mut r = req(0, Some("qwen3.5"));
+        r.include_context = Some(IncludeContext::ThisServer);
+        let _ = h.handle(r);
+        let events = obs.events.lock().unwrap();
+        assert_eq!(
+            events.as_slice(),
+            ["req", "resp_err"],
+            "includeContext set but no provider → no subcall",
+        );
     }
 
     #[test]
