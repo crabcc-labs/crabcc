@@ -280,6 +280,30 @@ impl Runner {
                 });
             }
         }
+        // Bind-mount the host MCP socket (Unix domain) so a
+        // containerised agent can dial back into the desktop for
+        // credential-free sampling and host-mediated tool calls.
+        // Container path matches `MCP-SAMPLING-OFFER.md` §8.1.
+        // The socket is bind-mounted RW so the container can write
+        // requests; the desktop is the trust boundary for what
+        // those requests can actually do (consent gate per
+        // `MCP-CONSENT.md` §6).
+        //
+        // Skipped silently when unset OR when the host file isn't
+        // there yet (Docker would error on a missing source path).
+        // The desktop's MCP server is the next slice — until it
+        // lands, this stays None and behaviour is unchanged.
+        if let Some(path) = self.cfg.host_mcp_socket.as_ref() {
+            if path.exists() {
+                mounts.push(Mount {
+                    target: Some("/run/crabcc/mcp.sock".into()),
+                    source: Some(path.to_string_lossy().to_string()),
+                    typ: Some(MountTypeEnum::BIND),
+                    read_only: Some(false),
+                    ..Default::default()
+                });
+            }
+        }
 
         HostConfig {
             init: Some(true),                      // Docker tini → zombie reaper.
@@ -336,6 +360,16 @@ impl Runner {
         // container stdio to HTTP-against-host.
         if let Some(url) = &self.cfg.host_axint_mcp_url {
             env.push(format!("AXINT_MCP_URL={url}"));
+        }
+        // Tell the in-container agent runtime where to dial the
+        // host's MCP server. Only surfaced when the corresponding
+        // socket bind-mount actually fired (`host_config` checks
+        // `host_mcp_socket.exists()` before mounting). Path mirrors
+        // `MCP-SAMPLING-OFFER.md` §8.1.
+        if let Some(path) = self.cfg.host_mcp_socket.as_ref() {
+            if path.exists() {
+                env.push("CRABCC_MCP_SOCKET=/run/crabcc/mcp.sock".into());
+            }
         }
         // SSO fallback: only inject the token env if no credentials
         // file was mounted. Avoids a stale env-token shadowing a

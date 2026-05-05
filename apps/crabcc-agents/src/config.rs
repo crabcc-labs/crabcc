@@ -59,6 +59,20 @@ pub struct Config {
     /// MCP socket (where the host can audit + gate).
     pub host_crabcc_dir: Option<PathBuf>,
 
+    /// Host-side path to a Unix-domain socket the desktop publishes
+    /// its MCP surface on. When set + the file exists, bind-mounted
+    /// at `/run/crabcc/mcp.sock` inside the agent container and
+    /// surfaced via `CRABCC_MCP_SOCKET`. Lets a containerised agent
+    /// dial back into the host's MCP server for credential-free
+    /// sampling, memory ops, and resource reads without holding any
+    /// API keys. See `MCP-SAMPLING-OFFER.md` §8.1.
+    ///
+    /// Resolved from `HOST_MCP_SOCKET`. Unset = no mount, no env —
+    /// today's behaviour (the desktop's MCP server isn't standing
+    /// up yet; this knob is wired in advance so the server-landing
+    /// PR doesn't have to touch this file).
+    pub host_mcp_socket: Option<PathBuf>,
+
     /// Docker network mode for agent containers when the host axint
     /// URL is configured. Defaults to `bridge` so the container can
     /// resolve `host.docker.internal`. Override to a dedicated
@@ -157,6 +171,10 @@ impl Config {
                 .ok()
                 .filter(|s| !s.is_empty()),
             host_crabcc_dir: resolve_crabcc_dir(),
+            host_mcp_socket: std::env::var("HOST_MCP_SOCKET")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from),
             agent_network: env_or("AGENT_NETWORK", "bridge"),
 
             stream_maxlen: env_parse("STREAM_MAXLEN", 10_000)?,
