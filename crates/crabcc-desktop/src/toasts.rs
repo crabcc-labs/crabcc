@@ -188,6 +188,9 @@ impl Render for ToastStrip {
                     .text_color(muted)
                     .cursor_pointer()
                     .hover(move |s| s.bg(hover_bg))
+                    .tooltip(|window, cx| {
+                        Tooltip::new("Dismiss all visible toasts").build(window, cx)
+                    })
                     .child(SharedString::new_static("dismiss all"))
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         state_for_dismiss_all.update(cx, |s, cx| {
@@ -207,7 +210,12 @@ impl Render for ToastStrip {
             footer_row
                 .child(div().text_color(muted).child(count_label))
                 .child(div().text_color(muted).child(SharedString::new_static("·")))
-                .child(
+                .child({
+                    let expand_tooltip: SharedString = if expanded {
+                        SharedString::new_static("Collapse toast history")
+                    } else {
+                        SharedString::new_static("Expand toast history")
+                    };
                     div()
                         .id("toast-history-expand")
                         .px_2()
@@ -215,14 +223,17 @@ impl Render for ToastStrip {
                         .text_color(muted)
                         .cursor_pointer()
                         .hover(move |s| s.bg(hover_bg))
+                        .tooltip(move |window, cx| {
+                            Tooltip::new(expand_tooltip.clone()).build(window, cx)
+                        })
                         .child(SharedString::new_static(expand_label))
                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                             entity_for_expand.update(cx, |this, cx| {
                                 this.expanded = !this.expanded;
                                 cx.notify();
                             });
-                        }),
-                )
+                        })
+                })
                 .child(div().text_color(muted).child(SharedString::new_static("·")))
                 .child(
                     div()
@@ -232,6 +243,9 @@ impl Render for ToastStrip {
                         .text_color(muted)
                         .cursor_pointer()
                         .hover(move |s| s.bg(hover_bg))
+                        .tooltip(|window, cx| {
+                            Tooltip::new("Clear toast history audit log").build(window, cx)
+                        })
                         .child(SharedString::new_static("clear"))
                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                             state_for_clear.update(cx, |s, cx| {
