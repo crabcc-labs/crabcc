@@ -116,6 +116,13 @@ pub fn run(opts: InstallOptions) -> Result<()> {
         link_one(src, dst, yes)?;
     }
 
+    // RTK (Rust Token Killer) is a runtime dependency for the
+    // hook-based shell-output proxy that keeps token use lean inside
+    // Claude Code. We don't bake it into the binary — `cargo install
+    // rtk` keeps it upgradable on its own cadence — but the bootstrap
+    // surface is the right place to check + prompt.
+    ensure_rtk(yes)?;
+
     println!();
     println!("Next steps (run yourself):");
     println!();
@@ -270,4 +277,86 @@ fn confirm(prompt: &str) -> Result<bool> {
     let mut line = String::new();
     io::stdin().lock().read_line(&mut line)?;
     Ok(matches!(line.trim().to_lowercase().as_str(), "y" | "yes"))
+}
+
+/// Result of probing PATH for `rtk`. The name collides between the
+/// wanted "Rust Token Killer" (rtk gain / rtk discover / rtk proxy)
+/// and reachingforthejack/rtk ("Rust Type Kit"); the latter has no
+/// `gain` subcommand, so we use that as the discriminator. The user's
+/// global RTK.md (loaded into every Claude Code session) calls out
+/// the same collision — keep this aligned with it.
+#[derive(Debug, PartialEq, Eq)]
+enum RtkStatus {
+    /// Correct rtk on PATH (Token Killer).
+    Token,
+    /// Some other `rtk` resolves on PATH but doesn't respond to
+    /// `rtk gain` — likely Rust Type Kit. We don't auto-overwrite —
+    /// the user must resolve the collision manually.
+    Wrong,
+    /// No `rtk` on PATH.
+    Missing,
+}
+
+fn detect_rtk() -> RtkStatus {
+    // Token Killer responds to `rtk gain`; Type Kit does not. A
+    // success on `rtk gain --help` is the most discriminating fast
+    // probe (no state changes, no network).
+    let probe = Command::new("rtk").arg("gain").arg("--help").output();
+    match probe {
+        Ok(out) if out.status.success() => RtkStatus::Token,
+        Ok(_) => RtkStatus::Wrong,
+        Err(_) => RtkStatus::Missing,
+    }
+}
+
+/// Ensure the Token-Killer `rtk` is installed and on PATH. Prompts
+/// with `cargo install rtk` when missing; warns and exits cleanly on
+/// the binary-name collision rather than auto-clobbering. Honours
+/// `--yes` for the missing case (auto-installs without prompt).
+fn ensure_rtk(yes: bool) -> Result<()> {
+    match detect_rtk() {
+        RtkStatus::Token => {
+            println!("rtk: ok (Token Killer on PATH)");
+            Ok(())
+        }
+        RtkStatus::Wrong => {
+            eprintln!();
+            eprintln!(
+                "rtk: a different `rtk` binary resolves on PATH (likely \
+                 reachingforthejack/rtk — \"Rust Type Kit\")."
+            );
+            eprintln!(
+                "     Crabcc expects `rtk` = Rust Token Killer. Resolve \
+                 the collision manually before re-running install-claude."
+            );
+            eprintln!("     See ~/.claude/RTK.md for details.");
+            // Non-fatal — the rest of the install still works.
+            Ok(())
+        }
+        RtkStatus::Missing => {
+            println!();
+            println!(
+                "rtk: not found on PATH (Rust Token Killer — \
+                 hook-based shell-output token proxy)."
+            );
+            if !yes && !confirm("  Install via `cargo install rtk`? [y/N] ")? {
+                println!("  skipped — install later with `cargo install rtk`");
+                return Ok(());
+            }
+            install_rtk_via_cargo()
+        }
+    }
+}
+
+fn install_rtk_via_cargo() -> Result<()> {
+    println!("  running: cargo install rtk");
+    let status = Command::new("cargo")
+        .args(["install", "rtk"])
+        .status()
+        .context("failed to invoke `cargo` — is it on PATH?")?;
+    if !status.success() {
+        bail!("`cargo install rtk` exited non-zero — install manually and re-run");
+    }
+    println!("  rtk: installed");
+    Ok(())
 }
