@@ -14,7 +14,7 @@
 #   4. macOS only: ad-hoc codesign the binaries (Sequoia provenance fix).
 #   5. Run scripts/install-aliases.sh --all-shells (idempotent).
 #   6. Symlink skill/ + commands/ into ~/.claude/.
-#   7. Optional Docker / Ollama stack — only if --with-docker is passed.
+#   7. Docker + Ollama stack — on by default; pass --no-docker to skip.
 #   8. Optional macOS LaunchAgent — only if --with-launchd is passed (macOS).
 #   9. Optional macOS .app build — only if --with-macos-app is passed (macOS).
 #  10. Run `scripts/doctor.sh --quiet` and a built-in --verify check.
@@ -31,7 +31,8 @@
 #   --macos-app-only    build + open Crabcc.dmg only (macOS)
 #   --telegram-only     bootstrap Telegram bot scaffolding only
 #   --ollama-only       Docker + Ollama stack + key mint only
-#   --with-docker       include Ollama stack in full install
+#   --with-docker       no-op (Docker + Ollama is now default-on)
+#   --no-docker         skip Docker + Ollama stack in full install
 #   --with-launchd      include LaunchAgents in full install (macOS)
 #   --with-macos-app    include DMG build in full install (macOS)
 #   --branch <name>     clone a non-main branch (useful for testing)
@@ -485,7 +486,12 @@ main() {
     REPO_URL="${CRABCC_REPO_URL:-$_BS_REPO_DEFAULT}"
     BRANCH="$_BS_BRANCH_DEFAULT"
 
-    WITH_DOCKER=0
+    # Docker + Ollama stack is on by default — the canonical
+    # "I want a working agent backend" experience needs the LiteLLM
+    # proxy + Ollama running. `--no-docker` opts out for headless /
+    # CI / "just give me the binary" cases. `--with-docker` is kept
+    # as a no-op for backwards compat with older invocations.
+    WITH_DOCKER=1
     WITH_LAUNCHD=0
     WITH_MACOS_APP=0
     NO_ALIASES=0
@@ -513,7 +519,8 @@ main() {
             --macos-app-only)  MACOS_APP_ONLY=1 ;;
             --telegram-only)   TELEGRAM_ONLY=1 ;;
             --ollama-only)     OLLAMA_ONLY=1 ;;
-            --with-docker)     WITH_DOCKER=1 ;;
+            --with-docker)     WITH_DOCKER=1 ;;       # legacy / no-op (default-on)
+            --no-docker)       WITH_DOCKER=0 ;;
             --with-launchd)    WITH_LAUNCHD=1 ;;
             --with-macos-app)  WITH_MACOS_APP=1 ;;
             --branch)          BRANCH="$2"; shift ;;
