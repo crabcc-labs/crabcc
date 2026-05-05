@@ -1,0 +1,54 @@
+version: "3.9"
+
+# crabcc-hitl-agent stack.
+# Joins the existing `crabcc-shared` external bridge (created by
+# install/ollama-stack/docker-compose.yml) so the LiteLLM proxy at
+# `litellm:4000` and the future crabcc-mcp HTTP service are reachable
+# by service name.
+
+services:
+  hitl:
+    image: ghcr.io/peterlodri-sec/crabcc-hitl-agent:${VERSION:-dev}
+    container_name: crabcc-hitl-agent
+    restart: unless-stopped
+    # Build inline if no prebuilt image is present in the local registry
+    # (typical first run on a dev box).
+    build:
+      context: .
+      dockerfile: Dockerfile
+      platforms:
+        - linux/arm64
+    networks:
+      - crabcc-shared
+    # Loopback-only port mapping. Bot ↔ HITL traffic stays on the
+    # docker network; the localhost mapping is purely for `curl
+    # 127.0.0.1:9100/healthz` debugging from the host.
+    ports:
+      - "127.0.0.1:9100:9100"
+    environment:
+      # Required.
+      CRABCC_HITL_LITELLM_BASE_URL: ${CRABCC_HITL_LITELLM_BASE_URL:-http://litellm:4000}
+      CRABCC_HITL_LITELLM_API_KEY: ${CRABCC_HITL_LITELLM_API_KEY:?LITELLM master key required}
+      CRABCC_HITL_API_TOKEN: ${CRABCC_HITL_API_TOKEN:?bearer token shared with the telegram bot required}
+      # Optional (have sensible defaults in settings.py).
+      CRABCC_HITL_MODEL: ${CRABCC_HITL_MODEL:-claude-haiku-4-5}
+      CRABCC_HITL_MAX_TASK_CHARS: ${CRABCC_HITL_MAX_TASK_CHARS:-4000}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:9100/healthz', timeout=2).status == 200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    # Read-only rootfs + tmpfs for /tmp keeps the blast-radius small.
+    # The service writes nothing to disk in Phase 0.
+    read_only: true
+    tmpfs:
+      - /tmp:size=16M
+    cap_drop: ["ALL"]
+    security_opt:
+      - "no-new-privileges:true"
+
+networks:
+  crabcc-shared:
+    external: true
+    name: crabcc-shared

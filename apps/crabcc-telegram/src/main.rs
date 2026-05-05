@@ -101,20 +101,21 @@ impl Config {
             Err(_) => default_serve.clone(),
         };
 
-        let public_url = std::env::var("CRABCC_PUBLIC_URL")
-            .ok()
-            .and_then(|raw| match Url::parse(&raw) {
-                Ok(u) => Some(u),
-                Err(e) => {
-                    tracing::warn!(
-                        env = "CRABCC_PUBLIC_URL",
-                        value = %raw,
-                        error = %e,
-                        "invalid public URL, ignoring"
-                    );
-                    None
-                }
-            });
+        let public_url =
+            std::env::var("CRABCC_PUBLIC_URL")
+                .ok()
+                .and_then(|raw| match Url::parse(&raw) {
+                    Ok(u) => Some(u),
+                    Err(e) => {
+                        tracing::warn!(
+                            env = "CRABCC_PUBLIC_URL",
+                            value = %raw,
+                            error = %e,
+                            "invalid public URL, ignoring"
+                        );
+                        None
+                    }
+                });
 
         // join() resolves "live" / "api/agents" against the base URL using
         // proper URL semantics (handles trailing slash). Cannot fail for an
@@ -272,14 +273,44 @@ fn truncate(s: &str, max: usize) -> &str {
     &s[..end]
 }
 
+/// POST a user prompt to the HITL agent service and return its reply.
+///
+/// The HITL service lives at `${CRABCC_HITL_URL}` (typically
+/// `http://hitl:9100` on the `crabcc-shared` docker network, or
+/// `http://127.0.0.1:9100` for local dev). Bearer auth via
+/// `${CRABCC_HITL_API_TOKEN}` matches the value the service reads
+/// from `CRABCC_HITL_API_TOKEN` on its end.
+///
+/// Phase 0: a single round-trip — no streaming, no tool-call
+/// approval prompts. Phase 1+ will add an SSE channel here so the
+/// bot can render "🧠 thinking..." → "🔧 wants to call sym Store, [✅
+/// approve]" inline.
+async fn hitl_chat(http: &reqwest::Client, task: &str) -> Result<String> {
+    let base = std::env::var("CRABCC_HITL_URL").unwrap_or_else(|_| "http://hitl:9100".to_string());
+    let url = format!("{}/chat", base.trim_end_matches('/'));
+    let mut req = http.post(&url).json(&serde_json::json!({ "task": task }));
+    if let Ok(token) = std::env::var("CRABCC_HITL_API_TOKEN") {
+        if !token.is_empty() {
+            req = req.bearer_auth(token);
+        }
+    }
+    let resp = req.send().await.context("POST /chat to HITL")?;
+    let status = resp.status();
+    if !status.is_success() {
+        let snippet = resp.text().await.unwrap_or_default();
+        let snippet = snippet.chars().take(300).collect::<String>();
+        return Err(anyhow!("HITL HTTP {status}: {snippet}"));
+    }
+    let body: serde_json::Value = resp.json().await.context("decode HITL response JSON")?;
+    body.get("reply")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .ok_or_else(|| anyhow!("HITL response missing `reply` field: {body}"))
+}
+
 // ── command handlers ──────────────────────────────────────────────────────────
 
-async fn handle(
-    bot: Bot,
-    msg: Message,
-    cmd: Cmd,
-    cfg: Arc<Config>,
-) -> ResponseResult<()> {
+async fn handle(bot: Bot, msg: Message, cmd: Cmd, cfg: Arc<Config>) -> ResponseResult<()> {
     let user_id = msg.from().map(|u| u.id.0).unwrap_or(0);
     if !is_owner(user_id) {
         tracing::warn!(user_id, "rejected non-owner message");
@@ -299,26 +330,52 @@ async fn handle(
                     .await?;
                 return Ok(());
             }
-            let status = bot
-                .send_message(msg.chat.id, format!("🦀 Starting agent: _{}_", &task))
+            // Phase 0: round-trip the task through the Python HITL
+            // service. We POST → wait for `{reply, model}` → relay
+            // the reply. Phase 1+ will switch to an SSE channel so
+            // tool-call approvals can land as inline buttons mid-loop.
+            let pending = bot
+                .send_message(msg.chat.id, "🦀 _Asking the agent…_".to_string())
                 .parse_mode(ParseMode::MarkdownV2)
                 .await?;
-            // Spawn agent non-blocking (fire and forget) so Telegram doesn't time out.
-            let task_clone = task.clone();
+            // Reuse the long-lived reqwest client from `Config` —
+            // built once at startup with the right timeouts +
+            // user-agent. `Arc<Config>` clone is cheap so spawning
+            // doesn't move ownership of the whole config.
+            let http = cfg.http.clone();
+            let task_for_call = task.clone();
+            let chat_id = msg.chat.id;
+            let pending_id = pending.id;
+            let bot_clone = bot.clone();
             tokio::spawn(async move {
-                let _ = crabcc(&["agent", "--run", &task_clone, "--backend", "ollama"]).await;
+                let outcome = hitl_chat(&http, &task_for_call).await;
+                let text = match outcome {
+                    Ok(reply) => {
+                        // Telegram caps a single message at 4096 chars; the HITL
+                        // service caps the *prompt* at 4000 already. Replies can
+                        // still exceed 4096 — truncate with a clear marker.
+                        let body = if reply.chars().count() > 3900 {
+                            format!("{}\n…\n\n_(reply truncated)_", truncate(&reply, 3900))
+                        } else {
+                            reply
+                        };
+                        format!("🦀 Agent reply:\n\n{}", body)
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "HITL chat failed");
+                        format!("⚠️ Agent error: `{}`", truncate(&e.to_string(), 300))
+                    }
+                };
+                if let Err(e) = bot_clone.edit_message_text(chat_id, pending_id, text).await {
+                    tracing::warn!(error = %e, "edit_message_text failed");
+                }
             });
-            bot.edit_message_text(
-                msg.chat.id,
-                status.id,
-                format!("🦀 Agent launched: `{}`\nUse /status to check progress\\.", truncate(&task, 60)),
-            )
-            .parse_mode(ParseMode::MarkdownV2)
-            .await?;
         }
 
         Cmd::Status => {
-            let raw = crabcc(&["agent-ls", "--limit", "5"]).await.unwrap_or_default();
+            let raw = crabcc(&["agent-ls", "--limit", "5"])
+                .await
+                .unwrap_or_default();
             let text = format!("*Recent agents*\n```\n{}\n```", truncate(&raw, 3000));
             bot.send_message(msg.chat.id, text)
                 .parse_mode(ParseMode::MarkdownV2)
@@ -335,13 +392,18 @@ async fn handle(
 
         Cmd::Search(query) => {
             if query.trim().is_empty() {
-                bot.send_message(msg.chat.id, "Usage: /search <query>").await?;
+                bot.send_message(msg.chat.id, "Usage: /search <query>")
+                    .await?;
                 return Ok(());
             }
             let raw = crabcc(&["memory", "search", &query, "--limit", "5"])
                 .await
                 .unwrap_or_default();
-            let text = format!("*Memory search:* `{}`\n```\n{}\n```", query, truncate(&raw, 3000));
+            let text = format!(
+                "*Memory search:* `{}`\n```\n{}\n```",
+                query,
+                truncate(&raw, 3000)
+            );
             bot.send_message(msg.chat.id, text)
                 .parse_mode(ParseMode::MarkdownV2)
                 .await?;
@@ -403,12 +465,16 @@ async fn handle(
 
         Cmd::Kill(id) => {
             if id.trim().is_empty() {
-                bot.send_message(msg.chat.id, "Usage: /kill <agent-id>").await?;
+                bot.send_message(msg.chat.id, "Usage: /kill <agent-id>")
+                    .await?;
                 return Ok(());
             }
             let raw = crabcc(&["agent-kill", id.trim()]).await.unwrap_or_default();
-            bot.send_message(msg.chat.id, format!("Kill result:\n{}", truncate(&raw, 500)))
-                .await?;
+            bot.send_message(
+                msg.chat.id,
+                format!("Kill result:\n{}", truncate(&raw, 500)),
+            )
+            .await?;
         }
 
         Cmd::Index => {
@@ -470,9 +536,7 @@ async fn main() -> Result<()> {
 
     let handler = Update::filter_message()
         .filter_command::<Cmd>()
-        .endpoint(move |bot: Bot, msg: Message, cmd: Cmd| {
-            handle(bot, msg, cmd, Arc::clone(&cfg))
-        });
+        .endpoint(move |bot: Bot, msg: Message, cmd: Cmd| handle(bot, msg, cmd, Arc::clone(&cfg)));
 
     Dispatcher::builder(bot, handler)
         .enable_ctrlc_handler()
@@ -528,7 +592,8 @@ mod service {
             exe = exe.display(),
             logs = logs_dir.display(),
         );
-        std::fs::write(&plist_path, plist).with_context(|| format!("write {}", plist_path.display()))?;
+        std::fs::write(&plist_path, plist)
+            .with_context(|| format!("write {}", plist_path.display()))?;
 
         // bootout existing first so an updated plist is honored.
         let uid = unsafe { libc_getuid() };
@@ -536,7 +601,11 @@ mod service {
             .args(["bootout", &format!("gui/{uid}/{LABEL}")])
             .status();
         let st = std::process::Command::new("/bin/launchctl")
-            .args(["bootstrap", &format!("gui/{uid}"), plist_path.to_str().unwrap()])
+            .args([
+                "bootstrap",
+                &format!("gui/{uid}"),
+                plist_path.to_str().unwrap(),
+            ])
             .status()
             .context("launchctl bootstrap")?;
         if !st.success() {
@@ -549,7 +618,10 @@ mod service {
             .args(["kickstart", "-k", &format!("gui/{uid}/{LABEL}")])
             .status();
         println!("✓ installed + started: {}", plist_path.display());
-        println!("  logs: {}/telegram-bot.{{out,err}}.log", logs_dir.display());
+        println!(
+            "  logs: {}/telegram-bot.{{out,err}}.log",
+            logs_dir.display()
+        );
         println!("  status: crabcc-telegram status-service");
         Ok(())
     }
@@ -622,7 +694,9 @@ mod service {
     }
 
     fn la_path() -> Result<PathBuf> {
-        Ok(home()?.join("Library/LaunchAgents").join(format!("{LABEL}.plist")))
+        Ok(home()?
+            .join("Library/LaunchAgents")
+            .join(format!("{LABEL}.plist")))
     }
 
     // tiny libc shim — avoids pulling the full `libc` crate just for getuid.
