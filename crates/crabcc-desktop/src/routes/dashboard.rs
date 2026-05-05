@@ -279,28 +279,36 @@ impl Render for DashboardHome {
                                     SharedString::new_static("activity-agent"),
                                     idx as u64,
                                 );
-                                div()
-                                    .id(badge_id)
-                                    .px_1()
-                                    .border_1()
-                                    .border_color(badge_color)
-                                    .rounded_md()
-                                    .text_color(badge_color)
-                                    .cursor_pointer()
-                                    .hover(move |s| s.border_color(primary).text_color(primary))
-                                    .tooltip(|window, cx| {
-                                        Tooltip::new("Pin agent — narrows the activity tile")
-                                            .build(window, cx)
-                                    })
-                                    .child(SharedString::from(format!("agt {trimmed}")))
-                                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                                        let id = click_id.clone();
-                                        entity_for_agent.update(cx, |this, cx| {
-                                            this.pin_activity_agent(id);
-                                            cx.notify();
-                                        });
-                                    })
-                                    .into_any_element()
+                                {
+                                    let agent_tooltip: SharedString = if agent_pinned {
+                                        SharedString::new_static("Unpin agent — show all activity")
+                                    } else {
+                                        SharedString::from(format!(
+                                            "Pin agent {trimmed} — narrows the activity tile"
+                                        ))
+                                    };
+                                    div()
+                                        .id(badge_id)
+                                        .px_1()
+                                        .border_1()
+                                        .border_color(badge_color)
+                                        .rounded_md()
+                                        .text_color(badge_color)
+                                        .cursor_pointer()
+                                        .hover(move |s| s.border_color(primary).text_color(primary))
+                                        .tooltip(move |window, cx| {
+                                            Tooltip::new(agent_tooltip.clone()).build(window, cx)
+                                        })
+                                        .child(SharedString::from(format!("agt {trimmed}")))
+                                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                            let id = click_id.clone();
+                                            entity_for_agent.update(cx, |this, cx| {
+                                                this.pin_activity_agent(id);
+                                                cx.notify();
+                                            });
+                                        })
+                                        .into_any_element()
+                                }
                             }
                             None => div().into_any_element(),
                         };
@@ -308,7 +316,15 @@ impl Render for DashboardHome {
                                 .gap_2()
                                 // Op badge — fixed-width column so the
                                 // query text aligns across rows.
-                                .child(
+                                .child({
+                                    let op_tooltip: SharedString = if badge_pinned {
+                                        SharedString::new_static("Unpin op — show all activity")
+                                    } else {
+                                        SharedString::from(format!(
+                                            "Pin op {} — narrows the activity tile",
+                                            g.op
+                                        ))
+                                    };
                                     div()
                                         .id(badge_id)
                                         .w(px(80.0))
@@ -319,9 +335,8 @@ impl Render for DashboardHome {
                                         .text_color(faded_op)
                                         .cursor_pointer()
                                         .hover(move |s| s.border_color(primary))
-                                        .tooltip(|window, cx| {
-                                            Tooltip::new("Pin op — narrows the activity tile")
-                                                .build(window, cx)
+                                        .tooltip(move |window, cx| {
+                                            Tooltip::new(op_tooltip.clone()).build(window, cx)
                                         })
                                         .child(g.op.clone())
                                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
@@ -330,8 +345,8 @@ impl Render for DashboardHome {
                                                 this.pin_activity_op(op);
                                                 cx.notify();
                                             });
-                                        }),
-                                )
+                                        })
+                                })
                                 .child(
                                     div()
                                         .flex_1()
