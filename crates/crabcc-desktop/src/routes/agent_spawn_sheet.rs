@@ -355,6 +355,11 @@ impl AgentSpawnSheet {
             let is_selected = self.selected_profile.as_deref() == Some(id.as_ref());
             let row_view = view.clone();
             let id_for_row = id.clone();
+            let profile_tooltip: SharedString = if is_selected {
+                SharedString::new_static("Unselect profile — fall back to server default")
+            } else {
+                SharedString::from(format!("Select profile {id}"))
+            };
             picker =
                 picker.child(
                     v_flex()
@@ -368,8 +373,8 @@ impl AgentSpawnSheet {
                         .text_color(if is_selected { foreground } else { muted })
                         .cursor_pointer()
                         .hover(move |s| s.border_color(primary).text_color(foreground))
-                        .tooltip(|window, cx| {
-                            Tooltip::new("Click to select / unselect profile").build(window, cx)
+                        .tooltip(move |window, cx| {
+                            Tooltip::new(profile_tooltip.clone()).build(window, cx)
                         })
                         .child(
                             div()
