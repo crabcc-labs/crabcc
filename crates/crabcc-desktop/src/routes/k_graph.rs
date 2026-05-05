@@ -31,8 +31,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use gpui::{
-    canvas, div, point, prelude::*, px, App, Bounds, Context, Entity, Hsla, IntoElement,
-    MouseButton, PathBuilder, Pixels, Render, SharedString, TextRun, Window,
+    canvas, div, point, prelude::*, px, App, Bounds, ClipboardItem, Context, Entity, Hsla,
+    IntoElement, MouseButton, PathBuilder, Pixels, Render, SharedString, TextRun, Window,
 };
 use gpui_component::{h_flex, tooltip::Tooltip, v_flex, ActiveTheme};
 
@@ -776,6 +776,38 @@ fn render_detail(
             });
         });
 
+    // Subline: wing · bytes · source_id. The id is split into its
+    // own click-to-copy chip — same pattern as the relations-graph
+    // drawer's file:line (#479). Clipboard receives the raw id (no
+    // surrounding "·" or label) so it pastes cleanly into
+    // `crabcc memory get` / `forget` on the CLI.
+    let id_for_copy = node.id.clone();
+    let id_tooltip: SharedString =
+        SharedString::from(format!("Click to copy \u{201C}{}\u{201D}", node.id));
+    let id_chip = div()
+        .id("k-graph-detail-id-copy")
+        .px_1()
+        .rounded_md()
+        .text_color(primary)
+        .text_xs()
+        .cursor_pointer()
+        .hover(move |s| s.bg(border))
+        .tooltip(move |window, cx| Tooltip::new(id_tooltip.clone()).build(window, cx))
+        .child(SharedString::from(node.id.to_string()))
+        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+            cx.stop_propagation();
+            cx.write_to_clipboard(ClipboardItem::new_string(id_for_copy.to_string()));
+        });
+    let subline = h_flex()
+        .gap_1()
+        .text_color(muted)
+        .text_xs()
+        .child(SharedString::from(format!(
+            "wing {} · {} bytes ·",
+            node.kind, node.len
+        )))
+        .child(id_chip);
+
     let header = v_flex()
         .gap_0p5()
         .child(
@@ -783,15 +815,7 @@ fn render_detail(
                 .text_color(foreground)
                 .child(SharedString::from(node.title.to_string())),
         )
-        .child(
-            div()
-                .text_color(muted)
-                .text_xs()
-                .child(SharedString::from(format!(
-                    "wing {} · {} bytes · {}",
-                    node.kind, node.len, node.id
-                ))),
-        )
+        .child(subline)
         .child(knowledge_link);
 
     let in_block = v_flex()
