@@ -6,11 +6,13 @@
 //!     top) map 1:1 to a no-arg HTTP method on [`crate::api::Client`]
 //!     — clicking dispatches via [`AppState::submit_command_run`] and
 //!     the response (Debug-formatted) renders inline below the row.
-//!   * **CLI-shape** rows (everything else) stay display-only because
-//!     they need user input the desktop client doesn't have an input
-//!     surface for yet (e.g. `crabcc sym <NAME>`). They're flagged
-//!     with a muted "(needs input · CLI only)" tail; promoting them
-//!     to runnable is a follow-up that needs an argument sheet.
+//!   * **CLI-shape** rows (everything else) need user input the
+//!     desktop client doesn't have an input surface for yet (e.g.
+//!     `crabcc sym <NAME>`). Click copies `crabcc <invocation>`
+//!     to the clipboard so the user can paste-and-edit in their
+//!     terminal — flagged with a muted "(click to copy · CLI only)"
+//!     tail. Promoting them to fully runnable is a follow-up that
+//!     needs an argument sheet.
 //!
 //! Per the design brief (#293/#295): single-slot run state — at most
 //! one row pulses "running…" at a time. A new click cancels (visually)
@@ -380,9 +382,10 @@ fn command_row(
         .filter(|(c, _)| Some(*c) == runnable)
         .map(|(_, body)| body.clone());
 
-    // Invocation chip — slightly elevated. For runnable rows, give it
-    // a subtle border in the primary colour so the click affordance
-    // reads.
+    // Invocation chip — slightly elevated. Runnable rows get a
+    // primary-coloured border (active affordance for click-to-run);
+    // CLI-shape rows get the muted border (still clickable now —
+    // copies `crabcc <invocation>` to the clipboard, see below).
     let chip_border = if runnable.is_some() { primary } else { border };
     let chip_id_str = match runnable {
         Some(r) => format!("commands-row-{}", r.key()),
@@ -390,15 +393,12 @@ fn command_row(
     };
     let chip_view = view.clone();
     let chip_runnable = runnable;
-    // Only runnable rows get cursor + hover. CLI-shape rows are
-    // display-only — pretending they're clickable would set up a
-    // disappointing click. The hover for runnable rows borrows
-    // `border` (the dim row-border on non-runnable rows) so a
-    // hovered runnable chip "pre-glows" with its non-runnable
-    // sibling's border, then settles back when the mouse leaves.
-    // Inverse direction would be more idiomatic but `primary` is
-    // the stronger colour and we're already using it for the
-    // active border — overlapping reads as "more active".
+    let invocation_for_copy = SharedString::from(format!("crabcc {}", cmd.invocation));
+    // Both runnable and CLI-shape rows get cursor_pointer + hover —
+    // both are clickable now (run vs copy-to-clipboard). The hover
+    // colour mirrors the same primary-glow for runnable rows; the
+    // CLI-shape rows pick up a subtler bg-only hover so the visual
+    // hierarchy stays "runnable is the louder click."
     let mut chip = div()
         .id(SharedString::from(chip_id_str))
         .min_w(px(280.0))
@@ -408,23 +408,36 @@ fn command_row(
         .border_1()
         .border_color(chip_border)
         .rounded_md()
-        .text_color(foreground);
+        .text_color(foreground)
+        .cursor_pointer();
     if runnable.is_some() {
         let summary: SharedString = SharedString::new_static(cmd.summary);
         chip = chip
-            .cursor_pointer()
             .hover(move |s| s.bg(card).border_color(primary).text_color(primary))
             .tooltip(move |window, cx| Tooltip::new(summary.clone()).build(window, cx));
+    } else {
+        let copy_tooltip: SharedString = SharedString::from(format!(
+            "Click to copy \u{201C}{invocation_for_copy}\u{201D}"
+        ));
+        chip = chip
+            .hover(move |s| s.border_color(primary))
+            .tooltip(move |window, cx| Tooltip::new(copy_tooltip.clone()).build(window, cx));
     }
+    let copy_payload = invocation_for_copy.clone();
     let chip = chip
         .child(SharedString::from(format!("crabcc {}", cmd.invocation)))
         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-            if let Some(r) = chip_runnable {
-                cx.stop_propagation();
-                chip_view.update(cx, |this, cx| {
-                    this.run(r, cx);
-                    cx.notify();
-                });
+            cx.stop_propagation();
+            match chip_runnable {
+                Some(r) => {
+                    chip_view.update(cx, |this, cx| {
+                        this.run(r, cx);
+                        cx.notify();
+                    });
+                }
+                None => {
+                    cx.write_to_clipboard(ClipboardItem::new_string(copy_payload.to_string()));
+                }
             }
         });
 
@@ -447,7 +460,7 @@ fn command_row(
     } else {
         div()
             .text_color(muted)
-            .child(SharedString::new_static("(needs input · CLI only)"))
+            .child(SharedString::new_static("(click to copy · CLI only)"))
             .into_any_element()
     };
 
