@@ -10,8 +10,8 @@
 //! case-insensitive). Mirrors the Agents-route filter pattern.
 
 use gpui::{
-    div, prelude::*, px, Context, Entity, Focusable, Hsla, IntoElement, MouseButton, Render,
-    SharedString, Window,
+    div, prelude::*, px, ClipboardItem, Context, Entity, Focusable, Hsla, IntoElement, MouseButton,
+    Render, SharedString, Window,
 };
 use gpui_component::{
     h_flex,
@@ -518,12 +518,39 @@ fn drawer_row(
             h_flex()
                 .gap_3()
                 // Drawer id — fixed-width column for visual alignment.
-                .child(
+                // Click copies the stable `source_id` (e.g.
+                // `web:abc123`, `doc:42`) — the value `crabcc memory
+                // get / forget` accept on the CLI. The visible `#42`
+                // is the SQL primary key (churns on re-import) so we
+                // copy source_id instead, with the tooltip surfacing
+                // the actual value being copied.
+                .child({
+                    let source_id_for_copy = d.source_id.clone();
+                    let id_tooltip: SharedString = SharedString::from(format!(
+                        "Click to copy source id \u{201C}{}\u{201D}",
+                        d.source_id
+                    ));
+                    let id_chip_id =
+                        SharedString::from(format!("knowledge-id-copy-{}", d.id));
                     div()
+                        .id(id_chip_id)
                         .w(px(60.0))
+                        .px_1()
+                        .rounded_md()
                         .text_color(muted)
-                        .child(SharedString::from(format!("#{}", d.id))),
-                )
+                        .cursor_pointer()
+                        .hover(move |s| s.bg(badge_bg))
+                        .tooltip(move |window, cx| {
+                            Tooltip::new(id_tooltip.clone()).build(window, cx)
+                        })
+                        .child(SharedString::from(format!("#{}", d.id)))
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            cx.stop_propagation();
+                            cx.write_to_clipboard(ClipboardItem::new_string(
+                                source_id_for_copy.to_string(),
+                            ));
+                        })
+                })
                 // Wing/room badge — uses the secondary token as a
                 // subtle pill background. Clicking pins the wing as
                 // an extra filter; clicking the active wing toggles
