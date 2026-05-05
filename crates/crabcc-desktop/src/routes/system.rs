@@ -32,6 +32,7 @@ use gpui::{
 use gpui_component::{
     h_flex,
     input::{Input, InputEvent, InputState},
+    tooltip::Tooltip,
     v_flex, ActiveTheme,
 };
 
@@ -236,6 +237,11 @@ fn section_header(
 ) -> gpui::Stateful<gpui::Div> {
     let chevron = if collapsed { "\u{25B8}" } else { "\u{25BE}" }; // ▸ / ▾
     let id = SharedString::from(format!("system-section-{key}"));
+    let tooltip_text: SharedString = if collapsed {
+        SharedString::from(format!("Expand {title}"))
+    } else {
+        SharedString::from(format!("Collapse {title}"))
+    };
     div()
         .id(id)
         .px_1()
@@ -243,6 +249,7 @@ fn section_header(
         .rounded_md()
         .cursor_pointer()
         .hover(move |s| s.text_color(foreground))
+        .tooltip(move |window, cx| Tooltip::new(tooltip_text.clone()).build(window, cx))
         .child(
             h_flex()
                 .gap_2()
