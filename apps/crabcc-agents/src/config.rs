@@ -47,6 +47,18 @@ pub struct Config {
     /// stdio process per job. Example: `http://host.docker.internal:7785/mcp`.
     pub host_axint_mcp_url: Option<String>,
 
+    /// Host-side path to the user's `.crabcc/` directory — symbol
+    /// index, memory.db, agent run logs, scenarios. Bind-mounted
+    /// **read-only** at `/home/nonroot/.crabcc/` inside agent
+    /// containers so the in-container `crabcc` CLI can read the
+    /// symbol index and memory drawers. Resolved via
+    /// `HOST_CRABCC_DIR` or defaulted to `$HOME/.crabcc`. Set the
+    /// env var to empty to disable. Read-only is intentional: a
+    /// containerised agent shouldn't mutate the host's symbol index
+    /// or memory drawers without explicit invocation through the
+    /// MCP socket (where the host can audit + gate).
+    pub host_crabcc_dir: Option<PathBuf>,
+
     /// Docker network mode for agent containers when the host axint
     /// URL is configured. Defaults to `bridge` so the container can
     /// resolve `host.docker.internal`. Override to a dedicated
@@ -144,6 +156,7 @@ impl Config {
             host_axint_mcp_url: std::env::var("HOST_AXINT_MCP_URL")
                 .ok()
                 .filter(|s| !s.is_empty()),
+            host_crabcc_dir: resolve_crabcc_dir(),
             agent_network: env_or("AGENT_NETWORK", "bridge"),
 
             stream_maxlen: env_parse("STREAM_MAXLEN", 10_000)?,
@@ -206,6 +219,27 @@ where
             .map_err(|e| anyhow::anyhow!("env {key} = {v:?}: {e}")),
         Err(_) => Ok(default),
     }
+}
+
+/// Resolve the host-side `.crabcc/` directory. Honour
+/// `HOST_CRABCC_DIR` first; fall back to `$HOME/.crabcc`. Empty
+/// string opts out of the bind-mount entirely (e.g. running in
+/// strict-isolation mode). The path is *not* required to exist at
+/// boot — `Runner::host_config` checks existence per-job before
+/// adding the mount, so a host that hasn't run `crabcc init` yet
+/// still gets a working worker.
+fn resolve_crabcc_dir() -> Option<PathBuf> {
+    if let Ok(s) = std::env::var("HOST_CRABCC_DIR") {
+        if s.is_empty() {
+            return None;
+        }
+        return Some(PathBuf::from(s));
+    }
+    let home = std::env::var("HOME").ok()?;
+    if home.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(home).join(".crabcc"))
 }
 
 fn resolve_creds_path() -> Option<PathBuf> {

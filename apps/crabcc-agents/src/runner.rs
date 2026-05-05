@@ -261,6 +261,25 @@ impl Runner {
                 });
             }
         }
+        // Bind-mount the host's `.crabcc/` directory (symbol index,
+        // memory.db, scenarios, agent run logs) read-only at the
+        // container's `~/.crabcc/` so the in-container `crabcc` CLI
+        // can find the index without re-running `crabcc index` from
+        // a cold tmpfs. Read-only on purpose — the container
+        // doesn't get to mutate host state without going through an
+        // explicit MCP-mediated path. See `STACK-REVIEW.md` finding
+        // 1 + `MCP-NATIVE.md` §4.4.
+        if let Some(path) = self.cfg.host_crabcc_dir.as_ref() {
+            if path.exists() {
+                mounts.push(Mount {
+                    target: Some("/home/nonroot/.crabcc".into()),
+                    source: Some(path.to_string_lossy().to_string()),
+                    typ: Some(MountTypeEnum::BIND),
+                    read_only: Some(true),
+                    ..Default::default()
+                });
+            }
+        }
 
         HostConfig {
             init: Some(true),                      // Docker tini → zombie reaper.
