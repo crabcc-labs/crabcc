@@ -252,7 +252,7 @@ impl Render for SystemRoute {
                 muted,
                 foreground,
                 entity,
-                kills_body(state, muted, q),
+                kills_body(state, self.state.clone(), muted, primary, card, q),
             ))
     }
 }
@@ -665,7 +665,14 @@ fn models_body(state: &AppState, muted: Hsla, card: Hsla, query_lower: &str) -> 
     body
 }
 
-fn kills_body(state: &AppState, muted: Hsla, query_lower: &str) -> gpui::AnyElement {
+fn kills_body(
+    state: &AppState,
+    state_entity: Entity<AppState>,
+    muted: Hsla,
+    primary: Hsla,
+    secondary: Hsla,
+    query_lower: &str,
+) -> gpui::AnyElement {
     let body: gpui::AnyElement = match state.agent_kills.as_ref() {
         None => loading("loading kills…", muted),
         Some(k) if k.rows.is_empty() => loading("no recent kills — clean run", muted),
@@ -700,9 +707,34 @@ fn kills_body(state: &AppState, muted: Hsla, query_lower: &str) -> gpui::AnyElem
                 v_flex()
                     .gap_1()
                     .children(visible.into_iter().map(|row| {
+                        // run_id is the agent run that was killed. Click
+                        // navigates to Agents pre-selected so the user
+                        // lands on the row whose log tail explains why.
+                        // Same `navigate_to_agents_with_selection`
+                        // handoff the Timeline's "→ Agents" pill uses.
+                        let run_id_for_nav = row.run_id.clone();
+                        let nav_state = state_entity.clone();
+                        let id: gpui::ElementId =
+                            SharedString::from(format!("kill-row-runid-{}", row.run_id)).into();
+                        let run_id_cell = div()
+                            .id(id)
+                            .w(px(80.0))
+                            .px_1()
+                            .rounded_md()
+                            .text_color(primary)
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(secondary))
+                            .child(row.run_id.clone())
+                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                let id = run_id_for_nav.clone();
+                                nav_state.update(cx, |s, cx| {
+                                    s.navigate_to_agents_with_selection(id);
+                                    cx.notify();
+                                });
+                            });
                         h_flex()
                             .gap_3()
-                            .child(div().w(px(80.0)).child(row.run_id.clone()))
+                            .child(run_id_cell)
                             .child(
                                 div()
                                     .w(px(140.0))
