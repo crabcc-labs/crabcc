@@ -1,0 +1,60 @@
+# crabcc-godfather — supervisor + telemetry / metadata layer.
+#
+# Owns the `_crab_*` tables in `~/.crabcc/_internal.db` (the singleton
+# already shared by `agent_runs_db.rs`) and provides:
+#
+#   * One-shot install fingerprint + host info (PII-clean: SHA256 of
+#     hostname + machine UUID, never raw values).
+#   * Per-app session tracking (viz / desktop / agent / cli).
+#   * Typed event log + resource samples.
+#   * Background `WatchHandle` that drives sysinfo-based supervision
+#     with crash detection.
+#   * Crash report builder + GitHub issue creation via `gh`.
+#   * Process control helpers: kill / restart / lldb-attach printout.
+#
+# Independent from `crabcc-cli` and `crabcc-viz` so it can survive
+# their crashes — the CLI binary `crabcc-godfather` is the standalone
+# supervisor surface; library callers (the other crates) embed via
+# the `Godfather` API.
+
+[package]
+name = "crabcc-godfather"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "crabcc_godfather"
+path = "src/lib.rs"
+
+[[bin]]
+name = "crabcc-godfather"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+rusqlite = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+# Process info + supervision. ~150 KB compiled, pure Rust, MIT — no
+# C deps. Cross-platform (macOS / Linux / Windows). We only use the
+# `process` + `system` features today; `network` / `disk` are
+# off-default and would bloat the binary if enabled.
+sysinfo = { version = "0.31", default-features = false, features = ["system"] }
+tracing = "0.1"
+# Daemon mode + the CLI's structured logging surface.
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+# Catches SIGINT in `crabcc-godfather daemon` so the supervisor's
+# session row gets `ended_at` instead of being yanked mid-tick.
+ctrlc = "3"
+
+[target.'cfg(unix)'.dependencies]
+# Used by `kill.rs` to send SIGTERM / SIGKILL by PID. `nix` would be
+# overkill for one syscall — stay on raw libc.
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"
