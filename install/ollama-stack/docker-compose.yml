@@ -186,11 +186,25 @@ services:
       - ./litellm.config.yaml:/app/config.yaml:ro
     tmpfs:
       - /tmp:size=128m,mode=1777
-    # --num_workers 2 gives the proxy two uvicorn worker processes
-    # so concurrent chat completions don't queue at the gateway. Keep
-    # in sync with OLLAMA_NUM_PARALLEL upstream so the bottleneck
-    # stays at the model, not the proxy.
-    command: ["--config", "/app/config.yaml", "--port", "4000", "--num_workers", "2"]
+    # --num_workers 2 gives the proxy two worker processes so concurrent
+    # chat completions don't queue at the gateway. Keep in sync with
+    # OLLAMA_NUM_PARALLEL upstream so the bottleneck stays at the
+    # model, not the proxy.
+    #
+    # --run_hypercorn swaps the default uvicorn for hypercorn (already
+    # in the litellm image's `proxy-runtime` extras), which speaks
+    # HTTP/2 cleartext (h2c) via the standard upgrade handshake. The
+    # HITL service's httpx pool is built with ``http2=True``; without
+    # h2c here it silently falls back to h1.1 and loses multiplexing
+    # on parallel tool calls. Issue #511.
+    command:
+      - "--config"
+      - "/app/config.yaml"
+      - "--port"
+      - "4000"
+      - "--num_workers"
+      - "2"
+      - "--run_hypercorn"
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost:4000/health/liveliness >/dev/null || exit 1"]
       interval: 10s
