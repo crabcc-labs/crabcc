@@ -367,6 +367,9 @@ impl Render for KnowledgeGraphRoute {
             .border_color(border)
             .rounded_md()
             .text_color(primary)
+            .cursor_pointer()
+            .hover(move |s| s.border_color(primary))
+            .tooltip(|window, cx| Tooltip::new("Re-fetch the memory graph").build(window, cx))
             .child(SharedString::new_static("Refresh"))
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 view_for_refresh.update(cx, |this, cx| {
