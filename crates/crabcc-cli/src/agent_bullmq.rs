@@ -146,6 +146,38 @@ async fn run_async(req: &AgentRequest<'_>, run: &RunDir) -> Result<i32> {
         .entry("x-job-run-id".into())
         .or_insert_with(|| run.id.clone());
 
+    // ── Container context — forward the bits an agent needs to do
+    // its job. The worker's `compose_env` (apps/crabcc-agents/src/
+    // runner.rs) translates `payload.env` to container env vars
+    // verbatim, so populating it here is enough to reach the agent
+    // process inside the sandbox.
+    //
+    // - `CRABCC_ROOT`: host-side path to the project the agent is
+    //   meant to operate on. The container has no host fs by
+    //   default; this is informational ("which repo am I working
+    //   on?") and is consumed by the entrypoint when bind-mounting
+    //   the project into /workspace lands as a follow-up.
+    //
+    // - `OLLAMA_BASE_URL` / `LITELLM_BASE_URL`: when the host runs
+    //   the local Ollama stack (`install/ollama-stack/`), agents
+    //   should hit it instead of cloud Anthropic. Forwarded as-is;
+    //   the agent rewrites `127.0.0.1` to `host.docker.internal`
+    //   itself if the value isn't already host-routable. Absent on
+    //   the host = absent in the container (agent falls back to
+    //   whatever its own discovery does).
+    let mut env: HashMap<String, String> = HashMap::new();
+    env.insert("CRABCC_ROOT".into(), req.root.display().to_string());
+    if let Ok(url) = std::env::var("OLLAMA_BASE_URL") {
+        if !url.is_empty() {
+            env.insert("OLLAMA_BASE_URL".into(), url);
+        }
+    }
+    if let Ok(url) = std::env::var("LITELLM_BASE_URL") {
+        if !url.is_empty() {
+            env.insert("LITELLM_BASE_URL".into(), url);
+        }
+    }
+
     let job = AgentJob {
         prompt: req.prompt.to_string(),
         // CRABCC_AGENT_KIND mirrors the worker's AGENT_KIND on the
@@ -157,7 +189,7 @@ async fn run_async(req: &AgentRequest<'_>, run: &RunDir) -> Result<i32> {
         model: req.model.clone(),
         effort: std::env::var("AGENT_DEFAULT_EFFORT").ok(),
         sandbox: SandboxSpec::default(),
-        env: HashMap::new(),
+        env,
         timeout_secs: None,
         headers,
     };
