@@ -30,12 +30,15 @@ import logging
 import secrets
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Annotated
+from pathlib import Path
+from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import __version__
+from .approvals import Decision, PendingApprovals
 from .llm import HitlAgent, build_httpx_client
 from .mcp_server import build_mcp, probe_mcp_started, run_mcp
 from .probes import (
@@ -47,7 +50,9 @@ from .probes import (
 )
 from .service_discovery import announce, maybe_register_redis
 from .settings import Settings, get_settings
+from .telegram_client import TelegramBotClient, validate_init_data
 from .telemetry import init_telemetry, instrument_fastapi
+from .tool_gate import configure as configure_tool_gate
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +103,45 @@ class ChatRequest(BaseModel):
     # Reserved for Phase 1: lets the bot pin a session id so multi-turn
     # state survives across messages. Phase 0 ignores it.
     session_id: str | None = Field(default=None, description="Reserved (Phase 1).")
+    # Phase 2: bot passes the originating Telegram chat id so tool
+    # approval prompts go to the user who started the agent. ``None``
+    # falls back to ``telegram_owner_chat_id`` from settings.
+    tg_chat_id: int | None = Field(default=None, description="Telegram chat id for approvals.")
+
+
+# ───── Approval-flow schemas (Phase 2) ─────
+
+
+class ApprovalRespondRequest(BaseModel):
+    """Body of POST /approval/respond — sent by the bot.
+
+    The bot consumes Telegram's callback_query updates and forwards
+    them here. ``request_id`` is the URL-safe token the gate placed in
+    the inline-button ``callback_data`` (``"approve:<id>"``).
+    """
+
+    request_id: str = Field(..., min_length=1)
+    decision: Literal["approve", "deny"]
+    reason: str | None = None
+    user_id: int | None = Field(default=None, description="Telegram user id of the responder.")
+
+
+class ApprovalRespondResponse(BaseModel):
+    accepted: bool
+
+
+class ApprovalView(BaseModel):
+    id: str
+    tool: str
+    arguments: dict[str, Any]
+    chat_id: int | None
+    created_at: float
+    expires_at: float
+    remaining_s: float
+
+
+class ApprovalListResponse(BaseModel):
+    pending: list[ApprovalView]
 
 
 class ChatResponse(BaseModel):
@@ -120,6 +164,30 @@ class HealthResponse(BaseModel):
 
 
 # ───── App lifespan: startup probes, build the agent, tear down ─────
+
+
+def _setup_phase2_approval(app: FastAPI, settings: Settings, http_client: Any) -> None:
+    """Wire the Phase 2 approval flow.
+
+    Builds the in-process pending registry, the Telegram outbound
+    client, and configures the module-level tool gate so tool calls
+    can find them. ``http_client`` is the shared httpx pool; we reuse
+    it for Telegram REST so api.telegram.org keeps a warm connection.
+    """
+    approvals = PendingApprovals(default_timeout_s=settings.approval_timeout_s)
+    telegram = (
+        TelegramBotClient(settings.telegram_bot_token, http_client)
+        if settings.telegram_bot_token
+        else None
+    )
+    configure_tool_gate(
+        pending=approvals,
+        telegram=telegram,
+        default_chat_id=settings.telegram_owner_chat_id,
+        default_timeout_s=settings.approval_timeout_s,
+    )
+    app.state.approvals = approvals
+    app.state.telegram = telegram
 
 
 def _probe_cfg(s: Settings) -> ProbeConfig:
@@ -167,6 +235,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.warning("startup probes disabled (probe_startup_enabled=False)")
         startup_results = []
     app.state.last_probes = startup_results
+
+    # Phase 2 — approval flow plumbing. Extracted to keep the lifespan
+    # focused on the lifecycle phases (probes / agent / mcp); the wiring
+    # itself is mechanical and benefits from a named seam.
+    _setup_phase2_approval(app, settings, http_client)
 
     # Agent uses the now-warm connection pool.
     agent = HitlAgent(settings, http_client)
@@ -349,9 +422,13 @@ async def chat(req: ChatRequest) -> ChatResponse:
     agent: HitlAgent = app.state.agent
     logger.debug(
         "chat: incoming",
-        extra={"task_len": len(req.task), "session_id": req.session_id},
+        extra={
+            "task_len": len(req.task),
+            "session_id": req.session_id,
+            "tg_chat_id": req.tg_chat_id,
+        },
     )
-    reply = await agent.chat(req.task)
+    reply = await agent.chat(req.task, tg_chat_id=req.tg_chat_id)
     logger.info(
         "chat: completed",
         extra={
@@ -361,3 +438,111 @@ async def chat(req: ChatRequest) -> ChatResponse:
         },
     )
     return ChatResponse(reply=reply, model=settings.model)
+
+
+# ───── Approval-flow endpoints (Phase 2) ─────
+
+
+@app.post(
+    "/approval/respond",
+    response_model=ApprovalRespondResponse,
+    dependencies=[Depends(_verify_token)],
+)
+async def approval_respond(req: ApprovalRespondRequest) -> ApprovalRespondResponse:
+    """Resolve a pending approval. Called by the Rust bot.
+
+    Idempotent: an unknown ``request_id`` (already resolved or never
+    existed) returns ``accepted=False`` rather than 4xx. The bot uses
+    that to decide whether to edit the original message ("Approved" /
+    "Denied") or just acknowledge — it shouldn't crash on a stale
+    callback after a service restart.
+    """
+    approvals: PendingApprovals = app.state.approvals
+    accepted = approvals.respond(req.request_id, Decision(kind=req.decision, reason=req.reason))
+    return ApprovalRespondResponse(accepted=accepted)
+
+
+@app.get(
+    "/approval/list",
+    response_model=ApprovalListResponse,
+    dependencies=[Depends(_verify_token)],
+)
+async def approval_list() -> ApprovalListResponse:
+    """List currently-pending approvals.
+
+    Used by the Mini App to render the approval queue. Bearer auth
+    today; Mini App callers will move to ``/webapp/api/approvals`` with
+    Telegram initData validation in a follow-up patch.
+    """
+    approvals: PendingApprovals = app.state.approvals
+    return ApprovalListResponse(pending=[ApprovalView(**a.to_view()) for a in approvals.list()])
+
+
+# ───── Mini App (Phase 2) ─────
+# StaticFiles is mounted lazily so the directory can be missing in
+# dev (skips the mount; bot+approval flow still works). The Mini App
+# JS bundle issues XHRs to /webapp/api/* which we validate with
+# initData HMAC instead of bearer auth.
+
+
+def _verify_init_data(
+    settings: Annotated[Settings, Depends(get_settings)],
+    x_telegram_init_data: str | None = Header(default=None, alias="X-Telegram-Init-Data"),
+) -> dict[str, str]:
+    """Validate the ``X-Telegram-Init-Data`` header.
+
+    The Mini App reads ``window.Telegram.WebApp.initData`` and sends it
+    on every XHR. We HMAC-verify against the bot token; a missing /
+    bad signature 401s. Returns the parsed fields for downstream
+    handlers (``user``, ``auth_date``, ``query_id``, ...).
+    """
+    if settings.telegram_bot_token is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="webapp disabled (telegram bot token not configured)",
+        )
+    if x_telegram_init_data is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="missing X-Telegram-Init-Data"
+        )
+    fields = validate_init_data(x_telegram_init_data, settings.telegram_bot_token)
+    if fields is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="bad init_data signature"
+        )
+    return fields
+
+
+@app.get(
+    "/webapp/api/approvals",
+    response_model=ApprovalListResponse,
+)
+async def webapp_approvals(
+    _fields: Annotated[dict[str, str], Depends(_verify_init_data)],
+) -> ApprovalListResponse:
+    """Mini App–facing approvals listing. Auth: validated initData."""
+    approvals: PendingApprovals = app.state.approvals
+    return ApprovalListResponse(pending=[ApprovalView(**a.to_view()) for a in approvals.list()])
+
+
+@app.post(
+    "/webapp/api/respond",
+    response_model=ApprovalRespondResponse,
+)
+async def webapp_respond(
+    req: ApprovalRespondRequest,
+    _fields: Annotated[dict[str, str], Depends(_verify_init_data)],
+) -> ApprovalRespondResponse:
+    """Mini App–facing responder. Auth: validated initData."""
+    approvals: PendingApprovals = app.state.approvals
+    accepted = approvals.respond(req.request_id, Decision(kind=req.decision, reason=req.reason))
+    return ApprovalRespondResponse(accepted=accepted)
+
+
+# Mount the static Mini App bundle. The path resolves relative to the
+# package so the same code works in dev (editable install) and in the
+# distroless container (where the package ships under
+# /app/.venv/lib/python*/site-packages/crabcc_hitl/webapp).
+_webapp_dir = Path(__file__).parent / "webapp"
+if _webapp_dir.is_dir():
+    app.mount("/webapp", StaticFiles(directory=_webapp_dir, html=True), name="webapp")

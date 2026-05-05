@@ -11,6 +11,8 @@ Test harness mocks httpx so we don't need a real crabcc-mcp server.
 
 from __future__ import annotations
 
+from typing import Any
+
 import orjson
 import pytest
 
@@ -31,13 +33,13 @@ async def test_unconfigured_returns_clear_error(monkeypatch: pytest.MonkeyPatch)
 # ───── Configured success path ─────
 
 
-def _install_fake_httpx(monkeypatch: pytest.MonkeyPatch, payload: object) -> list[dict]:
+def _install_fake_httpx(monkeypatch: pytest.MonkeyPatch, payload: object) -> list[dict[str, Any]]:
     """Patch httpx.AsyncClient so calls return ``payload`` as MCP success.
 
     Returns a list that captures every (url, body) sent — tests assert
     against the call shape after running the tool.
     """
-    captured: list[dict] = []
+    captured: list[dict[str, Any]] = []
 
     class _Resp:
         status_code = 200
@@ -59,7 +61,7 @@ def _install_fake_httpx(monkeypatch: pytest.MonkeyPatch, payload: object) -> lis
         async def __aexit__(self, *_a: object) -> None:
             return None
 
-        async def post(self, url: str, *, content: bytes, headers: dict) -> _Resp:
+        async def post(self, url: str, *, content: bytes, headers: dict[str, str]) -> _Resp:
             captured.append({"url": url, "body": orjson.loads(content), "headers": headers})
             envelope = {
                 "jsonrpc": "2.0",
@@ -139,7 +141,13 @@ async def test_tool_side_error_returns_ok_false(monkeypatch: pytest.MonkeyPatch)
         async def __aexit__(self, *_a: object) -> None:
             return None
 
-        async def post(self, _url: str, *, content: bytes, headers: dict) -> _Resp:  # noqa: ARG002
+        async def post(
+            self,
+            _url: str,
+            *,
+            content: bytes,  # noqa: ARG002 — body verification not needed in this test
+            headers: dict[str, str],  # noqa: ARG002 — headers verified elsewhere
+        ) -> _Resp:
             envelope = {
                 "jsonrpc": "2.0",
                 "id": 1,
