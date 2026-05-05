@@ -774,6 +774,11 @@ impl TimelineRoute {
                 let is_pinned_agent = self.agent_pin.as_deref() == Some(id.as_ref());
                 let badge_color = if is_pinned_agent { foreground } else { muted };
                 let click_id = id.clone();
+                let agent_tooltip: SharedString = if is_pinned_agent {
+                    SharedString::new_static("Unpin agent — show all agents")
+                } else {
+                    SharedString::from(format!("Pin agent {trimmed} — narrows the timeline"))
+                };
                 div()
                     .id(SharedString::from(format!("{row_id}-agent-pin")))
                     .px_1()
@@ -784,8 +789,8 @@ impl TimelineRoute {
                     .text_xs()
                     .cursor_pointer()
                     .hover(move |s| s.border_color(foreground).text_color(foreground))
-                    .tooltip(|window, cx| {
-                        Tooltip::new("Pin / unpin agent — narrows the timeline").build(window, cx)
+                    .tooltip(move |window, cx| {
+                        Tooltip::new(agent_tooltip.clone()).build(window, cx)
                     })
                     .child(SharedString::from(format!("agt {trimmed}")))
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
@@ -801,13 +806,18 @@ impl TimelineRoute {
             None => div().into_any_element(),
         };
 
+        let pin_tooltip: SharedString = if pinned {
+            SharedString::new_static("Unpin event — drop from pinned section")
+        } else {
+            SharedString::new_static("Pin event — keeps it in the top section")
+        };
         let pin_btn = div()
             .id(SharedString::from(format!("{row_id}-pin")))
             .px_1()
             .text_color(if pinned { foreground } else { muted })
             .cursor_pointer()
             .hover(move |s| s.text_color(foreground))
-            .tooltip(|window, cx| Tooltip::new("Pin / unpin event").build(window, cx))
+            .tooltip(move |window, cx| Tooltip::new(pin_tooltip.clone()).build(window, cx))
             .child(SharedString::new_static(if pinned { "★" } else { "☆" }))
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 cx.stop_propagation();
