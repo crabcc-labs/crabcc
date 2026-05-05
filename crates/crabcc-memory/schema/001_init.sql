@@ -93,6 +93,31 @@ CREATE INDEX IF NOT EXISTS idx_kg_subject        ON kg_triples(subject);
 CREATE INDEX IF NOT EXISTS idx_kg_predicate      ON kg_triples(predicate);
 CREATE INDEX IF NOT EXISTS idx_kg_valid_from     ON kg_triples(valid_from);
 
+-- Session-scoped shell ledger (lean-ctx integration #4). The
+-- PreToolUse Bash hook records every Bash invocation here, keyed
+-- on (command, cwd, session_id). `run_count` increments on every
+-- repeat — the loop detector (#5) watches both this and
+-- `session_reads.read_count` for "agent stuck re-running the same
+-- thing".
+--
+-- We deliberately don't store stdout / exit code: the PreToolUse
+-- hook fires BEFORE the command runs, so neither is available.
+-- The point of this table is observation + loop detection, not
+-- output caching (RTK already pattern-compresses shell output
+-- session-side; see ~/.claude/RTK.md).
+CREATE TABLE IF NOT EXISTS session_shells (
+    id              INTEGER PRIMARY KEY,
+    command         TEXT    NOT NULL,
+    cwd             TEXT    NOT NULL,
+    session_id      TEXT,
+    last_run_at     INTEGER NOT NULL,
+    run_count       INTEGER NOT NULL DEFAULT 1,
+    UNIQUE (command, cwd, session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_session_shells_session     ON session_shells(session_id);
+CREATE INDEX IF NOT EXISTS idx_session_shells_run_count   ON session_shells(run_count);
+CREATE INDEX IF NOT EXISTS idx_session_shells_last_run_at ON session_shells(last_run_at);
+
 -- Session-scoped read ledger (lean-ctx integration #2). `crabcc read`
 -- records what it served per (path, session_id) so the next read can
 -- decide between a full file and an outline-shaped stub. `mtime_ns`
