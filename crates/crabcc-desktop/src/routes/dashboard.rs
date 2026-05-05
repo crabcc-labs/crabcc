@@ -99,6 +99,18 @@ impl DashboardHome {
 
 impl Render for DashboardHome {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Cross-route nav handoff: a prior render of System → AGENT
+        // PROFILES staged a profile id to pre-populate. Consume up-
+        // front so the spawn sheet opens with that profile selected.
+        // One-shot — closing/submitting the sheet doesn't re-trigger.
+        let pending_profile = self.state.update(cx, |s, _| s.take_pending_spawn_profile());
+        if let Some(id) = pending_profile {
+            self.spawn_sheet.update(cx, |sheet, cx| {
+                sheet.open_with_profile(id);
+                cx.notify();
+            });
+        }
+
         let state = self.state.read(cx);
 
         // gpui-component uses `secondary` for elevated panels — there's

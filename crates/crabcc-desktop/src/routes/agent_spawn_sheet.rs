@@ -121,6 +121,15 @@ impl AgentSpawnSheet {
         self.is_open = true;
     }
 
+    /// Open the sheet with a profile pre-selected. Used by the
+    /// cross-route handoff from System → AGENT PROFILES so the
+    /// user lands on the spawn flow already focused on the profile
+    /// they were inspecting.
+    pub fn open_with_profile(&mut self, profile_id: SharedString) {
+        self.is_open = true;
+        self.selected_profile = Some(profile_id);
+    }
+
     pub fn close(&mut self) {
         self.is_open = false;
         self.phase = SheetPhase::Idle;
