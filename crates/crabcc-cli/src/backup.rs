@@ -365,6 +365,16 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    /// Sibling test modules (`memory`, `go`) pin `$CRABCC_HOME`
+    /// for `Palace::open` isolation since #479. With the env set,
+    /// [`backups_root`] *prefers* it over the `home` arg, so a
+    /// backup test that creates its own `home = tempdir()` ends up
+    /// reading/writing under a different root than its siblings.
+    /// Use the same crate-wide pin from `crate::test_support` and
+    /// pass it as `home`; distinct repo tempdirs give unique slugs
+    /// so two backup tests don't collide under the shared root.
+    use crate::test_support::ensure_test_crabcc_home as shared_test_home;
+
     fn seed_repo(repo: &Path) {
         let crabcc = repo.join(".crabcc");
         std::fs::create_dir_all(crabcc.join("tantivy")).unwrap();
@@ -378,7 +388,7 @@ mod tests {
     #[test]
     #[ignore = "slow (~2s) — fs-heavy snapshot test; run locally with --ignored"]
     fn snapshot_copies_all_known_artifacts_and_keeps_only_last_n() {
-        let home = tempdir().unwrap();
+        let home = shared_test_home();
         let repo = tempdir().unwrap();
         seed_repo(repo.path());
 
@@ -386,14 +396,14 @@ mod tests {
         // counts at the moment each one is taken (pre-prune of older
         // peers). After all 3 land, only the last 2 should remain on
         // disk per the default retention.
-        let r1 = snapshot(repo.path(), home.path()).unwrap();
+        let r1 = snapshot(repo.path(), &home).unwrap();
         assert_eq!(r1.files_copied, 5);
         assert_eq!(r1.dirs_copied, 1);
         std::thread::sleep(std::time::Duration::from_secs(1));
-        let r2 = snapshot(repo.path(), home.path()).unwrap();
+        let r2 = snapshot(repo.path(), &home).unwrap();
         assert_eq!(r2.files_copied, 5);
         std::thread::sleep(std::time::Duration::from_secs(1));
-        let r3 = snapshot(repo.path(), home.path()).unwrap();
+        let r3 = snapshot(repo.path(), &home).unwrap();
         assert_eq!(r3.files_copied, 5);
 
         // After 3rd snapshot, the 1st should be pruned (default keep=2).
@@ -401,7 +411,7 @@ mod tests {
         assert!(r2.destination.exists());
         assert!(r3.destination.exists());
 
-        let entries = list(home.path(), repo.path()).unwrap();
+        let entries = list(&home, repo.path()).unwrap();
         assert_eq!(entries.len(), 2);
         // Sorted newest-first.
         assert!(entries[0].timestamp >= entries[1].timestamp);
@@ -409,13 +419,13 @@ mod tests {
 
     #[test]
     fn snapshot_skips_missing_optional_files() {
-        let home = tempdir().unwrap();
+        let home = shared_test_home();
         let repo = tempdir().unwrap();
         // Only the index.db exists — no graph, no memory, no tantivy.
         std::fs::create_dir_all(repo.path().join(".crabcc")).unwrap();
         std::fs::write(repo.path().join(".crabcc").join("index.db"), b"x").unwrap();
 
-        let r = snapshot(repo.path(), home.path()).unwrap();
+        let r = snapshot(repo.path(), &home).unwrap();
         assert_eq!(r.files_copied, 1);
         assert_eq!(r.dirs_copied, 0);
         assert!(r.destination.join("index.db").exists());
@@ -423,11 +433,11 @@ mod tests {
 
     #[test]
     fn restore_overwrites_destination_with_backup_contents() {
-        let home = tempdir().unwrap();
+        let home = shared_test_home();
         let repo = tempdir().unwrap();
         seed_repo(repo.path());
 
-        let r = snapshot(repo.path(), home.path()).unwrap();
+        let r = snapshot(repo.path(), &home).unwrap();
 
         // Mutate the live copy after the snapshot.
         std::fs::write(repo.path().join(".crabcc").join("graph.json"), b"DIRTY").unwrap();
@@ -438,7 +448,7 @@ mod tests {
 
         let restored = restore(
             repo.path(),
-            home.path(),
+            &home,
             r.destination
                 .file_name()
                 .unwrap()

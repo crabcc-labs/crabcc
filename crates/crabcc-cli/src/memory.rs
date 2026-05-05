@@ -512,8 +512,11 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    use crate::test_support::ensure_test_crabcc_home;
+
     #[test]
     fn auto_capture_inner_creates_drawer_with_session() {
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         auto_capture_inner(dir.path(), "sym", "Foo", 3, Some("term:t1"));
         let palace = Palace::open(dir.path()).unwrap();
@@ -527,6 +530,7 @@ mod tests {
 
     #[test]
     fn auto_capture_inner_works_without_session() {
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         auto_capture_inner(dir.path(), "callers", "bar", 0, None);
         let palace = Palace::open(dir.path()).unwrap();
@@ -538,6 +542,7 @@ mod tests {
     #[test]
     fn auto_capture_inner_dedups_repeat_for_same_count() {
         // Same op + query + count → same sha → dedup'd. Two calls = one row.
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         auto_capture_inner(dir.path(), "sym", "X", 2, None);
         auto_capture_inner(dir.path(), "sym", "X", 2, None);
@@ -549,6 +554,7 @@ mod tests {
     fn auto_capture_inner_separates_drawers_when_count_changes() {
         // Same op + query but different count → different body → different
         // sha → new drawer with the same source_id.
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         auto_capture_inner(dir.path(), "sym", "X", 1, None);
         auto_capture_inner(dir.path(), "sym", "X", 5, None);

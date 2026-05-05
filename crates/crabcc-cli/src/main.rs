@@ -41,6 +41,8 @@ mod memory;
 mod model_info;
 mod status;
 mod telemetry;
+#[cfg(test)]
+mod test_support;
 
 #[derive(Parser)]
 #[command(name = "crabcc", version, about = "Symbol index for AI coding agents")]
