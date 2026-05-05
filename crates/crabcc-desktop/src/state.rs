@@ -933,6 +933,27 @@ impl AppState {
             .expect("memory-graph thread spawn");
     }
 
+    /// Fire a one-shot `/api/memory/recent` fetch. Same wire shape as
+    /// the 10s polling tick (which also produces `MemoryRefresh`),
+    /// just kicked off on demand. Used by the Knowledge route's
+    /// manual refresh button so the user doesn't have to wait for
+    /// the next poll after a CLI ingest landed elsewhere.
+    pub fn submit_memory_refresh(&self) {
+        let Some(handles) = self.workers.clone() else {
+            return;
+        };
+        let WorkerHandles { tx, base_url } = handles;
+        std::thread::Builder::new()
+            .name("crabcc-memory-refresh".into())
+            .spawn(move || {
+                debug!(target: "crabcc::state", thread = "memory-refresh", "starting");
+                let client = Client::with_base_url(base_url);
+                let result = client.memory_recent();
+                let _ = try_send_app_event(&tx, AppEvent::MemoryRefresh(result));
+            })
+            .expect("memory-refresh thread spawn");
+    }
+
     /// Fire a Commands-launchpad row's HTTP method on a detached
     /// thread. Mutates `running_command` + clears `last_command_run`
     /// up front so the calling row can pulse a "running…" indicator

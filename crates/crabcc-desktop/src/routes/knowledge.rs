@@ -296,15 +296,40 @@ impl Render for KnowledgeRoute {
             }
         };
 
+        // Manual refresh — same wire shape as the 10s poller, just
+        // user-driven. Useful when an ingest landed via CLI / MCP /
+        // Telegram and the user wants the new drawer immediately
+        // instead of waiting up to 10s for the next tick.
+        let refresh_state = self.state.clone();
+        let refresh_btn_color = primary;
+        let refresh_btn = div()
+            .id("knowledge-refresh-btn")
+            .px_2()
+            .py_0p5()
+            .border_1()
+            .border_color(border)
+            .rounded_md()
+            .text_color(refresh_btn_color)
+            .text_xs()
+            .child(SharedString::new_static("Refresh"))
+            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                refresh_state.read(cx).submit_memory_refresh();
+            });
         let header = v_flex()
             .gap_2()
             .child(
                 h_flex()
                     .gap_3()
                     .child(div().text_lg().child(SharedString::new_static("Knowledge")))
-                    .child(div().text_color(muted).child(SharedString::new_static(
-                        "Drawers refresh every 10s · Enter or click Ingest to submit.",
-                    ))),
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_color(muted)
+                            .child(SharedString::new_static(
+                                "Drawers refresh every 10s · Enter or click Ingest to submit.",
+                            )),
+                    )
+                    .child(refresh_btn),
             )
             .child(form)
             .child(status_line)
