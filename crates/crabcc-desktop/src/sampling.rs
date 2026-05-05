@@ -40,6 +40,21 @@ pub const MAX_SAMPLING_DEPTH: u8 = 3;
 /// `reference_ollama_mlx.md`.
 pub const QWEN35_RAM_FLOOR_GB: u32 = 32;
 
+/// Default summary lane — small Apple-Silicon-friendly Qwen3 used
+/// when `includeContext` is set and the host needs to compress
+/// resource snippets before stuffing them into the primary
+/// request. Mirrors the `ollama/qwen3:4b` entry in
+/// `install/ollama-stack/litellm.config.yaml`. See
+/// `MCP-SAMPLING-OFFER.md` §7.1.
+pub const DEFAULT_SUMMARY_MODEL: &str = "ollama/qwen3:4b";
+
+/// Cap on summary-input character count. Snippets concatenated
+/// past this are truncated before the summary call so a runaway
+/// resource provider can't burn 30 s of inference time on a 100 MB
+/// log tail. Picked at 32 KB (~8k tokens) as a conservative cap
+/// that leaves the qwen3:4b context window well under saturation.
+pub const SUMMARY_INPUT_CAP_BYTES: usize = 32 * 1024;
+
 /// Reserved JSON-RPC error codes we return to peers.
 /// Spec `MCP-SAMPLING-OFFER.md` §10.
 mod error_codes {
@@ -69,9 +84,59 @@ pub struct SamplingRequest {
     pub stop_sequences: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
+    /// MCP `includeContext` selector. When set, the handler asks
+    /// its [`ResourceProvider`] for a snapshot, summarises with the
+    /// secondary lane (`qwen3:4b` by default), and prepends the
+    /// summary to the primary request as a system-level context
+    /// block. See `MCP-SAMPLING-OFFER.md` §3.2 / §7.1.
+    #[serde(
+        default,
+        rename = "includeContext",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub include_context: Option<IncludeContext>,
     /// MCP `_meta` field. We only read `samplingDepth` from it for now.
     #[serde(default, rename = "_meta", skip_serializing_if = "Option::is_none")]
     pub meta: Option<SamplingMeta>,
+}
+
+/// MCP `includeContext` value. `None` = no context injection;
+/// `ThisServer` = snapshot just the directly-connected server's
+/// resources; `AllServers` = snapshot every connected server's.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum IncludeContext {
+    None,
+    ThisServer,
+    AllServers,
+}
+
+impl IncludeContext {
+    /// `None` (or absent) means "do not inject" — exposed so
+    /// callers don't have to match the variant inline.
+    pub fn injects(self) -> bool {
+        !matches!(self, IncludeContext::None)
+    }
+}
+
+/// One resource snippet to feed the summary lane. The handler
+/// concatenates these and asks the summary model to compress them
+/// into a single short context block.
+#[derive(Debug, Clone)]
+pub struct ResourceSnippet {
+    pub uri: String,
+    pub content: String,
+}
+
+/// Source of resource snippets for `includeContext`. Implementors
+/// know which servers / rooms the host is connected to and return
+/// the relevant subset for the requested scope.
+///
+/// Calls happen on the sampling-handler's worker thread, so impls
+/// must be `Send + Sync`. Implementations should be cheap and
+/// non-blocking — a slow provider stalls the whole sampling call.
+pub trait ResourceProvider: Send + Sync {
+    fn snapshot(&self, scope: IncludeContext) -> Vec<ResourceSnippet>;
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -275,6 +340,14 @@ pub struct LiteLlmSamplingHandler {
     /// production so every sampling round-trip surfaces in the
     /// inspector ring.
     observer: Option<Arc<dyn SamplingObserver>>,
+    /// Source of resource snippets for `includeContext`. None = the
+    /// handler ignores `includeContext` entirely (and skips the
+    /// summary lane). Wired in production by the desktop's startup
+    /// path once it has a server registry to snapshot.
+    resource_provider: Option<Arc<dyn ResourceProvider>>,
+    /// Model used for the summary call when `includeContext` fires.
+    /// Defaults to [`DEFAULT_SUMMARY_MODEL`].
+    summary_model: String,
 }
 
 #[derive(Debug, Clone)]
@@ -349,6 +422,8 @@ impl LiteLlmSamplingHandler {
             host_ram_gb,
             client,
             observer: None,
+            resource_provider: None,
+            summary_model: DEFAULT_SUMMARY_MODEL.to_string(),
         })
     }
 
@@ -372,6 +447,16 @@ impl LiteLlmSamplingHandler {
         self
     }
 
+    pub fn with_resource_provider(mut self, provider: Arc<dyn ResourceProvider>) -> Self {
+        self.resource_provider = Some(provider);
+        self
+    }
+
+    pub fn with_summary_model(mut self, model: impl Into<String>) -> Self {
+        self.summary_model = model.into();
+        self
+    }
+
     /// Pure model selection — exposed as a free fn for unit testing.
     fn select_model(&self, prefs: Option<&ModelPreferences>) -> Result<&ModelEntry, SamplingError> {
         select_model(&self.catalog, self.host_ram_gb, prefs)
@@ -390,6 +475,11 @@ impl SamplingHandler for LiteLlmSamplingHandler {
         }
 
         let model = self.select_model(request.model_preferences.as_ref())?.clone();
+
+        // includeContext flow — best-effort; failures fall through
+        // and the original request runs un-augmented. See
+        // `MCP-SAMPLING-OFFER.md` §7.1.
+        let request = self.maybe_inject_context(request);
 
         // Notify observer that a request is in flight. Errors from
         // the observer are not propagated — instrumentation must
@@ -411,6 +501,36 @@ impl SamplingHandler for LiteLlmSamplingHandler {
 }
 
 impl LiteLlmSamplingHandler {
+    /// If the request asks for `includeContext` and a provider is
+    /// configured, snapshot the resources, summarise via the
+    /// secondary lane, and prepend the summary to the original
+    /// request. Best-effort: any failure (provider returns nothing,
+    /// summary call errors) leaves the request untouched.
+    fn maybe_inject_context(&self, request: SamplingRequest) -> SamplingRequest {
+        let scope = match request.include_context {
+            Some(s) if s.injects() => s,
+            _ => return request,
+        };
+        let Some(provider) = self.resource_provider.as_ref() else {
+            return request;
+        };
+        let snippets = provider.snapshot(scope);
+        if snippets.is_empty() {
+            return request;
+        }
+        let corpus = concat_snippets(&snippets);
+        let summary_req = build_summary_request(&corpus);
+        match self.do_call(&self.summary_model, &summary_req) {
+            Ok(resp) => {
+                let summary_text = match resp.content {
+                    Content::Text { text } => text,
+                };
+                augment_request_with_summary(request, &summary_text)
+            }
+            Err(_) => request,
+        }
+    }
+
     /// Pure I/O bit, factored out so [`SamplingHandler::handle`]
     /// can wrap it with observer notifications without nesting
     /// match arms.
@@ -507,6 +627,86 @@ pub fn select_model<'a>(
             format!("no model in catalog fits a {host_ram_gb}GB host"),
         )
     })
+}
+
+/// Concatenate snippets with URI headers, capped at
+/// [`SUMMARY_INPUT_CAP_BYTES`]. Truncates on a UTF-8 char boundary
+/// when the cap fires; appends a sentinel so the summary model
+/// knows the input was clipped.
+pub fn concat_snippets(snippets: &[ResourceSnippet]) -> String {
+    let mut out = String::new();
+    for s in snippets {
+        out.push_str("=== ");
+        out.push_str(&s.uri);
+        out.push_str(" ===\n");
+        out.push_str(&s.content);
+        out.push('\n');
+        if out.len() >= SUMMARY_INPUT_CAP_BYTES {
+            break;
+        }
+    }
+    if out.len() > SUMMARY_INPUT_CAP_BYTES {
+        // Find the largest char boundary <= cap so we don't slice
+        // a multi-byte codepoint mid-encoding.
+        let mut idx = SUMMARY_INPUT_CAP_BYTES;
+        while idx > 0 && !out.is_char_boundary(idx) {
+            idx -= 1;
+        }
+        out.truncate(idx);
+        out.push_str("\n[…input truncated to fit summary cap…]");
+    }
+    out
+}
+
+/// Build the summary call's request — small max_tokens, low
+/// temperature, terse instruction so the secondary lane stays
+/// fast. Tagged with `samplingDepth: 1` so the depth cap survives
+/// across the chain (a peer that re-enters us at depth 0 + we
+/// internally invoke the summary at depth 1 = total of 2 nestings,
+/// caught by the cap of 3).
+pub fn build_summary_request(corpus: &str) -> SamplingRequest {
+    SamplingRequest {
+        messages: vec![Message {
+            role: Role::User,
+            content: Content::Text {
+                text: format!(
+                    "Summarise the following resource snippets in 3-5 sentences. \
+                     Preserve URIs in your summary so a downstream caller can \
+                     navigate back. No preamble.\n\n{corpus}"
+                ),
+            },
+        }],
+        model_preferences: None,
+        system_prompt: Some(
+            "You are a terse summariser. Output plain prose; no markdown headings."
+                .into(),
+        ),
+        max_tokens: Some(512),
+        stop_sequences: vec!["</think>".into()],
+        temperature: Some(0.2),
+        include_context: None,
+        meta: Some(SamplingMeta { sampling_depth: 1 }),
+    }
+}
+
+/// Prepend `summary_text` to the request's `system_prompt`, marked
+/// so a downstream operator can spot host-injected context in the
+/// inspector's params view. Returns a fresh request — the input is
+/// consumed.
+pub fn augment_request_with_summary(
+    mut request: SamplingRequest,
+    summary_text: &str,
+) -> SamplingRequest {
+    let block = format!(
+        "[host-injected resource summary, scope={:?}]\n{}\n[/end-summary]",
+        request.include_context.unwrap_or(IncludeContext::None),
+        summary_text.trim(),
+    );
+    request.system_prompt = Some(match request.system_prompt {
+        Some(prior) => format!("{block}\n\n{prior}"),
+        None => block,
+    });
+    request
 }
 
 fn fits_host(entry: &ModelEntry, host_ram_gb: u32) -> bool {
@@ -707,6 +907,7 @@ mod tests {
             max_tokens: Some(128),
             stop_sequences: vec![],
             temperature: Some(0.2),
+            include_context: None,
             meta: Some(SamplingMeta {
                 sampling_depth: meta_depth,
             }),
@@ -724,6 +925,8 @@ mod tests {
             host_ram_gb: 64,
             client: reqwest::blocking::Client::new(),
             observer: None,
+            resource_provider: None,
+            summary_model: DEFAULT_SUMMARY_MODEL.into(),
         };
         let r = handler.handle(req(MAX_SAMPLING_DEPTH, None));
         match r {
@@ -746,6 +949,8 @@ mod tests {
                 .build()
                 .unwrap(),
             observer: None,
+            resource_provider: None,
+            summary_model: DEFAULT_SUMMARY_MODEL.into(),
         };
         let r = handler.handle(req(MAX_SAMPLING_DEPTH - 1, Some("qwen3.5")));
         match r {
@@ -841,6 +1046,7 @@ mod tests {
             // as 0.10000000149011612, which doesn't compare equal to
             // the 0.1_f64 in the assertion. 0.5 is exact in both.
             temperature: Some(0.5),
+            include_context: None,
             meta: None,
         };
         let body = build_openai_request("ollama/qwen3:4b", &r);
@@ -872,6 +1078,7 @@ mod tests {
             max_tokens: None,
             stop_sequences: vec![],
             temperature: None,
+            include_context: None,
             meta: None,
         };
         let body = build_openai_request("any", &r);
@@ -984,6 +1191,8 @@ mod tests {
                 .build()
                 .unwrap(),
             observer: Some(obs.clone()),
+            resource_provider: None,
+            summary_model: DEFAULT_SUMMARY_MODEL.into(),
         };
         let _ = handler.handle(req(0, Some("qwen3.5")));
         let events = obs.events.lock().unwrap();
@@ -1004,6 +1213,8 @@ mod tests {
             host_ram_gb: 64,
             client: reqwest::blocking::Client::new(),
             observer: Some(obs.clone()),
+            resource_provider: None,
+            summary_model: DEFAULT_SUMMARY_MODEL.into(),
         };
         let r = handler.handle(req(MAX_SAMPLING_DEPTH, None));
         assert!(matches!(
@@ -1014,6 +1225,148 @@ mod tests {
             })
         ));
         assert!(obs.events.lock().unwrap().is_empty());
+    }
+
+    fn snippet(uri: &str, content: &str) -> ResourceSnippet {
+        ResourceSnippet {
+            uri: uri.to_string(),
+            content: content.to_string(),
+        }
+    }
+
+    #[test]
+    fn concat_snippets_includes_uri_headers() {
+        let s = concat_snippets(&[
+            snippet("desktop://logs/agent-42", "two errors at 14:02"),
+            snippet("desktop://memory/drawer/123", "[ollama mlx] note"),
+        ]);
+        assert!(s.contains("=== desktop://logs/agent-42 ==="));
+        assert!(s.contains("=== desktop://memory/drawer/123 ==="));
+        assert!(s.contains("two errors at 14:02"));
+    }
+
+    #[test]
+    fn concat_snippets_truncates_at_cap_with_sentinel() {
+        let big = "x".repeat(SUMMARY_INPUT_CAP_BYTES * 2);
+        let s = concat_snippets(&[snippet("desktop://huge", &big)]);
+        assert!(s.len() <= SUMMARY_INPUT_CAP_BYTES + 64); // sentinel slack
+        assert!(s.contains("input truncated"));
+    }
+
+    #[test]
+    fn augment_request_with_summary_prepends_block_when_no_prior_system() {
+        let r = SamplingRequest {
+            messages: vec![user("hi")],
+            model_preferences: None,
+            system_prompt: None,
+            max_tokens: None,
+            stop_sequences: vec![],
+            temperature: None,
+            include_context: Some(IncludeContext::ThisServer),
+            meta: None,
+        };
+        let out = augment_request_with_summary(r, "logs are noisy");
+        let sys = out.system_prompt.as_deref().unwrap();
+        assert!(sys.contains("[host-injected resource summary"));
+        assert!(sys.contains("logs are noisy"));
+        assert!(sys.contains("ThisServer"));
+    }
+
+    #[test]
+    fn augment_request_with_summary_keeps_prior_system_below_summary() {
+        let r = SamplingRequest {
+            messages: vec![user("hi")],
+            model_preferences: None,
+            system_prompt: Some("you are terse".into()),
+            max_tokens: None,
+            stop_sequences: vec![],
+            temperature: None,
+            include_context: Some(IncludeContext::AllServers),
+            meta: None,
+        };
+        let out = augment_request_with_summary(r, "all good");
+        let sys = out.system_prompt.unwrap();
+        let summary_pos = sys.find("[host-injected").unwrap();
+        let user_pos = sys.find("you are terse").unwrap();
+        assert!(
+            summary_pos < user_pos,
+            "summary block must precede the user-supplied system prompt"
+        );
+    }
+
+    #[test]
+    fn build_summary_request_has_depth_one() {
+        let r = build_summary_request("=== uri ===\ncontent");
+        assert_eq!(r.meta.unwrap().sampling_depth, 1);
+        assert!(r.system_prompt.unwrap().contains("terse summariser"));
+    }
+
+    /// Stub provider for include-context flow tests.
+    struct StubProvider {
+        snapshots: Vec<ResourceSnippet>,
+    }
+    impl ResourceProvider for StubProvider {
+        fn snapshot(&self, _scope: IncludeContext) -> Vec<ResourceSnippet> {
+            self.snapshots.clone()
+        }
+    }
+
+    fn handler_with_provider(snippets: Vec<ResourceSnippet>) -> LiteLlmSamplingHandler {
+        LiteLlmSamplingHandler {
+            endpoint: "http://127.0.0.1:1/never".into(),
+            master_key: "x".into(),
+            catalog: default_catalog(),
+            host_ram_gb: 64,
+            client: reqwest::blocking::Client::builder()
+                .timeout(Duration::from_millis(50))
+                .build()
+                .unwrap(),
+            observer: None,
+            resource_provider: Some(Arc::new(StubProvider {
+                snapshots: snippets,
+            })),
+            summary_model: DEFAULT_SUMMARY_MODEL.into(),
+        }
+    }
+
+    #[test]
+    fn maybe_inject_context_passthrough_when_no_includeContext() {
+        let h = handler_with_provider(vec![snippet("u", "c")]);
+        let r = req(0, None);
+        let augmented = h.maybe_inject_context(r.clone());
+        // include_context = None → unchanged
+        assert!(augmented.system_prompt.is_none());
+    }
+
+    #[test]
+    fn maybe_inject_context_passthrough_when_provider_empty() {
+        let h = handler_with_provider(vec![]);
+        let mut r = req(0, None);
+        r.include_context = Some(IncludeContext::ThisServer);
+        let augmented = h.maybe_inject_context(r);
+        // No snippets to summarise → unchanged.
+        assert!(augmented.system_prompt.is_none());
+    }
+
+    #[test]
+    fn maybe_inject_context_passthrough_when_summary_call_fails() {
+        // Provider returns snippets but the summary lane points at
+        // an unreachable endpoint → do_call returns Err →
+        // maybe_inject_context falls through with the request
+        // unchanged. The route layer then runs the original prompt.
+        let h = handler_with_provider(vec![snippet("u", "c")]);
+        let mut r = req(0, None);
+        r.include_context = Some(IncludeContext::ThisServer);
+        let prior_system = r.system_prompt.clone();
+        let augmented = h.maybe_inject_context(r);
+        assert_eq!(augmented.system_prompt, prior_system);
+    }
+
+    #[test]
+    fn include_context_none_does_not_inject() {
+        assert!(!IncludeContext::None.injects());
+        assert!(IncludeContext::ThisServer.injects());
+        assert!(IncludeContext::AllServers.injects());
     }
 
     #[test]

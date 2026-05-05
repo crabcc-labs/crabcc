@@ -1296,6 +1296,7 @@ fn run_test_sampling(tx: &flume::Sender<AppEvent>) -> anyhow::Result<String> {
         max_tokens: Some(64),
         stop_sequences: vec!["</think>".into()],
         temperature: Some(0.2),
+        include_context: None,
         meta: Some(SamplingMeta { sampling_depth: 0 }),
     };
 
