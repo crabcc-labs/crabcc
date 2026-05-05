@@ -524,6 +524,58 @@ fn tools_def_symbol() -> Vec<Value> {
             }),
             &[],
         ),
+        tool_schema(
+            "read",
+            "Outline-stub-aware file read. Cache key: (path, session_id) in \
+             memory.db's session_reads table. First read in a session: full \
+             content. Subsequent reads on same (path, session_id): outline \
+             stub (~30x cheaper) — unless mtime or content_hash drift, which \
+             invalidates the cache. Modes: `auto` (default) | `full` | `stub` \
+             | `entropy`. `entropy` filters lines below `threshold` bits/char \
+             (default 2.5) — useful for log tails / generated bundles.",
+            json!({
+                "path": str_field("repo-relative or absolute file path"),
+                "mode": {
+                    "type": "string",
+                    "enum": ["auto", "full", "stub", "entropy"],
+                    "description": "Read mode. Default: auto."
+                },
+                "session_id": str_field(
+                    "Cache scope. When omitted, reads $CRABCC_SESSION_ID; \
+                     when both empty, caching is bypassed and full content \
+                     is always returned."
+                ),
+                "threshold": {
+                    "type": "number",
+                    "description": "Shannon-entropy threshold (bits/char) for \
+                                    `mode=entropy`. Default 2.5."
+                },
+            }),
+            &["path"],
+        ),
+        tool_schema(
+            "ctx",
+            "Meta-tool: dispatch any other crabcc tool by name. Lets the \
+             agent call `ctx(tool='sym', args={name: 'Foo'})` instead of \
+             tracking 25 separate tool definitions. The model sees `ctx` + a \
+             handful of named tools and can compose calls dynamically. \
+             Equivalent to invoking the named tool directly — same args, \
+             same response shape.",
+            json!({
+                "tool": str_field(
+                    "Name of the tool to invoke (e.g. `sym`, `refs`, `read`, \
+                     `outline`). Memory tools are namespaced as \
+                     `memory.<op>` and accepted with or without the prefix."
+                ),
+                "args": {
+                    "type": "object",
+                    "description": "Argument object passed verbatim to the \
+                                    named tool's input schema.",
+                    "additionalProperties": true,
+                },
+            }),
+            &["tool"],
+        ),
     ]
 }
 
@@ -598,6 +650,22 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
         ));
     }
 
+    // `ctx` is a meta-tool that dispatches by `tool` arg name. Re-enter
+    // dispatch_tool_inner with the named tool + unwrapped args so the
+    // response shape matches calling that tool directly. Guard against
+    // a `ctx` arg pointing at `ctx` itself — that's an infinite loop.
+    if tool == "ctx" {
+        let inner_tool = args
+            .get("tool")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("ctx: missing `tool` arg"))?;
+        if inner_tool == "ctx" {
+            return Err(anyhow::anyhow!("ctx: cannot dispatch ctx -> ctx"));
+        }
+        let inner_args = args.get("args").cloned().unwrap_or_else(|| json!({}));
+        return dispatch_tool_inner(inner_tool, inner_args, root, dev);
+    }
+
     // Memory tools open .crabcc/memory.db directly via Palace; no symbol
     // Store needed. Route them first so we don't pay Store::open on a
     // memory-only call.
@@ -659,6 +727,23 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
         "outline" => {
             let r = outline::outline(&store, arg_str(&args, "file")?)?;
             Ok(serde_json::to_string(&r)?)
+        }
+        "read" => {
+            let path = std::path::PathBuf::from(arg_str(&args, "path")?);
+            let mode_raw = args.get("mode").and_then(|v| v.as_str()).unwrap_or("auto");
+            let mode = crabcc_memory::read::ReadMode::parse(mode_raw)?;
+            let session_id = args
+                .get("session_id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .filter(|s| !s.trim().is_empty());
+            let threshold = args
+                .get("threshold")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(2.5);
+            let value =
+                crabcc_memory::read::compute(root, &store, path, mode, session_id, threshold)?;
+            Ok(serde_json::to_string(&value)?)
         }
         "files" => {
             let under = args.get("under").and_then(|v| v.as_str());
@@ -938,6 +1023,72 @@ mod tests {
         let content = resp["result"]["content"][0]["text"].as_str().unwrap();
         let parsed: Value = serde_json::from_str(content).unwrap();
         assert!(!parsed.as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn handle_tools_call_read_returns_full_on_first_call() {
+        let dir = fixture_root();
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": {
+                "name": "read",
+                "arguments": {
+                    "path": dir.path().join("hi.ts").display().to_string(),
+                    "session_id": "mcp-read-test"
+                }
+            }
+        });
+        let resp = handle(&req, dir.path());
+        let content = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(content).unwrap();
+        assert_eq!(parsed["mode"], "full", "first read must be full");
+        assert!(parsed["content"]
+            .as_str()
+            .unwrap()
+            .contains("function hello"));
+    }
+
+    #[test]
+    fn handle_tools_call_ctx_dispatches_to_named_tool() {
+        // ctx(tool="sym", args={name: "hello"}) must produce the same
+        // response shape as a direct sym call.
+        let dir = fixture_root();
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 8,
+            "method": "tools/call",
+            "params": {
+                "name": "ctx",
+                "arguments": { "tool": "sym", "args": { "name": "hello" } }
+            }
+        });
+        let resp = handle(&req, dir.path());
+        let content = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(content).unwrap();
+        let arr = parsed.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["name"], "hello");
+    }
+
+    #[test]
+    fn handle_tools_call_ctx_rejects_self_dispatch() {
+        let dir = fixture_root();
+        let req = json!({
+            "jsonrpc": "2.0",
+            "id": 9,
+            "method": "tools/call",
+            "params": {
+                "name": "ctx",
+                "arguments": { "tool": "ctx", "args": {} }
+            }
+        });
+        let resp = handle(&req, dir.path());
+        assert!(
+            resp["error"].is_object() || resp["result"]["isError"].as_bool().unwrap_or(false),
+            "expected error on ctx → ctx self-dispatch, got: {resp}"
+        );
     }
 
     #[test]

@@ -137,6 +137,96 @@ paths:
                 type: array
                 items: {$ref: "#/components/schemas/Symbol"}
 
+  /tools/read:
+    post:
+      tags: [symbol-index]
+      operationId: read
+      summary: Outline-stub-aware file read (per-session cache).
+      description: |
+        Cache key: `(path, session_id)` in memory.db's `session_reads`
+        table. First read in a session returns full content; subsequent
+        reads on the same `(path, session_id)` return an outline-shaped
+        JSON stub — unless `mtime` or `content_hash` drift, which
+        invalidates the cache.
+
+        Modes: `auto` (default) | `full` | `stub` | `entropy`.
+        `entropy` filters lines below `threshold` bits/char (default 2.5)
+        — useful for log tails / generated bundles.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path]
+              properties:
+                path:
+                  type: string
+                  description: Repo-relative or absolute file path.
+                mode:
+                  type: string
+                  enum: [auto, full, stub, entropy]
+                  description: Read mode. Default `auto`.
+                session_id:
+                  type: string
+                  description: |
+                    Cache scope. When omitted, reads `$CRABCC_SESSION_ID`;
+                    when both are empty, caching is bypassed and full
+                    content is always returned.
+                threshold:
+                  type: number
+                  description: |
+                    Shannon-entropy threshold (bits/char) for
+                    `mode=entropy`. Default 2.5.
+      responses:
+        "200":
+          description: |
+            One of: `{mode: "full", content, ...}`, `{mode: "stub",
+            outline, ...}`, or `{mode: "entropy", content, kept_lines,
+            dropped_lines, ...}`.
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /tools/ctx:
+    post:
+      tags: [meta]
+      operationId: ctx
+      summary: Meta-tool — dispatch any other crabcc tool by name.
+      description: |
+        Lets the agent call `ctx(tool="sym", args={name: "Foo"})` instead
+        of tracking 25 separate tool definitions. Equivalent to invoking
+        the named tool directly — same args, same response shape.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tool]
+              properties:
+                tool:
+                  type: string
+                  description: |
+                    Name of the tool to invoke (e.g. `sym`, `refs`,
+                    `read`, `outline`). Memory tools use the
+                    `memory.<op>` form.
+                args:
+                  type: object
+                  description: |
+                    Argument object passed verbatim to the named tool's
+                    input schema.
+                  additionalProperties: true
+      responses:
+        "200":
+          description: |
+            The named tool's response shape, unmodified.
+          content:
+            application/json:
+              schema:
+                type: object
+
   /tools/files:
     post:
       tags: [symbol-index]
