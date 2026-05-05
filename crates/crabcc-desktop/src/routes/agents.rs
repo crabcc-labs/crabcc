@@ -544,7 +544,7 @@ impl Render for AgentsRoute {
                                 .into_any_element(),
                             Some(Ok(body)) if body.is_empty() => div()
                                 .text_color(muted)
-                                .child(SharedString::new_static("(empty)"))
+                                .child(SharedString::new_static("no output yet"))
                                 .into_any_element(),
                             Some(Ok(body)) => div()
                                 .text_xs()
