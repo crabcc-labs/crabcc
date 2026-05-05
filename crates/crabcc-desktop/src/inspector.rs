@@ -331,6 +331,105 @@ pub fn seed_demo_events(state: &mut crate::state::AppState) {
     }
 }
 
+/// `SamplingObserver` impl that ships sampling lifecycle events
+/// into the inspector ring via the existing `AppEvent` flume
+/// channel. Constructed once at app startup and shared across the
+/// sampling handler.
+///
+/// Two `CallEvent`s per sampling round-trip (per spec
+/// `MCP-INSPECTOR.md` §9): a `Pending` request row plus a
+/// completed `Ok`/`Err` row whose `parent_id` points at the
+/// request. The completed row carries `latency_ms`; the request
+/// row carries the full params blob.
+pub struct InspectorSamplingObserver {
+    tx: flume::Sender<crate::state::AppEvent>,
+}
+
+impl InspectorSamplingObserver {
+    pub fn new(tx: flume::Sender<crate::state::AppEvent>) -> Self {
+        Self { tx }
+    }
+}
+
+impl crate::sampling::SamplingObserver for InspectorSamplingObserver {
+    fn on_request(
+        &self,
+        request: &crate::sampling::SamplingRequest,
+        chosen_model: &str,
+    ) -> u64 {
+        let id = CallEvent::next_id();
+        let params = serde_json::to_string_pretty(request).unwrap_or_else(|_| "{}".into());
+        let evt = CallEvent {
+            id,
+            ts_ms: now_ms(),
+            server: SharedString::new_static("self"),
+            direction: Direction::In,
+            method: SharedString::new_static("sampling/createMessage"),
+            // Surface the chosen model in the inspector's tool-name
+            // column so the row reads
+            // "sampling/createMessage · ollama/qwen3.5:35b…".
+            tool_name: Some(SharedString::from(chosen_model.to_string())),
+            status: Status::Pending,
+            latency_ms: None,
+            params_pretty: truncate_inline(params),
+            result_pretty: None,
+            parent_id: None,
+        };
+        // Best-effort: drop on closed channel (gpui pump gone,
+        // app shutting down). Instrumentation must never break the
+        // call path.
+        let _ = self
+            .tx
+            .send(crate::state::AppEvent::InspectorRecord(evt));
+        id
+    }
+
+    fn on_response(
+        &self,
+        request_id: u64,
+        result: &Result<crate::sampling::SamplingResponse, crate::sampling::SamplingError>,
+        latency_ms: u32,
+    ) {
+        let id = CallEvent::next_id();
+        let (status, result_pretty) = match result {
+            Ok(r) => {
+                let body = serde_json::to_string_pretty(r).unwrap_or_else(|_| "{}".into());
+                (Status::Ok, Some(truncate_inline(body)))
+            }
+            Err(e) => (
+                Status::Err {
+                    code: e.kind.code(),
+                    msg: SharedString::from(e.message.clone()),
+                },
+                None,
+            ),
+        };
+        let evt = CallEvent {
+            id,
+            ts_ms: now_ms(),
+            server: SharedString::new_static("self"),
+            direction: Direction::Out,
+            method: SharedString::new_static("sampling/createMessage"),
+            tool_name: None,
+            status,
+            latency_ms: Some(latency_ms),
+            params_pretty: SharedString::new_static("(see parent request row)"),
+            result_pretty,
+            parent_id: Some(request_id),
+        };
+        let _ = self
+            .tx
+            .send(crate::state::AppEvent::InspectorRecord(evt));
+    }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 /// Truncate `s` to [`MAX_PAYLOAD_INLINE`] bytes on a UTF-8 char
 /// boundary, appending an `… [N more bytes]` sentinel when the
 /// cap fires. Returns a `SharedString` so callers don't pay an

@@ -132,6 +132,13 @@ pub enum AppEvent {
         Result<String, String>,
     ),
     Sse(SseEvent),
+    /// One observation for the MCP inspector ring. Posted from
+    /// background instrumentation (e.g. the sampling-offer
+    /// handler's `SamplingObserver` impl) over the same flume
+    /// channel everything else uses, so the gpui-side mutation
+    /// (`AppState::record_inspector_event`) stays single-threaded.
+    /// See `crate::inspector::InspectorSamplingObserver`.
+    InspectorRecord(crate::inspector::CallEvent),
 }
 
 /// One-slot result of the most recent `agent_log` fetch. Carries the
@@ -597,6 +604,14 @@ impl AppState {
     /// `entity.update(cx, |this, cx| { this.apply(evt); cx.notify(); })`.
     pub fn apply(&mut self, evt: AppEvent) {
         match evt {
+            // Inspector observations go straight into the ring.
+            // No notify-bookkeeping or telemetry side effects —
+            // the route observes `AppState` and re-renders on the
+            // outer `cx.notify()` in `pump_events`.
+            AppEvent::InspectorRecord(call_event) => {
+                self.record_inspector_event(call_event);
+                return;
+            }
             AppEvent::Initial(boxed) => {
                 let p = *boxed;
                 // Collect prefetch error sources so we can surface
