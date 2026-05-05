@@ -30,6 +30,31 @@ impl Severity {
         }
     }
 
+    /// Stable integer discriminant — used by the `_crab_event.severity_int`
+    /// column (#488). Order MUST stay monotonic (debug<info<warn<error<crash)
+    /// so the cleanup module's `severity_int < ?` filters keep working.
+    /// Adding a new variant ALWAYS goes at the end with the next value.
+    pub fn as_i64(self) -> i64 {
+        match self {
+            Self::Debug => 0,
+            Self::Info => 1,
+            Self::Warn => 2,
+            Self::Error => 3,
+            Self::Crash => 4,
+        }
+    }
+
+    pub fn from_i64(v: i64) -> Option<Self> {
+        Some(match v {
+            0 => Self::Debug,
+            1 => Self::Info,
+            2 => Self::Warn,
+            3 => Self::Error,
+            4 => Self::Crash,
+            _ => return None,
+        })
+    }
+
     /// Parse from the lowercase string form. Named `parse_str` (not
     /// `from_str`) to avoid clashing with `std::str::FromStr`'s method
     /// signature — we don't want to commit to its `Err` associated type
@@ -76,16 +101,24 @@ pub fn insert(
     // would be a ~3-5× regression on the watcher's per-tick path.
     // The cache is per-Connection so the WatchHandle's dedicated
     // Godfather handle pays the prepare cost exactly once.
+    //
+    // Writes set BOTH columns. The legacy TEXT `severity` column has
+    // a NOT NULL constraint we can't drop without a full SQLite
+    // table-rebuild dance, so we write an empty string sentinel —
+    // SQLite stores '' as a single type-tag byte, so the combined
+    // (severity, severity_int) cost is ~2 bytes per row vs ~5-7 for
+    // the old "debug"/"info"/… literals (#488). Reads prefer
+    // `severity_int` and never look at `severity` for new rows.
     let mut stmt = conn.prepare_cached(
-        "INSERT INTO _crab_event(ts, session_id, severity, source, category, message, payload)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        "INSERT INTO _crab_event(ts, session_id, severity, severity_int, source, category, message, payload)
+         VALUES (?1, ?2, '', ?3, ?4, ?5, ?6, ?7)",
     )?;
     let ts = now_secs();
     let payload_str = payload.map(serde_json::to_string).transpose()?;
     stmt.execute(params![
         ts as i64,
         session_id,
-        severity.as_str(),
+        severity.as_i64(),
         source,
         category,
         message,
@@ -96,48 +129,71 @@ pub fn insert(
 
 /// Recent events, newest first. Optional severity floor (`Some(Severity::Warn)`
 /// returns warn / error / crash; `None` returns everything).
+///
+/// Filters branch on the new `severity_int` column when it's populated
+/// (every post-migration row), falling back to the legacy `severity`
+/// TEXT column for pre-migration rows. The COALESCE keeps the read
+/// path branch-free per row.
 pub fn list_recent(
     conn: &Connection,
     limit: usize,
     min_severity: Option<Severity>,
 ) -> Result<Vec<Event>> {
-    let sev_clause = min_severity
-        .map(|s| match s {
-            Severity::Debug => "",
-            Severity::Info => " WHERE severity != 'debug'",
-            Severity::Warn => " WHERE severity IN ('warn','error','crash')",
-            Severity::Error => " WHERE severity IN ('error','crash')",
-            Severity::Crash => " WHERE severity = 'crash'",
-        })
-        .unwrap_or("");
+    // Pre-baked WHERE clauses — no per-call format!() allocation
+    // (#488: const slices over runtime branching). Filters branch
+    // on `severity_int` for new rows and fall back to the legacy
+    // TEXT column for any pre-migration rows where `severity_int`
+    // is NULL. (schema::apply backfills on every open, so the OR
+    // arm is theoretical — kept for safety on partial-migration
+    // DBs produced by an interrupted upgrade.)
+    let sev_clause: &str = match min_severity {
+        None | Some(Severity::Debug) => "",
+        Some(Severity::Info) => {
+            " WHERE severity_int >= 1 \
+              OR (severity_int IS NULL AND severity != '' AND severity != 'debug')"
+        }
+        Some(Severity::Warn) => {
+            " WHERE severity_int >= 2 \
+              OR (severity_int IS NULL AND severity IN ('warn','error','crash'))"
+        }
+        Some(Severity::Error) => {
+            " WHERE severity_int >= 3 \
+              OR (severity_int IS NULL AND severity IN ('error','crash'))"
+        }
+        Some(Severity::Crash) => {
+            " WHERE severity_int = 4 \
+              OR (severity_int IS NULL AND severity = 'crash')"
+        }
+    };
+    // SELECT both severity columns; COALESCE-decode below.
     let sql = format!(
-        "SELECT id, ts, session_id, severity, source, category, message, payload
+        "SELECT id, ts, session_id, severity_int, severity, source, category, message, payload
          FROM _crab_event{sev_clause}
          ORDER BY ts DESC, id DESC
          LIMIT ?1"
     );
     let mut stmt = conn.prepare_cached(&sql)?;
     let rows = stmt.query_map(params![limit as i64], |row| {
-        // Borrow the severity column as &str instead of allocating a
-        // String per row — `Severity::parse_str` only needs a slice
-        // (#488: skip-String-clone). Falls back to Info if the row
-        // has a value the enum doesn't know (forward-compat for a
-        // future severity bump).
-        let severity = row
-            .get_ref(3)?
-            .as_str()
-            .ok()
-            .and_then(Severity::parse_str)
-            .unwrap_or(Severity::Info);
-        let payload_str: Option<String> = row.get(7)?;
+        // INT path first: 1-byte read, no allocation. Fall through
+        // to the legacy TEXT column for pre-migration rows.
+        let severity = match row.get::<_, Option<i64>>(3)? {
+            Some(v) => Severity::from_i64(v).unwrap_or(Severity::Info),
+            None => row
+                .get_ref(4)?
+                .as_str()
+                .ok()
+                .and_then(Severity::parse_str)
+                .unwrap_or(Severity::Info),
+        };
+        let payload_str: Option<String> = row.get(8)?;
         Ok(Event {
             id: row.get(0)?,
             ts: row.get::<_, i64>(1)? as u64,
             session_id: row.get(2)?,
             severity,
-            source: row.get(4)?,
-            category: row.get(5)?,
-            message: row.get(6)?,
+            source: row.get(5)?,
+            category: row.get(6)?,
+            message: row.get(7)?,
             payload: payload_str.and_then(|s| serde_json::from_str(&s).ok()),
         })
     })?;

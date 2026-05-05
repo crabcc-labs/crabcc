@@ -102,8 +102,16 @@ pub fn prune_now(conn: &Connection, retention: &Retention) -> Result<PruneStats>
         "DELETE FROM _crab_resource_sample WHERE ts < ?1",
         params![resource_cutoff],
     )?;
+    // Filter on `severity_int` first (1-byte INTEGER comparison) and
+    // fall back to the legacy TEXT column for any pre-migration rows
+    // schema::apply hasn't backfilled yet (#488). Empty-string `severity`
+    // is the new-row sentinel — it's never 'crash', so ignoring the
+    // TEXT branch when severity_int is set is correct.
     let events_deleted = conn.execute(
-        "DELETE FROM _crab_event WHERE ts < ?1 AND severity != 'crash'",
+        "DELETE FROM _crab_event
+         WHERE ts < ?1
+           AND (severity_int IS NOT NULL AND severity_int != 4
+                OR severity_int IS NULL AND severity != 'crash')",
         params![event_cutoff],
     )?;
     let crashes_deleted = conn.execute(

@@ -16,6 +16,7 @@ use std::hint::black_box;
 use std::time::Duration;
 
 use crabcc_godfather::event::Severity;
+use crabcc_godfather::godfather::ResourceSample;
 use crabcc_godfather::{Godfather, InstallSource};
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 
@@ -54,6 +55,32 @@ fn bench_resource_sample(c: &mut Criterion) {
                 for _ in 0..1_000 {
                     g.record_resource_sample(&sid, 256, 12.5, 1024).unwrap();
                 }
+            },
+            BatchSize::SmallInput,
+        );
+    });
+
+    // The batched API the WatchHandle uses (#488). Same 1 000-insert
+    // workload, one transaction. Expected: most of the time vanishes
+    // because the per-insert COMMIT / fsync is amortised across the
+    // whole batch.
+    group.bench_function("1000_inserts_batched", |b| {
+        b.iter_batched(
+            || {
+                let (g, dir) = fresh_godfather();
+                let sid = g.record_session_start("bench", "0", 1234).unwrap();
+                let samples: Vec<ResourceSample> = (0..1_000)
+                    .map(|_| ResourceSample {
+                        ts: 1_700_000_000,
+                        rss_mb: 256,
+                        cpu_pct: 12.5,
+                        vsize_mb: 1024,
+                    })
+                    .collect();
+                (g, dir, sid, samples)
+            },
+            |(g, _dir, sid, samples)| {
+                g.record_resource_samples(&sid, &samples).unwrap();
             },
             BatchSize::SmallInput,
         );

@@ -48,6 +48,17 @@ impl InstallSource {
     }
 }
 
+/// One element of a batched `record_resource_samples` call. Cheap to
+/// construct in a tight loop; the watcher buffers a small Vec of
+/// these between flushes.
+#[derive(Debug, Clone, Copy)]
+pub struct ResourceSample {
+    pub ts: u64,
+    pub rss_mb: u64,
+    pub cpu_pct: f32,
+    pub vsize_mb: u64,
+}
+
 /// Shared facade across the lib + the CLI binary.
 pub struct Godfather {
     conn: Connection,
@@ -216,6 +227,43 @@ impl Godfather {
             cpu_pct as f64,
             vsize_mb as i64
         ])?;
+        Ok(())
+    }
+
+    /// Bulk-insert N samples in a single transaction. Issue #488:
+    /// per-call SQLite COMMIT (fsync) is the dominant cost on the
+    /// watcher's per-tick path; coalescing 6 samples into one
+    /// transaction cuts the amortised cost by ~5×. Caller is expected
+    /// to buffer samples in memory between flushes.
+    ///
+    /// Slice form rather than `IntoIterator` so the caller decides
+    /// the buffer shape — `WatchHandle` uses a small `Vec` it
+    /// re-clears per flush, keeping allocations stable.
+    pub fn record_resource_samples(
+        &self,
+        session_id: &str,
+        samples: &[ResourceSample],
+    ) -> Result<()> {
+        if !self.telemetry_enabled || samples.is_empty() {
+            return Ok(());
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT INTO _crab_resource_sample(session_id, ts, rss_mb, cpu_pct, vsize_mb)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            for s in samples {
+                stmt.execute(rusqlite::params![
+                    session_id,
+                    s.ts as i64,
+                    s.rss_mb as i64,
+                    s.cpu_pct as f64,
+                    s.vsize_mb as i64
+                ])?;
+            }
+        }
+        tx.commit()?;
         Ok(())
     }
 
@@ -399,6 +447,49 @@ mod tests {
         assert!(id > 0);
         let evts = g.list_recent_events(10, None).unwrap();
         assert_eq!(evts.len(), 1);
+    }
+
+    #[test]
+    fn batched_resource_samples_landed_atomically() {
+        let (g, _d) = open_godfather();
+        let sid = g.record_session_start("viz", "3.0", 4321).unwrap();
+        let samples: Vec<ResourceSample> = (0u64..50)
+            .map(|i| ResourceSample {
+                ts: 1_700_000_000 + i,
+                rss_mb: 100 + i,
+                cpu_pct: 5.0 + i as f32,
+                vsize_mb: 200 + i,
+            })
+            .collect();
+        g.record_resource_samples(&sid, &samples).unwrap();
+
+        let count: i64 = g
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM _crab_resource_sample WHERE session_id = ?1",
+                rusqlite::params![sid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 50);
+    }
+
+    #[test]
+    fn batched_resource_samples_empty_slice_is_noop() {
+        let (g, _d) = open_godfather();
+        let sid = g.record_session_start("viz", "3.0", 1).unwrap();
+        // Must not start a transaction for an empty batch — would
+        // pay a write-lock cost for nothing.
+        g.record_resource_samples(&sid, &[]).unwrap();
+        let count: i64 = g
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM _crab_resource_sample WHERE session_id = ?1",
+                rusqlite::params![sid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
     }
 
     #[test]

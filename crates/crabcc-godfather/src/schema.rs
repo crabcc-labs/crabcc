@@ -109,6 +109,58 @@ pub fn apply(conn: &Connection) -> Result<()> {
         rusqlite::params![SCHEMA_VERSION.to_string()],
     )?;
 
+    // Additive migration #488 — add `severity_int` so new event rows
+    // store severity as a 1-byte INTEGER instead of a 5-7 byte TEXT.
+    // The TEXT column is kept for back-compat reads of pre-migration
+    // rows; new writes set `severity_int` and leave `severity` NULL,
+    // which SQLite stores as a single type tag (~1 byte).
+    add_column_if_missing(conn, "_crab_event", "severity_int", "INTEGER")?;
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_event_severity_int \
+         ON _crab_event(severity_int, ts DESC);",
+    )?;
+    // One-time backfill — idempotent because the WHERE clause skips
+    // any row that already has `severity_int`. Cheap on small tables;
+    // becomes a no-op once every row has been seen.
+    conn.execute(
+        "UPDATE _crab_event
+         SET severity_int = CASE severity
+            WHEN 'debug' THEN 0
+            WHEN 'info'  THEN 1
+            WHEN 'warn'  THEN 2
+            WHEN 'error' THEN 3
+            WHEN 'crash' THEN 4
+            ELSE NULL
+         END
+         WHERE severity_int IS NULL AND severity IS NOT NULL",
+        [],
+    )?;
+
+    Ok(())
+}
+
+/// Idempotent ALTER — checks `pragma_table_info` before adding so a
+/// re-open after the first migration doesn't re-execute the ALTER
+/// (which would error). Mirrors the pattern in
+/// `crabcc-core::store::Store::open`.
+fn add_column_if_missing(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+    type_decl: &str,
+) -> Result<()> {
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+        rusqlite::params![table, column],
+        |row| row.get(0),
+    )?;
+    if exists == 0 {
+        // No params binding — table / column / type_decl are
+        // identifiers, not values.
+        conn.execute_batch(&format!(
+            "ALTER TABLE {table} ADD COLUMN {column} {type_decl};"
+        ))?;
+    }
     Ok(())
 }
 
