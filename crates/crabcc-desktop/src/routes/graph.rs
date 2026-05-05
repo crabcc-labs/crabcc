@@ -753,6 +753,9 @@ fn render_node_drawer(
         );
         for n in visible {
             let row_view = view.clone();
+            let row_id = id_for(n);
+            let row_tooltip: SharedString =
+                SharedString::from(format!("Open {row_id} in detail panel"));
             list = list.child(
                 div()
                     .id(SharedString::from(format!("graph-drawer-edge-{title}-{n}")))
@@ -761,7 +764,8 @@ fn render_node_drawer(
                     .text_xs()
                     .cursor_pointer()
                     .hover(move |s| s.text_color(primary))
-                    .child(id_for(n))
+                    .tooltip(move |window, cx| Tooltip::new(row_tooltip.clone()).build(window, cx))
+                    .child(row_id)
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         cx.stop_propagation();
                         row_view.update(cx, |this, cx| {
