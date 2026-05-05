@@ -515,17 +515,27 @@ impl Render for Shell {
         // Tooltip telegraphs the click target since the segment
         // itself doesn't carry a `→` hint (the foot bar should stay
         // visually quiet when nothing is happening).
-        let (services_color, services_label) = match state_for_brand.services_reachable() {
-            Some((up, total)) if up < total => (
-                badge_degraded,
-                SharedString::from(format!("services {up}/{total}")),
-            ),
-            Some((up, total)) => (
-                badge_running,
-                SharedString::from(format!("services {up}/{total}")),
-            ),
-            None => (muted, SharedString::new_static("services —")),
-        };
+        let (services_color, services_label, services_tooltip) =
+            match state_for_brand.services_reachable() {
+                Some((up, total)) if up < total => (
+                    badge_degraded,
+                    SharedString::from(format!("services {up}/{total}")),
+                    SharedString::from(format!(
+                        "View System — {} of {total} services unreachable",
+                        total - up
+                    )),
+                ),
+                Some((up, total)) => (
+                    badge_running,
+                    SharedString::from(format!("services {up}/{total}")),
+                    SharedString::from(format!("View System — all {total} services up")),
+                ),
+                None => (
+                    muted,
+                    SharedString::new_static("services —"),
+                    SharedString::new_static("View System — discovery still loading"),
+                ),
+            };
         let state_for_services_jump = self.state.clone();
         let services_segment: AnyElement = h_flex()
             .id("status-services")
@@ -535,7 +545,7 @@ impl Render for Shell {
             .rounded_md()
             .cursor_pointer()
             .hover(move |s| s.bg(hover_bg))
-            .tooltip(|window, cx| Tooltip::new("View System status").build(window, cx))
+            .tooltip(move |window, cx| Tooltip::new(services_tooltip.clone()).build(window, cx))
             .child(
                 div()
                     .text_color(services_color)
@@ -559,6 +569,14 @@ impl Render for Shell {
             (muted, "\u{25CB}")
         };
         let agents_label = SharedString::from(format!("agents {running}"));
+        let agents_tooltip: SharedString = if running > 0 {
+            SharedString::from(format!(
+                "View Agents — {running} running agent{}",
+                if running == 1 { "" } else { "s" }
+            ))
+        } else {
+            SharedString::new_static("View Agents — none running")
+        };
         let state_for_agents_jump = self.state.clone();
         let agents_segment: AnyElement = h_flex()
             .id("status-agents")
@@ -568,7 +586,7 @@ impl Render for Shell {
             .rounded_md()
             .cursor_pointer()
             .hover(move |s| s.bg(hover_bg))
-            .tooltip(|window, cx| Tooltip::new("View Agents").build(window, cx))
+            .tooltip(move |window, cx| Tooltip::new(agents_tooltip.clone()).build(window, cx))
             .child(
                 div()
                     .text_color(agents_color)
