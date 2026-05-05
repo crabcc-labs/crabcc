@@ -9,6 +9,7 @@ pub mod commands;
 pub mod dashboard;
 pub mod empty;
 pub mod graph;
+pub mod inspector;
 pub mod k_graph;
 pub mod knowledge;
 pub mod logs;

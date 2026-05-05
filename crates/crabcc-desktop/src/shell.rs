@@ -20,8 +20,8 @@ use crate::about::AboutModal;
 use crate::native;
 use crate::routes::{
     agents::AgentsRoute, commands::CommandsRoute, dashboard::DashboardHome,
-    k_graph::KnowledgeGraphRoute, knowledge::KnowledgeRoute, logs::LogsRoute, system::SystemRoute,
-    terminal::TerminalRoute, timeline::TimelineRoute,
+    inspector::InspectorRoute, k_graph::KnowledgeGraphRoute, knowledge::KnowledgeRoute,
+    logs::LogsRoute, system::SystemRoute, terminal::TerminalRoute, timeline::TimelineRoute,
 };
 use crate::settings::SettingsPanel;
 use crate::state::{AppState, Route};
@@ -37,6 +37,8 @@ pub struct Shell {
     knowledge: Entity<KnowledgeRoute>,
     commands: Entity<CommandsRoute>,
     timeline: Entity<TimelineRoute>,
+    /// MCP call inspector — see `routes::inspector`.
+    inspector: Entity<InspectorRoute>,
     k_graph: Entity<KnowledgeGraphRoute>,
     /// Embedded terminal — alacritty_terminal-backed shell session
     /// (issue #402). Lives across route switches so the user can
@@ -116,6 +118,9 @@ impl Shell {
         // it needs window. Same construction shape as the other
         // input-bearing routes.
         let timeline = cx.new(|cx| TimelineRoute::new(state.clone(), window, cx));
+        // InspectorRoute owns a filter TextInput, so it needs window —
+        // same construction shape as the other input-bearing routes.
+        let inspector = cx.new(|cx| InspectorRoute::new(state.clone(), window, cx));
         // KnowledgeGraphRoute is a stub today — no focusable widgets
         // because the canvas isn't rendered yet (server-side
         // `/api/memory/graph` blocks #297). Owns no TextInput, so
@@ -146,6 +151,7 @@ impl Shell {
             knowledge,
             commands,
             timeline,
+            inspector,
             k_graph,
             terminal,
             toasts,
@@ -520,6 +526,7 @@ impl Render for Shell {
             Route::Knowledge => self.knowledge.clone().into_any_element(),
             Route::Commands => self.commands.clone().into_any_element(),
             Route::Timeline => self.timeline.clone().into_any_element(),
+            Route::Inspector => self.inspector.clone().into_any_element(),
             Route::KnowledgeGraph => self.k_graph.clone().into_any_element(),
             Route::Terminal => self.terminal.clone().into_any_element(),
         };
