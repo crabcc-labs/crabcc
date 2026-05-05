@@ -19,8 +19,8 @@
 //! collapses the panel.
 
 use gpui::{
-    div, prelude::*, px, Context, Entity, Focusable, IntoElement, MouseButton, Render,
-    SharedString, Window,
+    div, prelude::*, px, ClipboardItem, Context, Entity, Focusable, IntoElement, MouseButton,
+    Render, SharedString, Window,
 };
 use gpui_component::{
     h_flex,
@@ -189,6 +189,7 @@ impl Render for AgentsRoute {
         let border = cx.theme().border;
         let success = cx.theme().success;
         let primary = cx.theme().primary;
+        let secondary = cx.theme().secondary;
 
         let state = self.state.read(cx);
         let total = state.agents.len();
@@ -483,20 +484,46 @@ impl Render for AgentsRoute {
                     // shows "(no prompt recorded)" so the user knows the
                     // launch path was the dry-run / legacy one rather
                     // than the agent failing silently.
-                    let prompt_text = if a.prompt_preview.trim().is_empty() {
+                    //
+                    // When a prompt is present, the row is click-to-copy
+                    // (raw prompt, no curly quotes). `cx.stop_propagation`
+                    // prevents the click bubbling into the surrounding
+                    // card click that toggles the log-tail panel.
+                    let prompt_empty = a.prompt_preview.trim().is_empty();
+                    let prompt_text = if prompt_empty {
                         SharedString::new_static("(no prompt recorded)")
                     } else {
                         SharedString::from(format!("\u{201C}{}\u{201D}", a.prompt_preview.clone()))
                     };
-                    let prompt_color = if a.prompt_preview.trim().is_empty() {
-                        muted
+                    let prompt_color = if prompt_empty { muted } else { primary };
+                    let prompt_row: gpui::AnyElement = if prompt_empty {
+                        div()
+                            .text_color(prompt_color)
+                            .child(prompt_text)
+                            .into_any_element()
                     } else {
-                        primary
+                        let id: gpui::ElementId =
+                            SharedString::from(format!("agents-prompt-copy-{}", a.id)).into();
+                        let copy_payload = a.prompt_preview.clone();
+                        div()
+                            .id(id)
+                            .px_1()
+                            .rounded_md()
+                            .text_color(prompt_color)
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(secondary))
+                            .tooltip(|window, cx| {
+                                Tooltip::new("Click to copy prompt").build(window, cx)
+                            })
+                            .child(prompt_text)
+                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                cx.stop_propagation();
+                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                    copy_payload.to_string(),
+                                ));
+                            })
+                            .into_any_element()
                     };
-                    let prompt_row: gpui::AnyElement = div()
-                        .text_color(prompt_color)
-                        .child(prompt_text)
-                        .into_any_element();
 
                     // Expanded log-tail panel — only rendered when this
                     // card is the selection. Reads from `state.agent_log`
