@@ -600,6 +600,11 @@ fn wing_section(
         let (incoming, outgoing) = edges.get(&id).copied().unwrap_or((0, 0));
         let row_view = view.clone();
         let id_for_click = id.clone();
+        let row_tooltip: SharedString = if is_selected {
+            SharedString::from(format!("Close drawer {} details", d.title))
+        } else {
+            SharedString::from(format!("Open drawer {}", d.title))
+        };
         rows = rows.child(
             h_flex()
                 .id(SharedString::from(format!(
@@ -623,6 +628,7 @@ fn wing_section(
                 })
                 .cursor_pointer()
                 .hover(move |s| s.border_color(wing_col))
+                .tooltip(move |window, cx| Tooltip::new(row_tooltip.clone()).build(window, cx))
                 .child(
                     div()
                         .min_w(px(220.0))
