@@ -271,6 +271,8 @@ impl Render for AgentsRoute {
                     .border_color(if is_active { primary } else { border })
                     .rounded_md()
                     .text_color(if is_active { foreground } else { muted })
+                    .cursor_pointer()
+                    .hover(move |s| s.border_color(primary))
                     .child(SharedString::new_static(f.label()))
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         entity.update(cx, |this, cx| {
@@ -416,6 +418,11 @@ impl Render for AgentsRoute {
                         .border_color(border)
                         .rounded_md()
                         .text_color(muted)
+                        .cursor_pointer()
+                        .hover(move |s| s.border_color(primary).text_color(primary))
+                        .tooltip(|window, cx| {
+                            Tooltip::new("Open Timeline filtered to this agent").build(window, cx)
+                        })
                         .child(SharedString::new_static("\u{2192} Timeline"))
                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                             cx.stop_propagation();
@@ -504,6 +511,11 @@ impl Render for AgentsRoute {
                             .border_color(border)
                             .rounded_md()
                             .text_color(primary)
+                            .cursor_pointer()
+                            .hover(move |s| s.border_color(primary))
+                            .tooltip(|window, cx| {
+                                Tooltip::new("Re-fetch the log tail").build(window, cx)
+                            })
                             .child(SharedString::new_static("Refresh"))
                             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                 // Stop the click from bubbling to the
