@@ -461,23 +461,64 @@ impl Render for AgentsRoute {
                     // root: —" for any agent whose meta.json hadn't
                     // landed yet. Now each chip is conditional and we
                     // drop the row entirely if every chip is missing.
-                    let mut meta_chips: Vec<SharedString> = Vec::with_capacity(4);
+                    //
+                    // The root chip is special: shows the leaf only
+                    // (full path won't fit) but click copies the full
+                    // path. Other chips are display-only.
+                    let mut meta_chips: Vec<gpui::AnyElement> = Vec::with_capacity(4);
                     if let Some(p) = pid {
-                        meta_chips.push(format!("pid {p}").into());
+                        meta_chips.push(
+                            div()
+                                .child(SharedString::from(format!("pid {p}")))
+                                .into_any_element(),
+                        );
                     }
-                    meta_chips.push(age.into());
-                    meta_chips.push(log_label.into());
+                    meta_chips.push(div().child(SharedString::from(age)).into_any_element());
+                    meta_chips.push(
+                        div()
+                            .child(SharedString::from(log_label))
+                            .into_any_element(),
+                    );
                     if let Some(r) = root_short {
-                        meta_chips.push(SharedString::from(format!("root: {r}")));
+                        let leaf_label = SharedString::from(format!("root: {r}"));
+                        if let Some(full_root) = a.root.clone() {
+                            let id: gpui::ElementId =
+                                SharedString::from(format!("agents-root-copy-{}", a.id)).into();
+                            let copy_payload = full_root.clone();
+                            let tooltip_text: SharedString = SharedString::from(format!(
+                                "Click to copy \u{201C}{full_root}\u{201D}"
+                            ));
+                            meta_chips.push(
+                                div()
+                                    .id(id)
+                                    .px_1()
+                                    .rounded_md()
+                                    .cursor_pointer()
+                                    .hover(move |s| s.bg(secondary))
+                                    .tooltip(move |window, cx| {
+                                        Tooltip::new(tooltip_text.clone()).build(window, cx)
+                                    })
+                                    .child(leaf_label)
+                                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                        cx.stop_propagation();
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            copy_payload.to_string(),
+                                        ));
+                                    })
+                                    .into_any_element(),
+                            );
+                        } else {
+                            meta_chips.push(div().child(leaf_label).into_any_element());
+                        }
                     }
                     let meta_row: gpui::AnyElement = if meta_chips.is_empty() {
                         div().into_any_element()
                     } else {
-                        let mut row = h_flex().gap_3().text_color(muted);
-                        for chip in meta_chips {
-                            row = row.child(chip);
-                        }
-                        row.into_any_element()
+                        h_flex()
+                            .gap_3()
+                            .text_color(muted)
+                            .children(meta_chips)
+                            .into_any_element()
                     };
 
                     // Prompt preview — always rendered. An empty preview
