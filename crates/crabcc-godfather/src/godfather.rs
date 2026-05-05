@@ -202,6 +202,34 @@ impl Godfather {
         )
     }
 
+    /// Same shape as [`record_event`] but takes the payload as a
+    /// pre-serialized JSON string. Lets per-tick callers (the
+    /// supervisor's heartbeat) reuse one buffer across ticks instead
+    /// of allocating a fresh `serde_json::Map` + `String` per call.
+    /// See `WatchHandle::run` for the buffer-reuse pattern (#488).
+    pub fn record_event_with_payload_str(
+        &self,
+        session_id: Option<&str>,
+        severity: Severity,
+        source: &str,
+        category: &str,
+        message: &str,
+        payload_str: Option<&str>,
+    ) -> Result<i64> {
+        if !self.telemetry_enabled {
+            return Ok(0);
+        }
+        event::insert_with_payload_str(
+            &self.conn,
+            session_id,
+            severity,
+            source,
+            category,
+            message,
+            payload_str,
+        )
+    }
+
     pub fn record_resource_sample(
         &self,
         session_id: &str,

@@ -97,6 +97,34 @@ pub fn insert(
     message: &str,
     payload: Option<&serde_json::Value>,
 ) -> Result<i64> {
+    // Owned-String pre-serialize — kept for the public `record_event`
+    // path that takes a `&serde_json::Value`. The watcher's heartbeat
+    // tick uses `insert_with_payload_str` instead so it can reuse a
+    // single buffer across ticks (#488).
+    let payload_str = payload.map(serde_json::to_string).transpose()?;
+    insert_with_payload_str(
+        conn,
+        session_id,
+        severity,
+        source,
+        category,
+        message,
+        payload_str.as_deref(),
+    )
+}
+
+/// Lower-level path: takes the payload as a pre-serialized JSON
+/// string (or `None`). Lets per-tick callers reuse a buffer to keep
+/// the heartbeat path allocation-free (#488).
+pub fn insert_with_payload_str(
+    conn: &Connection,
+    session_id: Option<&str>,
+    severity: Severity,
+    source: &str,
+    category: &str,
+    message: &str,
+    payload_str: Option<&str>,
+) -> Result<i64> {
     // Prepared-statement cache (#488) — re-prepare on every call
     // would be a ~3-5× regression on the watcher's per-tick path.
     // The cache is per-Connection so the WatchHandle's dedicated
@@ -114,7 +142,6 @@ pub fn insert(
          VALUES (?1, ?2, '', ?3, ?4, ?5, ?6, ?7)",
     )?;
     let ts = now_secs();
-    let payload_str = payload.map(serde_json::to_string).transpose()?;
     stmt.execute(params![
         ts as i64,
         session_id,

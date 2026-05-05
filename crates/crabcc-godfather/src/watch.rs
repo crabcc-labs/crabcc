@@ -11,6 +11,8 @@
 //! `Godfather` is dropped.
 
 use anyhow::Result;
+use serde::Serialize;
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -22,7 +24,12 @@ use crate::godfather::Godfather;
 
 #[derive(Debug, Clone)]
 pub struct WatchConfig {
-    pub target_app: String,
+    /// Most callers pass a static literal (`"crabcc"`, `"desktop"`,
+    /// etc.). `Cow<'static, str>` keeps the literal-call path
+    /// allocation-free while still letting tests / dynamic callers
+    /// pass an owned `String` via `Cow::Owned(...)` or `.into()`
+    /// (#488).
+    pub target_app: Cow<'static, str>,
     pub target_pid: u32,
     /// How often to record a `_crab_resource_sample`.
     pub sample_interval: Duration,
@@ -49,7 +56,7 @@ pub struct WatchConfig {
 
 impl WatchConfig {
     pub fn new(
-        target_app: impl Into<String>,
+        target_app: impl Into<Cow<'static, str>>,
         target_pid: u32,
         watched_session_id: impl Into<String>,
     ) -> Self {
@@ -68,7 +75,7 @@ impl WatchConfig {
 pub struct WatchHandle {
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
-    target_app: String,
+    target_app: Cow<'static, str>,
     target_pid: u32,
 }
 
@@ -115,6 +122,19 @@ impl Drop for WatchHandle {
     }
 }
 
+/// Heartbeat payload — typed-Serialize form. Used to drive
+/// `serde_json::to_writer` into a reusable byte buffer in the watch
+/// loop, replacing the per-tick `serde_json::json!{}` `Map` + `String`
+/// allocation pair (#488). Keeping it private to this module so the
+/// schema stays an implementation detail of the watcher.
+#[derive(Serialize)]
+struct Heartbeat<'a> {
+    target_app: &'a str,
+    target_pid: u32,
+    rss_mb: u64,
+    uptime_secs: u64,
+}
+
 fn run(godfather: Godfather, config: WatchConfig, stop: Arc<AtomicBool>) {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 
@@ -129,6 +149,13 @@ fn run(godfather: Godfather, config: WatchConfig, stop: Arc<AtomicBool>) {
     // the same allocation alive across the watcher's lifetime.
     let flush_every = config.flush_every.max(1) as usize;
     let mut buffer: Vec<crate::godfather::ResourceSample> = Vec::with_capacity(flush_every);
+
+    // Heartbeat JSON buffer (#488). Pre-allocated once; cleared and
+    // reused on every heartbeat tick. 128 bytes covers the typed
+    // payload comfortably (target_app names are short; the four
+    // integer fields serialize to ~40 bytes total). `to_writer`
+    // appends without reallocating once the buffer is up to size.
+    let mut heartbeat_buf: Vec<u8> = Vec::with_capacity(128);
     let flush_buffer = |buffer: &mut Vec<crate::godfather::ResourceSample>| {
         if buffer.is_empty() {
             return;
@@ -186,20 +213,32 @@ fn run(godfather: Godfather, config: WatchConfig, stop: Arc<AtomicBool>) {
                 }
 
                 if config.heartbeat_every > 0 && tick % config.heartbeat_every == 0 {
-                    let payload = serde_json::json!({
-                        "target_app": config.target_app,
-                        "target_pid": config.target_pid,
-                        "rss_mb": rss_mb,
-                        "uptime_secs": started.elapsed().as_secs(),
-                    });
-                    let _ = godfather.record_event(
-                        Some(&config.watched_session_id),
-                        Severity::Debug,
-                        "godfather",
-                        "heartbeat",
-                        "watch tick",
-                        Some(&payload),
-                    );
+                    // Serialize a typed `Heartbeat` directly into the
+                    // reused buffer — skips both the `Map` allocation
+                    // that `json!{}` would force and the per-call
+                    // `serde_json::to_string` inside `event::insert`
+                    // (#488). serde_json output is always valid UTF-8,
+                    // so the `from_utf8` validation is effectively a
+                    // memchr-shaped scan over ~80 bytes.
+                    heartbeat_buf.clear();
+                    let hb = Heartbeat {
+                        target_app: &config.target_app,
+                        target_pid: config.target_pid,
+                        rss_mb,
+                        uptime_secs: started.elapsed().as_secs(),
+                    };
+                    if serde_json::to_writer(&mut heartbeat_buf, &hb).is_ok() {
+                        if let Ok(payload_str) = std::str::from_utf8(&heartbeat_buf) {
+                            let _ = godfather.record_event_with_payload_str(
+                                Some(&config.watched_session_id),
+                                Severity::Debug,
+                                "godfather",
+                                "heartbeat",
+                                "watch tick",
+                                Some(payload_str),
+                            );
+                        }
+                    }
                 }
             }
             None => {
