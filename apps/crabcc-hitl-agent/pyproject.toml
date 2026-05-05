@@ -1,0 +1,111 @@
+[project]
+name = "crabcc-hitl-agent"
+version = "0.1.0"
+description = "Human-in-the-loop agent service for crabcc — bridges the Telegram bot to LiteLLM and (in later phases) the crabcc MCP tool registry."
+requires-python = ">=3.13"
+readme = "README.md"
+authors = [{ name = "Peter Lodri", email = "peter.lodri@instructure.com" }]
+license = { text = "Apache-2.0" }
+
+dependencies = [
+    # OpenAI Agents SDK — first-class tool-calling, sessions, HITL hooks.
+    # Phase 0 uses only `Agent` + `Runner` for the round-trip path; tool
+    # registration lands in Phase 1.
+    "openai-agents>=0.0.13",
+    # FastAPI + the standard ASGI server. `uvicorn[standard]` pulls in
+    # uvloop + httptools for a noticeable throughput bump on Linux.
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    # Settings via env-vars with type validation. Keeps the service
+    # 12-factor-clean — every knob lives in `Settings` and is read once
+    # at startup. Pydantic v2.
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+    # The agents SDK uses the openai client; pin the floor.
+    "openai>=1.55",
+    # httpx is the transport the openai SDK uses; the `http2` extra
+    # pulls `h2` so a single multiplexed TCP connection serves every
+    # in-flight request. LiteLLM speaks HTTP/2 — not enabling it
+    # leaves up to ~30% throughput on the table on bursty traffic.
+    "httpx[http2]>=0.28",
+    # orjson is the fastest stable JSON serializer for Python (5-10x
+    # vs stdlib `json` on dumps, ~3x on loads). Wired into FastAPI as
+    # the default response class + into request body parsing via a
+    # custom Request subclass; see main.py.
+    "orjson>=3.10",
+    # MCP server SDK — exposes our /chat capability as a tool for
+    # other host services (Rust crabcc-mcp consumers, future agents).
+    # Same protocol the rest of the workspace already speaks.
+    "mcp>=1.0",
+    # OpenTelemetry — emits traces to the workspace's existing `rotel`
+    # OTLP collector when ``OTEL_EXPORTER_OTLP_ENDPOINT`` is set in the
+    # environment (compose populates it from service-discovery).
+    # No-op when unset so local dev outside compose stays clean.
+    "opentelemetry-api>=1.27",
+    "opentelemetry-sdk>=1.27",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.27",
+    "opentelemetry-instrumentation-fastapi>=0.48b0",
+    "opentelemetry-instrumentation-httpx>=0.48b0",
+    # markitdown — Microsoft's HTML/PDF/DOCX/XLSX/PPTX → Markdown
+    # converter. Powers the ``fetch_url`` tool: download, strip
+    # boilerplate, hand back clean markdown for the agent's context
+    # window. Bigger surface than the existing Rust crabcc-fetch
+    # crate (which is HTML-only) without requiring a cross-process
+    # hop. Pinned ≥0.0.2 because earlier versions had a Python 3.13
+    # compatibility bug in the docx path.
+    "markitdown>=0.0.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.7",
+    "mypy>=1.13",
+    "httpx>=0.28",  # used by FastAPI's TestClient under the hood
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/crabcc_hitl"]
+
+# ───── Tooling ──────────────────────────────────────────────────────────
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+# Tight default: pyflakes, pycodestyle, isort, bugbear, simplify,
+# pyupgrade, plus a handful of safety-focused rules. Drops the rest of
+# the kitchen-sink set so churn on style doesn't hide real issues.
+select = ["E", "F", "I", "B", "SIM", "UP", "PL", "TCH", "ARG", "RUF"]
+# Stylistic rules silenced globally — they pepper the codebase with
+# noqa for no correctness benefit.
+#   PLC0415 — lazy imports kept on purpose (optional deps, test reload trick).
+#   PLR2004 — HTTP status compares (200, 300) are self-documenting.
+#   PLW0603 — `global` for one OTel init flag; obvious and contained.
+#   RUF002/RUF003 — multiplication-sign × in narrative docstrings/comments.
+#   TC003   — keeping runtime-used type imports out of TYPE_CHECKING
+#             blocks lets `from __future__ import annotations` do the work.
+ignore = ["PLC0415", "PLR2004", "PLW0603", "RUF002", "RUF003", "TC003"]
+# Allow asserts in test files; pytest assertions intentional.
+[tool.ruff.lint.per-file-ignores]
+# RUF012 (mutable class attrs need ClassVar) is verbose noise in
+# test stub classes that mock httpx.
+"tests/*" = ["PLR2004", "S101", "RUF012"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+# `openai-agents` ships type stubs but downstream OpenAI SDK is partial;
+# allow implicit Any for those modules so strict elsewhere stays useful.
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-ra -q"
