@@ -326,6 +326,16 @@ impl Render for Shell {
             (SharedString::new_static("\u{25CF} alerts"), primary)
         };
         let state_for_alerts = self.state.clone();
+        // State-aware tooltip — describes the click outcome, not the
+        // toggle. `SharedString::new_static` is fine since both
+        // strings are compile-time literals; the tooltip closure
+        // captures by clone so the `move |window, cx|` doesn't fight
+        // the borrow checker.
+        let alerts_tooltip: SharedString = if muted_state {
+            SharedString::new_static("Unmute alerts")
+        } else {
+            SharedString::new_static("Mute alerts")
+        };
         let alerts_btn = div()
             .id("toasts-mute-toggle")
             .px_2()
@@ -334,7 +344,7 @@ impl Render for Shell {
             .text_color(alerts_color)
             .cursor_pointer()
             .hover(move |s| s.bg(hover_bg))
-            .tooltip(|window, cx| Tooltip::new("Mute / unmute alerts").build(window, cx))
+            .tooltip(move |window, cx| Tooltip::new(alerts_tooltip.clone()).build(window, cx))
             .child(alerts_label)
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 state_for_alerts.update(cx, |s, cx| {
@@ -353,6 +363,11 @@ impl Render for Shell {
         // in the visible deque, so this toggle is moot.
         let echo_state = state_for_brand.echo_to_system;
         let echo_color = if echo_state { primary } else { muted };
+        let echo_tooltip: SharedString = if echo_state {
+            SharedString::new_static("Stop echoing alerts to Notification Center")
+        } else {
+            SharedString::new_static("Echo alerts to macOS Notification Center")
+        };
         let state_for_echo = self.state.clone();
         let echo_btn = div()
             .id("toasts-echo-toggle")
@@ -362,9 +377,7 @@ impl Render for Shell {
             .text_color(echo_color)
             .cursor_pointer()
             .hover(move |s| s.bg(hover_bg))
-            .tooltip(|window, cx| {
-                Tooltip::new("Echo alerts to macOS Notification Center").build(window, cx)
-            })
+            .tooltip(move |window, cx| Tooltip::new(echo_tooltip.clone()).build(window, cx))
             .child(SharedString::new_static("\u{2197} system"))
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 state_for_echo.update(cx, |s, cx| {
