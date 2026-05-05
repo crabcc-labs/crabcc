@@ -676,31 +676,9 @@ fn rrf_fuse(rankings: &[&[DrawerHit]], limit: usize) -> Vec<DrawerHit> {
 mod tests {
     use super::*;
     use tempfile::tempdir;
-
-    /// Pin every test in this file to the same `$CRABCC_HOME`
-    /// tempdir, so `Palace::open(repo_root)` resolves to a private
-    /// `repos/<slug>-<hash6>/memory.db` underneath it instead of
-    /// stomping the user's real `~/.crabcc/`. We never re-set the env
-    /// var after init — the path is stable for the test process — so
-    /// tests don't need any per-test mutex.
-    ///
-    /// The leaked `TempDir` keeps the directory alive for the
-    /// process lifetime. cargo's test runner cleans up `$TMPDIR`
-    /// itself, so the leak is contained.
-    fn ensure_test_crabcc_home() {
-        static HOME: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-        let path = HOME.get_or_init(|| {
-            let d = tempfile::tempdir().expect("test crabcc-home tempdir");
-            let path = d.path().to_path_buf();
-            std::mem::forget(d);
-            path
-        });
-        // Re-assert the env var on every call. Other test modules
-        // (notably crabcc-cli's backup tests) mutate `CRABCC_HOME`
-        // mid-run; without this re-pin, we'd race onto whatever they
-        // set.
-        std::env::set_var("CRABCC_HOME", path);
-    }
+    // Single crate-wide pin (see `test_support`) so palace + shell
+    // tests don't race on `$CRABCC_HOME`.
+    use crate::test_support::ensure_test_crabcc_home;
 
     #[test]
     fn open_creates_db_under_crabcc_home() {

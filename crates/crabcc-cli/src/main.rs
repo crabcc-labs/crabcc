@@ -365,6 +365,15 @@ enum Cmd {
         #[command(subcommand)]
         sub: memory::MemoryCmd,
     },
+    /// Shell-invocation ledger (lean-ctx integration #4). The
+    /// PreToolUse Bash hook calls `crabcc shell record` on every
+    /// command Claude Code is about to fire; the loop detector
+    /// (#5) reads `run_count` to flag agents stuck re-running the
+    /// same thing.
+    Shell {
+        #[command(subcommand)]
+        op: ShellOp,
+    },
     /// Snapshot / list / restore per-repo .crabcc/ state.
     Backup {
         #[command(subcommand)]
@@ -663,6 +672,29 @@ enum BackupOp {
     Loop {
         #[arg(long, default_value_t = 900u64)]
         interval: u64,
+    },
+}
+
+#[derive(Subcommand)]
+enum ShellOp {
+    /// UPSERT a row into `session_shells`. Idempotent — repeats on
+    /// the same `(command, cwd, session_id)` bump `run_count`. Used
+    /// by the PreToolUse Bash hook to observe Claude Code's
+    /// invocations.
+    Record {
+        /// The shell command Claude Code is about to fire.
+        #[arg(long)]
+        command: String,
+        /// Working directory the command will run in. Defaults to
+        /// the current `cwd`.
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        /// Session id the invocation belongs to. Defaults to
+        /// `$CRABCC_SESSION_ID`; when both are empty, the row is
+        /// keyed against an empty-session sentinel so repeat
+        /// detection still works for ungated callers.
+        #[arg(long)]
+        session_id: Option<String>,
     },
 }
 
@@ -1364,6 +1396,11 @@ fn main() -> Result<()> {
         return memory::run(&root, sub);
     }
 
+    // shell group — observation-only ledger; no Store::open needed.
+    if let Some(Cmd::Shell { op }) = &cli.cmd {
+        return run_shell(&root, op);
+    }
+
     std::fs::create_dir_all(db.parent().unwrap())?;
     let store = Store::open_with_compress(&db, cli.compress)?;
     let fts_dir = resolved.fts_dir();
@@ -1844,6 +1881,7 @@ fn main() -> Result<()> {
         Cmd::Completions { .. } => unreachable!("completions handled before store init"),
         Cmd::Openapi => unreachable!("openapi handled before store init"),
         Cmd::Memory { .. } => unreachable!("memory handled before store init"),
+        Cmd::Shell { .. } => unreachable!("shell handled before store init"),
         Cmd::Compress { .. } => unreachable!("compress handled before store init"),
     }
     Ok(())
@@ -2019,6 +2057,34 @@ fn run_model_info(op: &ModelInfoOp) -> Result<()> {
                     println!("  {n}");
                 }
             }
+            Ok(())
+        }
+    }
+}
+
+fn run_shell(root: &Path, op: &ShellOp) -> Result<()> {
+    match op {
+        ShellOp::Record {
+            command,
+            cwd,
+            session_id,
+        } => {
+            let cwd_path = match cwd {
+                Some(p) => p.clone(),
+                None => std::env::current_dir().map_err(|e| anyhow::anyhow!("get cwd: {e}"))?,
+            };
+            let cwd_str = cwd_path.to_string_lossy().to_string();
+            let session = session_id
+                .clone()
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| {
+                    std::env::var("CRABCC_SESSION_ID")
+                        .ok()
+                        .filter(|s| !s.trim().is_empty())
+                });
+            let rec =
+                crabcc_memory::shell::record_shell(root, command, &cwd_str, session.as_deref())?;
+            println!("{}", crabcc_memory::shell::record_to_json(&rec));
             Ok(())
         }
     }
@@ -2227,6 +2293,7 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         },
         Cmd::Graph { .. } => "graph",
         Cmd::Memory { .. } => "memory",
+        Cmd::Shell { .. } => "shell",
         Cmd::Backup { .. } => "backup",
         Cmd::Doctor { .. } => "doctor",
         Cmd::Jobs(_) => "jobs",

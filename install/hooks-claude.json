@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "jq -r '.tool_input.command // \"\"' | grep -qE '(^| )(rg|grep( -[a-zA-Z]+)?)\\s+[A-Za-z_][A-Za-z0-9_]+|(^| )find\\s+[^|]*-name\\b' && echo 'hint: try `crabcc sym/refs/callers` — symbol-aware and ~10x cheaper on tokens (`crabcc --help` for the full surface)' >&2; exit 0"
+            "command": "input=$(cat); cmd=$(echo \"$input\" | jq -r '.tool_input.command // \"\"'); session_id=$(echo \"$input\" | jq -r '.session_id // \"\"'); cwd=$(echo \"$input\" | jq -r '.cwd // \"\"'); if [ -n \"$cmd\" ] && command -v crabcc >/dev/null 2>&1; then crabcc shell record --command \"$cmd\" ${cwd:+--cwd \"$cwd\"} --session-id \"$session_id\" >/dev/null 2>&1 || true; fi; echo \"$cmd\" | grep -qE '(^| )(rg|grep( -[a-zA-Z]+)?)\\s+[A-Za-z_][A-Za-z0-9_]+|(^| )find\\s+[^|]*-name\\b' && echo 'hint: try `crabcc sym/refs/callers` — symbol-aware and ~10x cheaper on tokens (`crabcc --help` for the full surface)' >&2; exit 0"
           }
         ]
       },

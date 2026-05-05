@@ -76,6 +76,9 @@ pub mod embed;
 pub mod mine;
 pub mod palace;
 pub mod read;
+pub mod shell;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub mod types;
 
 pub use backend::{in_memory::InMemoryBackend, sqlite::SqliteBackend, Backend, LexicalQuery};
