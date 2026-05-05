@@ -26,8 +26,8 @@
 //! | agent_kills      | `run_id`, `reason`, `detail?`                       |
 
 use gpui::{
-    div, prelude::*, px, Context, Entity, Focusable, Hsla, IntoElement, MouseButton, Render,
-    SharedString, Window,
+    div, prelude::*, px, ClipboardItem, Context, Entity, Focusable, Hsla, IntoElement, MouseButton,
+    Render, SharedString, Window,
 };
 use gpui_component::{
     h_flex,
@@ -197,7 +197,7 @@ impl Render for SystemRoute {
                 muted,
                 foreground,
                 entity.clone(),
-                services_body(state, muted, success, danger, q),
+                services_body(state, muted, card, success, danger, q),
             ))
             .child(section(
                 "OTLP HEALTH",
@@ -208,7 +208,7 @@ impl Render for SystemRoute {
                 muted,
                 foreground,
                 entity.clone(),
-                otlp_body(state, muted, success, danger),
+                otlp_body(state, muted, card, success, danger),
             ))
             .child(section(
                 "OLLAMA KEY",
@@ -219,7 +219,7 @@ impl Render for SystemRoute {
                 muted,
                 foreground,
                 entity.clone(),
-                ollama_body(state, muted, success, danger),
+                ollama_body(state, muted, card, success, danger),
             ))
             .child(section(
                 "AGENT PROFILES",
@@ -352,6 +352,35 @@ fn loading(text: &'static str, muted: Hsla) -> gpui::AnyElement {
         .into_any_element()
 }
 
+/// Click-to-copy chip for URL / path / endpoint values. Renders the
+/// text muted (matches the surrounding meta line) but with a hover
+/// affordance + tooltip that signals "this is interactive". Click
+/// writes the value to the clipboard. `cx.stop_propagation()` so the
+/// click doesn't bubble into the section header's collapse toggle.
+fn copy_chip(
+    id: impl Into<gpui::ElementId>,
+    value: SharedString,
+    muted: Hsla,
+    secondary: Hsla,
+) -> gpui::Stateful<gpui::Div> {
+    let payload = value.clone();
+    let tooltip_text: SharedString =
+        SharedString::from(format!("Click to copy \u{201C}{value}\u{201D}"));
+    div()
+        .id(id)
+        .px_1()
+        .rounded_md()
+        .text_color(muted)
+        .cursor_pointer()
+        .hover(move |s| s.bg(secondary))
+        .tooltip(move |window, cx| Tooltip::new(tooltip_text.clone()).build(window, cx))
+        .child(value)
+        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+            cx.stop_propagation();
+            cx.write_to_clipboard(ClipboardItem::new_string(payload.to_string()));
+        })
+}
+
 /// Render the count-line that sits above each filterable section's
 /// list — only when the filter is active. Keeps the no-filter happy
 /// path visually compact.
@@ -380,6 +409,7 @@ fn no_match(noun: &str, query_lower: &str, muted: Hsla) -> gpui::AnyElement {
 fn services_body(
     state: &AppState,
     muted: Hsla,
+    secondary: Hsla,
     success: Hsla,
     danger: Hsla,
     query_lower: &str,
@@ -411,6 +441,8 @@ fn services_body(
                         } else {
                             ("✗", danger)
                         };
+                        let url_id: gpui::ElementId =
+                            SharedString::from(format!("service-url-copy-{}", s.name)).into();
                         h_flex()
                             .gap_3()
                             .child(
@@ -426,7 +458,7 @@ fn services_body(
                                     .text_color(muted)
                                     .child(SharedString::from(format!("{}ms", s.latency_ms))),
                             )
-                            .child(div().text_color(muted).child(s.url.clone()))
+                            .child(copy_chip(url_id, s.url.clone(), muted, secondary))
                             .into_any_element()
                     }))
                     .into_any_element()
@@ -441,7 +473,13 @@ fn services_body(
     body
 }
 
-fn otlp_body(state: &AppState, muted: Hsla, success: Hsla, danger: Hsla) -> gpui::AnyElement {
+fn otlp_body(
+    state: &AppState,
+    muted: Hsla,
+    secondary: Hsla,
+    success: Hsla,
+    danger: Hsla,
+) -> gpui::AnyElement {
     let body: gpui::AnyElement = match state.otlp_health.as_ref() {
         None => loading("loading OTLP health…", muted),
         Some(h) => {
@@ -458,11 +496,12 @@ fn otlp_body(state: &AppState, muted: Hsla, success: Hsla, danger: Hsla) -> gpui
                         .w(px(140.0))
                         .child(SharedString::from(mark.to_string())),
                 )
-                .child(
-                    div()
-                        .text_color(muted)
-                        .child(SharedString::from(h.endpoint.clone())),
-                )
+                .child(copy_chip(
+                    "otlp-endpoint-copy",
+                    SharedString::from(h.endpoint.clone()),
+                    muted,
+                    secondary,
+                ))
                 .children(h.error.as_ref().map(|e| {
                     div()
                         .text_color(danger)
@@ -474,7 +513,13 @@ fn otlp_body(state: &AppState, muted: Hsla, success: Hsla, danger: Hsla) -> gpui
     body
 }
 
-fn ollama_body(state: &AppState, muted: Hsla, success: Hsla, danger: Hsla) -> gpui::AnyElement {
+fn ollama_body(
+    state: &AppState,
+    muted: Hsla,
+    secondary: Hsla,
+    success: Hsla,
+    danger: Hsla,
+) -> gpui::AnyElement {
     let body: gpui::AnyElement = match state.ollama_key.as_ref() {
         None => loading("loading ollama key…", muted),
         Some(k) => {
@@ -491,11 +536,12 @@ fn ollama_body(state: &AppState, muted: Hsla, success: Hsla, danger: Hsla) -> gp
                         .w(px(140.0))
                         .child(SharedString::from(mark.to_string())),
                 )
-                .child(
-                    div()
-                        .text_color(muted)
-                        .child(SharedString::from(k.path.clone())),
-                )
+                .child(copy_chip(
+                    "ollama-path-copy",
+                    SharedString::from(k.path.clone()),
+                    muted,
+                    secondary,
+                ))
                 .children(k.size_bytes.map(|sz| {
                     div()
                         .text_color(muted)
