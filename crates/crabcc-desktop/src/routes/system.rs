@@ -561,6 +561,10 @@ fn profiles_body(
                         let nav_state = state_entity.clone();
                         let chip_id: gpui::ElementId =
                             SharedString::from(format!("profile-launch-{}", prof.id)).into();
+                        let chip_tooltip: SharedString = SharedString::from(format!(
+                            "Launch agent with profile {} — opens spawn sheet on Home",
+                            prof.id
+                        ));
                         let id_chip = div()
                             .id(chip_id)
                             .px_2()
@@ -569,6 +573,9 @@ fn profiles_body(
                             .rounded_md()
                             .text_color(primary)
                             .cursor_pointer()
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(chip_tooltip.clone()).build(window, cx)
+                            })
                             .child(prof.id.clone())
                             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                 let id = nav_id.clone();
@@ -741,6 +748,8 @@ fn kills_body(
                         let nav_state = state_entity.clone();
                         let id: gpui::ElementId =
                             SharedString::from(format!("kill-row-runid-{}", row.run_id)).into();
+                        let cell_tooltip: SharedString =
+                            SharedString::from(format!("Open agent {} in Agents", row.run_id));
                         let run_id_cell = div()
                             .id(id)
                             .w(px(80.0))
@@ -749,6 +758,9 @@ fn kills_body(
                             .text_color(primary)
                             .cursor_pointer()
                             .hover(move |s| s.bg(secondary))
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(cell_tooltip.clone()).build(window, cx)
+                            })
                             .child(row.run_id.clone())
                             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                 let id = run_id_for_nav.clone();
