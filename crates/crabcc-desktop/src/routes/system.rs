@@ -26,8 +26,8 @@
 //! | agent_kills      | `run_id`, `reason`, `detail?`                       |
 
 use gpui::{
-    div, prelude::*, px, Context, Entity, Focusable, Hsla, IntoElement, Render, SharedString,
-    Window,
+    div, prelude::*, px, Context, Entity, Focusable, Hsla, IntoElement, MouseButton, Render,
+    SharedString, Window,
 };
 use gpui_component::{
     h_flex,
@@ -35,9 +35,22 @@ use gpui_component::{
     v_flex, ActiveTheme,
 };
 
+use std::collections::HashSet;
+
 use crate::state::AppState;
 
 const KILLS_VISIBLE: usize = 8;
+
+/// Section keys for the per-section collapse state. Stable strings
+/// so route re-renders see the same set across notify ticks.
+mod section_keys {
+    pub const SERVICES: &str = "services";
+    pub const OTLP: &str = "otlp";
+    pub const OLLAMA: &str = "ollama";
+    pub const PROFILES: &str = "profiles";
+    pub const MODELS: &str = "models";
+    pub const KILLS: &str = "kills";
+}
 
 pub struct SystemRoute {
     state: Entity<AppState>,
@@ -46,6 +59,11 @@ pub struct SystemRoute {
     /// Lower-cased mirror of the filter input value, kept in sync via
     /// `InputEvent::Change`. Avoids re-lowercasing on every render.
     query_lower: String,
+    /// Per-section fold state. Default empty = every section
+    /// expanded. Click a section header to toggle. Mirrors the
+    /// timeline's `collapsed_agents` pattern: the route entity owns
+    /// it (not AppState — UI affordance, not domain state).
+    collapsed_sections: HashSet<&'static str>,
 }
 
 impl SystemRoute {
@@ -64,7 +82,18 @@ impl SystemRoute {
             state,
             query_input,
             query_lower: String::new(),
+            collapsed_sections: HashSet::new(),
         }
+    }
+
+    fn toggle_section(&mut self, key: &'static str) {
+        if !self.collapsed_sections.remove(key) {
+            self.collapsed_sections.insert(key);
+        }
+    }
+
+    fn is_section_collapsed(&self, key: &'static str) -> bool {
+        self.collapsed_sections.contains(key)
     }
 }
 
@@ -110,6 +139,18 @@ impl Render for SystemRoute {
             .child(Input::new(&self.query_input).appearance(false));
 
         let q = self.query_lower.as_str();
+        let foreground = cx.theme().foreground;
+        let entity = cx.entity();
+
+        // Per-section collapse state — owned by the route entity.
+        // Each section() call below picks up its own key's flag and
+        // skips body rendering when collapsed.
+        let services_collapsed = self.is_section_collapsed(section_keys::SERVICES);
+        let otlp_collapsed = self.is_section_collapsed(section_keys::OTLP);
+        let ollama_collapsed = self.is_section_collapsed(section_keys::OLLAMA);
+        let profiles_collapsed = self.is_section_collapsed(section_keys::PROFILES);
+        let models_collapsed = self.is_section_collapsed(section_keys::MODELS);
+        let kills_collapsed = self.is_section_collapsed(section_keys::KILLS);
 
         v_flex()
             .size_full()
@@ -118,23 +159,131 @@ impl Render for SystemRoute {
             .gap_4()
             .child(header)
             .child(filter_field)
-            .child(services_section(state, muted, border, success, danger, q))
-            .child(otlp_section(state, muted, border, success, danger))
-            .child(ollama_section(state, muted, border, success, danger))
-            .child(profiles_section(state, muted, border, card, q))
-            .child(models_section(state, muted, border, card, q))
-            .child(kills_section(state, muted, border, q))
+            .child(section(
+                "SERVICE DISCOVERY",
+                section_keys::SERVICES,
+                services_collapsed,
+                border,
+                muted,
+                foreground,
+                entity.clone(),
+                services_body(state, muted, success, danger, q),
+            ))
+            .child(section(
+                "OTLP HEALTH",
+                section_keys::OTLP,
+                otlp_collapsed,
+                border,
+                muted,
+                foreground,
+                entity.clone(),
+                otlp_body(state, muted, success, danger),
+            ))
+            .child(section(
+                "OLLAMA KEY",
+                section_keys::OLLAMA,
+                ollama_collapsed,
+                border,
+                muted,
+                foreground,
+                entity.clone(),
+                ollama_body(state, muted, success, danger),
+            ))
+            .child(section(
+                "AGENT PROFILES",
+                section_keys::PROFILES,
+                profiles_collapsed,
+                border,
+                muted,
+                foreground,
+                entity.clone(),
+                profiles_body(state, muted, card, q),
+            ))
+            .child(section(
+                "AGENT MODELS",
+                section_keys::MODELS,
+                models_collapsed,
+                border,
+                muted,
+                foreground,
+                entity.clone(),
+                models_body(state, muted, card, q),
+            ))
+            .child(section(
+                "RECENT KILLS",
+                section_keys::KILLS,
+                kills_collapsed,
+                border,
+                muted,
+                foreground,
+                entity,
+                kills_body(state, muted, q),
+            ))
     }
 }
 
-fn section(title: &'static str, border: Hsla, body: impl IntoElement) -> gpui::Div {
-    v_flex()
+/// Collapsible section header — click toggles via the route's
+/// `toggle_section` method. Chevron + title; visible state of the
+/// section body is controlled by the caller wrapping (or omitting)
+/// the body child below.
+fn section_header(
+    title: &'static str,
+    key: &'static str,
+    collapsed: bool,
+    muted: Hsla,
+    foreground: Hsla,
+    entity: Entity<SystemRoute>,
+) -> gpui::Stateful<gpui::Div> {
+    let chevron = if collapsed { "\u{25B8}" } else { "\u{25BE}" }; // ▸ / ▾
+    let id = SharedString::from(format!("system-section-{key}"));
+    div()
+        .id(id)
+        .child(
+            h_flex()
+                .gap_2()
+                .child(
+                    div()
+                        .text_color(muted)
+                        .child(SharedString::new_static(chevron)),
+                )
+                .child(
+                    div()
+                        .text_sm()
+                        .text_color(foreground)
+                        .child(SharedString::new_static(title)),
+                ),
+        )
+        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+            entity.update(cx, |this, cx| {
+                this.toggle_section(key);
+                cx.notify();
+            });
+        })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn section(
+    title: &'static str,
+    key: &'static str,
+    collapsed: bool,
+    border: Hsla,
+    muted: Hsla,
+    foreground: Hsla,
+    entity: Entity<SystemRoute>,
+    body: impl IntoElement,
+) -> gpui::Div {
+    let mut block = v_flex()
         .gap_2()
         .pb_3()
         .border_b_1()
         .border_color(border)
-        .child(div().text_sm().child(SharedString::new_static(title)))
-        .child(body)
+        .child(section_header(
+            title, key, collapsed, muted, foreground, entity,
+        ));
+    if !collapsed {
+        block = block.child(body);
+    }
+    block
 }
 
 fn loading(text: &'static str, muted: Hsla) -> gpui::AnyElement {
@@ -169,14 +318,13 @@ fn no_match(noun: &str, query_lower: &str, muted: Hsla) -> gpui::AnyElement {
         .into_any_element()
 }
 
-fn services_section(
+fn services_body(
     state: &AppState,
     muted: Hsla,
-    border: Hsla,
     success: Hsla,
     danger: Hsla,
     query_lower: &str,
-) -> gpui::Div {
+) -> gpui::AnyElement {
     let body: gpui::AnyElement = match state.services.as_ref() {
         None => loading("loading services…", muted),
         Some(rep) => {
@@ -231,16 +379,10 @@ fn services_section(
                 .into_any_element()
         }
     };
-    section("SERVICE DISCOVERY", border, body)
+    body
 }
 
-fn otlp_section(
-    state: &AppState,
-    muted: Hsla,
-    border: Hsla,
-    success: Hsla,
-    danger: Hsla,
-) -> gpui::Div {
+fn otlp_body(state: &AppState, muted: Hsla, success: Hsla, danger: Hsla) -> gpui::AnyElement {
     let body: gpui::AnyElement = match state.otlp_health.as_ref() {
         None => loading("loading OTLP health…", muted),
         Some(h) => {
@@ -270,16 +412,10 @@ fn otlp_section(
                 .into_any_element()
         }
     };
-    section("OTLP HEALTH", border, body)
+    body
 }
 
-fn ollama_section(
-    state: &AppState,
-    muted: Hsla,
-    border: Hsla,
-    success: Hsla,
-    danger: Hsla,
-) -> gpui::Div {
+fn ollama_body(state: &AppState, muted: Hsla, success: Hsla, danger: Hsla) -> gpui::AnyElement {
     let body: gpui::AnyElement = match state.ollama_key.as_ref() {
         None => loading("loading ollama key…", muted),
         Some(k) => {
@@ -309,16 +445,10 @@ fn ollama_section(
                 .into_any_element()
         }
     };
-    section("OLLAMA KEY", border, body)
+    body
 }
 
-fn profiles_section(
-    state: &AppState,
-    muted: Hsla,
-    border: Hsla,
-    card: Hsla,
-    query_lower: &str,
-) -> gpui::Div {
+fn profiles_body(state: &AppState, muted: Hsla, card: Hsla, query_lower: &str) -> gpui::AnyElement {
     let body: gpui::AnyElement = match state.agent_profiles.as_ref() {
         None => loading("loading profiles…", muted),
         Some(p) if p.profiles.is_empty() => loading("no profiles registered", muted),
@@ -397,16 +527,10 @@ fn profiles_section(
                 .into_any_element()
         }
     };
-    section("AGENT PROFILES", border, body)
+    body
 }
 
-fn models_section(
-    state: &AppState,
-    muted: Hsla,
-    border: Hsla,
-    card: Hsla,
-    query_lower: &str,
-) -> gpui::Div {
+fn models_body(state: &AppState, muted: Hsla, card: Hsla, query_lower: &str) -> gpui::AnyElement {
     let body: gpui::AnyElement = match state.agent_models.as_ref() {
         None => loading("loading models…", muted),
         Some(m) if m.models.is_empty() => loading("no models registered", muted),
@@ -479,10 +603,10 @@ fn models_section(
                 .into_any_element()
         }
     };
-    section("AGENT MODELS", border, body)
+    body
 }
 
-fn kills_section(state: &AppState, muted: Hsla, border: Hsla, query_lower: &str) -> gpui::Div {
+fn kills_body(state: &AppState, muted: Hsla, query_lower: &str) -> gpui::AnyElement {
     let body: gpui::AnyElement = match state.agent_kills.as_ref() {
         None => loading("loading kills…", muted),
         Some(k) if k.rows.is_empty() => loading("no recent kills — clean run", muted),
@@ -542,5 +666,5 @@ fn kills_section(state: &AppState, muted: Hsla, border: Hsla, query_lower: &str)
                 .into_any_element()
         }
     };
-    section("RECENT KILLS", border, body)
+    body
 }
