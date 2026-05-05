@@ -45,11 +45,17 @@ class Settings(BaseSettings):
     model: str = "claude-haiku-4-5"
 
     # ───── Agent behaviour ─────
-    # System prompt baseline. Kept minimal in Phase 0; Phase 1 will
-    # extend with tool-use guidance.
+    # System prompt — Phase 1 extends with tool-use guidance.
+    # Kept short on purpose: long instructions cost tokens on every
+    # turn and modern LLMs already know how tool-calling works.
     system_prompt: str = (
         "You are crabcc-helper, a code-search assistant embedded in a Telegram bot. "
-        "Reply concisely. In later phases you will be given crabcc tool calls."
+        "You have tools for indexed-code lookup (crabcc_sym, crabcc_refs, "
+        "crabcc_callers, crabcc_files, crabcc_outline, crabcc_fuzzy), per-repo "
+        "memory (memory_search, memory_remember, memory_list), and URL→markdown "
+        "(fetch_url). Prefer tools over guessing. When a tool returns "
+        "`ok=False`, surface its `error` to the user instead of fabricating. "
+        "Reply concisely — Telegram messages cap at 4096 chars."
     )
 
     # Hard cap on the user-supplied task length. Telegram messages cap

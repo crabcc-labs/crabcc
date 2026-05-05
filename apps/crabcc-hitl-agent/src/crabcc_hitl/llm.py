@@ -12,8 +12,21 @@ import logging
 from typing import TYPE_CHECKING
 
 import httpx
-from agents import Agent, OpenAIChatCompletionsModel, Runner
+from agents import Agent, OpenAIChatCompletionsModel, Runner, function_tool
 from openai import AsyncOpenAI
+
+from .tools import (
+    crabcc_callers,
+    crabcc_files,
+    crabcc_fuzzy,
+    crabcc_outline,
+    crabcc_refs,
+    crabcc_sym,
+    fetch_url,
+    memory_list,
+    memory_remember,
+    memory_search,
+)
 
 if TYPE_CHECKING:
     from .settings import Settings
@@ -72,10 +85,34 @@ class HitlAgent:
             model=settings.model,
             openai_client=self._client,
         )
+        # Tool registration — Phase 1.
+        # `function_tool` derives the JSON schema from each function's
+        # signature + docstring. Tools handle their own "MCP not
+        # configured" branch (return ``ok=False`` instead of raising)
+        # so a missing crabcc-mcp service doesn't crash the loop —
+        # the agent can still respond conversationally + use
+        # ``fetch_url``.
+        tools = [
+            function_tool(fetch_url),
+            function_tool(crabcc_sym),
+            function_tool(crabcc_refs),
+            function_tool(crabcc_callers),
+            function_tool(crabcc_files),
+            function_tool(crabcc_outline),
+            function_tool(crabcc_fuzzy),
+            function_tool(memory_search),
+            function_tool(memory_remember),
+            function_tool(memory_list),
+        ]
         self._agent = Agent(
             name="crabcc-helper",
             instructions=settings.system_prompt,
             model=self._model,
+            # mypy: `list[FunctionTool]` doesn't satisfy the SDK's
+            # invariant `list[FunctionTool | FileSearchTool | ...]`.
+            # Runtime behaviour is correct — the SDK iterates the
+            # list as `Sequence[Tool]`.
+            tools=tools,  # type: ignore[arg-type]
         )
         self._max_task_chars = settings.max_task_chars
 

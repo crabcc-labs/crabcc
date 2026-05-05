@@ -58,6 +58,20 @@ recalls.
 
 - **`fetch_url.py`** — download → SSRF-guarded → markitdown → markdown. Handles HTML, PDF, DOCX, XLSX, PPTX. SSRF policy mirrors the Rust `crabcc-fetch::is_ingest_safe_url`.
 
+## Implemented (Phase 1)
+
+All 9 wrap the shared `_mcp_client.py` (raw JSON-RPC over HTTP — no MCP-SDK session machinery; one-shot POST per call). Tools degrade gracefully when `CRABCC_HITL_MCP_BASE_URL` is unset — they return `ok=False` with a clear "MCP not configured" error so the agent doesn't crash.
+
+- **`crabcc_sym.py`** — find symbol definitions
+- **`crabcc_refs.py`** — find every reference (with `files_only` flag for token savings)
+- **`crabcc_callers.py`** — pure-SQL callsite query (with `count_only` flag)
+- **`crabcc_files.py`** — list indexed files (replaces `find` / `ls -R`)
+- **`crabcc_outline.py`** — top-level structure of a file
+- **`crabcc_fuzzy.py`** — Levenshtein-2 symbol search
+- **`memory_search.py`** — hybrid BM25⊕cosine search of saved notes
+- **`memory_remember.py`** — persist a note in the per-repo drawer
+- **`memory_list.py`** — recent notes list
+
 ## Tool-shape conventions
 
 - One async function per tool, named after the tool.
