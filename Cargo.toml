@@ -70,7 +70,6 @@ tracing-appender = "0.2"
 libc = "0.2"
 notify-debouncer-mini = "0.4"
 sonic-rs = "0.5"
-bumpalo = { version = "3", features = ["collections"] }
 moka = { version = "0.12", features = ["sync"] }
 fastembed = "5"
 tiny_http = "0.12"

@@ -74,6 +74,7 @@ pub mod jobs;
 pub mod md;
 pub mod ollama_stack;
 pub mod outline;
+pub mod parser_pool;
 pub mod pattern;
 pub mod query;
 pub mod refs;

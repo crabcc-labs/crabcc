@@ -4,26 +4,19 @@
 // `name`, regardless of usage context (calls, type annotations, imports, etc.).
 // Coarser than ast-grep's pattern-match (no semantics), but cheap and broad.
 
+use crate::parser_pool;
 use crate::types::Hit;
 use anyhow::{anyhow, Result};
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
 pub fn find_refs(src: &str, lang: &str, name: &str) -> Result<Vec<Hit>> {
-    let ts_lang: tree_sitter::Language = match lang {
-        "typescript" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-        "tsx" => tree_sitter_typescript::LANGUAGE_TSX.into(),
-        "javascript" => tree_sitter_javascript::LANGUAGE.into(),
-        "ruby" => tree_sitter_ruby::LANGUAGE.into(),
-        _ => return Err(anyhow!("unsupported lang: {lang}")),
-    };
-    let mut parser = Parser::new();
-    parser
-        .set_language(&ts_lang)
-        .map_err(|e| anyhow!("set_language: {e}"))?;
-    let tree = parser
-        .parse(src, None)
-        .ok_or_else(|| anyhow!("parse failed"))?;
-
+    // Whitelist preserved: `is_identifier_kind` only knows the four
+    // langs below, so accepting anything else from the shared parser
+    // pool would silently return empty results.
+    if !matches!(lang, "typescript" | "tsx" | "javascript" | "ruby") {
+        return Err(anyhow!("unsupported lang: {lang}"));
+    }
+    let tree = parser_pool::parse(lang, src)?;
     let mut out = Vec::new();
     walk(tree.root_node(), src.as_bytes(), src, name, lang, &mut out);
     Ok(out)

@@ -1,16 +1,17 @@
+use crate::parser_pool;
 use crate::types::{Edge, Symbol, SymbolKind};
-use anyhow::{anyhow, Result};
-use bumpalo::Bump;
+use anyhow::Result;
 use std::path::Path;
-use tree_sitter::{Node, Parser};
+use tree_sitter::Node;
 
-// Per-file bump-arena scratch budget. Tree-sitter's tallest queries on the
-// fixtures we care about (mc-mothership, ~1k-line files) build at most a
-// few KB of transient strings during impl-retag and signature stitching.
-// 4 KB up-front avoids the bump allocator's first-page reallocation for
-// any reasonably small file; larger files spill into a second page, which
-// is a cheap mmap, not a re-copy.
-const SCRATCH_ARENA_BYTES: usize = 4 * 1024;
+// Per-file output capacity hints. Symbol/edge counts are bimodal but
+// bottom out around tens-to-low-hundreds per source file; without a
+// hint, `Vec::push` walks the 0→4→8→…→128 reallocation chain on
+// every non-trivial file. Picked from a quick scan of the indexer's
+// production traffic on the reference repo (median 28 symbols / 71
+// edges per file). Slightly over-sized is free.
+const SYMBOLS_HINT: usize = 64;
+const EDGES_HINT: usize = 128;
 
 pub fn detect_lang(path: &Path) -> Option<&'static str> {
     let ext = path.extension()?.to_str()?;
@@ -27,16 +28,8 @@ pub fn detect_lang(path: &Path) -> Option<&'static str> {
 }
 
 pub fn extract_file(file: &str, src: &str, lang: &str) -> Result<Vec<Symbol>> {
-    let ts_lang = ts_language(lang)?;
-    let mut parser = Parser::new();
-    parser
-        .set_language(&ts_lang)
-        .map_err(|e| anyhow!("set_language: {e}"))?;
-    let tree = parser
-        .parse(src, None)
-        .ok_or_else(|| anyhow!("parse failed"))?;
-
-    let mut out = Vec::new();
+    let tree = parser_pool::parse(lang, src)?;
+    let mut out = Vec::with_capacity(SYMBOLS_HINT);
     walk(tree.root_node(), src.as_bytes(), file, lang, None, &mut out);
     Ok(out)
 }
@@ -60,57 +53,23 @@ pub fn extract_edges(file: &str, src: &str, lang: &str) -> Result<Vec<Edge>> {
 /// (tests can request one or the other), but in production we always want
 /// both — the indexer hot path goes through here.
 ///
-/// The function allocates a per-call `bumpalo::Bump` arena (currently
-/// unused by `walk` itself but threaded through so the next phase can
-/// switch transient strings — `impl_target`, `go_receiver_type`,
-/// `strip_generics` outputs — to bump-allocated `&str`s without
-/// changing the public `Vec<Symbol>` / `Vec<Edge>` shape). Bump dies with
-/// the function, so the entire scratch region frees in one mmap-level
-/// op rather than thousands of small `drop(String)` calls. See issue
-/// #38 (nightly-features research) for the full ROI analysis and the
-/// `allocator_api`-vs-`bumpalo::collections` tradeoff.
+/// `Parser` instances are kept on a thread-local pool (see
+/// `crate::parser_pool`) and reused across files, so a 13 k-file
+/// reindex pays the per-language `Parser::new` + `set_language` cost
+/// once per worker instead of once per file.
 pub fn extract_file_with_edges(
     file: &str,
     src: &str,
     lang: &str,
 ) -> Result<(Vec<Symbol>, Vec<Edge>)> {
-    let ts_lang = ts_language(lang)?;
-    let mut parser = Parser::new();
-    parser
-        .set_language(&ts_lang)
-        .map_err(|e| anyhow!("set_language: {e}"))?;
-    let tree = parser
-        .parse(src, None)
-        .ok_or_else(|| anyhow!("parse failed"))?;
-
+    let tree = parser_pool::parse(lang, src)?;
     let bytes = src.as_bytes();
     let root = tree.root_node();
-    // Per-file bump arena. Sized to cover the typical impl-retag /
-    // signature-stitch transient burst without paging; the allocator
-    // grows automatically if a giant file blows past the initial
-    // budget.
-    let _scratch = Bump::with_capacity(SCRATCH_ARENA_BYTES);
-    let mut symbols = Vec::new();
+    let mut symbols = Vec::with_capacity(SYMBOLS_HINT);
     walk(root, bytes, file, lang, None, &mut symbols);
-    let mut edges = Vec::new();
+    let mut edges = Vec::with_capacity(EDGES_HINT);
     walk_edges(root, bytes, lang, None, &mut edges);
     Ok((symbols, edges))
-}
-
-fn ts_language(lang: &str) -> Result<tree_sitter::Language> {
-    // tree-sitter 0.26 + per-language crates ship `LANGUAGE` (or
-    // `LANGUAGE_TYPESCRIPT` / `LANGUAGE_TSX` for the polyglot crate) as
-    // a `LanguageFn`. `.into()` converts it to `tree_sitter::Language`.
-    Ok(match lang {
-        "typescript" => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-        "tsx" => tree_sitter_typescript::LANGUAGE_TSX.into(),
-        "javascript" => tree_sitter_javascript::LANGUAGE.into(),
-        "ruby" => tree_sitter_ruby::LANGUAGE.into(),
-        "rust" => tree_sitter_rust::LANGUAGE.into(),
-        "go" => tree_sitter_go::LANGUAGE.into(),
-        "python" => tree_sitter_python::LANGUAGE.into(),
-        _ => return Err(anyhow!("unsupported lang: {lang}")),
-    })
 }
 
 fn walk(

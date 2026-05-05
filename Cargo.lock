@@ -969,7 +969,6 @@ dependencies = [
  "anyhow",
  "ast-grep-core",
  "ast-grep-language",
- "bumpalo",
  "criterion 0.8.2",
  "fsst-rs",
  "ignore",
