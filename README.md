@@ -26,27 +26,48 @@
 
 ---
 
-## Install (one line)
+## Install
+
+### One-line (canonical)
 
 ```bash
 gh api -H 'Accept: application/vnd.github.v3.raw' /repos/peterlodri-sec/crabcc/contents/install.sh | bash
 ```
 
-That's it. The installer:
+(Or, without `gh`: `curl -fsSL https://raw.githubusercontent.com/peterlodri-sec/crabcc/main/install.sh | bash`.)
 
-- prompts for `gh auth login` if you aren't authenticated yet
-- builds `crabcc` from source via `cargo install --locked`
-- writes shell completions for your current shell (zsh / bash / fish)
-- links the Claude Code skill + slash commands into `~/.claude/` (when
-  the `claude` CLI is present)
-- prints a `crabcc go` hint so the next thing you do is the right thing
+The installer:
 
-### Bootstrap a fresh machine
+- Prompts for `gh auth login` if you aren't authenticated yet (private-repo aware).
+- Builds `crabcc` from source via `cargo install --locked`.
+- Writes shell completions for your current shell (zsh / bash / fish).
+- Links the Claude Code skill + slash commands into `~/.claude/` when the
+  `claude` CLI is present.
+- Prints a `crabcc go` hint so the next thing you do is the right thing.
 
-For a brand-new dev box, `scripts/bootstrap.sh` is a `curl | bash`-able one-shot
-that handles preflight (rustup), clones into `~/workspace/bin/crabcc`, builds,
-ad-hoc-codesigns the binaries (Sequoia provenance fix), wires aliases, and
-links skills/commands. Idempotent — same script for fresh install + upgrade.
+> **Heads-up:** the one-liner does the binary install but does **not** run
+> `crabcc install-claude`, which is where the optional [RTK
+> (Token Killer)](https://crates.io/crates/rtk) detection + install prompt
+> lives. After the one-liner, run `crabcc install-claude` once if you want
+> the hook-based shell-output proxy. Tracked in
+> [#501](https://github.com/peterlodri-sec/crabcc/issues/501).
+
+Knobs (env or `--flag`):
+
+| flag | env | default | what |
+|---|---|---|---|
+| `--bin-dir=DIR` | `CRABCC_INSTALL_DIR` | `~/.cargo/bin` | install target |
+| `--version=TAG` | — | main HEAD | install a specific release |
+| `--no-completions` | — | off | skip shell completions |
+| `--no-claude` | — | off | skip ~/.claude/ symlinks |
+
+### Fresh machine — `scripts/bootstrap.sh`
+
+For a brand-new dev box, `bootstrap.sh` is the bigger sibling of `install.sh`:
+it preflights `rustup`, clones into `~/workspace/bin/crabcc`, builds,
+ad-hoc-codesigns the binaries (Sequoia provenance fix), wires shell aliases,
+links skills/commands, and optionally brings up Docker/Ollama and the macOS
+LaunchAgent. Idempotent — same script for fresh install **and** upgrade.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/peterlodri-sec/crabcc/main/scripts/bootstrap.sh | bash
@@ -55,14 +76,45 @@ curl -fsSL https://raw.githubusercontent.com/peterlodri-sec/crabcc/main/scripts/
 #   --with-docker     install Docker Desktop + bring up the Ollama stack
 #   --with-launchd    register the macOS LaunchAgent (background re-index)
 #   --with-macos-app  build + open the .dmg
+#   --cli-only        binaries only — skip Claude / aliases / Docker
 #   --check-only      preflight only; no writes
 ```
 
-### macOS .app + DMG installer (optional)
+### From source
+
+```bash
+cargo install --path crates/crabcc-cli
+```
+
+### Claude Code integration
+
+```bash
+crabcc install-claude          # symlinks skill + commands; offers to install RTK
+```
+
+The `install-claude` subcommand:
+
+- Symlinks the skill + slash-commands into `~/.claude/`.
+- Detects [RTK (Token Killer)](https://crates.io/crates/rtk) on PATH and
+  offers to `cargo install rtk` if missing — RTK is a hook-based
+  shell-output token proxy that pairs with the Bash hook below.
+- Prints the `claude mcp add crabcc -- crabcc --mcp` invocation and the hook
+  templates (SessionStart auto-refresh, PreToolUse grep→crabcc hint,
+  PreToolUse Read/Bash session-cache hooks) for you to paste into
+  `~/.claude/settings.json`. It does **not** modify any global Claude
+  config files.
+
+Hook templates: [`install/hooks-claude.json`](./install/hooks-claude.json).
+Pass `--yes` to skip per-symlink prompts, or `--print-hooks` to dump only the
+hook JSON (`crabcc install-claude --print-hooks > hooks.json`).
+
+Then in Claude Code: `/reload-plugins`.
+
+### macOS `.app` + DMG (optional)
 
 If you want a real `Crabcc.app` you can drag into `/Applications` and grant
-**App Management** privacy permission to (System Settings → Privacy &
-Security → App Management):
+**App Management** privacy permission (System Settings → Privacy & Security →
+App Management):
 
 ```bash
 task dmg                       # produces dist/crabcc-<version>.dmg
@@ -81,20 +133,23 @@ Uninstall the LaunchAgent without removing the app:
 scripts/install-macos-helpers.sh --remove
 ```
 
+### Index your repo
+
 ```bash
-# follow up with one more line: bootstrap a repo + open a Claude session
 cd <your-repo>
-crabcc go        # index + graph + memory + claude --effort max --no-chrome
+crabcc index            # one-time, ~5–30s on a 13k-file repo
+crabcc refresh          # incremental, ~250ms no-op (mtime + sha256 keyed)
+crabcc watch            # auto-refresh on file changes (Ctrl-C to exit)
+
+# Or in one step — index + graph + memory + open a Claude session:
+crabcc go
 ```
 
-Knobs (env or `--flag`):
-
-| flag | env | default | what |
-|---|---|---|---|
-| `--bin-dir=DIR` | `CRABCC_INSTALL_DIR` | `~/.cargo/bin` | install target |
-| `--version=TAG` | — | main HEAD | install a specific release |
-| `--no-completions` | — | off | skip shell completions |
-| `--no-claude` | — | off | skip ~/.claude/ symlinks |
+The symbol index lives at `<repo>/.crabcc/index.db`; add `.crabcc/` to
+`.gitignore`. The AI memory store lives at
+`$CRABCC_HOME/repos/<slug>-<hash6>/memory.db` (default `$CRABCC_HOME =
+~/.crabcc`), so worktrees of the same repo share one memory.db and
+`git clean -fdx` doesn't blow it away.
 
 ## Ollama agent backend
 
@@ -189,45 +244,6 @@ text.
 
 ---
 
-## Install
-
-```bash
-# One-liner (Linux + macOS, x86_64 + aarch64)
-curl -fsSL https://raw.githubusercontent.com/peterlodri-sec/crabcc/main/install.sh | bash
-
-# Or from source
-cargo install --path crates/crabcc-cli
-```
-
-```bash
-crabcc index            # one-time, ~5–30s on a 13k-file repo
-crabcc refresh          # incremental, ~250ms no-op (mtime + sha256 keyed)
-crabcc watch            # auto-refresh on file changes (Ctrl-C to exit)
-```
-
-The index lives at `.crabcc/index.db` per repo. Add `.crabcc/` to `.gitignore`.
-
-### Claude Code integration
-
-```bash
-cargo install --path crates/crabcc-cli
-crabcc install-claude
-```
-
-The interactive `install-claude` subcommand symlinks the skill and slash-command
-into `~/.claude/`, then prints the `claude mcp add crabcc -- crabcc --mcp`
-invocation and two optional hook snippets (SessionStart auto-refresh,
-PreToolUse grep→crabcc hint) for you to paste into `~/.claude/settings.json`.
-The subcommand does **not** modify any global Claude config files.
-
-Hook templates: [`install/hooks-claude.json`](./install/hooks-claude.json).
-Pass `--yes` to skip the per-symlink prompts, or `--print-hooks` to dump only
-the hook JSON to stdout (e.g. `crabcc install-claude --print-hooks > hooks.json`).
-
-Then in Claude Code: `/reload-plugins`.
-
----
-
 ## Usage
 
 | Question                             | Command                                              |
@@ -253,7 +269,11 @@ Full examples: [`examples/CLI.md`](./examples/CLI.md). MCP wire-level walkthroug
 
 ### AI memory (`crabcc memory`, M0–M2 + bench gate)
 
-Local-first, per-repo memory at `<repo>/.crabcc/memory.db`. Ships the
+Local-first, per-repo memory at `$CRABCC_HOME/repos/<slug>-<hash6>/memory.db`
+(default `$CRABCC_HOME = ~/.crabcc`). Per-repo by design: the slug is the
+repo's basename and `<hash6>` is the first 6 hex chars of
+`sha256(remote.origin.url)` so worktrees of the same repo share one db
+([#484](https://github.com/peterlodri-sec/crabcc/pull/484)). Ships the
 full pipeline tracked by [issue #2](../../issues/2):
 
 - **Storage** — `SqliteBackend` with WAL + FSST drawer-body compression
@@ -536,16 +556,18 @@ bench/                ← raw-CLI A/B benchmark harness + visualize
               └───────────────────────┼─────────────────────┘
                                       ▼
                        ┌──────────────────────────────┐
-                       │ Per-repo state at .crabcc/   │
-                       │   index.db (FTS5 + symbols)  │
-                       │   tantivy/ (fuzzy + prefix)  │
-                       │   graph.json (call graph)    │
-                       │   memory.db (drawers + vec)  │
-                       │   fsst.symbols (codec)       │
+                       │ Per-repo state                │
+                       │  <repo>/.crabcc/              │
+                       │    index.db (FTS5 + symbols)  │
+                       │    tantivy/ (fuzzy + prefix)  │
+                       │    graph.json (call graph)    │
+                       │    fsst.symbols (codec)       │
+                       │  $CRABCC_HOME/repos/<slug>/   │
+                       │    memory.db (drawers + vec)  │
                        └──────────────────────────────┘
 ```
 
-The CLI is a thin dispatcher: clap parses, the matched arm calls into one of three library crates, and `sonic_rs::to_string` encodes the result. The library crates are independent — `crabcc-mcp` runs the same code paths as the CLI but over JSON-RPC 2.0 instead of argv. `crabcc-memory` is the only crate that needs `.crabcc/memory.db`; everything else lives in `index.db`.
+The CLI is a thin dispatcher: clap parses, the matched arm calls into one of three library crates, and `sonic_rs::to_string` encodes the result. The library crates are independent — `crabcc-mcp` runs the same code paths as the CLI but over JSON-RPC 2.0 instead of argv. `crabcc-memory` is the only crate that touches `memory.db`; symbol-index state (`index.db`, `tantivy/`, `graph.json`, `fsst.symbols`) stays in the repo's `.crabcc/`. Memory was relocated from `<repo>/.crabcc/memory.db` to `$CRABCC_HOME/repos/<slug>-<hash6>/memory.db` in [#484](https://github.com/peterlodri-sec/crabcc/pull/484) so worktrees share one drawer store.
 
 ### Per-command mechanics
 
@@ -634,7 +656,7 @@ clap parses ─► Cmd::Refs { name: "UserId", mode: FilesOnly { limit: 5 } }
 ```text
 clap parses ─► memory::Cmd::Search { query, limit, wing, room, mode }
                   │
-                  Palace::open(repo_root)  ─►  .crabcc/memory.db + Embedder + Backend
+                  Palace::open(repo_root)  ─►  $CRABCC_HOME/repos/<slug>-<hash6>/memory.db + Embedder + Backend
                   │
                   ┌─────────────────────────────┴─────────────────────────────┐
                   ▼                                                           ▼
@@ -661,7 +683,7 @@ clap parses ─► memory::Cmd::Search { query, limit, wing, room, mode }
                                   println!
 ```
 
-The two rankers run independently against the same `.crabcc/memory.db`; RRF fuses ranks (not raw scores), which is why hybrid out-performs either ranker alone without needing per-corpus score normalization.
+The two rankers run independently against the same `memory.db`; RRF fuses ranks (not raw scores), which is why hybrid out-performs either ranker alone without needing per-corpus score normalization.
 
 For deeper architectural detail, mermaid diagrams of the data flow and threading model, and runbooks for adding features, see [`ARCHITECTURE.md`](./ARCHITECTURE.md).
 
