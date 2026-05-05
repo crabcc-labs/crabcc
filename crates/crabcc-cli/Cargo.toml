@@ -32,7 +32,7 @@ agent-sandbox = []
 # redis. Off by default — vanilla CLI users don't pay the dep cost.
 # See apps/crabcc-agents/README.md for the worker side and
 # `--transport bullmq` / `CRABCC_AGENT_TRANSPORT=bullmq` to opt in.
-agents-bullmq = ["dep:bullmq-rs", "dep:redis", "dep:futures-util", "dep:chrono"]
+agents-bullmq = ["dep:bullmq-rs", "dep:redis", "dep:futures-util"]
 
 [dependencies]
 crabcc-core   = { workspace = true, features = ["jobs"] }
@@ -68,7 +68,6 @@ tracing-appender = { workspace = true }
 bullmq-rs    = { version = "1", optional = true }
 redis        = { version = "0.28", default-features = false, features = ["tokio-comp", "connection-manager", "streams"], optional = true }
 futures-util = { version = "0.3", optional = true }
-chrono       = { version = "0.4", optional = true }
 # Issue #112 follow-up — jemalloc as the global allocator on the binary
 # crate. ~5-12% on alloc-heavy paths (extract.rs, MCP serve_io). MSVC
 # targets fall back to system allocator (cfg gate in main.rs). Optional

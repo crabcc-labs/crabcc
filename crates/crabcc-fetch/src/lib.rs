@@ -349,14 +349,17 @@ pub async fn fetch_one(
     let host = url_host(url).unwrap_or("");
     let prefer_main = host_uses_article_extractor(host);
     match client.get(url).send().await {
-        Err(e) => FetchResult {
-            url: url.into(),
-            status: 0,
-            title: None,
-            content_markdown: None,
-            via: Transport::Direct,
-            error: Some(e.to_string()),
-        },
+        Err(e) => {
+            tracing::warn!(target: "crabcc_fetch", url = %url, host = %host, error = %e, "fetch failed");
+            FetchResult {
+                url: url.into(),
+                status: 0,
+                title: None,
+                content_markdown: None,
+                via: Transport::Direct,
+                error: Some(e.to_string()),
+            }
+        }
         Ok(resp) => {
             let status = resp.status().as_u16();
             match read_body_capped(resp, max_body_bytes).await {
@@ -483,6 +486,7 @@ async fn read_body_capped(
         .map_err(|e| format!("body chunk: {e}"))?
     {
         if buf.len() + chunk.len() > cap {
+            tracing::warn!(target: "crabcc_fetch", cap, "response body exceeds cap; dropping connection");
             return Err(format!("response body exceeds {cap} bytes"));
         }
         buf.put_slice(&chunk);
@@ -501,9 +505,18 @@ pub async fn fetch_and_clean(urls: &[String], opts: FetchOpts) -> Vec<FetchResul
     if urls.is_empty() {
         return vec![];
     }
+    tracing::debug!(
+        target: "crabcc_fetch",
+        url_count = urls.len(),
+        concurrency = opts.concurrency,
+        enforce_ssrf = opts.enforce_ssrf,
+        max_body_bytes = ?opts.max_body_bytes,
+        "fetch_and_clean start",
+    );
     let client = match make_client(opts.per_url_timeout) {
         Ok(c) => c,
         Err(e) => {
+            tracing::error!(target: "crabcc_fetch", error = %e, "reqwest client build failed");
             return urls
                 .iter()
                 .map(|u| FetchResult {
@@ -529,6 +542,7 @@ pub async fn fetch_and_clean(urls: &[String], opts: FetchOpts) -> Vec<FetchResul
             let _permit = sem.acquire_owned().await.ok();
             if enforce_ssrf {
                 if let Err(reason) = is_ingest_safe_url(&url) {
+                    tracing::debug!(target: "crabcc_fetch", %url, %reason, "SSRF guard rejected url");
                     return (
                         idx,
                         FetchResult {

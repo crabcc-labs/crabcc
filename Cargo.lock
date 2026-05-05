@@ -933,7 +933,6 @@ version = "3.0.0-rc.3"
 dependencies = [
  "anyhow",
  "bullmq-rs",
- "chrono",
  "clap",
  "clap_complete",
  "crabcc-core",
