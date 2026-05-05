@@ -646,6 +646,8 @@ impl TimelineRoute {
             .border_color(border)
             .rounded_md()
             .bg(secondary)
+            .cursor_pointer()
+            .hover(move |s| s.border_color(muted))
             .child(
                 h_flex()
                     .gap_2()
@@ -780,6 +782,11 @@ impl TimelineRoute {
                     .rounded_md()
                     .text_color(badge_color)
                     .text_xs()
+                    .cursor_pointer()
+                    .hover(move |s| s.border_color(foreground).text_color(foreground))
+                    .tooltip(|window, cx| {
+                        Tooltip::new("Pin / unpin agent — narrows the timeline").build(window, cx)
+                    })
                     .child(SharedString::from(format!("agt {trimmed}")))
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         cx.stop_propagation();
@@ -798,6 +805,9 @@ impl TimelineRoute {
             .id(SharedString::from(format!("{row_id}-pin")))
             .px_1()
             .text_color(if pinned { foreground } else { muted })
+            .cursor_pointer()
+            .hover(move |s| s.text_color(foreground))
+            .tooltip(|window, cx| Tooltip::new("Pin / unpin event").build(window, cx))
             .child(SharedString::new_static(if pinned { "★" } else { "☆" }))
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 cx.stop_propagation();
@@ -830,6 +840,8 @@ impl TimelineRoute {
             } else {
                 gpui::transparent_black()
             })
+            .cursor_pointer()
+            .hover(move |s| s.bg(secondary))
             .child(
                 h_flex()
                     .gap_2()
@@ -899,8 +911,13 @@ impl TimelineRoute {
                     .child(
                         div()
                             .id("timeline-inspector-close")
-                            .px_1()
+                            .px_2()
+                            .py_0p5()
+                            .rounded_md()
                             .text_color(muted)
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(secondary))
+                            .tooltip(|window, cx| Tooltip::new("Close inspector").build(window, cx))
                             .child(SharedString::new_static("×"))
                             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                 cx.stop_propagation();
@@ -953,6 +970,9 @@ impl TimelineRoute {
                     .border_color(border)
                     .rounded_md()
                     .text_color(muted)
+                    .cursor_pointer()
+                    .hover(move |s| s.border_color(foreground).text_color(foreground))
+                    .tooltip(|window, cx| Tooltip::new("Copy query to clipboard").build(window, cx))
                     .child(SharedString::new_static("Copy query"))
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         cx.stop_propagation();
