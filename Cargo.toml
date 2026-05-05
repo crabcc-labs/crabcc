@@ -5,6 +5,7 @@ members = [
     "crates/crabcc-cli",
     "crates/crabcc-core",
     "crates/crabcc-fetch",
+    "crates/crabcc-godfather",
     "crates/crabcc-mcp",
     "crates/crabcc-memory",
     "crates/crabcc-memory-bench",
