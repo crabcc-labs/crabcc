@@ -68,6 +68,14 @@ rayon = "1"
 # spans via `RUST_LOG=crabcc_desktop=debug`.
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+# Embedded terminal route (issue #402). `alacritty_terminal` ships
+# its own TTY layer (`alacritty_terminal::tty`) covering Linux/macOS
+# fork-pty + the EventLoop that drains stdin/stdout — no need for
+# `portable-pty` on top. Same stack Zed uses in `crates/terminal/`.
+# The GPUI view layer is hand-rolled (mirrors `zed/crates/terminal_view/`)
+# so the renderer can use our existing theme tokens directly.
+alacritty_terminal = "0.25"
 # Tiny no-transitive-deps Ctrl-C handler — used by `main.rs` for the
 # opt-in graceful-shutdown path that runs `docker compose down` on
 # SIGINT when `CRABCC_DESKTOP_STOP_SERVICES_ON_EXIT=1`. Symmetric

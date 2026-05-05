@@ -21,6 +21,7 @@ pub mod settings;
 pub mod shell;
 pub mod sse;
 pub mod state;
+pub mod terminal;
 pub mod theme;
 pub mod theme_helpers;
 pub mod toasts;
