@@ -39,8 +39,10 @@ from pydantic import BaseModel, Field
 
 from . import __version__
 from .approvals import Decision, PendingApprovals
+from .audit import DecisionAudit, DecisionRecord, DecisionSource
 from .llm import HitlAgent, build_httpx_client
 from .mcp_server import build_mcp, probe_mcp_started, run_mcp
+from .policy import ApprovalPolicy
 from .probes import (
     ProbeConfig,
     ProbeResult,
@@ -144,6 +146,24 @@ class ApprovalListResponse(BaseModel):
     pending: list[ApprovalView]
 
 
+class AuditView(BaseModel):
+    """One audit-trail entry — see :class:`DecisionRecord` for the source shape."""
+
+    timestamp: float
+    tool: str
+    arguments: dict[str, Any]
+    source: DecisionSource
+    chat_id: int | None
+    matched_rule: str | None = None
+    reason: str | None = None
+
+
+class AuditResponse(BaseModel):
+    capacity: int
+    count: int
+    records: list[AuditView]
+
+
 class ChatResponse(BaseModel):
     reply: str
     model: str
@@ -167,12 +187,13 @@ class HealthResponse(BaseModel):
 
 
 def _setup_phase2_approval(app: FastAPI, settings: Settings, http_client: Any) -> None:
-    """Wire the Phase 2 approval flow.
+    """Wire the approval flow + Phase 3 policy / audit.
 
     Builds the in-process pending registry, the Telegram outbound
-    client, and configures the module-level tool gate so tool calls
-    can find them. ``http_client`` is the shared httpx pool; we reuse
-    it for Telegram REST so api.telegram.org keeps a warm connection.
+    client, the auto-approve allowlist, and the audit ring buffer,
+    then hands them all to the module-level tool gate. ``http_client``
+    is the shared httpx pool; reusing it for Telegram REST keeps one
+    warm connection to ``api.telegram.org``.
     """
     approvals = PendingApprovals(default_timeout_s=settings.approval_timeout_s)
     telegram = (
@@ -180,14 +201,20 @@ def _setup_phase2_approval(app: FastAPI, settings: Settings, http_client: Any) -
         if settings.telegram_bot_token
         else None
     )
+    policy = ApprovalPolicy.from_env_value(settings.approval_auto_patterns)
+    audit = DecisionAudit(capacity=settings.audit_capacity)
     configure_tool_gate(
         pending=approvals,
         telegram=telegram,
+        policy=policy,
+        audit=audit,
         default_chat_id=settings.telegram_owner_chat_id,
         default_timeout_s=settings.approval_timeout_s,
     )
     app.state.approvals = approvals
     app.state.telegram = telegram
+    app.state.policy = policy
+    app.state.audit = audit
 
 
 def _probe_cfg(s: Settings) -> ProbeConfig:
@@ -478,6 +505,40 @@ async def approval_list() -> ApprovalListResponse:
     return ApprovalListResponse(pending=[ApprovalView(**a.to_view()) for a in approvals.list()])
 
 
+def _audit_view(r: DecisionRecord) -> AuditView:
+    return AuditView(
+        timestamp=r.timestamp,
+        tool=r.tool,
+        arguments=r.arguments,
+        source=r.source,
+        chat_id=r.chat_id,
+        matched_rule=r.matched_rule,
+        reason=r.reason,
+    )
+
+
+@app.get(
+    "/approval/audit",
+    response_model=AuditResponse,
+    dependencies=[Depends(_verify_token)],
+)
+async def approval_audit(limit: int = 50) -> AuditResponse:
+    """Recent gate decisions, newest first.
+
+    Bounded by ``audit_capacity`` (env knob) and clamped here at
+    1..capacity so an unbounded ``?limit=`` doesn't dump the whole
+    deque on every poll.
+    """
+    audit: DecisionAudit = app.state.audit
+    safe_limit = max(1, min(limit, audit.capacity))
+    records = audit.recent(safe_limit)
+    return AuditResponse(
+        capacity=audit.capacity,
+        count=len(audit),
+        records=[_audit_view(r) for r in records],
+    )
+
+
 # ───── Mini App (Phase 2) ─────
 # StaticFiles is mounted lazily so the directory can be missing in
 # dev (skips the mount; bot+approval flow still works). The Mini App
@@ -539,6 +600,25 @@ async def webapp_respond(
     return ApprovalRespondResponse(accepted=accepted)
 
 
+@app.get(
+    "/webapp/api/audit",
+    response_model=AuditResponse,
+)
+async def webapp_audit(
+    _fields: Annotated[dict[str, str], Depends(_verify_init_data)],
+    limit: int = 50,
+) -> AuditResponse:
+    """Mini App–facing audit listing. Auth: validated initData."""
+    audit: DecisionAudit = app.state.audit
+    safe_limit = max(1, min(limit, audit.capacity))
+    records = audit.recent(safe_limit)
+    return AuditResponse(
+        capacity=audit.capacity,
+        count=len(audit),
+        records=[_audit_view(r) for r in records],
+    )
+
+
 # Mount the static Mini App bundle. The path resolves relative to the
 # package so the same code works in dev (editable install) and in the
 # distroless container (where the package ships under
@@ -546,3 +626,17 @@ async def webapp_respond(
 _webapp_dir = Path(__file__).parent / "webapp"
 if _webapp_dir.is_dir():
     app.mount("/webapp", StaticFiles(directory=_webapp_dir, html=True), name="webapp")
+
+# Local-dev console at /devapp/. Same file layout as /webapp/ but the
+# page authenticates with the bearer token (paste-then-localStorage)
+# and calls /chat, /approval/list, /approval/respond, /approval/audit
+# directly. No Telegram round-trip required — operators can drive the
+# entire HITL flow from a browser tab during local manual testing.
+# When deploying behind cloudflared, do NOT expose this path; the
+# bearer token is the only thing standing between the public internet
+# and the agent. The compose mapping for port 9100 is loopback-only,
+# so by default `localhost:9100/devapp/` works but the public tunnel
+# only fronts /webapp.
+_devapp_dir = Path(__file__).parent / "devapp"
+if _devapp_dir.is_dir():
+    app.mount("/devapp", StaticFiles(directory=_devapp_dir, html=True), name="devapp")

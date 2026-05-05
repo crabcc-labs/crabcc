@@ -116,6 +116,9 @@ includes:
   e2e:
     taskfile: taskfiles/e2e.yml
     flatten: true
+  hitl:
+    taskfile: taskfiles/hitl.yml
+    flatten: true
 
 tasks:
   default:

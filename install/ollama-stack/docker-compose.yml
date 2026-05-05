@@ -280,6 +280,11 @@ services:
       CRABCC_HITL_TELEGRAM_OWNER_CHAT_ID: ${CRABCC_HITL_TELEGRAM_OWNER_CHAT_ID:-}
       CRABCC_HITL_APPROVAL_TIMEOUT_S: ${CRABCC_HITL_APPROVAL_TIMEOUT_S:-120}
       CRABCC_HITL_APPROVAL_REQUIRED_TOOLS: ${CRABCC_HITL_APPROVAL_REQUIRED_TOOLS:-memory_remember,fetch_url}
+      # Phase 3 — per-arg auto-approve allowlist + audit ring buffer.
+      # Empty AUTO_PATTERNS disables the allowlist (every required
+      # tool still prompts). AUDIT_CAPACITY is in-memory only.
+      CRABCC_HITL_APPROVAL_AUTO_PATTERNS: ${CRABCC_HITL_APPROVAL_AUTO_PATTERNS:-}
+      CRABCC_HITL_AUDIT_CAPACITY: ${CRABCC_HITL_AUDIT_CAPACITY:-200}
     ports:
       # Loopback-only — peer containers reach us via service DNS, not
       # the host port. The host bindings exist purely for
