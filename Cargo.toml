@@ -63,7 +63,7 @@ ast-grep-core = "0.42"
 ast-grep-language = "0.42"
 sha2 = "0.10"
 tempfile = "3"
-toml = "0.8"
+toml = "1.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 tracing-appender = "0.2"
