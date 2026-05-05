@@ -311,6 +311,11 @@ impl Render for KnowledgeRoute {
             .rounded_md()
             .text_color(refresh_btn_color)
             .text_xs()
+            .cursor_pointer()
+            .hover(move |s| s.border_color(primary))
+            .tooltip(|window, cx| {
+                Tooltip::new("Refresh drawers now — bypass the 10s tick").build(window, cx)
+            })
             .child(SharedString::new_static("Refresh"))
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 refresh_state.read(cx).submit_memory_refresh();
