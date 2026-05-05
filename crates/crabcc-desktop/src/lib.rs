@@ -30,3 +30,4 @@ pub mod terminal;
 pub mod theme;
 pub mod theme_helpers;
 pub mod toasts;
+pub mod tools;

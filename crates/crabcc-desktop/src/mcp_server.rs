@@ -30,6 +30,7 @@ use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 use crate::sampling::{SamplingHandler, SamplingRequest};
+use crate::tools::{ToolErrorKind, ToolRegistry};
 
 /// MCP protocol version we advertise. MCP dates this with a
 /// YYYY-MM-DD string. Bump when the upstream spec moves.
@@ -87,12 +88,14 @@ impl std::fmt::Debug for McpServerHandle {
 
 /// Bind a Unix domain socket at `socket_path` and start the
 /// listener thread. Subsequent connections route inbound
-/// `sampling/createMessage` to `handler`.
+/// `sampling/createMessage` to `handler` and inbound
+/// `tools/list` + `tools/call` to `tools`.
 ///
 /// Returns the lifecycle handle. Drop it to unlink the socket.
 pub fn spawn(
     socket_path: PathBuf,
     handler: Arc<dyn SamplingHandler>,
+    tools: Arc<ToolRegistry>,
 ) -> Result<McpServerHandle> {
     if let Some(parent) = socket_path.parent() {
         std::fs::create_dir_all(parent)
@@ -112,15 +115,20 @@ pub fn spawn(
     );
 
     let handler_clone = handler.clone();
+    let tools_clone = tools.clone();
     std::thread::Builder::new()
         .name("crabcc-mcp-listener".into())
-        .spawn(move || listener_loop(listener, handler_clone))
+        .spawn(move || listener_loop(listener, handler_clone, tools_clone))
         .context("spawn MCP listener thread")?;
 
     Ok(McpServerHandle { socket_path })
 }
 
-fn listener_loop(listener: UnixListener, handler: Arc<dyn SamplingHandler>) {
+fn listener_loop(
+    listener: UnixListener,
+    handler: Arc<dyn SamplingHandler>,
+    tools: Arc<ToolRegistry>,
+) {
     for stream in listener.incoming() {
         let stream = match stream {
             Ok(s) => s,
@@ -130,10 +138,11 @@ fn listener_loop(listener: UnixListener, handler: Arc<dyn SamplingHandler>) {
             }
         };
         let h = handler.clone();
+        let t = tools.clone();
         if let Err(e) = std::thread::Builder::new()
             .name("crabcc-mcp-conn".into())
             .spawn(move || {
-                if let Err(e) = handle_connection(stream, h) {
+                if let Err(e) = handle_connection(stream, h, t) {
                     debug!(target: "crabcc::mcp_server", error = %e, "connection ended");
                 }
             })
@@ -156,7 +165,11 @@ struct JsonRpcMessage {
     params: Option<Value>,
 }
 
-fn handle_connection(stream: UnixStream, handler: Arc<dyn SamplingHandler>) -> Result<()> {
+fn handle_connection(
+    stream: UnixStream,
+    handler: Arc<dyn SamplingHandler>,
+    tools: Arc<ToolRegistry>,
+) -> Result<()> {
     let read_stream = stream.try_clone().context("clone stream for reader")?;
     let mut reader = BufReader::new(read_stream);
     let mut writer = stream;
@@ -199,6 +212,11 @@ fn handle_connection(stream: UnixStream, handler: Arc<dyn SamplingHandler>) -> R
                     "protocolVersion": PROTOCOL_VERSION,
                     "capabilities": {
                         "sampling": {},
+                        // `listChanged` would be true once we wire
+                        // dynamic tool reload notifications. Keep
+                        // the empty object today; it's enough to
+                        // signal the capability per spec.
+                        "tools": {},
                     },
                     "serverInfo": {
                         "name": "crabcc-desktop",
@@ -215,6 +233,79 @@ fn handle_connection(stream: UnixStream, handler: Arc<dyn SamplingHandler>) -> R
             // initialized to ping. Mirrors LSP.
             "ping" => {
                 send_result(&mut writer, req.id, serde_json::json!({}))?;
+            }
+            "tools/list" => {
+                if !initialized {
+                    send_error(
+                        &mut writer,
+                        req.id,
+                        -32002,
+                        "server not initialized — send `initialize` first",
+                    )?;
+                    continue;
+                }
+                let result = serde_json::json!({
+                    "tools": tools.render_list(),
+                });
+                send_result(&mut writer, req.id, result)?;
+            }
+            "tools/call" => {
+                if !initialized {
+                    send_error(
+                        &mut writer,
+                        req.id,
+                        -32002,
+                        "server not initialized — send `initialize` first",
+                    )?;
+                    continue;
+                }
+                let params = match req.params {
+                    Some(p) => p,
+                    None => {
+                        send_error(
+                            &mut writer,
+                            req.id,
+                            -32602,
+                            "missing params for tools/call",
+                        )?;
+                        continue;
+                    }
+                };
+                let name = match params.get("name").and_then(|v| v.as_str()) {
+                    Some(n) => n.to_string(),
+                    None => {
+                        send_error(
+                            &mut writer,
+                            req.id,
+                            -32602,
+                            "tools/call.params.name must be a string",
+                        )?;
+                        continue;
+                    }
+                };
+                let args = params
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({}));
+                match tools.call(&name, args) {
+                    Ok(result) => {
+                        let val = serde_json::to_value(&result).unwrap_or(Value::Null);
+                        send_result(&mut writer, req.id, val)?;
+                    }
+                    Err(e) => {
+                        // Map ToolErrorKind to JSON-RPC codes.
+                        // Tool-level "ran but failed" errors (where
+                        // the tool itself returns isError=true) are
+                        // not surfaced here — they're successful
+                        // results with the flag set.
+                        let code = match e.kind {
+                            ToolErrorKind::NotFound => -32602,
+                            ToolErrorKind::InvalidArgs => -32602,
+                            ToolErrorKind::Internal => -32603,
+                        };
+                        send_error(&mut writer, req.id, code, &e.message)?;
+                    }
+                }
             }
             "sampling/createMessage" => {
                 if !initialized {
@@ -327,10 +418,6 @@ mod tests {
     }
 
     fn make_server() -> (McpServerHandle, PathBuf, Arc<EchoHandler>) {
-        // Use the system temp dir directly instead of `tempfile`
-        // — Unix socket path length is capped at ~104 bytes on
-        // macOS, and tempfile's default path can exceed that on
-        // some hosts.
         let unique = format!(
             "crabcc-mcp-test-{}-{}.sock",
             std::process::id(),
@@ -340,7 +427,8 @@ mod tests {
         let h = Arc::new(EchoHandler {
             last: std::sync::Mutex::new(None),
         });
-        let server = spawn(path.clone(), h.clone()).expect("spawn server");
+        let tools = Arc::new(crate::tools::ToolRegistry::with_defaults());
+        let server = spawn(path.clone(), h.clone(), tools).expect("spawn server");
         (server, path, h)
     }
 
@@ -408,7 +496,7 @@ mod tests {
     }
 
     #[test]
-    fn initialize_advertises_sampling_capability() {
+    fn initialize_advertises_sampling_and_tools_capability() {
         let (_server, path, _h) = make_server();
         let mut stream = UnixStream::connect(&path).unwrap();
         let resp = send_recv(
@@ -422,7 +510,130 @@ mod tests {
         );
         assert_eq!(resp["result"]["protocolVersion"], PROTOCOL_VERSION);
         assert!(resp["result"]["capabilities"]["sampling"].is_object());
+        assert!(resp["result"]["capabilities"]["tools"].is_object());
         assert_eq!(resp["result"]["serverInfo"]["name"], "crabcc-desktop");
+    }
+
+    #[test]
+    fn tools_list_returns_registered_tools_after_init() {
+        let (_server, path, _h) = make_server();
+        let mut stream = UnixStream::connect(&path).unwrap();
+        let _ = send_recv(
+            &mut stream,
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {},
+            }),
+        );
+        send_notification(
+            &mut stream,
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized",
+            }),
+        );
+        let resp = send_recv(
+            &mut stream,
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/list",
+            }),
+        );
+        let tools = resp["result"]["tools"].as_array().unwrap();
+        assert!(
+            tools.iter().any(|t| t["name"] == "desktop.echo"),
+            "echo tool must be registered by default",
+        );
+    }
+
+    #[test]
+    fn tools_call_routes_to_handler_after_init() {
+        let (_server, path, _h) = make_server();
+        let mut stream = UnixStream::connect(&path).unwrap();
+        let _ = send_recv(
+            &mut stream,
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {},
+            }),
+        );
+        send_notification(
+            &mut stream,
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized",
+            }),
+        );
+        let resp = send_recv(
+            &mut stream,
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "desktop.echo",
+                    "arguments": {"text": "hello mcp"},
+                },
+            }),
+        );
+        assert_eq!(resp["result"]["isError"], false);
+        assert_eq!(resp["result"]["content"][0]["type"], "text");
+        assert_eq!(resp["result"]["content"][0]["text"], "hello mcp");
+    }
+
+    #[test]
+    fn tools_call_unknown_tool_returns_invalid_params() {
+        let (_server, path, _h) = make_server();
+        let mut stream = UnixStream::connect(&path).unwrap();
+        let _ = send_recv(
+            &mut stream,
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {},
+            }),
+        );
+        send_notification(
+            &mut stream,
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/initialized",
+            }),
+        );
+        let resp = send_recv(
+            &mut stream,
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "nope.does.not.exist",
+                    "arguments": {},
+                },
+            }),
+        );
+        assert_eq!(resp["error"]["code"], -32602);
+    }
+
+    #[test]
+    fn tools_list_requires_initialized() {
+        let (_server, path, _h) = make_server();
+        let mut stream = UnixStream::connect(&path).unwrap();
+        let resp = send_recv(
+            &mut stream,
+            &serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/list",
+            }),
+        );
+        assert_eq!(resp["error"]["code"], -32002);
     }
 
     #[test]
@@ -504,12 +715,17 @@ mod tests {
     fn unknown_method_returns_method_not_found() {
         let (_server, path, _h) = make_server();
         let mut stream = UnixStream::connect(&path).unwrap();
+        // Pick a method we *don't* implement — `prompts/list` is an
+        // MCP method the server doesn't surface today. Originally
+        // this test used `tools/list` but that's a recognised
+        // method now; using a still-unimplemented one keeps the
+        // assertion honest.
         let resp = send_recv(
             &mut stream,
             &serde_json::json!({
                 "jsonrpc": "2.0",
                 "id": 1,
-                "method": "tools/list",
+                "method": "prompts/list",
             }),
         );
         assert_eq!(resp["error"]["code"], -32601);
