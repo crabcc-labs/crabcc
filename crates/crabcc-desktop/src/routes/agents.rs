@@ -263,6 +263,11 @@ impl Render for AgentsRoute {
             .children(StatusFilter::ALL.into_iter().map(|f| {
                 let is_active = f == active_filter;
                 let entity = entity_for_pill.clone();
+                let pill_tooltip: SharedString = if is_active {
+                    SharedString::from(format!("Showing {} — click to keep", f.label()))
+                } else {
+                    SharedString::from(format!("Filter agents to {}", f.label()))
+                };
                 div()
                     .id(SharedString::new_static(f.id()))
                     .px_2()
@@ -273,6 +278,7 @@ impl Render for AgentsRoute {
                     .text_color(if is_active { foreground } else { muted })
                     .cursor_pointer()
                     .hover(move |s| s.border_color(primary))
+                    .tooltip(move |window, cx| Tooltip::new(pill_tooltip.clone()).build(window, cx))
                     .child(SharedString::new_static(f.label()))
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         entity.update(cx, |this, cx| {
