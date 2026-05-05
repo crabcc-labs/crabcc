@@ -110,6 +110,27 @@ class Settings(BaseSettings):
     mcp_enabled: bool = True
     mcp_port: int = 9101
 
+    # ───── Approval flow (Phase 2) ─────
+    # Bot token used to *send* approval prompts and validate Mini App
+    # initData signatures. Same value the Rust bot reads as
+    # TELEGRAM_BOT_TOKEN. ``None`` disables outbound prompts; required
+    # tools then fail closed (deny) — never silently bypass.
+    telegram_bot_token: str | None = None
+    # Default chat id for approval prompts when the request didn't
+    # carry one (e.g. MCP callers, scheduled jobs). Typically set to
+    # the bot's owner Telegram user id.
+    telegram_owner_chat_id: int | None = None
+    # Wall-clock cap on a pending approval. After this, the agent
+    # observes a synthetic deny with reason="timeout".
+    approval_timeout_s: float = 120.0
+    # Tools that REQUIRE explicit human approval before each invocation.
+    # Defaults reflect the write-ish / network-side-effect surface;
+    # everything else (read-only crabcc + memory queries) auto-runs.
+    # Override via env: ``CRABCC_HITL_APPROVAL_REQUIRED_TOOLS=a,b,c``.
+    approval_required_tools: list[str] = Field(
+        default_factory=lambda: ["memory_remember", "fetch_url"]
+    )
+
     # ───── Logging ─────
     # `info` is the default for the service + uvicorn. Bump to `debug`
     # locally when chasing a problem; the root logger toggles per

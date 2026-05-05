@@ -9,12 +9,14 @@ layer doesn't change shape.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import httpx
 from agents import Agent, OpenAIChatCompletionsModel, Runner, function_tool
 from openai import AsyncOpenAI
 
+from .approvals import current_chat_id
+from .tool_gate import gated
 from .tools import (
     crabcc_callers,
     crabcc_files,
@@ -85,25 +87,33 @@ class HitlAgent:
             model=settings.model,
             openai_client=self._client,
         )
-        # Tool registration — Phase 1.
+        # Tool registration — Phase 2.
         # `function_tool` derives the JSON schema from each function's
         # signature + docstring. Tools handle their own "MCP not
         # configured" branch (return ``ok=False`` instead of raising)
-        # so a missing crabcc-mcp service doesn't crash the loop —
-        # the agent can still respond conversationally + use
-        # ``fetch_url``.
-        tools = [
-            function_tool(fetch_url),
-            function_tool(crabcc_sym),
-            function_tool(crabcc_refs),
-            function_tool(crabcc_callers),
-            function_tool(crabcc_files),
-            function_tool(crabcc_outline),
-            function_tool(crabcc_fuzzy),
-            function_tool(memory_search),
-            function_tool(memory_remember),
-            function_tool(memory_list),
+        # so a missing crabcc-mcp service doesn't crash the loop.
+        # `gated(...)` wraps each fn with the approval flow: tools whose
+        # name is in ``approval_required_tools`` ask the user via
+        # Telegram and block on the response; everything else runs
+        # straight through.
+        required = set(settings.approval_required_tools)
+
+        def risk_for(fn_name: str) -> Literal["auto", "required"]:
+            return "required" if fn_name in required else "auto"
+
+        raw_tools = [
+            fetch_url,
+            crabcc_sym,
+            crabcc_refs,
+            crabcc_callers,
+            crabcc_files,
+            crabcc_outline,
+            crabcc_fuzzy,
+            memory_search,
+            memory_remember,
+            memory_list,
         ]
+        tools = [function_tool(gated(fn, risk=risk_for(fn.__name__))) for fn in raw_tools]  # type: ignore[arg-type]
         self._agent = Agent(
             name="crabcc-helper",
             instructions=settings.system_prompt,
@@ -116,12 +126,15 @@ class HitlAgent:
         )
         self._max_task_chars = settings.max_task_chars
 
-    async def chat(self, user_message: str) -> str:
+    async def chat(self, user_message: str, *, tg_chat_id: int | None = None) -> str:
         """Single round-trip: user prompt → agent reply.
 
-        No tool calls, no session state — Phase 0. Returns the model's
-        final text. Long inputs are clipped at ``max_task_chars`` to
-        keep prompt cost bounded; the user gets a short note appended.
+        ``tg_chat_id``, when set, threads through to the approval gate
+        via :data:`current_chat_id` (a :class:`contextvars.ContextVar`)
+        so each tool call asks the right user. Falls back to the
+        env-pinned ``telegram_owner_chat_id`` when ``None``. Long
+        inputs are clipped at ``max_task_chars`` to keep prompt cost
+        bounded; the user gets a short note appended.
         """
         if len(user_message) > self._max_task_chars:
             logger.warning(
@@ -131,10 +144,14 @@ class HitlAgent:
             user_message = (
                 user_message[: self._max_task_chars] + "\n\n[message truncated by HITL agent]"
             )
-        result = await Runner.run(self._agent, user_message)
+        token = current_chat_id.set(tg_chat_id)
+        try:
+            result = await Runner.run(self._agent, user_message)
+        finally:
+            current_chat_id.reset(token)
         # `final_output` is the last assistant message text. The SDK
-        # returns ``None`` only on tool-only flows (Phase 1+); for
-        # Phase 0 it's always a string.
+        # returns ``None`` only on tool-only flows; for the prompt-only
+        # round-trip it's always a string.
         return result.final_output or ""
 
     async def aclose(self) -> None:

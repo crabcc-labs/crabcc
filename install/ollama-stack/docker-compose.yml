@@ -256,6 +256,16 @@ services:
       # SDK no-ops cleanly when this is unset.
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_DEPLOYMENT_ENVIRONMENT: ${OTEL_DEPLOYMENT_ENVIRONMENT:-dev}
+      # Phase 2 — approval flow + Mini App. The bot token is shared
+      # with the Rust crabcc-telegram bot (one BotFather token, two
+      # processes; we only emit messages, the bot owns getUpdates).
+      # ``CRABCC_HITL_TELEGRAM_OWNER_CHAT_ID`` is the fallback chat for
+      # approvals when /chat didn't carry one. Empty values disable
+      # the relevant surface — required tools then fail closed.
+      CRABCC_HITL_TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      CRABCC_HITL_TELEGRAM_OWNER_CHAT_ID: ${CRABCC_HITL_TELEGRAM_OWNER_CHAT_ID:-}
+      CRABCC_HITL_APPROVAL_TIMEOUT_S: ${CRABCC_HITL_APPROVAL_TIMEOUT_S:-120}
+      CRABCC_HITL_APPROVAL_REQUIRED_TOOLS: ${CRABCC_HITL_APPROVAL_REQUIRED_TOOLS:-memory_remember,fetch_url}
     ports:
       # Loopback-only — peer containers reach us via service DNS, not
       # the host port. The host bindings exist purely for
@@ -282,6 +292,62 @@ services:
       - no-new-privileges:true
     networks:
       - stack
+      - crabcc-shared
+
+  # cloudflared — public HTTPS tunnel for the Telegram Mini App
+  # (/webapp/*). Telegram requires HTTPS for Mini Apps and signs
+  # initData with the bot token, so the tunnel only fronts the HITL
+  # service's webapp paths. Running this service is optional: when
+  # ``CLOUDFLARED_TUNNEL_TOKEN`` is empty, the tunnel container
+  # backs off and exits, the rest of the stack works unchanged.
+  #
+  # Setup (one-off):
+  #   1. Cloudflare Zero Trust → Networks → Tunnels → Create
+  #   2. Pick "Cloudflared" connector, copy the tunnel token
+  #   3. Add a public hostname (e.g. crabcc-webapp.<your-zone>.com)
+  #      pointing service ``hitl:9100`` (path /webapp).
+  #   4. Set ``CLOUDFLARED_TUNNEL_TOKEN=<token>`` in .env, then
+  #      ``docker compose up -d cloudflared``.
+  #   5. Configure the bot: BotFather → /setdomain →
+  #      crabcc-webapp.<your-zone>.com.
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    init: true
+    labels:
+      <<: *labels
+      com.crabcc.role: "tunnel"
+    profiles:
+      # Opt-in service: only starts when the user passes
+      # ``--profile tunnel`` or ``COMPOSE_PROFILES=tunnel``. Keeps
+      # ``compose up`` lean for users who don't run a Mini App.
+      - tunnel
+    # Token is interpolated lazily via env_file so `compose config`
+    # against an empty .env stays clean for users who don't run the
+    # tunnel. Cloudflared itself rejects empty tokens with a clear
+    # error if the profile is activated without one.
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARED_TUNNEL_TOKEN:-}
+    command:
+      - tunnel
+      - --no-autoupdate
+      - run
+    depends_on:
+      hitl:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 128mb
+    logging: *logging
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    networks:
+      # Same network as hitl — the tunnel resolves ``hitl:9100`` via
+      # docker DNS and forwards Cloudflare-side requests through it.
       - crabcc-shared
 
 volumes:

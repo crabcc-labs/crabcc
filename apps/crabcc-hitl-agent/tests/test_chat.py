@@ -100,7 +100,10 @@ def test_chat_round_trip_returns_reply() -> None:
         assert body["reply"] == "hi from haiku"
         assert body["model"] == "claude-haiku-4-5-test"
     runner_mock.assert_awaited_once()
-    # Second positional arg is the user message.
+    # Second positional arg is the user message. ``await_args`` is
+    # typed Optional by AsyncMock; assert before unpacking so mypy
+    # narrows.
+    assert runner_mock.await_args is not None
     args, _kwargs = runner_mock.await_args
     assert args[1] == "ping?"
 
@@ -127,6 +130,7 @@ def test_chat_clips_overlong_task(monkeypatch: pytest.MonkeyPatch) -> None:
     with client:
         r = client.post("/chat", json={"task": "x" * 1_000})
         assert r.status_code == 200
+    assert runner_mock.await_args is not None
     args, _ = runner_mock.await_args
     forwarded = args[1]
     # 10-char cap + the truncation suffix.

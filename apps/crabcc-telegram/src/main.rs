@@ -40,7 +40,7 @@ use anyhow::{anyhow, Context, Result};
 use reqwest::Url;
 use teloxide::{
     prelude::*,
-    types::{InlineKeyboardButton, InlineKeyboardMarkup, ParseMode, WebAppInfo},
+    types::{CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, ParseMode, WebAppInfo},
     utils::command::BotCommands,
 };
 use tokio::process::Command as TokioCommand;
@@ -285,10 +285,15 @@ fn truncate(s: &str, max: usize) -> &str {
 /// approval prompts. Phase 1+ will add an SSE channel here so the
 /// bot can render "🧠 thinking..." → "🔧 wants to call sym Store, [✅
 /// approve]" inline.
-async fn hitl_chat(http: &reqwest::Client, task: &str) -> Result<String> {
+async fn hitl_chat(http: &reqwest::Client, task: &str, chat_id: i64) -> Result<String> {
     let base = std::env::var("CRABCC_HITL_URL").unwrap_or_else(|_| "http://hitl:9100".to_string());
     let url = format!("{}/chat", base.trim_end_matches('/'));
-    let mut req = http.post(&url).json(&serde_json::json!({ "task": task }));
+    let mut req = http
+        .post(&url)
+        // `tg_chat_id` lets the HITL agent route Phase 2 approval prompts
+        // back to the user who started the agent, instead of the
+        // env-pinned fallback.
+        .json(&serde_json::json!({ "task": task, "tg_chat_id": chat_id }));
     if let Ok(token) = std::env::var("CRABCC_HITL_API_TOKEN") {
         if !token.is_empty() {
             req = req.bearer_auth(token);
@@ -306,6 +311,47 @@ async fn hitl_chat(http: &reqwest::Client, task: &str) -> Result<String> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| anyhow!("HITL response missing `reply` field: {body}"))
+}
+
+/// POST a callback decision to HITL `/approval/respond`.
+///
+/// The bot is the single consumer of `getUpdates`, so callback queries
+/// land here. We forward them to HITL where the actual pending future
+/// lives. Idempotent on HITL's side — a stale id returns
+/// `accepted=false` and we just acknowledge the tap without editing.
+async fn hitl_respond(
+    http: &reqwest::Client,
+    request_id: &str,
+    decision: &str,
+    user_id: u64,
+) -> Result<bool> {
+    let base = std::env::var("CRABCC_HITL_URL").unwrap_or_else(|_| "http://hitl:9100".to_string());
+    let url = format!("{}/approval/respond", base.trim_end_matches('/'));
+    let mut req = http.post(&url).json(&serde_json::json!({
+        "request_id": request_id,
+        "decision": decision,
+        "user_id": user_id,
+    }));
+    if let Ok(token) = std::env::var("CRABCC_HITL_API_TOKEN") {
+        if !token.is_empty() {
+            req = req.bearer_auth(token);
+        }
+    }
+    let resp = req
+        .send()
+        .await
+        .context("POST /approval/respond to HITL")?;
+    let status = resp.status();
+    if !status.is_success() {
+        let snippet = resp.text().await.unwrap_or_default();
+        let snippet = snippet.chars().take(300).collect::<String>();
+        return Err(anyhow!("HITL HTTP {status}: {snippet}"));
+    }
+    let body: serde_json::Value = resp.json().await.context("decode HITL respond JSON")?;
+    Ok(body
+        .get("accepted")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false))
 }
 
 // ── command handlers ──────────────────────────────────────────────────────────
@@ -347,8 +393,9 @@ async fn handle(bot: Bot, msg: Message, cmd: Cmd, cfg: Arc<Config>) -> ResponseR
             let chat_id = msg.chat.id;
             let pending_id = pending.id;
             let bot_clone = bot.clone();
+            let chat_id_i64 = chat_id.0;
             tokio::spawn(async move {
-                let outcome = hitl_chat(&http, &task_for_call).await;
+                let outcome = hitl_chat(&http, &task_for_call, chat_id_i64).await;
                 let text = match outcome {
                     Ok(reply) => {
                         // Telegram caps a single message at 4096 chars; the HITL
@@ -488,6 +535,76 @@ async fn handle(bot: Bot, msg: Message, cmd: Cmd, cfg: Arc<Config>) -> ResponseR
     Ok(())
 }
 
+// ── callback queries — Phase 2 approval flow ─────────────────────────────────
+
+/// Handle inline-button taps from approval prompts.
+///
+/// HITL sends `sendMessage` with `callback_data` of the shape
+/// `approve:<request_id>` or `deny:<request_id>`. When the user taps
+/// either, Telegram delivers a `callback_query` to whichever process
+/// owns `getUpdates` — that's us, the Rust bot. We forward the
+/// decision to HITL `/approval/respond`, edit the original message
+/// to reflect the outcome, and `answerCallbackQuery` to clear the
+/// loading spinner Telegram shows on the button.
+async fn handle_callback(bot: Bot, q: CallbackQuery, cfg: Arc<Config>) -> ResponseResult<()> {
+    if !is_owner(q.from.id.0) {
+        // Same lockdown as message commands. Acknowledge silently so
+        // a non-owner doesn't see a spinning button.
+        let _ = bot.answer_callback_query(&q.id).await;
+        return Ok(());
+    }
+    let Some(data) = q.data.as_deref() else {
+        let _ = bot.answer_callback_query(&q.id).await;
+        return Ok(());
+    };
+    let (decision, request_id) = match data.split_once(':') {
+        Some(("approve", id)) => ("approve", id),
+        Some(("deny", id)) => ("deny", id),
+        _ => {
+            let _ = bot.answer_callback_query(&q.id).await;
+            return Ok(());
+        }
+    };
+
+    let resp = hitl_respond(&cfg.http, request_id, decision, q.from.id.0).await;
+    let (toast, status_label) = match (decision, &resp) {
+        ("approve", Ok(true)) => ("✅ Approved", "✅ Approved"),
+        ("approve", Ok(false)) => ("⚠️ Already resolved or expired", "⚠️ Stale"),
+        ("deny", Ok(true)) => ("🛑 Denied", "🛑 Denied"),
+        ("deny", Ok(false)) => ("⚠️ Already resolved or expired", "⚠️ Stale"),
+        (_, Err(e)) => {
+            tracing::warn!(error = %e, decision, request_id, "HITL respond failed");
+            ("⚠️ HITL unreachable", "⚠️ HITL unreachable")
+        }
+        _ => ("?", "?"),
+    };
+
+    // Best-effort acknowledgement; ignore errors so a failed
+    // callback-answer doesn't drop the original message edit.
+    let _ = bot.answer_callback_query(&q.id).text(toast).await;
+
+    // Edit the original prompt to record the outcome — this also
+    // strips the inline keyboard so a stale tap can't re-fire.
+    // teloxide wraps the callback's source message in
+    // `MaybeInaccessibleMessage` because Telegram strips body fields
+    // from very old messages; only the `Regular` variant carries the
+    // text + ids we need to issue an edit.
+    if let Some(teloxide::types::MaybeInaccessibleMessage::Regular(msg)) = q.message.as_ref() {
+        let new_text = match msg.text() {
+            Some(orig) => format!("{}\n\n{}", orig, status_label),
+            None => status_label.to_string(),
+        };
+        if let Err(e) = bot
+            .edit_message_text(msg.chat.id, msg.id, new_text)
+            .await
+        {
+            tracing::warn!(error = %e, "edit_message_text on callback failed");
+        }
+    }
+
+    Ok(())
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 #[tokio::main]
@@ -534,9 +651,21 @@ async fn main() -> Result<()> {
 
     let bot = Bot::from_env(); // reads TELEGRAM_BOT_TOKEN
 
-    let handler = Update::filter_message()
-        .filter_command::<Cmd>()
-        .endpoint(move |bot: Bot, msg: Message, cmd: Cmd| handle(bot, msg, cmd, Arc::clone(&cfg)));
+    let cfg_for_msg = Arc::clone(&cfg);
+    let cfg_for_cb = Arc::clone(&cfg);
+    let handler = dptree::entry()
+        .branch(
+            Update::filter_message()
+                .filter_command::<Cmd>()
+                .endpoint(move |bot: Bot, msg: Message, cmd: Cmd| {
+                    handle(bot, msg, cmd, Arc::clone(&cfg_for_msg))
+                }),
+        )
+        .branch(
+            Update::filter_callback_query().endpoint(move |bot: Bot, q: CallbackQuery| {
+                handle_callback(bot, q, Arc::clone(&cfg_for_cb))
+            }),
+        );
 
     Dispatcher::builder(bot, handler)
         .enable_ctrlc_handler()

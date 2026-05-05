@@ -1,6 +1,6 @@
 # crabcc-hitl-agent
 
-Human-in-the-loop agent service. Sits between the Rust Telegram bot and the LiteLLM proxy. **Phase 0** ships the round-trip wiring — no tools, no approval flow yet.
+Human-in-the-loop agent service. Sits between the Rust Telegram bot and the LiteLLM proxy. **Phase 2** wires per-tool approval prompts via Telegram inline buttons, plus a Telegram Mini App at `/webapp/*` for browsing the pending queue.
 
 ## Architecture
 
@@ -16,20 +16,24 @@ LiteLLM proxy :4000                  ← install/ollama-stack
 LLM (Claude tool-call models / Ollama fallback)
 ```
 
-Phase 1 will add a `tools/` package that registers the crabcc MCP HTTP surface (sym/refs/callers/files/outline/fuzzy/memory.*) as Agent tools. Phase 2 wires the human-approval flow (inline-button "approve / reject" via the bot before any tool runs).
+Phase 1 added a `tools/` package registering the crabcc MCP HTTP surface (sym/refs/callers/files/outline/fuzzy/memory.*) plus `fetch_url`. Phase 2 gates each side-effecting tool behind a Telegram approval prompt and exposes a Mini App for queue management.
 
 ## Endpoints
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
 | `GET`  | `/healthz` | none | Liveness probe (k8s-shaped). |
-| `POST` | `/chat`    | bearer | Single round-trip: `{task}` → model → `{reply, model}`. |
-| _reserved_ | `/webapp/*` | (future) | Telegram Mini App surface (Phase 2). |
+| `POST` | `/chat`    | bearer | Single round-trip: `{task, tg_chat_id?}` → `{reply, model}`. |
+| `POST` | `/approval/respond` | bearer | Bot forwards inline-button taps. |
+| `GET`  | `/approval/list`    | bearer | Snapshot of pending approvals. |
+| `GET`  | `/webapp/*`         | initData | Telegram Mini App static bundle. |
+| `GET`  | `/webapp/api/approvals` | initData | Mini App approvals listing. |
+| `POST` | `/webapp/api/respond`   | initData | Mini App approve/deny. |
 
 Body for `POST /chat`:
 
 ```json
-{ "task": "what does crabcc-godfather do?", "session_id": null }
+{ "task": "find Store callers", "tg_chat_id": 5875395828 }
 ```
 
 Response:
@@ -51,6 +55,10 @@ Every knob is an env var with the `CRABCC_HITL_` prefix.
 | `CRABCC_HITL_LITELLM_API_KEY` | `sk-litellm-dev-key` | LiteLLM master / virtual key. |
 | `CRABCC_HITL_MODEL` | `claude-haiku-4-5` | Model id as registered in `install/ollama-stack/litellm.config.yaml`. |
 | `CRABCC_HITL_MAX_TASK_CHARS` | `4000` | Hard cap on user prompt length. Truncates with a clear suffix. |
+| `CRABCC_HITL_TELEGRAM_BOT_TOKEN` | _(unset)_ | Bot token used to **send** approval prompts and validate Mini App initData. Empty disables the gate; required tools fail closed. |
+| `CRABCC_HITL_TELEGRAM_OWNER_CHAT_ID` | _(unset)_ | Fallback chat id for approvals when `/chat` carried no `tg_chat_id`. |
+| `CRABCC_HITL_APPROVAL_TIMEOUT_S` | `120` | Per-tool wait time. Times out into a synthetic deny. |
+| `CRABCC_HITL_APPROVAL_REQUIRED_TOOLS` | `memory_remember,fetch_url` | Comma-separated list of tools that always need approval. Read-only tools auto-run. |
 
 ## Local dev
 
@@ -97,40 +105,50 @@ docker compose up -d
 docker compose logs -f hitl
 ```
 
-## §5 cloudflared / Telegram Mini App
+## cloudflared / Telegram Mini App
 
 The bot ↔ HITL service path **does not need cloudflared** — both run inside the `crabcc-shared` docker network and reach each other by service DNS. Bearer-token auth is the only boundary check.
 
-Telegram Mini Apps require a publicly-reachable HTTPS URL (BotFather rejects `http://` and private hostnames). When Phase 2 lands a webapp, expose only the `/webapp/*` path through cloudflared:
+Telegram Mini Apps require a publicly-reachable HTTPS URL (BotFather rejects `http://` and private hostnames). The compose stack ships a `cloudflared` service behind a `tunnel` profile:
 
-```yaml
-# ~/.cloudflared/config.yml — bot-specific tunnel.
-tunnel: <tunnel-id>
-ingress:
-  - hostname: hitl.<your-domain>
-    path: /webapp/*
-    service: http://127.0.0.1:9100
-  # Reject everything else publicly. /chat must NEVER be exposed —
-  # auth is bearer-only and the bot is the sole legitimate caller.
-  - service: http_status:404
+```bash
+# 1. Cloudflare Zero Trust → Networks → Tunnels → Create.
+# 2. Pick "Cloudflared" connector; copy the token.
+# 3. Add a public hostname pointing at `hitl:9100`, path `/webapp`.
+# 4. Drop the token in install/ollama-stack/.env:
+echo "CLOUDFLARED_TUNNEL_TOKEN=<token>" >> install/ollama-stack/.env
+
+# 5. Bring up the tunnel alongside the rest of the stack:
+docker compose --profile tunnel up -d
 ```
 
-Then `BotFather → /setmenubutton` (or the `/newbot` Mini App URL prompt) takes the public `https://hitl.<your-domain>/webapp/...` URL. The internal `/chat` endpoint stays loopback-only.
+Configure the bot once: `BotFather → /setmenubutton` (or `/newbot` Mini App URL) with the public `https://<hostname>/webapp/` URL. The internal `/chat` endpoint stays loopback-only — only `/webapp/*` is exposed.
+
+Mini App auth is `X-Telegram-Init-Data`-validated (HMAC-SHA256 over the bot token). Bearer tokens are **not** accepted on `/webapp/api/*`.
 
 ## Layout
 
 ```
 apps/crabcc-hitl-agent/
-├── pyproject.toml           # uv-managed, ruff/mypy/pytest configured
-├── Dockerfile               # multi-stage; linux/arm64 first
-├── docker-compose.yml       # joins crabcc-shared
+├── pyproject.toml             # uv-managed, ruff/mypy/pytest configured
+├── Dockerfile                 # multi-stage; linux/arm64 first
+├── docker-compose.yml         # joins crabcc-shared
 ├── README.md
 ├── src/
 │   └── crabcc_hitl/
 │       ├── __init__.py
-│       ├── main.py          # FastAPI app, /healthz + /chat
-│       ├── settings.py      # pydantic-settings, env-driven
-│       └── llm.py           # OpenAI Agents SDK wrapper → LiteLLM
+│       ├── _types.py          # shared TypedDicts (Telegram wire shapes)
+│       ├── main.py            # FastAPI app: /healthz, /chat, /approval/*, /webapp/*
+│       ├── settings.py        # pydantic-settings, env-driven
+│       ├── llm.py             # OpenAI Agents SDK wrapper → LiteLLM
+│       ├── approvals.py       # PendingApprovals registry + ContextVar
+│       ├── telegram_client.py # Bot REST client + initData validator
+│       ├── tool_gate.py       # gated() decorator wrapping each tool
+│       ├── tools/             # crabcc + memory + fetch tool registry
+│       └── webapp/            # Mini App static bundle (index.html)
 └── tests/
-    └── test_chat.py         # mocked Runner.run; auth + clip tests
+    ├── test_chat.py           # mocked Runner.run; auth + clip tests
+    ├── test_fetch_url.py      # markitdown tool wrapper
+    ├── test_phase1_tools.py   # crabcc + memory wrapper tests
+    └── test_phase2_approval.py # gate + registry + initData
 ```
