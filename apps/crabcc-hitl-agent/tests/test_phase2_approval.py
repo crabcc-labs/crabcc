@@ -11,6 +11,8 @@ from typing import Any
 import pytest
 
 from crabcc_hitl.approvals import Decision, PendingApprovals, current_chat_id
+from crabcc_hitl.audit import DecisionAudit
+from crabcc_hitl.policy import ApprovalPolicy
 from crabcc_hitl.telegram_client import validate_init_data
 from crabcc_hitl.tool_gate import configure as configure_tool_gate
 from crabcc_hitl.tool_gate import gated
@@ -126,6 +128,8 @@ async def test_auto_risk_bypasses_gate() -> None:
     configure_tool_gate(
         pending=pending,
         telegram=None,  # not configured, but auto bypasses anyway
+        policy=ApprovalPolicy(),
+        audit=DecisionAudit(),
         default_chat_id=None,
         default_timeout_s=5.0,
     )
@@ -143,6 +147,8 @@ async def test_required_risk_without_telegram_denies() -> None:
     configure_tool_gate(
         pending=pending,
         telegram=None,
+        policy=ApprovalPolicy(),
+        audit=DecisionAudit(),
         default_chat_id=None,
         default_timeout_s=5.0,
     )
@@ -165,6 +171,8 @@ async def test_required_risk_approve_runs_tool() -> None:
     configure_tool_gate(
         pending=pending,
         telegram=_FakeTelegram(),  # type: ignore[arg-type]
+        policy=ApprovalPolicy(),
+        audit=DecisionAudit(),
         default_chat_id=42,
         default_timeout_s=5.0,
     )
@@ -203,6 +211,8 @@ async def test_required_risk_deny_short_circuits() -> None:
     configure_tool_gate(
         pending=pending,
         telegram=_FakeTelegram(),  # type: ignore[arg-type]
+        policy=ApprovalPolicy(),
+        audit=DecisionAudit(),
         default_chat_id=42,
         default_timeout_s=5.0,
     )
@@ -244,6 +254,8 @@ async def test_chat_id_threaded_via_contextvar() -> None:
     configure_tool_gate(
         pending=pending,
         telegram=_FakeTelegram(),  # type: ignore[arg-type]
+        policy=ApprovalPolicy(),
+        audit=DecisionAudit(),
         default_chat_id=99,  # fallback if no contextvar
         default_timeout_s=5.0,
     )

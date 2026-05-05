@@ -131,6 +131,19 @@ class Settings(BaseSettings):
         default_factory=lambda: ["memory_remember", "fetch_url"]
     )
 
+    # ───── Approval policy / audit (Phase 3) ─────
+    # Per-arg auto-approve allowlist. Comma-separated ``tool:arg=glob``
+    # rules; a matching rule short-circuits the prompt and runs the
+    # tool, recording a "policy" audit entry. Empty disables the
+    # allowlist (every required tool still prompts).
+    # Examples: ``fetch_url:url=https://github.com/**`` /
+    # ``memory_remember:key=note:*``.
+    approval_auto_patterns: str | None = None
+    # Bounded ring-buffer of recent gate decisions exposed at
+    # /approval/audit. ~200 entries is plenty for human review;
+    # bumping this isn't free (purely in-memory).
+    audit_capacity: int = 200
+
     # ───── Logging ─────
     # `info` is the default for the service + uvicorn. Bump to `debug`
     # locally when chasing a problem; the root logger toggles per

@@ -91,6 +91,9 @@
     <h1>Pending approvals</h1>
     <div id="root" class="loading">Loading…</div>
 
+    <h1 style="margin-top: 28px">Recent decisions</h1>
+    <div id="audit" class="loading">Loading…</div>
+
     <script>
       // Telegram exposes the WebApp object globally; missing == loaded
       // outside Telegram, in which case we just show the data with no
@@ -104,6 +107,7 @@
 
       const initData = (tg && tg.initData) || "";
       const root = document.getElementById("root");
+      const audit = document.getElementById("audit");
 
       async function fetchApprovals() {
         const res = await fetch("/webapp/api/approvals", {
@@ -111,6 +115,54 @@
         });
         if (!res.ok) throw new Error(`http ${res.status}`);
         return (await res.json()).pending;
+      }
+
+      async function fetchAudit() {
+        const res = await fetch("/webapp/api/audit?limit=20", {
+          headers: { "X-Telegram-Init-Data": initData },
+        });
+        if (!res.ok) throw new Error(`http ${res.status}`);
+        return (await res.json()).records;
+      }
+
+      function fmtTime(ts) {
+        const d = new Date(ts * 1000);
+        return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      }
+
+      const SOURCE_BADGE = {
+        approve: "✅ approve",
+        deny: "🛑 deny",
+        auto: "▶ auto",
+        policy: "📜 policy",
+        timeout: "⌛ timeout",
+        prompt_failed: "⚠️ prompt fail",
+        misconfigured: "⚠️ no channel",
+      };
+
+      function renderAudit(items) {
+        if (!items.length) {
+          audit.className = "empty";
+          audit.textContent = "No decisions yet.";
+          return;
+        }
+        audit.className = "";
+        audit.innerHTML = "";
+        for (const r of items) {
+          const card = document.createElement("div");
+          card.className = "row";
+          const tool = document.createElement("div");
+          tool.className = "tool";
+          tool.textContent = `${SOURCE_BADGE[r.source] || r.source} • ${r.tool}`;
+          const meta = document.createElement("div");
+          meta.className = "meta";
+          let line = fmtTime(r.timestamp);
+          if (r.matched_rule) line += ` • ${r.matched_rule}`;
+          if (r.reason) line += ` • ${r.reason}`;
+          meta.textContent = line;
+          card.append(tool, meta);
+          audit.appendChild(card);
+        }
       }
 
       async function respond(requestId, decision) {
@@ -179,8 +231,9 @@
 
       async function tick() {
         try {
-          const items = await fetchApprovals();
+          const [items, history] = await Promise.all([fetchApprovals(), fetchAudit()]);
           render(items);
+          renderAudit(history);
         } catch (e) {
           showError(e.message);
         }

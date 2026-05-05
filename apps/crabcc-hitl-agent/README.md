@@ -1,6 +1,6 @@
 # crabcc-hitl-agent
 
-Human-in-the-loop agent service. Sits between the Rust Telegram bot and the LiteLLM proxy. **Phase 2** wires per-tool approval prompts via Telegram inline buttons, plus a Telegram Mini App at `/webapp/*` for browsing the pending queue.
+Human-in-the-loop agent service. Sits between the Rust Telegram bot and the LiteLLM proxy. **Phase 3** adds a per-arg auto-approve allowlist, an in-process audit ring buffer, and a local-dev console (`/devapp/`) so the whole flow can be driven from a browser without Telegram.
 
 ## Architecture
 
@@ -26,9 +26,12 @@ Phase 1 added a `tools/` package registering the crabcc MCP HTTP surface (sym/re
 | `POST` | `/chat`    | bearer | Single round-trip: `{task, tg_chat_id?}` → `{reply, model}`. |
 | `POST` | `/approval/respond` | bearer | Bot forwards inline-button taps. |
 | `GET`  | `/approval/list`    | bearer | Snapshot of pending approvals. |
+| `GET`  | `/approval/audit`   | bearer | Recent gate decisions, newest first. |
 | `GET`  | `/webapp/*`         | initData | Telegram Mini App static bundle. |
 | `GET`  | `/webapp/api/approvals` | initData | Mini App approvals listing. |
 | `POST` | `/webapp/api/respond`   | initData | Mini App approve/deny. |
+| `GET`  | `/webapp/api/audit`     | initData | Mini App audit listing. |
+| `GET`  | `/devapp/*`         | bearer (in page) | Local-dev browser console. **Loopback only.** |
 
 Body for `POST /chat`:
 
@@ -59,8 +62,24 @@ Every knob is an env var with the `CRABCC_HITL_` prefix.
 | `CRABCC_HITL_TELEGRAM_OWNER_CHAT_ID` | _(unset)_ | Fallback chat id for approvals when `/chat` carried no `tg_chat_id`. |
 | `CRABCC_HITL_APPROVAL_TIMEOUT_S` | `120` | Per-tool wait time. Times out into a synthetic deny. |
 | `CRABCC_HITL_APPROVAL_REQUIRED_TOOLS` | `memory_remember,fetch_url` | Comma-separated list of tools that always need approval. Read-only tools auto-run. |
+| `CRABCC_HITL_APPROVAL_AUTO_PATTERNS` | _(unset)_ | Per-arg allowlist that bypasses the prompt. Comma-separated `tool:arg=glob`. Example: `fetch_url:url=https://github.com/**`. |
+| `CRABCC_HITL_AUDIT_CAPACITY` | `200` | Ring-buffer size for `/approval/audit`. In-memory only. |
 
 ## Local dev
+
+The fastest path is the repo-root Taskfile target — brings up the full stack and exposes a browser console at `http://127.0.0.1:9100/devapp/`.
+
+```bash
+task hitl:up        # generates .env if missing; starts ollama+caddy+litellm+hitl
+task hitl:open      # opens the dev console in your browser
+task hitl:logs      # tails hitl logs (SERVICE=litellm/caddy/ollama for others)
+task hitl:test      # ruff + ruff format + mypy strict + pytest
+task hitl:down      # tear down (volumes preserved)
+```
+
+The dev console is a single static page that authenticates with the bearer token (paste once, persists in `localStorage`), sends `/chat`, polls `/approval/list`, posts `/approval/respond`, and renders `/approval/audit` — the full HITL flow without Telegram. Loopback-only by design; the cloudflared tunnel only fronts `/webapp`.
+
+Manual setup (no Taskfile):
 
 ```bash
 # 1. Install (uv recommended; pip works too).
@@ -144,11 +163,15 @@ apps/crabcc-hitl-agent/
 │       ├── approvals.py       # PendingApprovals registry + ContextVar
 │       ├── telegram_client.py # Bot REST client + initData validator
 │       ├── tool_gate.py       # gated() decorator wrapping each tool
+│       ├── policy.py          # per-arg auto-approve allowlist (Phase 3)
+│       ├── audit.py           # in-process decision ring buffer (Phase 3)
 │       ├── tools/             # crabcc + memory + fetch tool registry
-│       └── webapp/            # Mini App static bundle (index.html)
+│       ├── webapp/            # Mini App static bundle (Telegram)
+│       └── devapp/            # local-dev browser console (bearer auth)
 └── tests/
     ├── test_chat.py           # mocked Runner.run; auth + clip tests
     ├── test_fetch_url.py      # markitdown tool wrapper
     ├── test_phase1_tools.py   # crabcc + memory wrapper tests
-    └── test_phase2_approval.py # gate + registry + initData
+    ├── test_phase2_approval.py # gate + registry + initData
+    └── test_phase3_policy_audit.py # policy parser + audit + e2e
 ```
