@@ -241,7 +241,7 @@ impl Render for SystemRoute {
                 muted,
                 foreground,
                 entity.clone(),
-                models_body(state, muted, card, q),
+                models_body(state, muted, card, card, q),
             ))
             .child(section(
                 "RECENT KILLS",
@@ -667,7 +667,13 @@ fn profiles_body(
     body
 }
 
-fn models_body(state: &AppState, muted: Hsla, card: Hsla, query_lower: &str) -> gpui::AnyElement {
+fn models_body(
+    state: &AppState,
+    muted: Hsla,
+    secondary: Hsla,
+    card: Hsla,
+    query_lower: &str,
+) -> gpui::AnyElement {
     let body: gpui::AnyElement = match state.agent_models.as_ref() {
         None => loading("loading models…", muted),
         Some(m) if m.models.is_empty() => loading("no models registered", muted),
@@ -702,6 +708,45 @@ fn models_body(state: &AppState, muted: Hsla, card: Hsla, query_lower: &str) -> 
                 v_flex()
                     .gap_1()
                     .children(visible.into_iter().map(|model| {
+                        // File-path chip — leaf only for row density;
+                        // click copies the full path so the user can
+                        // jump to the model definition file. Inlined
+                        // (not via `copy_chip`) because that helper
+                        // ties display and payload to the same string,
+                        // and we deliberately want them to differ.
+                        let leaf: SharedString = model
+                            .file
+                            .rsplit('/')
+                            .next()
+                            .filter(|s| !s.is_empty())
+                            .map(|s| SharedString::from(s.to_string()))
+                            .unwrap_or_else(|| model.file.clone());
+                        let file_id: gpui::ElementId = SharedString::from(format!(
+                            "model-file-copy-{}-{}",
+                            model.provider, model.name
+                        ))
+                        .into();
+                        let full_path = model.file.clone();
+                        let tooltip_text: SharedString = SharedString::from(format!(
+                            "Click to copy \u{201C}{full_path}\u{201D}"
+                        ));
+                        let file_chip = div()
+                            .id(file_id)
+                            .px_1()
+                            .rounded_md()
+                            .text_color(muted)
+                            .cursor_pointer()
+                            .hover(move |s| s.bg(secondary))
+                            .tooltip(move |window, cx| {
+                                Tooltip::new(tooltip_text.clone()).build(window, cx)
+                            })
+                            .child(leaf)
+                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                cx.stop_propagation();
+                                cx.write_to_clipboard(ClipboardItem::new_string(
+                                    full_path.to_string(),
+                                ));
+                            });
                         h_flex()
                             .gap_3()
                             .child(
@@ -720,6 +765,7 @@ fn models_body(state: &AppState, muted: Hsla, card: Hsla, query_lower: &str) -> 
                                     .as_ref()
                                     .map(|p| div().text_color(muted).child(p.clone())),
                             )
+                            .child(file_chip)
                             .into_any_element()
                     }))
                     .into_any_element()
