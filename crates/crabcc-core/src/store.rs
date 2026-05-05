@@ -145,31 +145,41 @@ impl Store {
     }
 
     pub fn upsert_file(&self, path: &str, sha256: &str, mtime: i64, lang: &str) -> Result<i64> {
-        self.conn.execute(
+        // `RETURNING id` (sqlite ≥ 3.35, in every modern build) collapses
+        // the old "INSERT … ON CONFLICT … then SELECT id" pair into one
+        // round-trip. `last_insert_rowid` doesn't update on the UPSERT
+        // conflict path, which is why the prior code needed the
+        // separate SELECT — RETURNING fires on both INSERT and UPDATE
+        // arms. Combined with `prepare_cached` this halves per-file SQL
+        // cost on the indexer's hot loop.
+        let mut stmt = self.conn.prepare_cached(
             "INSERT INTO files(path, sha256, mtime, lang, indexed_at)
              VALUES (?1, ?2, ?3, ?4, strftime('%s','now'))
              ON CONFLICT(path) DO UPDATE SET sha256=excluded.sha256,
                                              mtime=excluded.mtime,
                                              lang=excluded.lang,
-                                             indexed_at=strftime('%s','now')",
-            params![path, sha256, mtime, lang],
+                                             indexed_at=strftime('%s','now')
+             RETURNING id",
         )?;
-        // last_insert_rowid is NOT updated on the UPSERT conflict path, so
-        // we must look up the id after to handle both insert and update.
-        let id: i64 = self.conn.query_row(
-            "SELECT id FROM files WHERE path = ?1",
-            params![path],
-            |row| row.get(0),
-        )?;
+        let id: i64 = stmt.query_row(params![path, sha256, mtime, lang], |row| row.get(0))?;
         Ok(id)
     }
 
     pub fn replace_symbols(&self, file_id: i64, symbols: &[Symbol]) -> Result<()> {
-        self.conn
-            .execute("DELETE FROM symbols WHERE file_id = ?1", params![file_id])?;
-        // We always bind `signature_enc` explicitly so the row reflects the
-        // encoding actually used (no reliance on the schema DEFAULT).
-        let mut stmt = self.conn.prepare(
+        // One transaction per file → one fsync per file instead of
+        // one fsync per row. With `synchronous=NORMAL` each statement
+        // would otherwise still cost a journal-sync; bundling the
+        // DELETE + N INSERTs collapses them into a single commit.
+        // `unchecked_transaction` works on `&Connection` (vs the
+        // `&mut Connection` `transaction()` requires), which keeps
+        // the public `&self` signature stable for callers holding a
+        // `Mutex<Store>`. Single-writer guarantee makes this safe.
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM symbols WHERE file_id = ?1", params![file_id])?;
+        // `prepare_cached` keeps the parsed statement on the
+        // Connection's cache across files, so a 13 k-file reindex
+        // pays the prepare cost once instead of 13 k times.
+        let mut stmt = tx.prepare_cached(
             "INSERT INTO symbols(file_id, name, kind, signature, parent, line_start, line_end, visibility, signature_enc)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         )?;
@@ -206,6 +216,10 @@ impl Store {
                 0_i64,
             ])?;
         }
+        // Drop the prepared statement before commit so the borrow on
+        // `tx` is released.
+        drop(stmt);
+        tx.commit()?;
         Ok(())
     }
 
@@ -213,15 +227,18 @@ impl Store {
     /// Mirror of `replace_symbols` — same all-or-nothing per-file shape so
     /// reindexing a file leaves the edges table consistent.
     pub fn replace_edges(&self, file_id: i64, edges: &[Edge]) -> Result<()> {
-        self.conn
-            .execute("DELETE FROM edges WHERE src_file_id = ?1", params![file_id])?;
-        let mut stmt = self.conn.prepare(
+        // Same transaction-per-file shape as `replace_symbols`.
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM edges WHERE src_file_id = ?1", params![file_id])?;
+        let mut stmt = tx.prepare_cached(
             "INSERT INTO edges(src_file_id, src_symbol, dst_name, kind, line)
              VALUES (?1, ?2, ?3, ?4, ?5)",
         )?;
         for e in edges {
             stmt.execute(params![file_id, e.src_symbol, e.dst_name, e.kind, e.line])?;
         }
+        drop(stmt);
+        tx.commit()?;
         Ok(())
     }
 
@@ -238,7 +255,7 @@ impl Store {
     /// `kind = 'call'`, returning {file, line, src_symbol} per hit. Cost is
     /// dominated by the index seek on `idx_edges_dst_kind`.
     pub fn callers_of(&self, name: &str) -> Result<Vec<EdgeHit>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT f.path, e.line, e.src_symbol
              FROM edges e JOIN files f ON e.src_file_id = f.id
              WHERE e.dst_name = ?1 AND e.kind = 'call'
@@ -258,7 +275,7 @@ impl Store {
     /// Used by `CallGraph::build` to fold the edges table into adjacency in
     /// a single scan instead of N * find_callers.
     pub fn iter_call_edges(&self) -> Result<Vec<(String, String)>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT src_symbol, dst_name FROM edges
              WHERE kind = 'call' AND src_symbol IS NOT NULL",
         )?;
@@ -269,7 +286,7 @@ impl Store {
     }
 
     pub fn list_files(&self) -> Result<Vec<(String, String)>> {
-        let mut stmt = self.conn.prepare("SELECT path, lang FROM files")?;
+        let mut stmt = self.conn.prepare_cached("SELECT path, lang FROM files")?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
@@ -283,7 +300,9 @@ impl Store {
         // our own walker, never untrusted input. The public surface
         // change is binary-compatible for callers that just `.get()`
         // the map; we type-alias-swap rather than wrap.
-        let mut stmt = self.conn.prepare("SELECT path, sha256, mtime FROM files")?;
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT path, sha256, mtime FROM files")?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -388,7 +407,7 @@ impl Store {
     }
 
     pub fn iter_all_symbols(&self) -> Result<Vec<Symbol>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT s.name, s.kind, s.signature, s.parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
              FROM symbols s JOIN files f ON s.file_id = f.id",
         )?;
@@ -408,7 +427,7 @@ impl Store {
     }
 
     pub fn symbols_in_file(&self, file: &str) -> Result<Vec<Symbol>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT s.name, s.kind, s.signature, s.parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
              FROM symbols s JOIN files f ON s.file_id = f.id
              WHERE f.path = ?1
@@ -430,7 +449,7 @@ impl Store {
     }
 
     pub fn find_by_name(&self, name: &str) -> Result<Vec<Symbol>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT s.name, s.kind, s.signature, s.parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
              FROM symbols s JOIN files f ON s.file_id = f.id
              WHERE s.name = ?1",
