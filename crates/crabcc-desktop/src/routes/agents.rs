@@ -578,6 +578,11 @@ impl Render for AgentsRoute {
                     let card_hover_bg = cx.theme().secondary;
                     let entity_click = entity_for_click.clone();
                     let id_for_click = a.id.clone();
+                    let card_tooltip: SharedString = if is_selected {
+                        SharedString::from(format!("Close agent {} details", a.id))
+                    } else {
+                        SharedString::from(format!("Open agent {}", a.id))
+                    };
                     v_flex()
                         .id(a.derived.card_id.clone())
                         .gap_1()
@@ -588,6 +593,9 @@ impl Render for AgentsRoute {
                         .rounded_md()
                         .cursor_pointer()
                         .hover(move |s| s.bg(card_hover_bg))
+                        .tooltip(move |window, cx| {
+                            Tooltip::new(card_tooltip.clone()).build(window, cx)
+                        })
                         .child(head_row)
                         .child(meta_row)
                         .child(prompt_row)
