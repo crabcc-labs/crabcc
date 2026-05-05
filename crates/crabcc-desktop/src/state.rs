@@ -1567,8 +1567,9 @@ fn try_start_mcp_server(
             .with_observer(observer)
             .with_resource_provider(provider),
     );
+    let tools = Arc::new(crate::tools::ToolRegistry::with_defaults());
 
-    match crate::mcp_server::spawn(socket_path.clone(), handler) {
+    match crate::mcp_server::spawn(socket_path.clone(), handler, tools) {
         Ok(h) => {
             info!(
                 target: "crabcc::state",
