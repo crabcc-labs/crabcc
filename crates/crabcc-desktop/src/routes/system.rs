@@ -230,7 +230,7 @@ impl Render for SystemRoute {
                 muted,
                 foreground,
                 entity.clone(),
-                profiles_body(state, muted, card, q),
+                profiles_body(state, self.state.clone(), muted, primary, card, q),
             ))
             .child(section(
                 "AGENT MODELS",
@@ -507,7 +507,15 @@ fn ollama_body(state: &AppState, muted: Hsla, success: Hsla, danger: Hsla) -> gp
     body
 }
 
-fn profiles_body(state: &AppState, muted: Hsla, card: Hsla, query_lower: &str) -> gpui::AnyElement {
+#[allow(clippy::too_many_arguments)]
+fn profiles_body(
+    state: &AppState,
+    state_entity: Entity<AppState>,
+    muted: Hsla,
+    primary: Hsla,
+    card: Hsla,
+    query_lower: &str,
+) -> gpui::AnyElement {
     let body: gpui::AnyElement = match state.agent_profiles.as_ref() {
         None => loading("loading profiles…", muted),
         Some(p) if p.profiles.is_empty() => loading("no profiles registered", muted),
@@ -545,16 +553,33 @@ fn profiles_body(state: &AppState, muted: Hsla, card: Hsla, query_lower: &str) -
                 v_flex()
                     .gap_1()
                     .children(visible.into_iter().map(|prof| {
+                        // Profile id chip — clicking navigates to Home
+                        // and opens the spawn sheet pre-selected to
+                        // this profile. Same one-shot handoff pattern
+                        // as the other cross-route links (#382, #463).
+                        let nav_id = prof.id.clone();
+                        let nav_state = state_entity.clone();
+                        let chip_id: gpui::ElementId =
+                            SharedString::from(format!("profile-launch-{}", prof.id)).into();
+                        let id_chip = div()
+                            .id(chip_id)
+                            .px_2()
+                            .py_0p5()
+                            .bg(card)
+                            .rounded_md()
+                            .text_color(primary)
+                            .cursor_pointer()
+                            .child(prof.id.clone())
+                            .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                                let id = nav_id.clone();
+                                nav_state.update(cx, |s, cx| {
+                                    s.navigate_to_dashboard_with_spawn_profile(id);
+                                    cx.notify();
+                                });
+                            });
                         h_flex()
                             .gap_3()
-                            .child(
-                                div()
-                                    .px_2()
-                                    .py_0p5()
-                                    .bg(card)
-                                    .rounded_md()
-                                    .child(prof.id.clone()),
-                            )
+                            .child(id_chip)
                             .children(
                                 prof.crate_
                                     .as_ref()

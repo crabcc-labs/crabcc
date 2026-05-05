@@ -332,6 +332,13 @@ pub struct AppState {
     /// selects the matching pill so its detail + neighbour highlight
     /// land on entry.
     pub pending_kgraph_selected_id: Option<SharedString>,
+    /// Staging slot for a one-shot agent-spawn flow: profile id to
+    /// pre-select when the dashboard's spawn sheet opens. Set by
+    /// `navigate_to_dashboard_with_spawn_profile` (e.g. the System
+    /// route's per-profile "Launch agent" affordance); the dashboard
+    /// reads-and-clears it via `take_pending_spawn_profile` on its
+    /// next render.
+    pub pending_spawn_profile: Option<SharedString>,
     /// Worker plumbing for one-shot HTTP submits — see [`WorkerHandles`].
     /// `Option` only because `Default` can't fabricate a real flume
     /// channel; `state::build` populates it before the view ever
@@ -1065,6 +1072,22 @@ impl AppState {
         self.pending_kgraph_selected_id.take()
     }
 
+    /// Navigate to Home and stage `profile_id` so the dashboard's
+    /// spawn sheet opens pre-populated with that profile selected.
+    /// Used by the System route's per-profile launch affordance.
+    pub fn navigate_to_dashboard_with_spawn_profile(&mut self, profile_id: SharedString) {
+        self.pending_spawn_profile = Some(profile_id);
+        self.route = Route::Home;
+    }
+
+    /// Read-and-clear the pending spawn-profile id. One-shot —
+    /// dashboard applies it once on next render and the slot stays
+    /// empty until staged again. Closing or submitting the sheet
+    /// won't re-trigger the staged profile.
+    pub fn take_pending_spawn_profile(&mut self) -> Option<SharedString> {
+        self.pending_spawn_profile.take()
+    }
+
     pub fn agents_running(&self) -> u32 {
         use crate::api::types::AgentStatus;
         self.agents
@@ -1772,5 +1795,22 @@ mod tests {
             Some("web:abc")
         );
         assert_eq!(s.take_pending_kgraph_selected_id(), None);
+    }
+
+    #[test]
+    fn navigate_to_dashboard_with_spawn_profile_sets_route_and_stages_id() {
+        let mut s = AppState::new();
+        assert!(s.pending_spawn_profile.is_none());
+        s.navigate_to_dashboard_with_spawn_profile("crabcc-default".into());
+        assert_eq!(s.route, Route::Home);
+        assert_eq!(s.pending_spawn_profile.as_deref(), Some("crabcc-default"));
+    }
+
+    #[test]
+    fn take_pending_spawn_profile_is_one_shot() {
+        let mut s = AppState::new();
+        s.navigate_to_dashboard_with_spawn_profile("p1".into());
+        assert_eq!(s.take_pending_spawn_profile().as_deref(), Some("p1"));
+        assert_eq!(s.take_pending_spawn_profile(), None);
     }
 }
