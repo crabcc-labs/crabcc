@@ -421,6 +421,79 @@ impl crate::sampling::SamplingObserver for InspectorSamplingObserver {
             .tx
             .send(crate::state::AppEvent::InspectorRecord(evt));
     }
+
+    fn on_subcall_request(
+        &self,
+        parent_id: u64,
+        method: &str,
+        chosen_model: &str,
+        request: &crate::sampling::SamplingRequest,
+    ) -> u64 {
+        let id = CallEvent::next_id();
+        let params = serde_json::to_string_pretty(request).unwrap_or_else(|_| "{}".into());
+        let evt = CallEvent {
+            id,
+            ts_ms: now_ms(),
+            server: SharedString::new_static("self"),
+            direction: Direction::In,
+            method: SharedString::from(method.to_string()),
+            // For sub-calls, surface the chosen sub-model so the
+            // inspector row reads e.g.
+            // "sampling/createMessage · ollama/qwen3:4b" — distinct
+            // from the parent's qwen3.5:35b badge.
+            tool_name: Some(SharedString::from(chosen_model.to_string())),
+            status: Status::Pending,
+            latency_ms: None,
+            params_pretty: truncate_inline(params),
+            result_pretty: None,
+            // Subcall request links *directly* to the top-level
+            // parent — flat hierarchy is enough today.
+            parent_id: Some(parent_id),
+        };
+        let _ = self
+            .tx
+            .send(crate::state::AppEvent::InspectorRecord(evt));
+        id
+    }
+
+    fn on_subcall_response(
+        &self,
+        _sub_id: u64,
+        parent_id: u64,
+        result: &Result<crate::sampling::SamplingResponse, crate::sampling::SamplingError>,
+        latency_ms: u32,
+    ) {
+        let id = CallEvent::next_id();
+        let (status, result_pretty) = match result {
+            Ok(r) => {
+                let body = serde_json::to_string_pretty(r).unwrap_or_else(|_| "{}".into());
+                (Status::Ok, Some(truncate_inline(body)))
+            }
+            Err(e) => (
+                Status::Err {
+                    code: e.kind.code(),
+                    msg: SharedString::from(e.message.clone()),
+                },
+                None,
+            ),
+        };
+        let evt = CallEvent {
+            id,
+            ts_ms: now_ms(),
+            server: SharedString::new_static("self"),
+            direction: Direction::Out,
+            method: SharedString::new_static("sampling/createMessage"),
+            tool_name: None,
+            status,
+            latency_ms: Some(latency_ms),
+            params_pretty: SharedString::new_static("(subcall response — see parent)"),
+            result_pretty,
+            parent_id: Some(parent_id),
+        };
+        let _ = self
+            .tx
+            .send(crate::state::AppEvent::InspectorRecord(evt));
+    }
 }
 
 fn now_ms() -> i64 {
