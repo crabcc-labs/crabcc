@@ -23,7 +23,7 @@
 use gpui::{
     div, prelude::*, px, Context, Entity, IntoElement, MouseButton, Render, SharedString, Window,
 };
-use gpui_component::{h_flex, v_flex, ActiveTheme};
+use gpui_component::{h_flex, tooltip::Tooltip, v_flex, ActiveTheme};
 
 use crate::about::AboutModal;
 use crate::state::AppState;
@@ -110,6 +110,11 @@ impl Render for SettingsPanel {
                 if is_active { "\u{25C9}" } else { "\u{25CB}" },
                 name,
             ));
+            let row_tooltip: SharedString = if is_active {
+                SharedString::from(format!("On {name} palette — already active"))
+            } else {
+                SharedString::from(format!("Use {name} palette"))
+            };
             h_flex()
                 .id(row_id)
                 .gap_2()
@@ -121,6 +126,7 @@ impl Render for SettingsPanel {
                 .text_color(row_color)
                 .cursor_pointer()
                 .hover(move |s| s.bg(hover_bg))
+                .tooltip(move |window, cx| Tooltip::new(row_tooltip.clone()).build(window, cx))
                 .child(label)
                 .on_mouse_down(MouseButton::Left, move |_, window, cx| {
                     // Apply + persist + close. Same flow as the
@@ -169,6 +175,10 @@ impl Render for SettingsPanel {
             "mute alerts",
             muted_now,
             toggle_style,
+            (
+                SharedString::new_static("Mute toast alerts"),
+                SharedString::new_static("Unmute toast alerts"),
+            ),
             {
                 let state = self.state.clone();
                 move |cx: &mut gpui::App| {
@@ -184,6 +194,10 @@ impl Render for SettingsPanel {
             "echo to Notification Center",
             echo_now,
             toggle_style,
+            (
+                SharedString::new_static("Echo toasts to macOS Notification Center"),
+                SharedString::new_static("Stop echoing toasts to macOS Notification Center"),
+            ),
             {
                 let state = self.state.clone();
                 move |cx: &mut gpui::App| {
@@ -210,6 +224,9 @@ impl Render for SettingsPanel {
             .text_color(muted)
             .cursor_pointer()
             .hover(move |s| s.bg(hover_bg))
+            .tooltip(|window, cx| {
+                Tooltip::new("Open About — version + license + credits").build(window, cx)
+            })
             .child(SharedString::from(format!(
                 "About crabcc-desktop v{} \u{203A}",
                 env!("CARGO_PKG_VERSION")
@@ -260,6 +277,7 @@ fn make_toggle_row<F>(
     label: &'static str,
     on: bool,
     style: ToggleRowStyle,
+    tooltips: (SharedString, SharedString),
     on_click: F,
 ) -> gpui::Stateful<gpui::Div>
 where
@@ -270,6 +288,11 @@ where
     let row_border = if on { style.primary } else { style.border };
     let hover_bg = style.hover_bg;
     let label_text = SharedString::from(format!("{glyph} {label}"));
+    // tooltips.0 is the verb when the toggle is currently OFF (action
+    // = "turn it on"); tooltips.1 is the verb when ON (action = "turn
+    // it off"). Mirrors the state-aware tooltip pattern used across
+    // the rest of the app.
+    let tooltip = if on { tooltips.1 } else { tooltips.0 };
     h_flex()
         .id(gpui::ElementId::Name(id))
         .gap_2()
@@ -281,6 +304,7 @@ where
         .text_color(row_color)
         .cursor_pointer()
         .hover(move |s| s.bg(hover_bg))
+        .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
         .child(label_text)
         .on_mouse_down(MouseButton::Left, move |_, _, cx| on_click(cx))
 }
