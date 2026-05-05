@@ -44,7 +44,7 @@ anyhow = "1"
 ahash = "0.8"
 clap = { version = "4", features = ["derive"] }
 markdown = { version = "1", default-features = false }
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
 sqlite-vec = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
