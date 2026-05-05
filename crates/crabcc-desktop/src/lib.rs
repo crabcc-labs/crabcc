@@ -18,6 +18,7 @@ pub mod icons;
 pub mod inspector;
 pub mod native;
 pub mod routes;
+pub mod sampling;
 pub mod services;
 pub mod settings;
 pub mod shell;
