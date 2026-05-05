@@ -13,7 +13,7 @@
 //! native macOS bindings.
 
 use gpui::{div, prelude::*, px, Context, IntoElement, MouseButton, Render, SharedString, Window};
-use gpui_component::{h_flex, v_flex, ActiveTheme};
+use gpui_component::{h_flex, tooltip::Tooltip, v_flex, ActiveTheme};
 
 /// One curated dependency to surface in the modal.
 struct DepEntry {
@@ -132,6 +132,7 @@ impl Render for AboutModal {
                     .rounded_md()
                     .cursor_pointer()
                     .hover(move |s| s.bg(hover_bg))
+                    .tooltip(|window, cx| Tooltip::new("Close About").build(window, cx))
                     .child(SharedString::new_static("\u{00D7}"))
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         entity_for_close.update(cx, |this, cx| {
@@ -225,6 +226,7 @@ impl Render for AboutModal {
             .items_center()
             .justify_center()
             .cursor_pointer()
+            .tooltip(|window, cx| Tooltip::new("Click backdrop to close About").build(window, cx))
             .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                 entity_for_backdrop.update(cx, |this, cx| {
                     this.close();
