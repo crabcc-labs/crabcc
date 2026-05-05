@@ -210,6 +210,80 @@ services:
       - stack
       - crabcc-shared
 
+  # crabcc-hitl-agent — Python FastAPI service bridging the Telegram
+  # bot to LiteLLM. Phase 0: round-trip /chat. Phase 1+ adds tool
+  # calls + HITL approval. See apps/crabcc-hitl-agent/README.md for
+  # the full service contract.
+  #
+  # Joins both networks for the same reason litellm does: `stack` for
+  # the LiteLLM upstream hop, `crabcc-shared` so the telegram bot (in
+  # its own container / host process) can reach us by service DNS.
+  hitl:
+    image: ghcr.io/peterlodri-sec/crabcc-hitl-agent:${CRABCC_HITL_VERSION:-dev}
+    # Built locally on first `compose up` when no image is in the
+    # local registry. The build context is the apps/ directory; the
+    # relative path resolves from this compose file's location.
+    build:
+      context: ../../apps/crabcc-hitl-agent
+      dockerfile: Dockerfile
+    container_name: crabcc-hitl-agent
+    restart: unless-stopped
+    init: true
+    labels:
+      <<: *labels
+      com.crabcc.role: "hitl-agent"
+    depends_on:
+      litellm:
+        condition: service_healthy
+    environment:
+      # Required — fail-fast when missing.
+      CRABCC_HITL_LITELLM_BASE_URL: http://litellm:4000
+      CRABCC_HITL_LITELLM_API_KEY: ${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY required}
+      CRABCC_HITL_API_TOKEN: ${CRABCC_HITL_API_TOKEN:?CRABCC_HITL_API_TOKEN required (openssl rand -hex 32)}
+      # Pick the model registered in litellm.config.yaml. Default is
+      # the cheapest tool-call-capable Claude — Phase 0 doesn't need
+      # tools yet, but the model still has to be tool-capable so
+      # Phase 1 lands without re-config.
+      CRABCC_HITL_MODEL: ${CRABCC_HITL_MODEL:-claude-haiku-4-5}
+      # Tunables — sane defaults baked into settings.py.
+      CRABCC_HITL_MAX_TASK_CHARS: ${CRABCC_HITL_MAX_TASK_CHARS:-4000}
+      CRABCC_HITL_LOG_LEVEL: ${CRABCC_HITL_LOG_LEVEL:-info}
+      CRABCC_HITL_MCP_ENABLED: ${CRABCC_HITL_MCP_ENABLED:-true}
+      # Mark we're inside compose so service_discovery uses service-DNS
+      # hostnames in the announce log.
+      CRABCC_COMPOSE: "1"
+      # Optional: the rotel collector (issue #105 sibling). The OTel
+      # SDK no-ops cleanly when this is unset.
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_DEPLOYMENT_ENVIRONMENT: ${OTEL_DEPLOYMENT_ENVIRONMENT:-dev}
+    ports:
+      # Loopback-only — peer containers reach us via service DNS, not
+      # the host port. The host bindings exist purely for
+      # `curl 127.0.0.1:9100/healthz` debugging from the dev box.
+      - "127.0.0.1:${CRABCC_HITL_PORT:-9100}:9100"
+      - "127.0.0.1:${CRABCC_HITL_MCP_PORT:-9101}:9101"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "--max-time", "5", "http://127.0.0.1:9100/healthz"]
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          memory: 512mb
+    logging: *logging
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - stack
+      - crabcc-shared
+
 volumes:
   ollama_models:
   caddy_data:
