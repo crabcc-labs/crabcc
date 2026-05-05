@@ -418,7 +418,12 @@ fn row(
         // levels render with the primary border + foreground colour
         // so the user can spot the active filter even after pills
         // scrolled off-screen.
-        .child(
+        .child({
+            let level_tooltip: SharedString = if level_pinned {
+                SharedString::new_static("Unpin level — show all levels")
+            } else {
+                SharedString::from(format!("Pin level {}", level_label(evt.level)))
+            };
             div()
                 .id(badge_id)
                 .w(px(60.0))
@@ -433,9 +438,7 @@ fn row(
                 .text_color(level_color)
                 .cursor_pointer()
                 .hover(move |s| s.border_color(primary))
-                .tooltip(|window, cx| {
-                    Tooltip::new("Pin / unpin level filter").build(window, cx)
-                })
+                .tooltip(move |window, cx| Tooltip::new(level_tooltip.clone()).build(window, cx))
                 .child(SharedString::from(level_label(evt.level)))
                 .on_mouse_down(MouseButton::Left, {
                     let entity = entity.clone();
@@ -450,8 +453,8 @@ fn row(
                             cx.notify();
                         });
                     }
-                }),
-        )
+                })
+        })
         // Target (e.g. `crabcc::core::store`). Truncated to keep the
         // body column wide. Click toggles a target-pin: a stronger
         // narrow than the substring filter (exact match on the full
@@ -465,13 +468,18 @@ fn row(
             let entity_for_target = entity.clone();
             let target_active =
                 target_pin.is_some_and(|p| p.as_ref() == evt.target.as_ref());
+            let target_tooltip: SharedString = if target_active {
+                SharedString::new_static("Unpin target — show all targets")
+            } else {
+                SharedString::from(format!("Pin target {}", evt.target))
+            };
             div()
                 .id(target_id)
                 .w(px(220.0))
                 .text_color(if target_active { foreground } else { muted })
                 .cursor_pointer()
                 .hover(move |s| s.text_color(foreground))
-                .tooltip(|window, cx| Tooltip::new("Pin / unpin target").build(window, cx))
+                .tooltip(move |window, cx| Tooltip::new(target_tooltip.clone()).build(window, cx))
                 .child(SharedString::from(truncate(&evt.target, 32)))
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     let t = target_clicked.clone();
