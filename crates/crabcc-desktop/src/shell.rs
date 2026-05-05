@@ -631,7 +631,7 @@ impl Render for Shell {
         let status_bar = h_flex()
             .gap_4()
             .px_5()
-            .py_1()
+            .py_1p5()
             .border_t_1()
             .border_color(border)
             .text_xs()
