@@ -18,6 +18,7 @@ pub mod icons;
 pub mod inspector;
 pub mod mcp_server;
 pub mod native;
+pub mod resources;
 pub mod routes;
 pub mod sampling;
 pub mod services;

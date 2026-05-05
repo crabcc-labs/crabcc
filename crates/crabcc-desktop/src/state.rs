@@ -21,6 +21,7 @@
 //! observers redraw.
 
 use std::collections::VecDeque;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use gpui::{Context, Entity, SharedString};
@@ -443,6 +444,13 @@ pub struct AppState {
     /// Drop unlinks the socket file. See `crate::mcp_server`.
     #[allow(dead_code)]
     pub mcp_server: Option<crate::mcp_server::McpServerHandle>,
+    /// Resource snapshot shared with the
+    /// `AppStateResourceProvider` wired into the sampling handler.
+    /// Refreshed on every `apply()` (excluding inspector events).
+    /// `None` when no MCP server is running — saves the per-event
+    /// refresh cost when there's no consumer. See
+    /// `crate::resources`.
+    pub resource_snapshot: Option<Arc<RwLock<crate::resources::ResourceSnapshot>>>,
 }
 
 /// Cap on the toast history log. The brief calls out
@@ -883,6 +891,13 @@ impl AppState {
                 self.last_command_run = Some((cmd, result));
             }
         }
+        // Keep the resource snapshot fresh for the MCP server's
+        // includeContext flow. Cheap (string assembly only) and
+        // bounded by the per-section caps in `crate::resources`.
+        // InspectorRecord events early-return above so they don't
+        // pay this cost — they're meta and don't affect the
+        // resource view anyway.
+        self.refresh_resource_snapshot();
     }
 
     /// Fire a memory ingest request from a detached thread. Sends an
@@ -1045,6 +1060,22 @@ impl AppState {
                 let _ = try_send_app_event(&tx, AppEvent::CommandRunResult(cmd, result));
             })
             .expect("command-run thread spawn");
+    }
+
+    /// Rebuild the [`crate::resources::ResourceSnapshot`] from
+    /// current state. No-op when no snapshot is wired (i.e. no
+    /// MCP server running). Cheap — string assembly only,
+    /// microseconds per call.
+    pub fn refresh_resource_snapshot(&self) {
+        let Some(snap) = self.resource_snapshot.as_ref() else {
+            return;
+        };
+        let new = crate::resources::ResourceSnapshot::from_state(self);
+        if let Ok(mut w) = snap.write() {
+            *w = new;
+        }
+        // Poisoned lock = silently skip; instrumentation must
+        // never break the call path.
     }
 
     /// Append one MCP-call observation to the inspector ring.
@@ -1466,16 +1497,23 @@ pub fn build(cx: &mut Context<AppState>, base_url: &str) -> AppState {
     let (tx, rx) = spawn_workers(base_url);
     let entity = cx.entity();
     AppState::pump_events(&entity, rx, cx);
-    // Try to start the MCP server early — before stashing tx into
-    // `WorkerHandles` — so if startup fails we still have the
-    // sender clone to route AppEvents through.
-    let mcp_server = try_start_mcp_server(tx.clone());
+    // Pre-allocate the resource snapshot Arc — shared between the
+    // sampling-handler's ResourceProvider (worker thread) and the
+    // AppState writer (gpui thread, via `apply()` → refresh).
+    // Always created; only stashed on AppState if the MCP server
+    // actually starts (saves the per-event refresh cost otherwise).
+    let resource_snapshot = Arc::new(RwLock::new(
+        crate::resources::ResourceSnapshot::default(),
+    ));
+    let mcp_server = try_start_mcp_server(tx.clone(), resource_snapshot.clone());
+    let resource_snapshot_field = mcp_server.as_ref().map(|_| resource_snapshot);
     let mut state = AppState {
         workers: Some(WorkerHandles {
             tx,
             base_url: base_url.to_string(),
         }),
         mcp_server,
+        resource_snapshot: resource_snapshot_field,
         ..AppState::new()
     };
     // Inspector-route demo seed. Opt-in via env var so production
@@ -1489,15 +1527,15 @@ pub fn build(cx: &mut Context<AppState>, base_url: &str) -> AppState {
 
 /// Best-effort MCP server startup. Resolves the socket path,
 /// builds a [`crate::sampling::LiteLlmSamplingHandler`] from env,
-/// wires the inspector observer, spawns the listener thread.
-/// Returns `None` (with a warn log) on any failure — the desktop
-/// continues running without an MCP surface, which is the right
-/// behaviour for hosts that haven't set `LITELLM_MASTER_KEY`.
+/// wires the inspector observer + the resource provider, spawns
+/// the listener thread. Returns `None` (with a warn log) on any
+/// failure — the desktop continues running without an MCP surface,
+/// which is the right behaviour for hosts that haven't set
+/// `LITELLM_MASTER_KEY`.
 fn try_start_mcp_server(
     tx: flume::Sender<AppEvent>,
+    resource_snapshot: Arc<RwLock<crate::resources::ResourceSnapshot>>,
 ) -> Option<crate::mcp_server::McpServerHandle> {
-    use std::sync::Arc;
-
     let socket_path = match crate::mcp_server::default_socket_path() {
         Some(p) => p,
         None => {
@@ -1521,7 +1559,14 @@ fn try_start_mcp_server(
         }
     };
     let observer = Arc::new(crate::inspector::InspectorSamplingObserver::new(tx));
-    let handler = Arc::new(handler.with_observer(observer));
+    let provider = Arc::new(crate::resources::AppStateResourceProvider::new(
+        resource_snapshot,
+    ));
+    let handler = Arc::new(
+        handler
+            .with_observer(observer)
+            .with_resource_provider(provider),
+    );
 
     match crate::mcp_server::spawn(socket_path.clone(), handler) {
         Ok(h) => {
