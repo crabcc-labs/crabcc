@@ -26,6 +26,7 @@ use std::time::Duration;
 use gpui::{Context, Entity, SharedString};
 use tracing::{debug, info};
 
+use crate::inspector::{CallEvent, INSPECTOR_RING_CAP};
 use crate::api::types::{
     AgentKillResponse, AgentKillsResponse, AgentLaunchRequest, AgentLaunchResponse, AgentLog,
     AgentModelsResponse, AgentProfilesResponse, AgentStatus, Bootstrap, DiscoveryReport,
@@ -172,6 +173,14 @@ pub enum Route {
     /// the route's lifetime; switching tabs and back keeps the
     /// session alive.
     Terminal,
+    /// MCP call inspector — two-pane waterfall over every MCP
+    /// message (internal in-proc bridge + future external peers).
+    /// Distinct from `Timeline` (which renders the SSE activity
+    /// stream); this one is the meta layer. Spec at
+    /// `crates/crabcc-desktop/docs/MCP-INSPECTOR.md`. Eventually
+    /// supersedes `System` per `MCP-NATIVE.md` §2; for M0 ships
+    /// alongside it so adoption stays additive.
+    Inspector,
 }
 
 impl Route {
@@ -186,6 +195,7 @@ impl Route {
             Route::Timeline => "Timeline",
             Route::KnowledgeGraph => "K-Graph",
             Route::Terminal => "Terminal",
+            Route::Inspector => "Inspector",
         }
     }
 
@@ -204,10 +214,11 @@ impl Route {
             Route::Timeline => "crabcc · live · Timeline",
             Route::KnowledgeGraph => "crabcc · live · K-Graph",
             Route::Terminal => "crabcc · live · Terminal",
+            Route::Inspector => "crabcc · live · Inspector",
         }
     }
 
-    pub const ALL: [Route; 9] = [
+    pub const ALL: [Route; 10] = [
         Route::Home,
         Route::Agents,
         Route::Logs,
@@ -215,6 +226,7 @@ impl Route {
         Route::Knowledge,
         Route::Commands,
         Route::Timeline,
+        Route::Inspector,
         Route::KnowledgeGraph,
         Route::Terminal,
     ];
@@ -409,6 +421,13 @@ pub struct AppState {
     /// otherwise the OS-appearance default (resolved via
     /// `theme::initial_palette_index`).
     pub palette_index: usize,
+    /// MCP-message ring buffer feeding the Inspector route. Bounded
+    /// by [`INSPECTOR_RING_CAP`]; over-cap pushes evict the oldest.
+    /// Populated via [`AppState::record_inspector_event`] — for M0
+    /// the in-proc MCP bridge isn't yet wired, so callers are
+    /// purely opt-in. See
+    /// `crates/crabcc-desktop/docs/MCP-INSPECTOR.md` for the design.
+    pub inspector_ring: VecDeque<CallEvent>,
 }
 
 /// Cap on the toast history log. The brief calls out
@@ -1005,6 +1024,18 @@ impl AppState {
             .expect("command-run thread spawn");
     }
 
+    /// Append one MCP-call observation to the inspector ring.
+    /// Evicts the oldest entry once the ring is full so the buffer
+    /// stays bounded at [`INSPECTOR_RING_CAP`]. Callers are anywhere
+    /// that handles an MCP message; for M0 nothing inside the
+    /// crate calls this yet — the in-proc bridge wiring lands in M1.
+    pub fn record_inspector_event(&mut self, evt: CallEvent) {
+        if self.inspector_ring.len() >= INSPECTOR_RING_CAP {
+            self.inspector_ring.pop_front();
+        }
+        self.inspector_ring.push_back(evt);
+    }
+
     pub fn set_route(&mut self, route: Route) {
         self.route = route;
     }
@@ -1357,13 +1388,20 @@ pub fn build(cx: &mut Context<AppState>, base_url: &str) -> AppState {
     let (tx, rx) = spawn_workers(base_url);
     let entity = cx.entity();
     AppState::pump_events(&entity, rx, cx);
-    AppState {
+    let mut state = AppState {
         workers: Some(WorkerHandles {
             tx,
             base_url: base_url.to_string(),
         }),
         ..AppState::new()
+    };
+    // Inspector-route demo seed. Opt-in via env var so production
+    // binaries don't carry synthetic state. See
+    // `crate::inspector::seed_demo_events` for the event set.
+    if std::env::var_os("CRABCC_DESKTOP_INSPECTOR_DEMO").is_some() {
+        crate::inspector::seed_demo_events(&mut state);
     }
+    state
 }
 
 #[cfg(test)]
