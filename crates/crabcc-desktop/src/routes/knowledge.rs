@@ -516,7 +516,12 @@ fn drawer_row(
                 // subtle pill background. Clicking pins the wing as
                 // an extra filter; clicking the active wing toggles
                 // the pin off.
-                .child(
+                .child({
+                    let wing_tooltip: SharedString = if wing_pinned {
+                        SharedString::new_static("Unpin wing — show all wings")
+                    } else {
+                        SharedString::from(format!("Pin wing {} — narrows the drawer list", d.wing))
+                    };
                     div()
                         .id(badge_id)
                         .px_2()
@@ -527,9 +532,8 @@ fn drawer_row(
                         .rounded_md()
                         .cursor_pointer()
                         .hover(move |s| s.border_color(primary))
-                        .tooltip(|window, cx| {
-                            Tooltip::new("Pin / unpin wing — narrows the drawer list")
-                                .build(window, cx)
+                        .tooltip(move |window, cx| {
+                            Tooltip::new(wing_tooltip.clone()).build(window, cx)
                         })
                         .child(location)
                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
@@ -538,8 +542,8 @@ fn drawer_row(
                                 this.pin_wing(wing);
                                 cx.notify();
                             });
-                        }),
-                )
+                        })
+                })
                 .child(
                     div()
                         .flex_1()
