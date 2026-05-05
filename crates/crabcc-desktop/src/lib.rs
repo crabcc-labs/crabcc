@@ -16,6 +16,7 @@ pub mod api;
 pub mod graph_layout;
 pub mod icons;
 pub mod inspector;
+pub mod mcp_server;
 pub mod native;
 pub mod routes;
 pub mod sampling;
