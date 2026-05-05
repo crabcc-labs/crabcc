@@ -75,6 +75,7 @@ pub mod backend;
 pub mod embed;
 pub mod mine;
 pub mod palace;
+pub mod read;
 pub mod types;
 
 pub use backend::{in_memory::InMemoryBackend, sqlite::SqliteBackend, Backend, LexicalQuery};
