@@ -805,6 +805,52 @@ mod tests {
         assert!(path.exists());
     }
 
+    /// Schema gate: the additive `session_reads` table from the
+    /// lean-ctx integration plan must be present in any freshly-
+    /// opened db. The `crabcc read` command (#3) writes here, so
+    /// open() landing the table is a load-bearing precondition.
+    #[test]
+    fn open_creates_session_reads_table() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("memory.db");
+        let _ = SqliteBackend::open(&path).unwrap();
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master \
+                 WHERE type = 'table' AND name = 'session_reads'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "session_reads table should be created on open");
+
+        // Smoke-check the column shape — a future schema migration
+        // that drops or renames a column would silently break #3.
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(session_reads)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        for required in &[
+            "path",
+            "session_id",
+            "mtime_ns",
+            "content_hash",
+            "served_mode",
+            "served_at",
+            "bytes_returned",
+            "read_count",
+        ] {
+            assert!(
+                cols.iter().any(|c| c == required),
+                "session_reads missing column {required}; got {cols:?}"
+            );
+        }
+    }
+
     #[test]
     fn add_query_round_trip() {
         let dir = tempdir().unwrap();
