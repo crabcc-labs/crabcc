@@ -22,7 +22,8 @@
 //! stall on a 30-second qwen3.5 call.
 
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// Default LiteLLM proxy endpoint per
 /// `install/ollama-stack/docker-compose.yml`. Override via
@@ -230,6 +231,28 @@ pub trait SamplingHandler: Send + Sync {
     fn handle(&self, request: SamplingRequest) -> Result<SamplingResponse, SamplingError>;
 }
 
+/// Side-channel observer for sampling lifecycle events. Lets the
+/// inspector ring (or any future audit sink) record start/end
+/// pairs without coupling [`SamplingHandler`] to the inspector
+/// types.
+///
+/// The handler calls `on_request` immediately after model
+/// selection and `on_response` immediately after the upstream
+/// call returns. A request id minted in `on_request` is threaded
+/// through to `on_response` so the consumer can link the two
+/// events (parent_id-style).
+pub trait SamplingObserver: Send + Sync {
+    /// Returns a u64 token that identifies this in-flight request.
+    /// Free-form — observers that don't care can return 0.
+    fn on_request(&self, request: &SamplingRequest, chosen_model: &str) -> u64;
+    fn on_response(
+        &self,
+        request_id: u64,
+        result: &Result<SamplingResponse, SamplingError>,
+        latency_ms: u32,
+    );
+}
+
 // ───────────────────────────────────────── LiteLLM impl
 
 /// Production handler. Proxies to the LiteLLM container fronted by
@@ -247,6 +270,11 @@ pub struct LiteLlmSamplingHandler {
     host_ram_gb: u32,
     /// HTTP client — reused across calls for keepalive.
     client: reqwest::blocking::Client,
+    /// Optional lifecycle hook. None = no instrumentation. Wired
+    /// to `crate::inspector::InspectorSamplingObserver` in
+    /// production so every sampling round-trip surfaces in the
+    /// inspector ring.
+    observer: Option<Arc<dyn SamplingObserver>>,
 }
 
 #[derive(Debug, Clone)]
@@ -320,6 +348,7 @@ impl LiteLlmSamplingHandler {
             catalog: default_catalog(),
             host_ram_gb,
             client,
+            observer: None,
         })
     }
 
@@ -335,6 +364,11 @@ impl LiteLlmSamplingHandler {
 
     pub fn with_host_ram_gb(mut self, gb: u32) -> Self {
         self.host_ram_gb = gb;
+        self
+    }
+
+    pub fn with_observer(mut self, observer: Arc<dyn SamplingObserver>) -> Self {
+        self.observer = Some(observer);
         self
     }
 
@@ -357,7 +391,35 @@ impl SamplingHandler for LiteLlmSamplingHandler {
 
         let model = self.select_model(request.model_preferences.as_ref())?.clone();
 
-        let body = build_openai_request(&model.name, &request);
+        // Notify observer that a request is in flight. Errors from
+        // the observer are not propagated — instrumentation must
+        // never break the call.
+        let req_id = self
+            .observer
+            .as_ref()
+            .map(|o| o.on_request(&request, &model.name));
+        let started = Instant::now();
+
+        let result = self.do_call(&model.name, &request);
+
+        if let (Some(o), Some(id)) = (self.observer.as_ref(), req_id) {
+            let latency_ms = started.elapsed().as_millis().min(u32::MAX as u128) as u32;
+            o.on_response(id, &result, latency_ms);
+        }
+        result
+    }
+}
+
+impl LiteLlmSamplingHandler {
+    /// Pure I/O bit, factored out so [`SamplingHandler::handle`]
+    /// can wrap it with observer notifications without nesting
+    /// match arms.
+    fn do_call(
+        &self,
+        model: &str,
+        request: &SamplingRequest,
+    ) -> Result<SamplingResponse, SamplingError> {
+        let body = build_openai_request(model, request);
         let resp = self
             .client
             .post(&self.endpoint)
@@ -392,7 +454,7 @@ impl SamplingHandler for LiteLlmSamplingHandler {
             )
         })?;
 
-        translate_openai_response(&model.name, oa)
+        translate_openai_response(model, oa)
     }
 }
 
@@ -661,6 +723,7 @@ mod tests {
             catalog: default_catalog(),
             host_ram_gb: 64,
             client: reqwest::blocking::Client::new(),
+            observer: None,
         };
         let r = handler.handle(req(MAX_SAMPLING_DEPTH, None));
         match r {
@@ -682,6 +745,7 @@ mod tests {
                 .timeout(Duration::from_millis(50))
                 .build()
                 .unwrap(),
+            observer: None,
         };
         let r = handler.handle(req(MAX_SAMPLING_DEPTH - 1, Some("qwen3.5")));
         match r {
@@ -877,6 +941,79 @@ mod tests {
             Err(e) => assert_eq!(e.kind, SamplingErrorKind::Unavailable),
             Ok(_) => panic!("expected Unavailable"),
         }
+    }
+
+    /// Recording observer used to assert lifecycle calls fire in
+    /// the expected order on both success and error paths.
+    struct CountingObserver {
+        events: std::sync::Mutex<Vec<&'static str>>,
+    }
+    impl SamplingObserver for CountingObserver {
+        fn on_request(&self, _r: &SamplingRequest, _model: &str) -> u64 {
+            self.events.lock().unwrap().push("req");
+            42
+        }
+        fn on_response(
+            &self,
+            request_id: u64,
+            result: &Result<SamplingResponse, SamplingError>,
+            _latency_ms: u32,
+        ) {
+            assert_eq!(request_id, 42, "request id must thread through");
+            self.events
+                .lock()
+                .unwrap()
+                .push(if result.is_ok() { "resp_ok" } else { "resp_err" });
+        }
+    }
+
+    #[test]
+    fn observer_fires_on_request_and_response_for_failed_call() {
+        // Network call is unreachable → upstream-Unavailable error,
+        // but the observer must still see both lifecycle events.
+        let obs = Arc::new(CountingObserver {
+            events: std::sync::Mutex::new(vec![]),
+        });
+        let handler = LiteLlmSamplingHandler {
+            endpoint: "http://127.0.0.1:1/never".into(),
+            master_key: "x".into(),
+            catalog: default_catalog(),
+            host_ram_gb: 64,
+            client: reqwest::blocking::Client::builder()
+                .timeout(Duration::from_millis(50))
+                .build()
+                .unwrap(),
+            observer: Some(obs.clone()),
+        };
+        let _ = handler.handle(req(0, Some("qwen3.5")));
+        let events = obs.events.lock().unwrap();
+        assert_eq!(events.as_slice(), ["req", "resp_err"]);
+    }
+
+    #[test]
+    fn observer_does_not_fire_when_depth_cap_rejects_early() {
+        // Depth cap fires *before* model selection, so the observer
+        // never sees on_request — there's no model to attribute.
+        let obs = Arc::new(CountingObserver {
+            events: std::sync::Mutex::new(vec![]),
+        });
+        let handler = LiteLlmSamplingHandler {
+            endpoint: "http://invalid".into(),
+            master_key: "x".into(),
+            catalog: default_catalog(),
+            host_ram_gb: 64,
+            client: reqwest::blocking::Client::new(),
+            observer: Some(obs.clone()),
+        };
+        let r = handler.handle(req(MAX_SAMPLING_DEPTH, None));
+        assert!(matches!(
+            r,
+            Err(SamplingError {
+                kind: SamplingErrorKind::DepthExceeded,
+                ..
+            })
+        ));
+        assert!(obs.events.lock().unwrap().is_empty());
     }
 
     #[test]
