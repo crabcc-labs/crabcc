@@ -469,6 +469,9 @@ fn row(
                 .id(target_id)
                 .w(px(220.0))
                 .text_color(if target_active { foreground } else { muted })
+                .cursor_pointer()
+                .hover(move |s| s.text_color(foreground))
+                .tooltip(|window, cx| Tooltip::new("Pin / unpin target").build(window, cx))
                 .child(SharedString::from(truncate(&evt.target, 32)))
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     let t = target_clicked.clone();
