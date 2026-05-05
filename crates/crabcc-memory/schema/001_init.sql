@@ -93,6 +93,32 @@ CREATE INDEX IF NOT EXISTS idx_kg_subject        ON kg_triples(subject);
 CREATE INDEX IF NOT EXISTS idx_kg_predicate      ON kg_triples(predicate);
 CREATE INDEX IF NOT EXISTS idx_kg_valid_from     ON kg_triples(valid_from);
 
+-- Session-scoped read ledger (lean-ctx integration #2). `crabcc read`
+-- records what it served per (path, session_id) so the next read can
+-- decide between a full file and an outline-shaped stub. `mtime_ns`
+-- and `content_hash` together gate cache freshness; `served_mode`
+-- (`"full"` / `"stub"` / `"entropy"`) lets the read command distinguish
+-- "this caller hasn't seen the body yet" from "this caller already
+-- has the body cached, hand back a stub".
+--
+-- `read_count` accumulates re-read attempts on the same (path,
+-- session_id) — the loop detector watches it.
+CREATE TABLE IF NOT EXISTS session_reads (
+    id              INTEGER PRIMARY KEY,
+    path            TEXT    NOT NULL,
+    session_id      TEXT,
+    mtime_ns        INTEGER NOT NULL,
+    content_hash    TEXT    NOT NULL,
+    served_mode     TEXT    NOT NULL,
+    served_at       INTEGER NOT NULL,
+    bytes_returned  INTEGER NOT NULL,
+    read_count      INTEGER NOT NULL DEFAULT 1,
+    UNIQUE (path, session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_session_reads_session   ON session_reads(session_id);
+CREATE INDEX IF NOT EXISTS idx_session_reads_path      ON session_reads(path);
+CREATE INDEX IF NOT EXISTS idx_session_reads_served_at ON session_reads(served_at);
+
 -- Default wing — created lazily on first drawer insert if absent. Schema
 -- doesn't seed it because INSERT OR IGNORE there would race with concurrent
 -- callers; the Backend handles the get-or-create dance under a transaction.
