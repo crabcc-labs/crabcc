@@ -339,6 +339,14 @@ pub struct AppState {
     /// reads-and-clears it via `take_pending_spawn_profile` on its
     /// next render.
     pub pending_spawn_profile: Option<SharedString>,
+    /// Staging slot for a one-shot Knowledge-route wing-pin. Set by
+    /// `navigate_to_knowledge_with_wing_pin` (e.g. the K-Graph's
+    /// wing-list section header click); the Knowledge route reads-
+    /// and-clears it via `take_pending_knowledge_wing_pin` and
+    /// applies it to its `wing_pin` field on next render. Distinct
+    /// from `pending_knowledge_filter` (substring filter); both can
+    /// stage independently.
+    pub pending_knowledge_wing_pin: Option<SharedString>,
     /// Worker plumbing for one-shot HTTP submits — see [`WorkerHandles`].
     /// `Option` only because `Default` can't fabricate a real flume
     /// channel; `state::build` populates it before the view ever
@@ -1088,6 +1096,21 @@ impl AppState {
         self.pending_spawn_profile.take()
     }
 
+    /// Navigate to the Knowledge route and stage `wing` so the
+    /// route's `wing_pin` field activates on next render. Used by
+    /// the K-Graph's wing-list section-header click to dive from a
+    /// canvas wing group to its drawer body view.
+    pub fn navigate_to_knowledge_with_wing_pin(&mut self, wing: SharedString) {
+        self.pending_knowledge_wing_pin = Some(wing);
+        self.route = Route::Knowledge;
+    }
+
+    /// Read-and-clear the pending Knowledge wing-pin. One-shot,
+    /// same shape as `take_pending_knowledge_filter`.
+    pub fn take_pending_knowledge_wing_pin(&mut self) -> Option<SharedString> {
+        self.pending_knowledge_wing_pin.take()
+    }
+
     pub fn agents_running(&self) -> u32 {
         use crate::api::types::AgentStatus;
         self.agents
@@ -1812,5 +1835,35 @@ mod tests {
         s.navigate_to_dashboard_with_spawn_profile("p1".into());
         assert_eq!(s.take_pending_spawn_profile().as_deref(), Some("p1"));
         assert_eq!(s.take_pending_spawn_profile(), None);
+    }
+
+    #[test]
+    fn navigate_to_knowledge_with_wing_pin_sets_route_and_stages_wing() {
+        let mut s = AppState::new();
+        assert!(s.pending_knowledge_wing_pin.is_none());
+        s.navigate_to_knowledge_with_wing_pin("doc".into());
+        assert_eq!(s.route, Route::Knowledge);
+        assert_eq!(s.pending_knowledge_wing_pin.as_deref(), Some("doc"));
+    }
+
+    #[test]
+    fn take_pending_knowledge_wing_pin_is_one_shot() {
+        let mut s = AppState::new();
+        s.navigate_to_knowledge_with_wing_pin("session".into());
+        assert_eq!(
+            s.take_pending_knowledge_wing_pin().as_deref(),
+            Some("session")
+        );
+        assert_eq!(s.take_pending_knowledge_wing_pin(), None);
+    }
+
+    #[test]
+    fn knowledge_filter_and_wing_pin_handoffs_are_independent() {
+        let mut s = AppState::new();
+        s.navigate_to_knowledge_with_filter("foo".into());
+        s.navigate_to_knowledge_with_wing_pin("doc".into());
+        assert_eq!(s.route, Route::Knowledge);
+        assert_eq!(s.pending_knowledge_filter.as_deref(), Some("foo"));
+        assert_eq!(s.pending_knowledge_wing_pin.as_deref(), Some("doc"));
     }
 }
