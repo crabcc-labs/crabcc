@@ -28,6 +28,7 @@ use gpui_component::{
 
 use crate::routes::empty::empty_state;
 use crate::state::AppState;
+use gpui_component::tooltip::Tooltip;
 
 /// Identifier for a runnable Commands row. One variant per no-arg
 /// HTTP method on [`crate::api::Client`]; the dispatch table lives
@@ -378,9 +379,11 @@ fn command_row(
         .rounded_md()
         .text_color(foreground);
     if runnable.is_some() {
+        let summary: SharedString = SharedString::new_static(cmd.summary);
         chip = chip
             .cursor_pointer()
-            .hover(move |s| s.bg(card).border_color(primary).text_color(primary));
+            .hover(move |s| s.bg(card).border_color(primary).text_color(primary))
+            .tooltip(move |window, cx| Tooltip::new(summary.clone()).build(window, cx));
     }
     let chip = chip
         .child(SharedString::from(format!("crabcc {}", cmd.invocation)))
@@ -449,6 +452,9 @@ fn command_row(
                                 .text_xs()
                                 .cursor_pointer()
                                 .hover(move |s| s.border_color(primary).text_color(primary))
+                                .tooltip(|window, cx| {
+                                    Tooltip::new("Copy result to clipboard").build(window, cx)
+                                })
                                 .child(SharedString::new_static("Copy"))
                                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                     cx.stop_propagation();
