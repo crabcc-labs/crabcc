@@ -374,6 +374,14 @@ enum Cmd {
         #[command(subcommand)]
         op: ShellOp,
     },
+    /// Loop detector (lean-ctx integration #5). Surfaces
+    /// `(path, session_id)` / `(command, cwd, session_id)` pairs
+    /// whose `read_count` / `run_count` cross a threshold (default
+    /// 5). Reads `session_reads` + `session_shells`.
+    Loop {
+        #[command(subcommand)]
+        op: LoopOp,
+    },
     /// Snapshot / list / restore per-repo .crabcc/ state.
     Backup {
         #[command(subcommand)]
@@ -672,6 +680,19 @@ enum BackupOp {
     Loop {
         #[arg(long, default_value_t = 900u64)]
         interval: u64,
+    },
+}
+
+#[derive(Subcommand)]
+enum LoopOp {
+    /// Print loop hits as JSON. Empty array == no loops detected.
+    /// `--threshold` defaults to 5; `--session-id` defaults to
+    /// `$CRABCC_SESSION_ID` (no session = scan all sessions).
+    Check {
+        #[arg(long)]
+        session_id: Option<String>,
+        #[arg(long, default_value_t = crabcc_memory::loop_detect::DEFAULT_THRESHOLD)]
+        threshold: i64,
     },
 }
 
@@ -1401,6 +1422,11 @@ fn main() -> Result<()> {
         return run_shell(&root, op);
     }
 
+    // loop-detector group — pure read; no Store::open needed.
+    if let Some(Cmd::Loop { op }) = &cli.cmd {
+        return run_loop(&root, op);
+    }
+
     std::fs::create_dir_all(db.parent().unwrap())?;
     let store = Store::open_with_compress(&db, cli.compress)?;
     let fts_dir = resolved.fts_dir();
@@ -1882,6 +1908,7 @@ fn main() -> Result<()> {
         Cmd::Openapi => unreachable!("openapi handled before store init"),
         Cmd::Memory { .. } => unreachable!("memory handled before store init"),
         Cmd::Shell { .. } => unreachable!("shell handled before store init"),
+        Cmd::Loop { .. } => unreachable!("loop handled before store init"),
         Cmd::Compress { .. } => unreachable!("compress handled before store init"),
     }
     Ok(())
@@ -2062,6 +2089,27 @@ fn run_model_info(op: &ModelInfoOp) -> Result<()> {
     }
 }
 
+fn run_loop(root: &Path, op: &LoopOp) -> Result<()> {
+    match op {
+        LoopOp::Check {
+            session_id,
+            threshold,
+        } => {
+            let sid = session_id
+                .clone()
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| {
+                    std::env::var("CRABCC_SESSION_ID")
+                        .ok()
+                        .filter(|s| !s.trim().is_empty())
+                });
+            let hits = crabcc_memory::loop_detect::detect(root, sid.as_deref(), *threshold)?;
+            println!("{}", crabcc_memory::loop_detect::hits_to_json(&hits));
+            Ok(())
+        }
+    }
+}
+
 fn run_shell(root: &Path, op: &ShellOp) -> Result<()> {
     match op {
         ShellOp::Record {
@@ -2084,6 +2132,19 @@ fn run_shell(root: &Path, op: &ShellOp) -> Result<()> {
                 });
             let rec =
                 crabcc_memory::shell::record_shell(root, command, &cwd_str, session.as_deref())?;
+            // Loop hint — fire on stderr exactly at the threshold
+            // boundary (run_count == DEFAULT_THRESHOLD) so the model
+            // gets one clear warning, not a repeated nag on every
+            // subsequent run past it. The Bash PreToolUse hook
+            // forwards stderr into the model's context.
+            if rec.run_count == crabcc_memory::loop_detect::DEFAULT_THRESHOLD {
+                let preview: String = command.chars().take(60).collect();
+                eprintln!(
+                    "loop-detector: \"{preview}\" run {} times in this session — \
+                     consider why; `crabcc loop check` lists active loops",
+                    rec.run_count
+                );
+            }
             println!("{}", crabcc_memory::shell::record_to_json(&rec));
             Ok(())
         }
@@ -2294,6 +2355,7 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::Graph { .. } => "graph",
         Cmd::Memory { .. } => "memory",
         Cmd::Shell { .. } => "shell",
+        Cmd::Loop { .. } => "loop",
         Cmd::Backup { .. } => "backup",
         Cmd::Doctor { .. } => "doctor",
         Cmd::Jobs(_) => "jobs",
