@@ -483,6 +483,7 @@ impl Render for KnowledgeGraphRoute {
                         border,
                         secondary,
                         view_for_select.clone(),
+                        self.state.clone(),
                     ));
                 }
 
@@ -568,13 +569,23 @@ fn wing_section(
     border: Hsla,
     secondary: Hsla,
     view: Entity<KnowledgeGraphRoute>,
+    state_entity: Entity<AppState>,
 ) -> gpui::Div {
     let total = drawers.len();
     let visible = drawers.len().min(SECTION_ROW_LIMIT);
+    // Wing badge — click navigates to Knowledge with that wing
+    // pre-pinned, mirroring the established cross-route handoff
+    // pattern. From the canvas-view's wing grouping the user can
+    // jump straight to that wing's drawer body view.
+    let badge_id: gpui::ElementId =
+        SharedString::from(format!("k-graph-wing-link-{}", sanitize_id_part(&wing))).into();
+    let nav_wing = wing.clone();
+    let nav_state = state_entity.clone();
     let header = h_flex()
         .gap_2()
         .child(
             div()
+                .id(badge_id)
                 .px_2()
                 .py_0p5()
                 .border_1()
@@ -582,7 +593,16 @@ fn wing_section(
                 .rounded_md()
                 .text_color(wing_col)
                 .text_xs()
-                .child(SharedString::from(wing.to_string())),
+                .cursor_pointer()
+                .hover(move |s| s.bg(secondary))
+                .child(SharedString::from(wing.to_string()))
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    let w = nav_wing.clone();
+                    nav_state.update(cx, |s, cx| {
+                        s.navigate_to_knowledge_with_wing_pin(w);
+                        cx.notify();
+                    });
+                }),
         )
         .child(
             div()
