@@ -75,12 +75,20 @@ Idempotent — same script for fresh install **and** upgrade.
 ```bash
 curl -fsSL https://raw.githubusercontent.com/peterlodri-sec/crabcc/main/scripts/bootstrap.sh | bash
 
-# Optional add-ons:
-#   --with-docker     install Docker Desktop + bring up the Ollama stack
-#   --with-launchd    register the macOS LaunchAgent (background re-index)
-#   --with-macos-app  build + open the .dmg
+# Defaults:
+#   ✓ Docker Desktop + Ollama stack (LiteLLM proxy on :4000)
+#   ✓ Claude Code skill / commands / RTK detection (via crabcc install-claude)
+#   ✓ Shell aliases (zsh + bash)
+#
+# Opt-outs:
+#   --no-docker       skip Docker + Ollama stack (binary + Claude only)
+#   --no-aliases      skip shell alias install
 #   --cli-only        binaries only — skip Claude / aliases / Docker
 #   --check-only      preflight only; no writes
+#
+# Opt-ins:
+#   --with-launchd    register the macOS LaunchAgent (background re-index)
+#   --with-macos-app  build + open the .dmg
 ```
 
 ### From source
