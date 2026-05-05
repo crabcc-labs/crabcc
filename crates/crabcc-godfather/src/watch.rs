@@ -31,6 +31,12 @@ pub struct WatchConfig {
     /// multiple of `sample_interval` so heartbeat spam doesn't crowd
     /// the event log; default is every 6th sample (30 s by default).
     pub heartbeat_every: u32,
+    /// Buffer this many samples in RAM before flushing them as a
+    /// single transaction (#488). Default 6 = 30 s of samples at the
+    /// default 5 s `sample_interval`. Set to 1 to disable batching.
+    /// Remaining buffered samples flush on watcher shutdown so
+    /// nothing is lost when the target exits.
+    pub flush_every: u32,
     /// If set, the path the watched app writes its log to. On exit
     /// we tail-read the last ~4 KiB into `_crab_crash.log_tail` so
     /// the crash report has context without the supervisor mirroring
@@ -52,6 +58,7 @@ impl WatchConfig {
             target_pid,
             sample_interval: Duration::from_secs(5),
             heartbeat_every: 6,
+            flush_every: 6,
             log_path: None,
             watched_session_id: watched_session_id.into(),
         }
@@ -116,6 +123,24 @@ fn run(godfather: Godfather, config: WatchConfig, stop: Arc<AtomicBool>) {
     let started = Instant::now();
     let mut tick: u32 = 0;
 
+    // Sample buffer (#488) — accumulate up to `flush_every` samples
+    // and write them as a single transaction. `with_capacity` avoids
+    // a Vec realloc on the first flush; `clear` in the flush keeps
+    // the same allocation alive across the watcher's lifetime.
+    let flush_every = config.flush_every.max(1) as usize;
+    let mut buffer: Vec<crate::godfather::ResourceSample> = Vec::with_capacity(flush_every);
+    let flush_buffer = |buffer: &mut Vec<crate::godfather::ResourceSample>| {
+        if buffer.is_empty() {
+            return;
+        }
+        if let Err(e) =
+            godfather.record_resource_samples(&config.watched_session_id, buffer.as_slice())
+        {
+            tracing::warn!(target: "crabcc_godfather", error = %e, "sample flush failed");
+        }
+        buffer.clear();
+    };
+
     while !stop.load(Ordering::SeqCst) {
         // Existence check first via `kill(pid, 0)` — sysinfo's cache
         // on macOS lags reality after a SIGTERM-then-reap (the dead
@@ -150,12 +175,15 @@ fn run(godfather: Godfather, config: WatchConfig, stop: Arc<AtomicBool>) {
                 // sysinfo's CPU is 0..=cpu_count*100; clamp to a
                 // single-core 0..100 view for the dashboard.
                 let cpu_pct = (p.cpu_usage()).clamp(0.0, 10_000.0);
-                let _ = godfather.record_resource_sample(
-                    &config.watched_session_id,
+                buffer.push(crate::godfather::ResourceSample {
+                    ts: now_secs(),
                     rss_mb,
                     cpu_pct,
                     vsize_mb,
-                );
+                });
+                if buffer.len() >= flush_every {
+                    flush_buffer(&mut buffer);
+                }
 
                 if config.heartbeat_every > 0 && tick % config.heartbeat_every == 0 {
                     let payload = serde_json::json!({
@@ -175,6 +203,12 @@ fn run(godfather: Godfather, config: WatchConfig, stop: Arc<AtomicBool>) {
                 }
             }
             None => {
+                // Drain whatever's still buffered before we commit
+                // the crash row — losing the last <flush_every>
+                // samples would leave a visible gap on the dashboard
+                // chart right before the crash, which is the worst
+                // place for a gap.
+                flush_buffer(&mut buffer);
                 // Process gone. Read final exit status from /proc
                 // (Linux) or sysinfo's last cached value (macOS).
                 // Stdlib doesn't give us a non-child reap path, so
@@ -219,6 +253,19 @@ fn run(godfather: Godfather, config: WatchConfig, stop: Arc<AtomicBool>) {
         tick = tick.wrapping_add(1);
         std::thread::sleep(config.sample_interval);
     }
+    // Stop signalled — drain any buffered samples so the dashboard
+    // doesn't see a gap on the chart right before the watcher
+    // disappears.
+    flush_buffer(&mut buffer);
+}
+
+/// Helper for the sample buffer: unix-secs `now`. Pulled out so the
+/// watcher's hot loop doesn't import std::time::SystemTime unnecessarily.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// `kill(pid, 0)` — POSIX existence probe. Returns true if the PID
