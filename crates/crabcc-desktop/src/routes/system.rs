@@ -238,6 +238,11 @@ fn section_header(
     let id = SharedString::from(format!("system-section-{key}"));
     div()
         .id(id)
+        .px_1()
+        .py_0p5()
+        .rounded_md()
+        .cursor_pointer()
+        .hover(move |s| s.text_color(foreground))
         .child(
             h_flex()
                 .gap_2()
