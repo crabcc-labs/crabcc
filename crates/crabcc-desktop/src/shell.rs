@@ -21,7 +21,7 @@ use crate::native;
 use crate::routes::{
     agents::AgentsRoute, commands::CommandsRoute, dashboard::DashboardHome,
     k_graph::KnowledgeGraphRoute, knowledge::KnowledgeRoute, logs::LogsRoute, system::SystemRoute,
-    timeline::TimelineRoute,
+    terminal::TerminalRoute, timeline::TimelineRoute,
 };
 use crate::settings::SettingsPanel;
 use crate::state::{AppState, Route};
@@ -38,6 +38,11 @@ pub struct Shell {
     commands: Entity<CommandsRoute>,
     timeline: Entity<TimelineRoute>,
     k_graph: Entity<KnowledgeGraphRoute>,
+    /// Embedded terminal — alacritty_terminal-backed shell session
+    /// (issue #402). Lives across route switches so the user can
+    /// context-switch between Terminal and another tab without
+    /// losing their shell.
+    terminal: Entity<TerminalRoute>,
     /// In-window toast strip (track C.0). Mounted between the
     /// header and the body slot — renders nothing when
     /// `AppState::toasts` is empty so the layout stays unchanged
@@ -116,6 +121,13 @@ impl Shell {
         // `/api/memory/graph` blocks #297). Owns no TextInput, so
         // `window` is not threaded in.
         let k_graph = cx.new(|cx| KnowledgeGraphRoute::new(state.clone(), cx));
+        // TerminalRoute owns a focus_handle for raw key capture, so it
+        // needs &mut Window to register. Side effect of construction:
+        // a child shell process is spawned right now (cheap fork +
+        // exec). That's intentional — the user expects the terminal
+        // to be ready the first time they click the tab; eager spawn
+        // keeps the click-to-prompt latency at zero.
+        let terminal = cx.new(|cx| TerminalRoute::new(state.clone(), window, cx));
         // No `window` argument — the strip has no focusable widgets
         // (yet). When the "Settings" entrypoint lands in slice 2+
         // it'll need `window` for that widget.
@@ -135,6 +147,7 @@ impl Shell {
             commands,
             timeline,
             k_graph,
+            terminal,
             toasts,
             settings,
             about,
@@ -488,6 +501,7 @@ impl Render for Shell {
             Route::Commands => self.commands.clone().into_any_element(),
             Route::Timeline => self.timeline.clone().into_any_element(),
             Route::KnowledgeGraph => self.k_graph.clone().into_any_element(),
+            Route::Terminal => self.terminal.clone().into_any_element(),
         };
 
         // Status bar — thin strip pinned at the bottom of the

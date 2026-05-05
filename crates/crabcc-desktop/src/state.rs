@@ -167,6 +167,11 @@ pub enum Route {
     /// separately. The route surfaces the gap inline so the slot
     /// reads as a known greenfield, not an empty tab.
     KnowledgeGraph,
+    /// Embedded terminal — alacritty_terminal-backed shell session
+    /// rendered in GPUI (issue #402). Each visit owns one shell for
+    /// the route's lifetime; switching tabs and back keeps the
+    /// session alive.
+    Terminal,
 }
 
 impl Route {
@@ -180,6 +185,7 @@ impl Route {
             Route::Commands => "Commands",
             Route::Timeline => "Timeline",
             Route::KnowledgeGraph => "K-Graph",
+            Route::Terminal => "Terminal",
         }
     }
 
@@ -197,10 +203,11 @@ impl Route {
             Route::Commands => "crabcc · live · Commands",
             Route::Timeline => "crabcc · live · Timeline",
             Route::KnowledgeGraph => "crabcc · live · K-Graph",
+            Route::Terminal => "crabcc · live · Terminal",
         }
     }
 
-    pub const ALL: [Route; 8] = [
+    pub const ALL: [Route; 9] = [
         Route::Home,
         Route::Agents,
         Route::Logs,
@@ -209,6 +216,7 @@ impl Route {
         Route::Commands,
         Route::Timeline,
         Route::KnowledgeGraph,
+        Route::Terminal,
     ];
 }
 

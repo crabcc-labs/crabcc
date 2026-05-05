@@ -13,5 +13,6 @@ pub mod k_graph;
 pub mod knowledge;
 pub mod logs;
 pub mod system;
+pub mod terminal;
 pub mod time;
 pub mod timeline;
