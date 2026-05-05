@@ -175,10 +175,16 @@ impl Render for AboutModal {
 
         let deps_section = v_flex().gap_2().child(deps_title).child(deps_list);
 
+        // License + copyright line. Year is hard-coded — bump on
+        // each release. Author/owner is fetched from CARGO_PKG_AUTHORS,
+        // which is `peterlodri-sec` per the workspace Cargo.toml. When
+        // co-author lines land, this becomes a Vec.
         let license_line = div()
             .text_xs()
             .text_color(muted)
-            .child(SharedString::new_static("MIT licensed."));
+            .child(SharedString::new_static(
+                "MIT licensed · © 2026 peterlodri-sec",
+            ));
 
         // Modal body — Stateful so the click handler can call
         // `cx.stop_propagation()` and prevent the click from bubbling
