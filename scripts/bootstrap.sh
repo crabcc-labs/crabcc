@@ -198,37 +198,25 @@ step_aliases() {
 }
 
 step_skills_commands() {
-    local cl_skills="$HOME/.claude/skills" cl_cmds="$HOME/.claude/commands"
-    mkdir -p "$cl_skills" "$cl_cmds"
-
-    for s in "$CRABCC_HOME/skill"/*/; do
-        [[ -d "$s" ]] || continue
-        local name; name="$(basename "$s")"
-        mkdir -p "$cl_skills/$name"
-        for f in "$s"*.md; do
-            [[ -e "$f" ]] || continue
-            ln -sfn "$f" "$cl_skills/$name/$(basename "$f")"
-        done
-        vlog "linked skill: $name"
-    done
-    ok "skills linked → $cl_skills"
-
-    for c in "$CRABCC_HOME/commands"/*; do
-        [[ -e "$c" ]] || continue
-        if [[ -d "$c" ]]; then
-            local name; name="$(basename "$c")"
-            mkdir -p "$cl_cmds/$name"
-            for f in "$c"/*.md; do
-                [[ -e "$f" ]] || continue
-                ln -sfn "$f" "$cl_cmds/$name/$(basename "$f")"
-            done
-            vlog "linked command group: $name"
-        else
-            ln -sfn "$c" "$cl_cmds/$(basename "$c")"
-            vlog "linked command: $(basename "$c")"
-        fi
-    done
-    ok "slash commands linked → $cl_cmds"
+    # Single source of truth: delegate to `crabcc install-claude` so
+    # this script doesn't drift from `crabcc install-claude`'s
+    # behaviour (notably the RTK detection added in #478 — the prompt
+    # offers `cargo install rtk` if Rust Token Killer isn't on PATH).
+    # `--yes` skips the per-symlink confirmations; symlinks point at
+    # `$CRABCC_HOME/skill/...` which is stable for bootstrap.sh's
+    # install model (the clone lives in `~/workspace/bin/crabcc`,
+    # not a tempdir).
+    log "running crabcc install-claude (symlinks skill + commands; offers RTK)"
+    # Don't suppress stdout/stderr — the user wants to see the RTK
+    # detection result and any cargo-install progress. Capture only
+    # exit status so a non-zero failure surfaces as a warn rather
+    # than aborting the whole bootstrap.
+    if "$HOME/.cargo/bin/crabcc" install-claude --yes; then
+        ok "claude integration wired (skill + commands + RTK check)"
+    else
+        warn "crabcc install-claude returned non-zero — continuing"
+        warn "    re-run manually with \`crabcc install-claude\` to inspect"
+    fi
 }
 
 step_macos_app() {

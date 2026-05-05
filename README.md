@@ -45,11 +45,13 @@ The installer:
   `claude` CLI is present.
 - Prints a `crabcc go` hint so the next thing you do is the right thing.
 
-> **Heads-up:** the one-liner does the binary install but does **not** run
-> `crabcc install-claude`, which is where the optional [RTK
-> (Token Killer)](https://crates.io/crates/rtk) detection + install prompt
-> lives. After the one-liner, run `crabcc install-claude` once if you want
-> the hook-based shell-output proxy. Tracked in
+> **Heads-up:** the one-liner builds in a tempdir, so it can only do a
+> minimal Claude integration (skill + slash-command symlinks). For the
+> full surface — [RTK (Token Killer)](https://crates.io/crates/rtk)
+> detection + install, hook templates, MCP registration hint — clone
+> crabcc to a stable location and run `crabcc install-claude` from
+> inside that clone. `scripts/bootstrap.sh` (below) handles all of
+> this automatically. Full script consolidation tracked in
 > [#501](https://github.com/peterlodri-sec/crabcc/issues/501).
 
 Knobs (env or `--flag`):
@@ -66,8 +68,9 @@ Knobs (env or `--flag`):
 For a brand-new dev box, `bootstrap.sh` is the bigger sibling of `install.sh`:
 it preflights `rustup`, clones into `~/workspace/bin/crabcc`, builds,
 ad-hoc-codesigns the binaries (Sequoia provenance fix), wires shell aliases,
-links skills/commands, and optionally brings up Docker/Ollama and the macOS
-LaunchAgent. Idempotent — same script for fresh install **and** upgrade.
+**runs `crabcc install-claude --yes`** (skill + commands + RTK detection),
+and optionally brings up Docker/Ollama and the macOS LaunchAgent.
+Idempotent — same script for fresh install **and** upgrade.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/peterlodri-sec/crabcc/main/scripts/bootstrap.sh | bash

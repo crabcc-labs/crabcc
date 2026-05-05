@@ -327,5 +327,13 @@ ${BOLD}next:${RESET}
     ${BLUE}crabcc info${RESET}           # build provenance
     ${BLUE}crabcc upgrade${RESET}        # check for updates
 
+${BOLD}claude code add-on:${RESET}
+    install.sh did a minimal Claude integration (skill + slash-command
+    symlinks). For the full surface — RTK (Token Killer) detection,
+    PreToolUse hook templates, MCP registration hint — clone crabcc
+    to a stable location and run \`crabcc install-claude\` from inside
+    that clone. \`scripts/bootstrap.sh\` does this automatically; the
+    one-liner doesn't because it builds in a tempdir.
+
 docs: https://github.com/$REPO
 EOF
