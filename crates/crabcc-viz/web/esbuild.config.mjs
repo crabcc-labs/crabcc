@@ -80,6 +80,9 @@ const TEMPLATE = `<!doctype html>
 <meta name="referrer" content="no-referrer">
 <meta name="color-scheme" content="light dark">
 <title>crabcc · live</title>
+<link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/static/apple-touch-icon.png">
 <style>/*STYLES*/</style>
 </head>
 <body>
