@@ -461,17 +461,28 @@ enum Cmd {
     /// Outline-stub-aware file read. Caches per
     /// `(path, session_id)` in memory.db's `session_reads` table;
     /// serves the full file on cache miss / mtime change / hash
-    /// mismatch, an outline-shaped JSON stub on hit. `--mode=full`
-    /// always serves content; `--mode=stub` always serves the
-    /// outline. `--session-id` defaults to `$CRABCC_SESSION_ID`;
-    /// when empty/unset, caching is bypassed and every call serves
-    /// full content.
+    /// mismatch, an outline-shaped JSON stub on hit.
+    ///
+    /// Modes: `auto` (default) | `full` | `stub` | `entropy`.
+    /// `--mode=entropy` filters lines whose Shannon character
+    /// entropy is below `--threshold` (default 2.5 bits/char) —
+    /// useful for log tails, generated bundles, vendored code.
+    ///
+    /// `--session-id` defaults to `$CRABCC_SESSION_ID`; when
+    /// empty/unset, caching is bypassed and every call serves full
+    /// content.
     Read {
         path: PathBuf,
         #[arg(long, default_value = "auto")]
         mode: String,
         #[arg(long)]
         session_id: Option<String>,
+        /// Shannon-entropy threshold (bits/char) for
+        /// `--mode=entropy`. Lines below the threshold are dropped.
+        /// 2.5 keeps most source code / prose; 3.0 is stricter; 2.0
+        /// only drops near-constant lines.
+        #[arg(long, default_value_t = 2.5)]
+        threshold: f64,
     },
     #[command(hide = true)]
     Files {
@@ -1706,8 +1717,16 @@ fn main() -> Result<()> {
             path,
             mode,
             session_id,
+            threshold,
         } => {
-            read::run(&root, &store, path.clone(), &mode, session_id.clone())?;
+            read::run(
+                &root,
+                &store,
+                path.clone(),
+                &mode,
+                session_id.clone(),
+                threshold,
+            )?;
         }
         Cmd::Files {
             under,
