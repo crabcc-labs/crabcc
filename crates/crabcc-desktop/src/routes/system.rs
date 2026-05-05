@@ -153,6 +153,34 @@ impl Render for SystemRoute {
         let models_collapsed = self.is_section_collapsed(section_keys::MODELS);
         let kills_collapsed = self.is_section_collapsed(section_keys::KILLS);
 
+        // Per-section meta — small count summary visible in each
+        // section header (whether expanded or collapsed). Health
+        // signals (e.g. "1 down" for services) ride alongside so a
+        // user can spot trouble without expanding every section.
+        // None for sections where there's no useful count yet (OTLP /
+        // Ollama are single-row state, captured in the body alone).
+        let services_meta = state.services.as_ref().map(|r| {
+            let total = r.services.len();
+            let down = r.services.iter().filter(|s| !s.reachable).count();
+            if down == 0 {
+                format!("{total} services")
+            } else {
+                format!("{total} services · {down} down")
+            }
+        });
+        let profiles_meta = state.agent_profiles.as_ref().map(|p| {
+            let total = p.profiles.len();
+            format!("{total} profile{}", if total == 1 { "" } else { "s" })
+        });
+        let models_meta = state.agent_models.as_ref().map(|m| {
+            let total = m.models.len();
+            format!("{total} model{}", if total == 1 { "" } else { "s" })
+        });
+        let kills_meta = state.agent_kills.as_ref().map(|k| {
+            let total = k.rows.len();
+            format!("{total} recent")
+        });
+
         v_flex()
             .size_full()
             .px_5()
@@ -164,6 +192,7 @@ impl Render for SystemRoute {
                 "SERVICE DISCOVERY",
                 section_keys::SERVICES,
                 services_collapsed,
+                services_meta,
                 border,
                 muted,
                 foreground,
@@ -174,6 +203,7 @@ impl Render for SystemRoute {
                 "OTLP HEALTH",
                 section_keys::OTLP,
                 otlp_collapsed,
+                None,
                 border,
                 muted,
                 foreground,
@@ -184,6 +214,7 @@ impl Render for SystemRoute {
                 "OLLAMA KEY",
                 section_keys::OLLAMA,
                 ollama_collapsed,
+                None,
                 border,
                 muted,
                 foreground,
@@ -194,6 +225,7 @@ impl Render for SystemRoute {
                 "AGENT PROFILES",
                 section_keys::PROFILES,
                 profiles_collapsed,
+                profiles_meta,
                 border,
                 muted,
                 foreground,
@@ -204,6 +236,7 @@ impl Render for SystemRoute {
                 "AGENT MODELS",
                 section_keys::MODELS,
                 models_collapsed,
+                models_meta,
                 border,
                 muted,
                 foreground,
@@ -214,6 +247,7 @@ impl Render for SystemRoute {
                 "RECENT KILLS",
                 section_keys::KILLS,
                 kills_collapsed,
+                kills_meta,
                 border,
                 muted,
                 foreground,
@@ -227,10 +261,12 @@ impl Render for SystemRoute {
 /// `toggle_section` method. Chevron + title; visible state of the
 /// section body is controlled by the caller wrapping (or omitting)
 /// the body child below.
+#[allow(clippy::too_many_arguments)]
 fn section_header(
     title: &'static str,
     key: &'static str,
     collapsed: bool,
+    meta: Option<String>,
     muted: Hsla,
     foreground: Hsla,
     entity: Entity<SystemRoute>,
@@ -242,6 +278,30 @@ fn section_header(
     } else {
         SharedString::from(format!("Collapse {title}"))
     };
+    let mut row = h_flex()
+        .gap_2()
+        .child(
+            div()
+                .text_color(muted)
+                .child(SharedString::new_static(chevron)),
+        )
+        .child(
+            div()
+                .text_sm()
+                .text_color(foreground)
+                .child(SharedString::new_static(title)),
+        );
+    if let Some(m) = meta {
+        // Count summary — visible whether expanded or collapsed so a
+        // user scanning the route gets a glance "X services · Y down"
+        // without expanding each section.
+        row = row.child(
+            div()
+                .text_xs()
+                .text_color(muted)
+                .child(SharedString::from(format!("· {m}"))),
+        );
+    }
     div()
         .id(id)
         .px_1()
@@ -250,21 +310,7 @@ fn section_header(
         .cursor_pointer()
         .hover(move |s| s.text_color(foreground))
         .tooltip(move |window, cx| Tooltip::new(tooltip_text.clone()).build(window, cx))
-        .child(
-            h_flex()
-                .gap_2()
-                .child(
-                    div()
-                        .text_color(muted)
-                        .child(SharedString::new_static(chevron)),
-                )
-                .child(
-                    div()
-                        .text_sm()
-                        .text_color(foreground)
-                        .child(SharedString::new_static(title)),
-                ),
-        )
+        .child(row)
         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
             entity.update(cx, |this, cx| {
                 this.toggle_section(key);
@@ -278,6 +324,7 @@ fn section(
     title: &'static str,
     key: &'static str,
     collapsed: bool,
+    meta: Option<String>,
     border: Hsla,
     muted: Hsla,
     foreground: Hsla,
@@ -290,7 +337,7 @@ fn section(
         .border_b_1()
         .border_color(border)
         .child(section_header(
-            title, key, collapsed, muted, foreground, entity,
+            title, key, collapsed, meta, muted, foreground, entity,
         ));
     if !collapsed {
         block = block.child(body);
