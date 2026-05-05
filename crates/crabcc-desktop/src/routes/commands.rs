@@ -177,6 +177,36 @@ impl Render for CommandsRoute {
                 .into_any_element(),
             None => div().into_any_element(),
         };
+        // "↻ Re-run <name>" — visible whenever a result is in flight
+        // OR has landed AND nothing is currently running. Lets the
+        // user repeat the same fetch (e.g. agents / services /
+        // memory_recent) without scrolling back to find the row.
+        // Hidden during in-flight runs to avoid double-firing the
+        // same command before the worker channel round-trips.
+        let rerun_btn: gpui::AnyElement = match (&last_command_run, running_command) {
+            (Some((cmd, _)), None) => {
+                let cmd_copy = *cmd;
+                let route_entity = cx.entity();
+                let label = SharedString::from(format!("\u{21BB} Re-run {}", cmd_copy.key()));
+                div()
+                    .id("commands-rerun-last")
+                    .px_2()
+                    .py_0p5()
+                    .border_1()
+                    .border_color(border)
+                    .rounded_md()
+                    .text_color(primary)
+                    .text_xs()
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(card))
+                    .child(label)
+                    .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                        route_entity.update(cx, |this, cx| this.run(cmd_copy, cx));
+                    })
+                    .into_any_element()
+            }
+            _ => div().into_any_element(),
+        };
         let header = h_flex()
             .gap_3()
             .child(div().text_lg().child(SharedString::new_static("Commands")))
@@ -185,7 +215,8 @@ impl Render for CommandsRoute {
                     .text_color(muted)
                     .child(SharedString::from(count_label)),
             )
-            .child(running_label);
+            .child(running_label)
+            .child(rerun_btn);
 
         // Wrapper border brightens to `primary` while the input is
         // focused — same focus-indicator pattern as the other route
