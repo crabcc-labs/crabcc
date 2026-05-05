@@ -29,6 +29,7 @@ mod agent_bullmq;
 mod agent_guard;
 mod agent_profile;
 mod agent_runs_db;
+mod auto_index;
 mod backup;
 mod compress_cmd;
 mod debug_network;
@@ -40,6 +41,7 @@ mod jobs_cmd;
 mod memory;
 mod model_info;
 mod read;
+mod root_resolver;
 mod status;
 mod telemetry;
 #[cfg(test)]
@@ -919,8 +921,13 @@ fn main() -> Result<()> {
     reset_sigpipe();
 
     let cli = Cli::parse();
-    let root = cli.root.unwrap_or_else(|| std::env::current_dir().unwrap());
-    let db = root.join(".crabcc").join("index.db");
+    // Resolve `--root` to a concrete source dir + index-artifact dir.
+    // Supports local paths AND git URLs (https://, git@, ssh://, gh:owner/repo).
+    // For URLs and uninitialised local paths we centralise artifacts under
+    // `$CRABCC_HOME/repos/<key>/`; legacy `<root>/.crabcc/` wins when present.
+    let resolved = root_resolver::resolve(cli.root.as_deref())?;
+    let root = resolved.source_dir.clone();
+    let db = resolved.db();
 
     // Issue #74 — `crabcc` is the low-level surface; `ccc` is the
     // user-friendly combo CLI. Emit a one-line stderr hint when the
@@ -1359,7 +1366,7 @@ fn main() -> Result<()> {
 
     std::fs::create_dir_all(db.parent().unwrap())?;
     let store = Store::open_with_compress(&db, cli.compress)?;
-    let fts_dir = root.join(".crabcc").join("tantivy");
+    let fts_dir = resolved.fts_dir();
 
     // Determine a canonical command name for logging.
     let log_name = match &cli.cmd {
@@ -1367,6 +1374,13 @@ fn main() -> Result<()> {
         Some(c) => cmd_name_for_log(c),
     };
     tracing::info!(target: "crabcc_cli", cmd = log_name, "command: enter");
+
+    // Auto-index on first read. `outline foo.rs` on a fresh project used
+    // to silently return empty; now we surface a one-line warning and
+    // run `full_index` first. No-op once the store is populated.
+    if needs_auto_index(&cli.cmd) {
+        auto_index::ensure_indexed(&resolved, &store)?;
+    }
 
     match cli.cmd.unwrap_or(Cmd::Index { op: None }) {
         // ── Index group (store-dependent ops) ──────────────────────────────
@@ -1564,7 +1578,10 @@ fn main() -> Result<()> {
         Cmd::Graph { op } => match op {
             GraphOp::Build => {
                 let g = crabcc_core::graph::CallGraph::build(&store, &root)?;
-                let path = root.join(".crabcc").join("graph.json");
+                let path = resolved.graph_json();
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
                 g.save(&path)?;
                 println!(
                     "{}",
@@ -1581,13 +1598,14 @@ fn main() -> Result<()> {
                 dir: direction,
                 depth,
             } => {
-                let path = root.join(".crabcc").join("graph.json");
+                let path = resolved.graph_json();
                 let g = if path.exists() {
                     crabcc_core::graph::CallGraph::load(&path)?
                 } else {
                     eprintln!(
-                        "crabcc graph walk: no .crabcc/graph.json — building on the fly \
-                         (run `crabcc graph build` to cache)"
+                        "crabcc graph walk: no graph.json at {} — building on the fly \
+                         (run `crabcc graph build` to cache)",
+                        path.display()
                     );
                     crabcc_core::graph::CallGraph::build(&store, &root)?
                 };
@@ -1606,7 +1624,7 @@ fn main() -> Result<()> {
                 println!("{body}");
             }
             GraphOp::Cycles => {
-                let g = load_or_build_graph(&store, &root)?;
+                let g = load_or_build_graph(&store, &root, &resolved.graph_json())?;
                 let cycles = g.cycles();
                 let body = sonic_rs::to_string(&cycles)?;
                 crabcc_core::track::record(
@@ -1619,7 +1637,7 @@ fn main() -> Result<()> {
                 println!("{body}");
             }
             GraphOp::Orphans => {
-                let g = load_or_build_graph(&store, &root)?;
+                let g = load_or_build_graph(&store, &root, &resolved.graph_json())?;
                 let orphans = g.orphans();
                 let body = sonic_rs::to_string(&orphans)?;
                 crabcc_core::track::record(
@@ -2098,10 +2116,13 @@ fn run_serve(root: &Path, port: u16, bind: &str, no_open: bool, init: bool) -> R
     })
 }
 
-fn load_or_build_graph(store: &Store, root: &Path) -> Result<crabcc_core::graph::CallGraph> {
-    let path = root.join(".crabcc").join("graph.json");
-    if path.exists() {
-        crabcc_core::graph::CallGraph::load(&path)
+fn load_or_build_graph(
+    store: &Store,
+    root: &Path,
+    graph_path: &Path,
+) -> Result<crabcc_core::graph::CallGraph> {
+    if graph_path.exists() {
+        crabcc_core::graph::CallGraph::load(graph_path)
     } else {
         crabcc_core::graph::CallGraph::build(store, root)
     }
@@ -2129,6 +2150,35 @@ fn list_files(
         out.truncate(limit);
     }
     Ok(out)
+}
+
+/// True for commands that read the symbol index but don't build it
+/// themselves — i.e. anything that would silently return empty on a
+/// fresh project. The auto-index guard fires once before dispatch.
+///
+/// Excluded: `index/*` (does its own indexing), `memory/*` (separate
+/// DB), `agent/*` / `stack` / `setup` / `track` / `viz/serve` / `doctor`
+/// / `fetch` / `jobs` / `backup` / `debug-network` (don't touch the
+/// symbol store on the read path).
+fn needs_auto_index(c: &Option<Cmd>) -> bool {
+    match c {
+        // Implicit default = `index` — no auto-index needed (we're about
+        // to index anyway).
+        None => false,
+        Some(cmd) => matches!(
+            cmd,
+            Cmd::Lookup { .. }
+                | Cmd::Sym { .. }
+                | Cmd::Refs { .. }
+                | Cmd::Callers { .. }
+                | Cmd::Outline { .. }
+                | Cmd::Files { .. }
+                | Cmd::Fuzzy { .. }
+                | Cmd::Prefix { .. }
+                | Cmd::Grep { .. }
+                | Cmd::Graph { .. }
+        ),
+    }
 }
 
 /// Human-friendly name for a `Cmd` variant — used by the structured

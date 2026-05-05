@@ -14,5 +14,7 @@
 // real files under `tests/integration/`.
 #[path = "integration/agent_dry_run.rs"]
 mod agent_dry_run;
+#[path = "integration/auto_index.rs"]
+mod auto_index;
 #[path = "integration/e2e_walkdir.rs"]
 mod e2e_walkdir;
