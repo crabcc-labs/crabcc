@@ -20,6 +20,15 @@
             "command": "jq -r '.tool_input.command // \"\"' | grep -qE '(^| )(rg|grep( -[a-zA-Z]+)?)\\s+[A-Za-z_][A-Za-z0-9_]+|(^| )find\\s+[^|]*-name\\b' && echo 'hint: try `crabcc sym/refs/callers` — symbol-aware and ~10x cheaper on tokens (`crabcc --help` for the full surface)' >&2; exit 0"
           }
         ]
+      },
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "input=$(cat); file=$(echo \"$input\" | jq -r '.tool_input.file_path // \"\"'); session_id=$(echo \"$input\" | jq -r '.session_id // \"\"'); if [ -n \"$file\" ] && [ -f \"$file\" ] && command -v crabcc >/dev/null 2>&1; then CRABCC_SESSION_ID=\"$session_id\" crabcc read \"$file\" --mode=full --session-id \"$session_id\" >/dev/null 2>&1 || true; case \"$file\" in *.rs|*.ts|*.tsx|*.js|*.jsx|*.py|*.go|*.java|*.kt|*.swift|*.cpp|*.cc|*.h|*.hpp) echo 'hint: `crabcc read --mode=auto` returns an outline stub on cache hit (~30x cheaper than full re-reads); the MCP `mcp__crabcc__read` tool exposes the same surface' >&2 ;; esac; fi; exit 0"
+          }
+        ]
       }
     ]
   }
