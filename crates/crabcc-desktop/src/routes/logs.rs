@@ -233,6 +233,11 @@ impl Render for LogsRoute {
         let level_pills = LevelFilter::ALL.into_iter().map(|f| {
             let is_active = f == active_filter;
             let entity = entity_for_pill.clone();
+            let pill_tooltip: SharedString = if is_active {
+                SharedString::from(format!("Showing {} — click to keep", f.label()))
+            } else {
+                SharedString::from(format!("Filter logs to {}", f.label()))
+            };
             div()
                 .id(SharedString::new_static(f.id()))
                 .px_2()
@@ -243,6 +248,7 @@ impl Render for LogsRoute {
                 .text_color(if is_active { foreground } else { muted })
                 .cursor_pointer()
                 .hover(move |s| s.bg(pill_hover_bg))
+                .tooltip(move |window, cx| Tooltip::new(pill_tooltip.clone()).build(window, cx))
                 .child(SharedString::new_static(f.label()))
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     entity.update(cx, |this, cx| {
@@ -259,6 +265,8 @@ impl Render for LogsRoute {
         let target_clear_pill: Option<gpui::AnyElement> = self.target_pin.clone().map(|t| {
             let entity_for_clear = cx.entity();
             let label = SharedString::from(format!("{} \u{00D7}", truncate(&t, 32)));
+            let clear_tooltip: SharedString =
+                SharedString::from(format!("Clear target pin {t} — show all targets"));
             div()
                 .id("logs-target-pin-clear")
                 .px_2()
@@ -269,6 +277,7 @@ impl Render for LogsRoute {
                 .text_color(primary)
                 .cursor_pointer()
                 .hover(move |s| s.bg(pill_hover_bg))
+                .tooltip(move |window, cx| Tooltip::new(clear_tooltip.clone()).build(window, cx))
                 .child(label)
                 .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                     entity_for_clear.update(cx, |this, cx| {
