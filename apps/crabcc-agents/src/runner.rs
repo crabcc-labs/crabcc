@@ -304,6 +304,29 @@ impl Runner {
                 });
             }
         }
+        // Bind-mount the host project root (the path the user ran
+        // `crabcc agent run` against, propagated as `CRABCC_ROOT`
+        // in `payload.env` — see PR #516 / `agent_bullmq.rs`)
+        // **read-only** at `/host/repo` inside the container, so
+        // the in-container agent can actually read the source it's
+        // meant to operate on. `/workspace` stays a tmpfs scratch
+        // — the project sits at a separate path so writes from the
+        // agent land in scratch, not in the user's repo.
+        //
+        // Read-only is deliberate. Mutating the host repo from a
+        // sandboxed agent without going through an explicit user-
+        // gated path (MCP tools, the desktop's consent flow per
+        // `MCP-CONSENT.md`) is too easy a footgun. RW lands in a
+        // follow-up with explicit per-job opt-in.
+        if let Some(host_root) = project_mount_active(payload) {
+            mounts.push(Mount {
+                target: Some("/host/repo".into()),
+                source: Some(host_root.to_string()),
+                typ: Some(MountTypeEnum::BIND),
+                read_only: Some(true),
+                ..Default::default()
+            });
+        }
 
         HostConfig {
             init: Some(true),                      // Docker tini → zombie reaper.
@@ -385,8 +408,27 @@ impl Runner {
                 env.push(format!("CLAUDE_CODE_OAUTH_TOKEN={token}"));
             }
         }
+        // Skip CRABCC_ROOT here — when the project bind-mount fires
+        // (below), we re-emit it pointing at the in-container path
+        // instead of the host's path. When it doesn't fire, we
+        // forward the host path as informational so the agent at
+        // least knows which repo the user invoked it on.
         for (k, v) in &payload.env {
+            if k == "CRABCC_ROOT" {
+                continue;
+            }
             env.push(format!("{k}={v}"));
+        }
+        if let Some(host_root) = project_mount_active(payload) {
+            // Mount fired → agent reads via /host/repo.
+            env.push("CRABCC_ROOT=/host/repo".into());
+            env.push(format!("CRABCC_HOST_ROOT={host_root}"));
+        } else if let Some(host_root) = payload.env.get("CRABCC_ROOT") {
+            // No mount (path doesn't exist on this worker host) —
+            // forward the original value verbatim so the agent
+            // knows the user's intent even though the path isn't
+            // reachable from inside the container.
+            env.push(format!("CRABCC_ROOT={host_root}"));
         }
         // Trackability headers → container env. Convention:
         //   `x-request-id` → `CRABCC_HEADER_X_REQUEST_ID`
@@ -452,6 +494,22 @@ impl Runner {
                 }
             }
         })
+    }
+}
+
+/// Returns the host-side path to bind-mount as the project root,
+/// or `None` when the bind-mount should be skipped. Active when
+/// `CRABCC_ROOT` is in `payload.env` (the CLI sets this — see
+/// PR #516 / `agent_bullmq.rs`) AND the path exists on the worker
+/// host. The exists-check matters because the worker may run on
+/// a different machine than the CLI (network-dispatched jobs);
+/// silently skipping is safer than crashing the container.
+fn project_mount_active(payload: &AgentJob) -> Option<&str> {
+    let p = payload.env.get("CRABCC_ROOT")?;
+    if std::path::Path::new(p).exists() {
+        Some(p.as_str())
+    } else {
+        None
     }
 }
 
