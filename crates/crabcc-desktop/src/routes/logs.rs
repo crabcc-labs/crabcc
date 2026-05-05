@@ -12,8 +12,8 @@
 //! filter pattern.
 
 use gpui::{
-    div, prelude::*, px, Context, Entity, Focusable, Hsla, IntoElement, MouseButton, Render,
-    SharedString, Window,
+    div, prelude::*, px, ClipboardItem, Context, Entity, Focusable, Hsla, IntoElement, MouseButton,
+    Render, SharedString, Window,
 };
 use gpui_component::{
     h_flex,
@@ -350,6 +350,7 @@ impl Render for LogsRoute {
                                 evt,
                                 muted,
                                 border,
+                                pill_hover_bg,
                                 info,
                                 warning,
                                 danger,
@@ -384,6 +385,7 @@ fn row(
     evt: &TelemetryEvent,
     muted: Hsla,
     border: Hsla,
+    secondary: Hsla,
     info: Hsla,
     warning: Hsla,
     danger: Hsla,
@@ -499,8 +501,31 @@ fn row(
                 })
         })
         // Message preview from `fields.message` if present, else a
-        // compact JSON dump.
-        .child(SharedString::from(truncate(&preview(&evt.fields), 240)))
+        // compact JSON dump. Click copies the full (untruncated)
+        // preview — log messages often run long (JSON, error
+        // chains) and the row's 240-char truncation makes manual
+        // selection unreliable.
+        .child({
+            let full = preview(&evt.fields);
+            let truncated = truncate(&full, 240);
+            let copy_payload = full.clone();
+            let id: gpui::ElementId =
+                SharedString::from(format!("logs-row-msg-{idx}")).into();
+            div()
+                .id(id)
+                .px_1()
+                .rounded_md()
+                .cursor_pointer()
+                .hover(move |s| s.bg(secondary))
+                .tooltip(|window, cx| {
+                    Tooltip::new("Click to copy full message").build(window, cx)
+                })
+                .child(SharedString::from(truncated))
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    cx.stop_propagation();
+                    cx.write_to_clipboard(ClipboardItem::new_string(copy_payload.clone()));
+                })
+        })
 }
 
 fn level_label(level: LogLevel) -> &'static str {
