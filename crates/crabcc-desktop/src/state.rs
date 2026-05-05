@@ -1033,7 +1033,7 @@ impl AppState {
                     "starting"
                 );
                 let client = Client::with_base_url(base_url);
-                let result = run_command(&client, cmd).map_err(|e| e.to_string());
+                let result = run_command(&client, cmd, &tx).map_err(|e| e.to_string());
                 let _ = try_send_app_event(&tx, AppEvent::CommandRunResult(cmd, result));
             })
             .expect("command-run thread spawn");
@@ -1229,6 +1229,7 @@ const APP_CHANNEL_CAP: usize = 512;
 fn run_command(
     client: &Client,
     cmd: crate::routes::commands::RunnableCommand,
+    tx: &flume::Sender<AppEvent>,
 ) -> anyhow::Result<String> {
     use crate::routes::commands::RunnableCommand as RC;
     fn pretty<T: serde::Serialize>(v: T) -> anyhow::Result<String> {
@@ -1248,7 +1249,60 @@ fn run_command(
         RC::RandomQuery => pretty(client.random_query()?),
         RC::SeedGraph => pretty(client.seed_graph()?),
         RC::MemoryRecent => pretty(client.memory_recent()?),
+        RC::TestSampling => run_test_sampling(tx),
     }
+}
+
+/// Smoke test for the MCP sampling-offer. Builds a
+/// [`LiteLlmSamplingHandler`] with the inspector observer attached
+/// and fires a small `sampling/createMessage` so the route layer
+/// can show a real round-trip end-to-end. Returns the response
+/// JSON for inline display.
+fn run_test_sampling(tx: &flume::Sender<AppEvent>) -> anyhow::Result<String> {
+    use crate::sampling::{
+        Content, LiteLlmSamplingHandler, Message, ModelHint, ModelPreferences, Role,
+        SamplingHandler, SamplingMeta, SamplingRequest,
+    };
+    use std::sync::Arc;
+
+    let handler = LiteLlmSamplingHandler::from_env()
+        .map_err(|e| anyhow::anyhow!("build handler: {e}"))?
+        .with_observer(Arc::new(crate::inspector::InspectorSamplingObserver::new(
+            tx.clone(),
+        )));
+
+    // Tight smoke prompt — small max_tokens so this returns in a
+    // few seconds even on cold-loaded qwen3.5:35b.
+    let request = SamplingRequest {
+        messages: vec![Message {
+            role: Role::User,
+            content: Content::Text {
+                text: "Say 'inspector loop is live' in three words exactly.".into(),
+            },
+        }],
+        model_preferences: Some(ModelPreferences {
+            hints: vec![
+                ModelHint {
+                    name: "qwen3.5".into(),
+                },
+                ModelHint {
+                    name: "qwen2.5-coder".into(),
+                },
+            ],
+            cost_priority: Some(1.0),
+            ..Default::default()
+        }),
+        system_prompt: Some("You are terse.".into()),
+        max_tokens: Some(64),
+        stop_sequences: vec!["</think>".into()],
+        temperature: Some(0.2),
+        meta: Some(SamplingMeta { sampling_depth: 0 }),
+    };
+
+    let response = handler
+        .handle(request)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    Ok(serde_json::to_string_pretty(&response)?)
 }
 
 /// Best-effort `AppEvent` send. Drops the event (with a warn log)

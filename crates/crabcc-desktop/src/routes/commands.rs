@@ -50,6 +50,13 @@ pub enum RunnableCommand {
     RandomQuery,
     SeedGraph,
     MemoryRecent,
+    /// MCP sampling-offer smoke test — fires a small
+    /// `sampling/createMessage` through the local LiteLLM stack
+    /// with the inspector observer attached. Lets the user
+    /// validate the M3 loop end-to-end (request → handler →
+    /// LiteLLM → Ollama → response → CallEvent pair in the
+    /// inspector). See `crate::sampling::LiteLlmSamplingHandler`.
+    TestSampling,
 }
 
 impl RunnableCommand {
@@ -70,6 +77,7 @@ impl RunnableCommand {
             RunnableCommand::RandomQuery => "random_query",
             RunnableCommand::SeedGraph => "seed_graph",
             RunnableCommand::MemoryRecent => "memory_recent",
+            RunnableCommand::TestSampling => "test_sampling",
         }
     }
 }
@@ -634,6 +642,18 @@ const CATALOG: &[Category] = &[
                 invocation: "memory.recent",
                 summary: "GET /api/memory/recent — newest memory drawers.",
                 runnable: Some(RunnableCommand::MemoryRecent),
+            },
+        ],
+    },
+    Category {
+        name: "MCP (runnable)",
+        blurb: "Smoke tests for the MCP-native surfaces. Click to fire an end-to-end probe.",
+        commands: &[
+            Command {
+                invocation: "sampling.test",
+                summary: "POST sampling/createMessage to the local LiteLLM stack — \
+                          surfaces a parent/child CallEvent pair in the Inspector route.",
+                runnable: Some(RunnableCommand::TestSampling),
             },
         ],
     },
