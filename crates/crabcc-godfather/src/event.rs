@@ -72,21 +72,25 @@ pub fn insert(
     message: &str,
     payload: Option<&serde_json::Value>,
 ) -> Result<i64> {
-    let ts = now_secs();
-    let payload_str = payload.map(serde_json::to_string).transpose()?;
-    conn.execute(
+    // Prepared-statement cache (#488) — re-prepare on every call
+    // would be a ~3-5× regression on the watcher's per-tick path.
+    // The cache is per-Connection so the WatchHandle's dedicated
+    // Godfather handle pays the prepare cost exactly once.
+    let mut stmt = conn.prepare_cached(
         "INSERT INTO _crab_event(ts, session_id, severity, source, category, message, payload)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![
-            ts as i64,
-            session_id,
-            severity.as_str(),
-            source,
-            category,
-            message,
-            payload_str,
-        ],
     )?;
+    let ts = now_secs();
+    let payload_str = payload.map(serde_json::to_string).transpose()?;
+    stmt.execute(params![
+        ts as i64,
+        session_id,
+        severity.as_str(),
+        source,
+        category,
+        message,
+        payload_str,
+    ])?;
     Ok(conn.last_insert_rowid())
 }
 
@@ -112,15 +116,25 @@ pub fn list_recent(
          ORDER BY ts DESC, id DESC
          LIMIT ?1"
     );
-    let mut stmt = conn.prepare(&sql)?;
+    let mut stmt = conn.prepare_cached(&sql)?;
     let rows = stmt.query_map(params![limit as i64], |row| {
-        let severity_str: String = row.get(3)?;
+        // Borrow the severity column as &str instead of allocating a
+        // String per row — `Severity::parse_str` only needs a slice
+        // (#488: skip-String-clone). Falls back to Info if the row
+        // has a value the enum doesn't know (forward-compat for a
+        // future severity bump).
+        let severity = row
+            .get_ref(3)?
+            .as_str()
+            .ok()
+            .and_then(Severity::parse_str)
+            .unwrap_or(Severity::Info);
         let payload_str: Option<String> = row.get(7)?;
         Ok(Event {
             id: row.get(0)?,
             ts: row.get::<_, i64>(1)? as u64,
             session_id: row.get(2)?,
-            severity: Severity::parse_str(&severity_str).unwrap_or(Severity::Info),
+            severity,
             source: row.get(4)?,
             category: row.get(5)?,
             message: row.get(6)?,
