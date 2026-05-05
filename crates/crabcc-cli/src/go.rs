@@ -197,20 +197,29 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    use crate::test_support::ensure_test_crabcc_home;
+
     #[test]
     fn init_creates_crabcc_dir_and_dbs() {
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         let root = dir.path();
         let db = root.join(".crabcc").join("index.db");
         let report = init(root, &db).unwrap();
         assert!(!report.was_initialized);
         assert!(root.join(".crabcc").join("index.db").exists());
-        assert!(root.join(".crabcc").join("memory.db").exists());
+        let memory_path = crabcc_memory::resolve_db_path(root).unwrap();
+        assert!(
+            memory_path.exists(),
+            "expected memory.db at {}",
+            memory_path.display()
+        );
         assert!(root.join(".crabcc").join("graph.json").exists());
     }
 
     #[test]
     fn init_is_idempotent() {
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         let root = dir.path();
         let db = root.join(".crabcc").join("index.db");
@@ -224,6 +233,7 @@ mod tests {
     fn init_indexes_a_simple_typescript_file() {
         // Drop a single .ts file in the tempdir, run init, expect the
         // symbol count to reflect the function we wrote.
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         let root = dir.path();
         std::fs::write(
@@ -255,6 +265,7 @@ mod tests {
 
     #[test]
     fn read_agents_prompt_prefers_file_when_present() {
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         let agents_path = dir.path().join("AGENTS.md");
         std::fs::write(&agents_path, "MARKER-12345").unwrap();
@@ -264,6 +275,7 @@ mod tests {
 
     #[test]
     fn read_agents_prompt_falls_back_when_absent() {
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         let p = read_agents_prompt(dir.path());
         assert!(p.contains("crabcc sym"));

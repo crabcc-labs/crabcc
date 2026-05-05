@@ -1068,7 +1068,12 @@ fn bootstrap_snapshot(root: &Path) -> Result<BootstrapSnapshot> {
         .to_string();
     let db_path = root.join(".crabcc").join("index.db");
     let graph_path = root.join(".crabcc").join("graph.json");
-    let memory_path = root.join(".crabcc").join("memory.db");
+    // Memory db moved to $CRABCC_HOME/repos/<slug>-<hash6>/memory.db
+    // (#479) so worktrees of one repo share a drawer store and
+    // `git clean -fdx` doesn't blow it away. resolve_db_path is the
+    // single source of truth for the layout.
+    let memory_path = crabcc_memory::resolve_db_path(root)
+        .unwrap_or_else(|_| root.join(".crabcc").join("memory.db"));
 
     let mut index = IndexState {
         present: db_path.exists(),
@@ -1177,7 +1182,11 @@ fn memory_recent(root: &Path, query: &str) -> Result<MemoryRecentSnapshot> {
             _ => {}
         }
     }
-    let memory_path = root.join(".crabcc").join("memory.db");
+    // Same path resolution as `bootstrap_snapshot` — see #479. The
+    // legacy `.crabcc/memory.db` is also checked as a fallback for
+    // installs that haven't run the migrating `Palace::open` yet.
+    let memory_path = crabcc_memory::resolve_db_path(root)
+        .unwrap_or_else(|_| root.join(".crabcc").join("memory.db"));
     if !memory_path.exists() {
         return Ok(MemoryRecentSnapshot {
             present: false,

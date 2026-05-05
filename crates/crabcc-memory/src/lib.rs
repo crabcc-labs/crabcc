@@ -87,8 +87,8 @@ pub use mine::{
     MineReport,
 };
 pub use palace::{
-    find_git_root, Palace, PalaceRegistry, SearchMode, DEFAULT_PALACE_CACHE_CAPACITY,
-    GIT_ROOT_CACHE_TTL, PALACE_CACHE_TTI,
+    find_git_root, resolve_db_path, Palace, PalaceRegistry, SearchMode,
+    DEFAULT_PALACE_CACHE_CAPACITY, GIT_ROOT_CACHE_TTL, PALACE_CACHE_TTI,
 };
 pub use types::{
     DeleteSel, Drawer, DrawerHit, DrawerId, DrawerInsert, GetResult, HealthStatus, Query,

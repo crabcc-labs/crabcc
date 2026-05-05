@@ -20,6 +20,9 @@ use tiny_http::{Header, Method, Request, Response, Server};
 
 pub mod memory;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 /// The MCP server's canonical OpenAPI 3.1 description, embedded at
 /// compile time. Source of truth: `crates/crabcc-mcp/openapi.yaml`.
 /// Surfaced via `crabcc openapi` (CLI) and the `_openapi` MCP tool.
@@ -848,7 +851,16 @@ fn error_response(id: Option<Value>, code: i64, message: &str) -> Value {
 mod tests {
     use super::*;
 
+    /// Pin `$CRABCC_HOME` to a single tempdir for the entire test
+    /// process so `Palace::open(repo_root)` (which now routes through
+    /// `$CRABCC_HOME/repos/<slug>/memory.db` since #479) doesn't
+    /// pollute the user's real `~/.crabcc/`. Must be called by every
+    /// test that opens a Palace; cargo runs tests in parallel, so a
+    /// per-test env-var mutation would race other concurrent tests.
+    use crate::test_support::ensure_test_crabcc_home;
+
     fn fixture_root() -> tempfile::TempDir {
+        ensure_test_crabcc_home();
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("hi.ts"),
@@ -958,6 +970,10 @@ mod tests {
     }
 
     fn call_tool(root: &std::path::Path, tool: &str, args: Value) -> Value {
+        // Pin $CRABCC_HOME the first time any test dispatches a tool —
+        // memory tools open a Palace which now resolves to
+        // $CRABCC_HOME/repos/<slug>/memory.db (#479).
+        ensure_test_crabcc_home();
         let req = json!({
             "jsonrpc": "2.0",
             "id": 100,
@@ -1211,8 +1227,11 @@ mod tests {
     #[test]
     fn memory_dispatch_resolves_cwd_arg_to_git_root() {
         // cwd points into a nested dir under a git root; dispatch should
-        // walk up to the root and write memory.db there, not under the
-        // server's startup root.
+        // walk up to the root and key memory.db off the git-root, not the
+        // server's startup root. As of #479 the db lives at
+        // $CRABCC_HOME/repos/<slug>/memory.db; the test-process-wide
+        // pin in `call_tool` handles isolation from the user's real
+        // `~/.crabcc/`.
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".git")).unwrap();
         let nested = dir.path().join("a/b/c");
@@ -1229,13 +1248,20 @@ mod tests {
             }),
         );
 
-        // memory.db must exist under the git-root, not under server_root.
-        assert!(dir.path().join(".crabcc").join("memory.db").exists());
-        assert!(!server_root
-            .path()
-            .join(".crabcc")
-            .join("memory.db")
-            .exists());
+        // memory.db must be created under the git-root key, not the
+        // server-root key.
+        let git_root_db = crabcc_memory::resolve_db_path(dir.path()).unwrap();
+        let server_root_db = crabcc_memory::resolve_db_path(server_root.path()).unwrap();
+        assert!(
+            git_root_db.exists(),
+            "expected memory.db at {}",
+            git_root_db.display()
+        );
+        assert!(
+            !server_root_db.exists(),
+            "memory.db must not appear at {}",
+            server_root_db.display()
+        );
     }
 
     #[test]

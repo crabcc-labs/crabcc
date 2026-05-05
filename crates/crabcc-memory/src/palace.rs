@@ -18,10 +18,12 @@ use crate::backend::{sqlite::SqliteBackend, Backend, LexicalQuery};
 use crate::embed::{Embedder, HashEmbedder};
 use crate::types::*;
 use anyhow::{Context, Result};
+use crabcc_core::hash::sha256_hex;
 use moka::sync::Cache;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -117,13 +119,19 @@ pub struct Palace {
 }
 
 impl Palace {
-    /// Open or create a persistent palace at `<repo_root>/.crabcc/memory.db`.
+    /// Open or create a persistent palace. As of #479 (May 2026) the
+    /// db lives at `$CRABCC_HOME/repos/<slug>-<hash6>/memory.db` —
+    /// see [`resolve_db_path`] for the layout. Idempotent: reuses the
+    /// existing db if present, copies a legacy
+    /// `<repo_root>/.crabcc/memory.db` over on first open.
     /// Default embedder is `HashEmbedder` until M1 wires `fastembed-rs`.
     pub fn open(repo_root: &Path) -> Result<Self> {
-        let crabcc_dir = repo_root.join(".crabcc");
-        std::fs::create_dir_all(&crabcc_dir)
-            .with_context(|| format!("create {}", crabcc_dir.display()))?;
-        let db_path = crabcc_dir.join("memory.db");
+        let db_path = resolve_db_path(repo_root)?;
+        if let Some(parent) = db_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create {}", parent.display()))?;
+        }
+        migrate_legacy_if_needed(repo_root, &db_path)?;
         let backend = SqliteBackend::open(&db_path)?;
         Ok(Self {
             root: repo_root.to_path_buf(),
@@ -369,6 +377,116 @@ impl Palace {
 /// containing one, or `None` if not in a git repo.
 ///
 /// Hot paths (the MCP tool dispatch loop) should prefer routing through
+/// Resolve the on-disk path for a repo's `memory.db`. Layout:
+///
+/// ```text
+/// $CRABCC_HOME/repos/<slug>-<hash6>/memory.db
+/// ```
+///
+/// * `$CRABCC_HOME` defaults to `$HOME/.crabcc` (matches the convention
+///   already used by `crabcc-cli/backup.rs`, `model_info`, agents/, etc.).
+/// * `<slug>` is the repo dir's basename, ascii-lowered, with non-
+///   `[a-z0-9_-]` collapsed to `-`. Falls back to `unknown-repo` when
+///   the path has no terminal component.
+/// * `<hash6>` is the first 6 hex chars of `sha256(origin_url)`. When
+///   no `remote.origin.url` is set (fresh `git init`, non-git dir), the
+///   slug stands alone — at the cost of basename collisions across
+///   unrelated repos sharing a name.
+///
+/// Centralising memory.db in `$CRABCC_HOME` means worktrees of the same
+/// repo share one db (they share `.git/config`), and `git clean -fdx`
+/// in the working tree doesn't blow it away.
+pub fn resolve_db_path(repo_root: &Path) -> Result<PathBuf> {
+    let home = crabcc_home_dir()?;
+    let key = repo_storage_key(repo_root);
+    Ok(home.join("repos").join(key).join("memory.db"))
+}
+
+fn crabcc_home_dir() -> Result<PathBuf> {
+    if let Ok(p) = std::env::var("CRABCC_HOME") {
+        if !p.is_empty() {
+            return Ok(PathBuf::from(p));
+        }
+    }
+    let home = std::env::var("HOME").context("$HOME is not set")?;
+    Ok(PathBuf::from(home).join(".crabcc"))
+}
+
+fn repo_storage_key(repo_root: &Path) -> String {
+    let raw_basename = repo_root
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "unknown-repo".into());
+    let slug = sanitize_slug(&raw_basename);
+    match git_origin_url(repo_root) {
+        Some(url) => {
+            let hash6: String = sha256_hex(url.as_bytes()).chars().take(6).collect();
+            format!("{slug}-{hash6}")
+        }
+        None => slug,
+    }
+}
+
+fn sanitize_slug(raw: &str) -> String {
+    let s: String = raw
+        .chars()
+        .map(|c| {
+            let lower = c.to_ascii_lowercase();
+            if lower.is_ascii_alphanumeric() || lower == '-' || lower == '_' {
+                lower
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed = s.trim_matches('-');
+    if trimmed.is_empty() {
+        "unknown-repo".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn git_origin_url(repo_root: &Path) -> Option<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["config", "--get", "remote.origin.url"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
+/// One-shot migration: if `<repo_root>/.crabcc/memory.db` exists and
+/// the new global path doesn't, copy it over so the user's existing
+/// drawers carry forward. Idempotent — once the new path exists,
+/// subsequent opens skip the check.
+fn migrate_legacy_if_needed(repo_root: &Path, new_path: &Path) -> Result<()> {
+    let legacy = repo_root.join(".crabcc").join("memory.db");
+    if !legacy.exists() || new_path.exists() {
+        return Ok(());
+    }
+    if let Some(parent) = new_path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    std::fs::copy(&legacy, new_path)
+        .with_context(|| format!("copy {} -> {}", legacy.display(), new_path.display()))?;
+    eprintln!(
+        "crabcc-memory: migrated drawers from {} -> {}",
+        legacy.display(),
+        new_path.display()
+    );
+    Ok(())
+}
+
 /// [`PalaceRegistry::open_for`] / [`PalaceRegistry::resolve_git_root`],
 /// which memoize this walk for [`GIT_ROOT_CACHE_TTL`] so a flurry of
 /// calls with the same `cwd` only pays the canonicalize + ancestor scan
@@ -559,16 +677,105 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    /// Pin every test in this file to the same `$CRABCC_HOME`
+    /// tempdir, so `Palace::open(repo_root)` resolves to a private
+    /// `repos/<slug>-<hash6>/memory.db` underneath it instead of
+    /// stomping the user's real `~/.crabcc/`. We never re-set the env
+    /// var after init — the path is stable for the test process — so
+    /// tests don't need any per-test mutex.
+    ///
+    /// The leaked `TempDir` keeps the directory alive for the
+    /// process lifetime. cargo's test runner cleans up `$TMPDIR`
+    /// itself, so the leak is contained.
+    fn ensure_test_crabcc_home() {
+        static HOME: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        let path = HOME.get_or_init(|| {
+            let d = tempfile::tempdir().expect("test crabcc-home tempdir");
+            let path = d.path().to_path_buf();
+            std::mem::forget(d);
+            path
+        });
+        // Re-assert the env var on every call. Other test modules
+        // (notably crabcc-cli's backup tests) mutate `CRABCC_HOME`
+        // mid-run; without this re-pin, we'd race onto whatever they
+        // set.
+        std::env::set_var("CRABCC_HOME", path);
+    }
+
     #[test]
-    fn open_creates_crabcc_dir_and_db() {
+    fn open_creates_db_under_crabcc_home() {
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         let p = Palace::open(dir.path()).unwrap();
-        assert!(p.root.join(".crabcc").exists());
-        assert!(p.root.join(".crabcc").join("memory.db").exists());
+        let expected = resolve_db_path(dir.path()).unwrap();
+        assert!(
+            expected.exists(),
+            "expected {} to exist",
+            expected.display()
+        );
+        assert_eq!(p.root, dir.path().to_path_buf());
+    }
+
+    #[test]
+    fn migrate_legacy_db_on_first_open() {
+        ensure_test_crabcc_home();
+        let dir = tempdir().unwrap();
+        // Pre-stage a real, opened-then-closed legacy SQLite file via
+        // SqliteBackend itself. Writing arbitrary bytes wouldn't pass
+        // the SQLite header check on the migrated copy, so we use the
+        // real backend to guarantee a valid file.
+        let legacy_dir = dir.path().join(".crabcc");
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        let legacy_db = legacy_dir.join("memory.db");
+        {
+            let _ = SqliteBackend::open(&legacy_db).unwrap();
+        }
+
+        let new_path = resolve_db_path(dir.path()).unwrap();
+        // Safety: a previous test run may have left a slugged subdir
+        // behind (basename collisions across tempdirs). Clear so the
+        // migration branch in `Palace::open` fires.
+        if new_path.exists() {
+            std::fs::remove_file(&new_path).unwrap();
+        }
+        let _p = Palace::open(dir.path()).unwrap();
+
+        // The migrated file must be byte-identical to the legacy one.
+        let legacy_bytes = std::fs::read(&legacy_db).unwrap();
+        let migrated_bytes = std::fs::read(&new_path).unwrap();
+        assert_eq!(migrated_bytes, legacy_bytes);
+    }
+
+    #[test]
+    fn slug_sanitizer_collapses_special_chars() {
+        assert_eq!(sanitize_slug("My Cool Repo!"), "my-cool-repo");
+        assert_eq!(sanitize_slug("foo_bar-1"), "foo_bar-1");
+        assert_eq!(sanitize_slug("///"), "unknown-repo");
+        assert_eq!(sanitize_slug(""), "unknown-repo");
+    }
+
+    #[test]
+    fn repo_storage_key_falls_back_to_slug_without_origin() {
+        // tempdir → no .git, so no origin URL. Slug-only key.
+        ensure_test_crabcc_home();
+        let dir = tempdir().unwrap();
+        let key = repo_storage_key(dir.path());
+        assert!(!key.is_empty());
+        assert!(!key.contains('/'));
+        // No hash suffix when origin is missing — slug stands alone.
+        assert!(
+            !key.contains('-')
+                || key.matches('-').count()
+                    == sanitize_slug(&dir.path().file_name().unwrap().to_string_lossy())
+                        .matches('-')
+                        .count(),
+            "key {key:?} should not have an extra `-<hash6>` suffix"
+        );
     }
 
     #[test]
     fn open_is_idempotent_and_reuses_data() {
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         let id1 = {
             let p = Palace::open(dir.path()).unwrap();
@@ -586,6 +793,7 @@ mod tests {
 
     #[test]
     fn remember_then_search() {
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         let p = Palace::open(dir.path()).unwrap();
         p.remember("default", None, "1", "the fox jumps").unwrap();
@@ -605,6 +813,7 @@ mod tests {
 
     #[test]
     fn find_git_root_walks_up() {
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".git")).unwrap();
         let nested = dir.path().join("a/b/c");
@@ -615,6 +824,7 @@ mod tests {
 
     #[test]
     fn registry_caches_per_root() {
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".git")).unwrap();
         let nested = dir.path().join("sub/sub2");
@@ -630,6 +840,7 @@ mod tests {
 
     #[test]
     fn registry_separates_distinct_roots() {
+        ensure_test_crabcc_home();
         let a = tempdir().unwrap();
         std::fs::create_dir_all(a.path().join(".git")).unwrap();
         let b = tempdir().unwrap();
@@ -644,6 +855,7 @@ mod tests {
 
     #[test]
     fn palace_search_with_no_drawers_is_empty() {
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         let p = Palace::open(dir.path()).unwrap();
         assert!(p.search("anything", 5).unwrap().hits.is_empty());
@@ -654,6 +866,7 @@ mod tests {
         // 4 threads race to open_for the same git root. Registry must
         // hand out the same Arc to all of them and end with count == 1.
         use std::thread;
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".git")).unwrap();
         let reg = Arc::new(PalaceRegistry::new());
@@ -675,6 +888,7 @@ mod tests {
     fn find_git_root_returns_none_outside_repo() {
         // tempdir lives under /tmp or /var/folders — neither is inside a git
         // repo on a normal system, so walk-up should exhaust to None.
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         let result = find_git_root(dir.path());
         assert!(
@@ -694,6 +908,7 @@ mod tests {
 
     #[test]
     fn remember_in_session_round_trips_session_id() {
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         let p = Palace::open(dir.path()).unwrap();
         let id = p
@@ -705,6 +920,7 @@ mod tests {
 
     #[test]
     fn remember_without_session_yields_no_session_id() {
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         let p = Palace::open(dir.path()).unwrap();
         let id = p.remember("default", None, "doc:1", "hello").unwrap();
@@ -714,6 +930,7 @@ mod tests {
 
     #[test]
     fn remember_in_session_persists_across_reopen() {
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         {
             let p = Palace::open(dir.path()).unwrap();
@@ -729,6 +946,7 @@ mod tests {
 
     #[test]
     fn search_filtered_returns_session_carrying_drawer() {
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         let p = Palace::open(dir.path()).unwrap();
         p.remember_in_session("default", None, "doc:1", "fox jumps", Some("s1"))
@@ -850,6 +1068,7 @@ mod tests {
     fn search_lexical_finds_keyword_match() {
         // BM25 path on a SQLite palace: drawers whose body contains the
         // queried token must surface; unrelated drawers must not.
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         let p = Palace::open(dir.path()).unwrap();
         p.remember("default", None, "doc:1", "the quick brown fox")
@@ -870,6 +1089,7 @@ mod tests {
 
     #[test]
     fn search_vector_returns_self_first() {
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         let p = Palace::open(dir.path()).unwrap();
         p.remember("default", None, "doc:1", "alpha beta gamma")
@@ -887,6 +1107,7 @@ mod tests {
         // Smoke test: hybrid must find the queried term even when the stub
         // embedder's vector contribution is noise — RRF fusion lets the
         // BM25 ranker carry the win for keyword queries.
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         let p = Palace::open(dir.path()).unwrap();
         p.remember("default", None, "doc:1", "quantum entanglement experiment")
@@ -910,6 +1131,7 @@ mod tests {
         // Hybrid hits must carry the fused RRF score, not the raw cosine
         // or BM25 value. RRF rank-1 score is bounded by 2/(60+1) when both
         // rankers agree on top-1 — well below 1.0.
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         let p = Palace::open(dir.path()).unwrap();
         p.remember("default", None, "doc:1", "exact phrase match here")
@@ -936,6 +1158,7 @@ mod tests {
         // BM25 winner appears under the default `search()` — which is
         // true whether the default is `Hybrid` (RRF includes lexical)
         // or `Lexical` (BM25-only).
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         let p = Palace::open(dir.path()).unwrap();
         // Two docs with WILDLY different lexical content. If the default
@@ -954,6 +1177,7 @@ mod tests {
     fn search_lexical_persists_across_reopen() {
         // FTS5 index must survive close/reopen. Write on first open,
         // close, reopen, lexical-search on second open.
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         {
             let p = Palace::open(dir.path()).unwrap();
@@ -970,6 +1194,7 @@ mod tests {
 
     #[test]
     fn search_lexical_room_filter() {
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         let p = Palace::open(dir.path()).unwrap();
         p.remember("default", Some("kitchen"), "doc:1", "tomato basil pasta")
@@ -991,6 +1216,7 @@ mod tests {
         // refreshes the idle timer; sleeping past it without further
         // access must trigger eviction on the next maintenance pass.
         use std::thread::sleep;
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".git")).unwrap();
         let reg = PalaceRegistry::with_test_timings(
@@ -1016,6 +1242,7 @@ mod tests {
     fn registry_capacity_bound_evicts_oldest() {
         // capacity = 2; opening a third palace must drop one of the
         // earlier two so the cache stays at most two entries.
+        ensure_test_crabcc_home();
         let a = tempdir().unwrap();
         std::fs::create_dir_all(a.path().join(".git")).unwrap();
         let b = tempdir().unwrap();
@@ -1041,6 +1268,7 @@ mod tests {
         // 50ms TTL — first lookup populates, second within window is a
         // hit, sleeping past the TTL drops the entry.
         use std::thread::sleep;
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".git")).unwrap();
         let reg = PalaceRegistry::with_test_timings(
@@ -1076,6 +1304,7 @@ mod tests {
         // must return the cached value even after we delete the .git
         // marker on disk. (Outside the TTL window the marker delete
         // would propagate; inside it the memo wins.)
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".git")).unwrap();
         let reg =
@@ -1278,6 +1507,7 @@ mod tests {
         // Verify clause from issue #20: recall@5 ≥ 0.8 over the canned
         // corpus. Runs under the *default* search mode for the build
         // (Lexical when `memory-embed` is off; Hybrid when on).
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         let p = Palace::open(dir.path()).unwrap();
         for (id, body) in golden_drawers() {
@@ -1330,6 +1560,7 @@ mod tests {
         use crate::SqliteBackend;
         use std::sync::Arc;
 
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         let backend = Arc::new(SqliteBackend::open(&dir.path().join("memory.db")).unwrap());
         let embedder = Arc::new(FastEmbedder::new().expect("load MiniLM"));
@@ -1426,6 +1657,7 @@ mod tests {
 
     #[test]
     fn forget_by_id_removes_drawer_and_returns_count() {
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         let p = Palace::open(dir.path()).unwrap();
         let id = p
@@ -1449,6 +1681,7 @@ mod tests {
         // Issue #26 deliverable — `forget` MUST return Ok with 0 rows
         // removed when the selector matches nothing. Callers (notably
         // the MCP tool) treat this as "drawer is gone, no work needed".
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         let p = Palace::open(dir.path()).unwrap();
         let n = p.forget(&DeleteSel::ById(vec![99_999])).unwrap();
@@ -1461,6 +1694,7 @@ mod tests {
 
     #[test]
     fn forget_before_in_wing_only_drops_matching_rows() {
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         let p = Palace::open(dir.path()).unwrap();
 
@@ -1473,7 +1707,8 @@ mod tests {
             .remember("scratch", None, "other:1", "different wing")
             .unwrap();
 
-        let conn = rusqlite::Connection::open(dir.path().join(".crabcc/memory.db")).unwrap();
+        let db_path = resolve_db_path(dir.path()).unwrap();
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
         conn.execute("UPDATE drawers SET created_at = 500 WHERE id = ?1", [stale])
             .unwrap();
         conn.execute("UPDATE drawers SET created_at = 500 WHERE id = ?1", [other])
@@ -1501,6 +1736,7 @@ mod tests {
 
     #[test]
     fn forget_before_in_wing_with_no_matches_is_noop() {
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         let p = Palace::open(dir.path()).unwrap();
         p.remember("notes", None, "doc:1", "body").unwrap();
@@ -1528,6 +1764,7 @@ mod tests {
         // form: fence backticks gone, `###` gone, but the identifiers
         // and prose preserved. BM25 / lexical search must still find
         // the content tokens.
+        ensure_test_crabcc_home();
         let dir = tempdir().unwrap();
         let p = Palace::open(dir.path()).unwrap();
         let raw = "### Connection pool\n\nUse `Store::open` to create a pool:\n\n```rust\nlet s = Store::open(path)?;\n```\n";

@@ -504,8 +504,16 @@ mod tests {
 
     // --- dispatch ---
 
+    /// Pin `$CRABCC_HOME` to a single tempdir for the entire test
+    /// process so `Palace::open(repo_root)` (which now routes through
+    /// `$CRABCC_HOME/repos/<slug>/memory.db` since #479) doesn't
+    /// pollute the user's real `~/.crabcc/`. The leaked TempDir
+    /// guard keeps the directory alive for the test process.
+    use crate::test_support::ensure_test_crabcc_home;
+
     #[test]
     fn dispatch_unknown_tool_errors() {
+        ensure_test_crabcc_home();
         let dir = tempfile::tempdir().unwrap();
         let err = dispatch("memory.nonexistent", &json!({}), dir.path()).unwrap_err();
         assert!(err.to_string().contains("unknown memory tool"));
@@ -513,6 +521,7 @@ mod tests {
 
     #[test]
     fn dispatch_init_creates_db() {
+        ensure_test_crabcc_home();
         let dir = tempfile::tempdir().unwrap();
         // Create a .git dir so find_git_root resolves
         std::fs::create_dir_all(dir.path().join(".git")).unwrap();
@@ -528,6 +537,7 @@ mod tests {
 
     #[test]
     fn dispatch_count_on_fresh_db() {
+        ensure_test_crabcc_home();
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".git")).unwrap();
         let result = dispatch(
@@ -542,6 +552,7 @@ mod tests {
 
     #[test]
     fn dispatch_remember_and_get() {
+        ensure_test_crabcc_home();
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".git")).unwrap();
         let cwd = dir.path().to_str().unwrap();
@@ -567,6 +578,7 @@ mod tests {
 
     #[test]
     fn dispatch_delete_requires_exactly_one_selector() {
+        ensure_test_crabcc_home();
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".git")).unwrap();
         let cwd = dir.path().to_str().unwrap();
@@ -587,6 +599,7 @@ mod tests {
 
     #[test]
     fn dispatch_forget_rejects_invalid_args() {
+        ensure_test_crabcc_home();
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".git")).unwrap();
         let cwd = dir.path().to_str().unwrap();
@@ -598,6 +611,7 @@ mod tests {
 
     #[test]
     fn dispatch_list_on_fresh_db_returns_empty() {
+        ensure_test_crabcc_home();
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".git")).unwrap();
         let cwd = dir.path().to_str().unwrap();
@@ -609,6 +623,7 @@ mod tests {
 
     #[test]
     fn dispatch_health_on_fresh_db() {
+        ensure_test_crabcc_home();
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(dir.path().join(".git")).unwrap();
         let cwd = dir.path().to_str().unwrap();
