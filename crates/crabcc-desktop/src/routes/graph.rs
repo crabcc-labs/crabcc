@@ -683,20 +683,45 @@ fn render_node_drawer(
         None => div().into_any_element(),
     };
 
-    // Subline: depth + edge count + (optional) file:line. Each part is
-    // separated by `·` so a missing optional folds the row cleanly.
-    let mut subline_parts: Vec<String> = Vec::with_capacity(3);
-    if let Some(d) = depth {
-        subline_parts.push(format!("depth {d}"));
+    // Subline: depth + edge count + (optional) file:line. The
+    // file:line part is a click target — click copies "file:line"
+    // to the clipboard so the user can paste into an editor jump-
+    // to-line dialog, ripgrep, etc. Plain text for the other two
+    // parts since they're informational only.
+    let depth_part: Option<String> = depth.map(|d| format!("depth {d}"));
+    let edges_part = format!("{degree} edge{}", if degree == 1 { "" } else { "s" });
+    let file_line: Option<String> = match (file.as_deref(), line) {
+        (Some(f), Some(l)) => Some(format!("{f}:{l}")),
+        _ => None,
+    };
+    let mut subline = h_flex().gap_1().text_color(muted).text_xs();
+    if let Some(part) = depth_part {
+        subline = subline.child(div().child(SharedString::from(part)));
+        subline = subline.child(div().child(SharedString::new_static("·")));
     }
-    subline_parts.push(format!(
-        "{degree} edge{}",
-        if degree == 1 { "" } else { "s" }
-    ));
-    if let (Some(f), Some(l)) = (file.as_deref(), line) {
-        subline_parts.push(format!("{f}:{l}"));
+    subline = subline.child(div().child(SharedString::from(edges_part)));
+    if let Some(fl) = file_line {
+        let fl_text = SharedString::from(fl.clone());
+        let fl_for_copy = fl.clone();
+        let fl_tooltip: SharedString =
+            SharedString::from(format!("Click to copy \u{201C}{fl}\u{201D}"));
+        subline = subline.child(div().child(SharedString::new_static("·")));
+        subline = subline.child(
+            div()
+                .id("graph-drawer-fileline-copy")
+                .px_1()
+                .rounded_md()
+                .text_color(primary)
+                .cursor_pointer()
+                .hover(move |s| s.bg(secondary))
+                .tooltip(move |window, cx| Tooltip::new(fl_tooltip.clone()).build(window, cx))
+                .child(fl_text)
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    cx.stop_propagation();
+                    cx.write_to_clipboard(ClipboardItem::new_string(fl_for_copy.clone()));
+                }),
+        );
     }
-    let subline_text = subline_parts.join(" · ");
 
     // Header — symbol id (mono) + kind chip + meta line + close.
     let header = h_flex()
@@ -713,12 +738,7 @@ fn render_node_drawer(
                             .child(SharedString::from(label.clone())),
                     ),
                 )
-                .child(
-                    div()
-                        .text_color(muted)
-                        .text_xs()
-                        .child(SharedString::from(subline_text)),
-                ),
+                .child(subline),
         )
         .child(
             div()
