@@ -14,6 +14,7 @@
 pub mod about;
 pub mod api;
 pub mod graph_layout;
+pub mod icons;
 pub mod native;
 pub mod routes;
 pub mod services;
