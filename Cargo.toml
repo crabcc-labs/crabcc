@@ -69,7 +69,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"]
 tracing-appender = "0.2"
 libc = "0.2"
 notify-debouncer-mini = "0.4"
-sonic-rs = "0.3"
+sonic-rs = "0.5"
 bumpalo = { version = "3", features = ["collections"] }
 moka = { version = "0.12", features = ["sync"] }
 fastembed = "5"
