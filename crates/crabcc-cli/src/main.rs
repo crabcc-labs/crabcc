@@ -39,6 +39,7 @@ mod install;
 mod jobs_cmd;
 mod memory;
 mod model_info;
+mod read;
 mod status;
 mod telemetry;
 #[cfg(test)]
@@ -457,6 +458,21 @@ enum Cmd {
     },
     #[command(hide = true)]
     Outline { file: PathBuf },
+    /// Outline-stub-aware file read. Caches per
+    /// `(path, session_id)` in memory.db's `session_reads` table;
+    /// serves the full file on cache miss / mtime change / hash
+    /// mismatch, an outline-shaped JSON stub on hit. `--mode=full`
+    /// always serves content; `--mode=stub` always serves the
+    /// outline. `--session-id` defaults to `$CRABCC_SESSION_ID`;
+    /// when empty/unset, caching is bypassed and every call serves
+    /// full content.
+    Read {
+        path: PathBuf,
+        #[arg(long, default_value = "auto")]
+        mode: String,
+        #[arg(long)]
+        session_id: Option<String>,
+    },
     #[command(hide = true)]
     Files {
         #[arg(long)]
@@ -1686,6 +1702,13 @@ fn main() -> Result<()> {
             crabcc_core::track::record("outline", &key, syms.len(), &repo_label(&root), body.len());
             println!("{body}");
         }
+        Cmd::Read {
+            path,
+            mode,
+            session_id,
+        } => {
+            read::run(&root, &store, path.clone(), &mode, session_id.clone())?;
+        }
         Cmd::Files {
             under,
             lang,
@@ -2148,6 +2171,7 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::Refs { .. } => "refs",
         Cmd::Callers { .. } => "callers",
         Cmd::Outline { .. } => "outline",
+        Cmd::Read { .. } => "read",
         Cmd::Files { .. } => "files",
         Cmd::Fuzzy { .. } => "fuzzy",
         Cmd::Prefix { .. } => "prefix",
