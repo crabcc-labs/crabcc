@@ -23,7 +23,7 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
-use gpui::{App, Context, Entity, SharedString};
+use gpui::{Context, Entity, SharedString};
 use tracing::{debug, info};
 
 use crate::api::types::{
@@ -1365,10 +1365,6 @@ pub fn build(cx: &mut Context<AppState>, base_url: &str) -> AppState {
         ..AppState::new()
     }
 }
-
-// Suppress dead-code lint for the unused `_app` arg until A.5 needs it.
-#[allow(dead_code)]
-fn _app_marker(_app: &App) {}
 
 #[cfg(test)]
 mod tests {

@@ -24,7 +24,6 @@ redis              = { version = "0.28", features = ["tokio-comp", "connection-m
 bollard            = { version = "0.17", default-features = false, features = ["ssl"] }
 futures-util       = "0.3"
 chrono             = { version = "0.4", features = ["serde"] }
-uuid               = { version = "1", features = ["v4", "serde"] }
 
 # jemalloc — used for the Linux container build only. The worker is a
 # long-running, multi-threaded process whose allocation profile (per-
