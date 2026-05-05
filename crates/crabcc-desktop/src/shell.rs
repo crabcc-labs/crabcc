@@ -285,6 +285,12 @@ impl Render for Shell {
                         tab_inner.child(div().text_xs().text_color(badge_color).child(badge_text));
                 }
 
+                let tab_tooltip: SharedString = if is_active {
+                    SharedString::from(format!("On {label} — click to keep"))
+                } else {
+                    SharedString::from(format!("Go to {label}"))
+                };
+
                 div()
                     .id(label)
                     .px_2()
@@ -299,6 +305,7 @@ impl Render for Shell {
                     })
                     .cursor_pointer()
                     .hover(move |s| s.bg(hover_bg))
+                    .tooltip(move |window, cx| Tooltip::new(tab_tooltip.clone()).build(window, cx))
                     .child(tab_inner)
                     .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                         state.update(cx, |s, cx| {
