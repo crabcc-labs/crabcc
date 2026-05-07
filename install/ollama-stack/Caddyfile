@@ -23,7 +23,12 @@
 	# Stable correlation id for log tie-back. Use the inbound header
 	# when set (so an upstream agent can stamp its own run id),
 	# generate otherwise.
-	@no_id `!header({"X-Request-Id"})`
+	#
+	# Older Caddy 2.7 accepted the CEL `!header({"X-Request-Id"})`
+	# expression matcher; the 2.10+ CEL parser rejects the `{...}`
+	# header-set literal. The standard `header` request matcher with
+	# `not` does the same thing in stable Caddyfile syntax.
+	@no_id not header X-Request-Id *
 	header @no_id +X-Request-Id "{http.request.uuid}"
 }
 
