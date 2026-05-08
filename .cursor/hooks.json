@@ -1,0 +1,9 @@
+{
+  "hooks": [
+    {
+      "event": "afterFileEdit",
+      "script": ".cursor/hooks/fast-validate.sh",
+      "pattern": "**/*.{rs,toml}"
+    }
+  ]
+}
