@@ -43,7 +43,7 @@ sha2 = { workspace = true }
 # C deps. Cross-platform (macOS / Linux / Windows). We only use the
 # `process` + `system` features today; `network` / `disk` are
 # off-default and would bloat the binary if enabled.
-sysinfo = { version = "0.31", default-features = false, features = ["system"] }
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 tracing = "0.1"
 # Daemon mode + the CLI's structured logging surface.
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
