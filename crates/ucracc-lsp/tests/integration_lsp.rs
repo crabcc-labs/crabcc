@@ -414,6 +414,76 @@ async fn cache_invalidates_on_did_change() {
     );
 }
 
+/// Incremental reparse path: send a small-range `didChange` (not a full
+/// replace), then assert the LSP re-indexes correctly. Catches regressions
+/// where the cached `Tree` is reused without applying the InputEdit, or
+/// where the byte-offset math drifts off the actual source.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn incremental_reparse_picks_up_small_edit() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().to_path_buf();
+    write_fixtures(&root);
+    build_index(&root);
+
+    let svc = boot(root.clone()).await;
+    let uri = uri_for(&root, "ucracc.rs");
+    open_doc(&svc, uri.clone(), "rust", fixtures::RUST_SRC).await;
+
+    // Find `UcraccStore` and tack an `X` onto the end, simulating a typed
+    // character. This is a ranged didChange — the range is the empty
+    // span just AFTER the `e` in `UcraccStore`.
+    let (line, col_of_pub) = find_position(fixtures::RUST_SRC, "pub struct UcraccStore").unwrap();
+    let end_col = col_of_pub + ("pub struct UcraccStore".len() as u32);
+    svc.inner()
+        .did_change(DidChangeTextDocumentParams {
+            text_document: VersionedTextDocumentIdentifier {
+                uri: uri.clone(),
+                version: 2,
+            },
+            content_changes: vec![TextDocumentContentChangeEvent {
+                range: Some(tower_lsp::lsp_types::Range {
+                    start: Position {
+                        line,
+                        character: end_col,
+                    },
+                    end: Position {
+                        line,
+                        character: end_col,
+                    },
+                }),
+                range_length: None,
+                text: "X".to_string(),
+            }],
+        })
+        .await;
+
+    // The original UcraccStore should have been renamed to UcraccStoreX
+    // in the live index. Hover on UcraccStoreX must resolve.
+    let resp = svc
+        .inner()
+        .hover(HoverParams {
+            text_document_position_params: TextDocumentPositionParams {
+                text_document: TextDocumentIdentifier { uri },
+                position: Position {
+                    line,
+                    character: col_of_pub + 12,
+                },
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+        })
+        .await
+        .expect("hover")
+        .expect("Some(hover)");
+    let text = match resp.contents {
+        tower_lsp::lsp_types::HoverContents::Markup(m) => m.value,
+        other => panic!("unexpected hover contents: {other:?}"),
+    };
+    assert!(
+        text.contains("UcraccStoreX"),
+        "incremental reparse missed the edit; hover text: {text}"
+    );
+}
+
 /// `callHierarchy/prepare` + `callHierarchy/incomingCalls` must surface
 /// `greet` as a caller of `say_hello` in the Rust fixture.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

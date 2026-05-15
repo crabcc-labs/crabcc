@@ -35,10 +35,16 @@ merge results.
 | Python          | ✓      | ✓     | crabcc-core extractor                  |
 | Ruby            | ✓      | ✓     | crabcc-core extractor                  |
 | Go              | ✓      | ✓     | crabcc-core extractor                  |
-| Swift           | ✓      | ✓     | this crate (tree-sitter-swift)         |
-| Bash            | ✓      | ✓     | this crate (tree-sitter-bash) — commands as call edges |
+| Swift           | ✓      | ✓     | crabcc-core extractor *(moved in v0.2)*|
+| Bash            | ✓      | ✓     | crabcc-core extractor *(moved in v0.2; commands → call edges)* |
 | YAML            | ✓      | —     | this crate (tree-sitter-yaml) — top-level keys, no edges |
 | Markdown        | ✓      | —     | this crate (tree-sitter-md) — heading outline, no edges |
+
+**Why some languages moved**: Swift and Bash *are code* — putting them in
+`crabcc-core` means `crabcc index`, `crabcc sym`, `crabcc callers`, and
+the MCP server all pick them up automatically, not just this LSP. YAML
+and Markdown aren't code; they stay here to keep `crabcc-core`'s mission
+focused on symbol extraction.
 
 ## Features
 
@@ -101,6 +107,19 @@ edit-session.
 `initialized` notification; if the user never sends a request, no I/O
 ever happens. First request after a cold launch pays the open cost once
 (then never again until process restart).
+
+### Tree-sitter pipeline (v0.2)
+
+| Op | Cost | Notes |
+|---|---|---|
+| Full reparse — 100-fn Rust file (~3 KLOC) | 1.32 ms | Cold parse |
+| Incremental reparse — same file, 1-byte edit | **162 µs** | **8.2× faster** |
+
+Per-doc `Tree` cache + LSP `INCREMENTAL` sync. Each `didChange` produces
+`InputEdit`s that are applied to the cached tree; `Parser::parse(src,
+Some(&old_tree))` skips subtrees outside the edit region. Combined with
+the thread-local Parser pool in `crabcc-core` (one Parser per thread per
+language, reused across calls), keystrokes in big files stay sub-200 µs.
 
 The dispatch wrapper adds < 1 µs per hot-path call (URL parse + Mutex
 acquire + Tokio task hop). Cold start is dominated by tantivy mmap

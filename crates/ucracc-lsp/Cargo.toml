@@ -10,16 +10,15 @@ license.workspace = true
 # and hover/definition/references < 20 ms p95.
 
 [features]
-default = ["swift", "bash", "yaml", "markdown"]
-# Pulls tree-sitter-swift. crabcc-core's grammar fleet does not cover Swift.
-swift = ["dep:tree-sitter-swift"]
-# tree-sitter-bash. Extracts function_definition + variable_assignment.
-bash = ["dep:tree-sitter-bash"]
+default = ["yaml", "markdown"]
 # tree-sitter-yaml. Surfaces top-level keys as DocumentSymbols (nav only,
 # no call edges — YAML isn't code).
 yaml = ["dep:tree-sitter-yaml"]
 # tree-sitter-md. Surfaces ATX/setext headings as a doc outline.
 markdown = ["dep:tree-sitter-md"]
+# NOTE: Swift and Bash moved to crabcc-core as of v0.2.0 — they're code
+# and now reachable via `crabcc index` / `crabcc sym` / the MCP server,
+# not just ucracc-lsp.
 # Enables the workspace/executeCommand `ucracc.memory.search` command.
 memory = ["dep:crabcc-memory"]
 # Enables `ucracc.webfetch`.
@@ -43,8 +42,6 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-std", "
 tower-lsp = "0.20"
 
 tree-sitter = { workspace = true }
-tree-sitter-swift = { version = "0.7", optional = true }
-tree-sitter-bash = { version = "0.25", optional = true }
 tree-sitter-yaml = { version = "0.7", optional = true }
 tree-sitter-md = { version = "0.5", optional = true }
 moka = { workspace = true }

@@ -1,8 +1,60 @@
 use crate::types::{Edge, Symbol, SymbolKind};
 use anyhow::{anyhow, Result};
 use bumpalo::Bump;
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::Path;
 use tree_sitter::{Node, Parser};
+
+// Per-thread parser pool. Constructing a `Parser` and calling
+// `set_language` is ~5–10 µs of pure overhead per call (LR table init).
+// Across a full-repo index that adds up; on the LSP didChange path it
+// adds latency the user can feel on a fast typist's keyboard. We keep
+// one `Parser` per thread per language and reset between calls.
+//
+// `thread_local!` keeps this lock-free; the pool never crosses threads.
+// The map is keyed on the `&'static str` lang tag we already pass
+// everywhere, so no allocation on lookup.
+thread_local! {
+    static PARSERS: RefCell<HashMap<&'static str, Parser>> = RefCell::new(HashMap::new());
+}
+
+fn intern_lang(lang: &str) -> Option<&'static str> {
+    Some(match lang {
+        "typescript" => "typescript",
+        "tsx" => "tsx",
+        "javascript" => "javascript",
+        "ruby" => "ruby",
+        "rust" => "rust",
+        "go" => "go",
+        "python" => "python",
+        "swift" => "swift",
+        "bash" => "bash",
+        _ => return None,
+    })
+}
+
+/// Run `f` with a `Parser` already configured for `lang`. The parser is
+/// pulled from a per-thread pool and returned afterwards. If no parser
+/// exists for this (thread, lang) pair yet, one is created lazily.
+fn with_parser<F, T>(lang: &str, f: F) -> Result<T>
+where
+    F: FnOnce(&mut Parser) -> Result<T>,
+{
+    let key = intern_lang(lang).ok_or_else(|| anyhow!("unsupported lang: {lang}"))?;
+    PARSERS.with(|cell| {
+        let mut map = cell.borrow_mut();
+        if !map.contains_key(key) {
+            let ts_lang = ts_language(key)?;
+            let mut p = Parser::new();
+            p.set_language(&ts_lang)
+                .map_err(|e| anyhow!("set_language({key}): {e}"))?;
+            map.insert(key, p);
+        }
+        let parser = map.get_mut(key).expect("just inserted");
+        f(parser)
+    })
+}
 
 // Per-file bump-arena scratch budget. Tree-sitter's tallest queries on the
 // fixtures we care about (mc-mothership, ~1k-line files) build at most a
@@ -22,23 +74,21 @@ pub fn detect_lang(path: &Path) -> Option<&'static str> {
         "rs" => "rust",
         "go" => "go",
         "py" | "pyi" => "python",
+        "swift" => "swift",
+        "sh" | "bash" | "zsh" => "bash",
         _ => return None,
     })
 }
 
 pub fn extract_file(file: &str, src: &str, lang: &str) -> Result<Vec<Symbol>> {
-    let ts_lang = ts_language(lang)?;
-    let mut parser = Parser::new();
-    parser
-        .set_language(&ts_lang)
-        .map_err(|e| anyhow!("set_language: {e}"))?;
-    let tree = parser
-        .parse(src, None)
-        .ok_or_else(|| anyhow!("parse failed"))?;
-
-    let mut out = Vec::new();
-    walk(tree.root_node(), src.as_bytes(), file, lang, None, &mut out);
-    Ok(out)
+    with_parser(lang, |parser| {
+        let tree = parser
+            .parse(src, None)
+            .ok_or_else(|| anyhow!("parse failed"))?;
+        let mut out = Vec::new();
+        walk(tree.root_node(), src.as_bytes(), file, lang, None, &mut out);
+        Ok(out)
+    })
 }
 
 /// Extract every call edge in the file. `src_symbol` is the *enclosing*
@@ -74,27 +124,49 @@ pub fn extract_file_with_edges(
     src: &str,
     lang: &str,
 ) -> Result<(Vec<Symbol>, Vec<Edge>)> {
-    let ts_lang = ts_language(lang)?;
-    let mut parser = Parser::new();
-    parser
-        .set_language(&ts_lang)
-        .map_err(|e| anyhow!("set_language: {e}"))?;
-    let tree = parser
-        .parse(src, None)
-        .ok_or_else(|| anyhow!("parse failed"))?;
+    with_parser(lang, |parser| {
+        let tree = parser
+            .parse(src, None)
+            .ok_or_else(|| anyhow!("parse failed"))?;
+        let bytes = src.as_bytes();
+        let root = tree.root_node();
+        // Per-file bump arena. Sized to cover the typical impl-retag /
+        // signature-stitch transient burst without paging; the allocator
+        // grows automatically if a giant file blows past the initial
+        // budget.
+        let _scratch = Bump::with_capacity(SCRATCH_ARENA_BYTES);
+        let mut symbols = Vec::new();
+        walk(root, bytes, file, lang, None, &mut symbols);
+        let mut edges = Vec::new();
+        walk_edges(root, bytes, lang, None, &mut edges);
+        Ok((symbols, edges))
+    })
+}
 
-    let bytes = src.as_bytes();
-    let root = tree.root_node();
-    // Per-file bump arena. Sized to cover the typical impl-retag /
-    // signature-stitch transient burst without paging; the allocator
-    // grows automatically if a giant file blows past the initial
-    // budget.
+/// Public access to the underlying tree-sitter `Language` for a lang
+/// tag. Consumers (LSP servers, watchers) that want to keep their own
+/// per-document `Parser` + `Tree` and drive incremental reparse can
+/// pull the Language here and feed `extract_from_root` for extraction.
+pub fn language(lang: &str) -> Result<tree_sitter::Language> {
+    ts_language(lang)
+}
+
+/// Walk an already-parsed tree to produce symbols + edges. Mirror of
+/// the body of `extract_file_with_edges` minus the parse step — for
+/// callers that own the `Parser` (e.g. ucracc-lsp's incremental
+/// reparse path).
+pub fn extract_from_root(
+    root: tree_sitter::Node,
+    src: &[u8],
+    file: &str,
+    lang: &str,
+) -> (Vec<Symbol>, Vec<Edge>) {
     let _scratch = Bump::with_capacity(SCRATCH_ARENA_BYTES);
     let mut symbols = Vec::new();
-    walk(root, bytes, file, lang, None, &mut symbols);
+    walk(root, src, file, lang, None, &mut symbols);
     let mut edges = Vec::new();
-    walk_edges(root, bytes, lang, None, &mut edges);
-    Ok((symbols, edges))
+    walk_edges(root, src, lang, None, &mut edges);
+    (symbols, edges)
 }
 
 fn ts_language(lang: &str) -> Result<tree_sitter::Language> {
@@ -109,6 +181,8 @@ fn ts_language(lang: &str) -> Result<tree_sitter::Language> {
         "rust" => tree_sitter_rust::LANGUAGE.into(),
         "go" => tree_sitter_go::LANGUAGE.into(),
         "python" => tree_sitter_python::LANGUAGE.into(),
+        "swift" => tree_sitter_swift::LANGUAGE.into(),
+        "bash" => tree_sitter_bash::LANGUAGE.into(),
         _ => return Err(anyhow!("unsupported lang: {lang}")),
     })
 }
@@ -215,6 +289,15 @@ fn go_receiver_type(node: &Node, src: &[u8]) -> Option<String> {
 }
 
 fn node_name<'a>(node: &Node, src: &'a [u8]) -> Option<&'a str> {
+    // Swift's `init` / `deinit` decls have no `name` field — the keyword
+    // IS the identifier as far as callHierarchy and outline are
+    // concerned. Synthesize a static string so the rest of the extractor
+    // stays generic.
+    match node.kind() {
+        "init_declaration" => return Some("init"),
+        "deinit_declaration" => return Some("deinit"),
+        _ => {}
+    }
     node.child_by_field_name("name")
         .and_then(|n| n.utf8_text(src).ok())
 }
@@ -273,6 +356,11 @@ fn is_callable(lang: &str, kind: &str) -> bool {
         "rust" => matches!(kind, "function_item"),
         "go" => matches!(kind, "function_declaration" | "method_declaration"),
         "python" => matches!(kind, "function_definition"),
+        "swift" => matches!(
+            kind,
+            "function_declaration" | "init_declaration" | "deinit_declaration"
+        ),
+        "bash" => matches!(kind, "function_definition"),
         _ => false,
     }
 }
@@ -350,6 +438,40 @@ fn call_target(node: &Node, src: &[u8], lang: &str) -> Option<(String, u32)> {
                     .map(|s| (s.to_string(), line)),
                 _ => None,
             }
+        }
+        // Swift: `call_expression` has no `function` field. The first
+        // non-trivia child is the callee — `simple_identifier` for free
+        // fns, `navigation_expression` for `obj.foo()`. For the latter,
+        // dig into the trailing `navigation_suffix` for the method name.
+        ("swift", "call_expression") => {
+            let mut cursor = node.walk();
+            let target = node.children(&mut cursor).next()?;
+            match target.kind() {
+                "simple_identifier" => Some((target.utf8_text(src).ok()?.to_string(), line)),
+                "navigation_expression" => {
+                    let mut sub = target.walk();
+                    let mut method: Option<String> = None;
+                    for child in target.children(&mut sub) {
+                        if child.kind() == "navigation_suffix" {
+                            let mut k = child.walk();
+                            for grand in child.children(&mut k) {
+                                if grand.kind() == "simple_identifier" {
+                                    method = grand.utf8_text(src).ok().map(String::from);
+                                }
+                            }
+                        }
+                    }
+                    Some((method?, line))
+                }
+                _ => None,
+            }
+        }
+        // Bash: `cmd arg arg` — the `name` field carries the command name.
+        // We treat every command invocation as an edge so callHierarchy
+        // works for shell-script callgraphs.
+        ("bash", "command") => {
+            let name = node.child_by_field_name("name")?;
+            Some((name.utf8_text(src).ok()?.to_string(), line))
         }
         _ => None,
     }
@@ -436,6 +558,23 @@ fn symbol_kind_for(lang: &str, kind: &str) -> Option<SymbolKind> {
             "class_definition" => Some(SymbolKind::Class),
             // decorated_definition wraps a function/class — descend without
             // emitting; the inner definition carries the actual name.
+            _ => None,
+        },
+        ("swift", k) => match k {
+            "function_declaration" => Some(SymbolKind::Function),
+            "init_declaration" | "deinit_declaration" => Some(SymbolKind::Method),
+            "class_declaration" => Some(SymbolKind::Class),
+            "protocol_declaration" => Some(SymbolKind::Interface),
+            "enum_declaration" => Some(SymbolKind::Enum),
+            "typealias_declaration" => Some(SymbolKind::Type),
+            "property_declaration" => Some(SymbolKind::Var),
+            _ => None,
+        },
+        ("bash", k) => match k {
+            "function_definition" => Some(SymbolKind::Function),
+            // variable_assignment is intentionally not surfaced — inside
+            // fn bodies it floods the outline; we'd want a parent-aware
+            // emission that the generic walk() doesn't model. Leave it.
             _ => None,
         },
         _ => None,
@@ -537,6 +676,27 @@ fn visibility_for(lang: &str, node: &Node, src: &[u8]) -> Option<String> {
             } else {
                 Some("pub".into())
             }
+        }
+        "swift" => {
+            // Walk the `modifiers` child for one of the access tokens.
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "modifiers" {
+                    let text = child.utf8_text(src).unwrap_or("");
+                    for token in ["public", "open", "internal", "fileprivate", "private"] {
+                        if text.contains(token) {
+                            return Some(token.to_string());
+                        }
+                    }
+                }
+            }
+            None
+        }
+        "bash" => {
+            // No visibility concept in shell; functions are global within
+            // the process. Leave as None.
+            let _ = (node, src);
+            None
         }
         _ => None,
     }

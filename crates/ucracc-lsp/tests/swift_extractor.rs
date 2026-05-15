@@ -2,9 +2,10 @@
 //! source and asserts the extracted symbols and edges match what the
 //! navigation surface depends on.
 //!
+//! As of ucracc-lsp v0.2.0 the Swift extractor lives in crabcc-core; we
+//! exercise it via `crabcc_core::extract::extract_file_with_edges`.
+//!
 //! Run: cargo test -p ucracc-lsp --test swift_extractor
-
-#![cfg(feature = "swift")]
 
 mod fixtures;
 
@@ -12,9 +13,12 @@ use crabcc_core::SymbolKind;
 
 #[test]
 fn swift_class_func_call_edge_extraction() {
-    let (syms, edges) =
-        ucracc_lsp::swift::extract("ucracc.swift", fixtures::SWIFT_SRC)
-            .expect("swift extraction must succeed");
+    let (syms, edges) = crabcc_core::extract::extract_file_with_edges(
+        "ucracc.swift",
+        fixtures::SWIFT_SRC,
+        "swift",
+    )
+    .expect("swift extraction must succeed");
 
     // We must capture: the public class, its init, its greet method, the
     // free `sayHello` function.

@@ -57,11 +57,11 @@ impl Lang {
     }
 
     /// Languages parsed by this crate (vs delegated to crabcc-core).
+    /// Swift and Bash moved into crabcc-core in v0.2.0; only data-shaped
+    /// languages (YAML, Markdown) stay here because they're not code and
+    /// don't fit crabcc-core's symbol-extractor mission.
     pub fn handled_internally(self) -> bool {
-        matches!(
-            self,
-            Lang::Swift | Lang::Bash | Lang::Yaml | Lang::Markdown
-        )
+        matches!(self, Lang::Yaml | Lang::Markdown)
     }
 }
 

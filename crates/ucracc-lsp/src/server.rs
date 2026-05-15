@@ -42,6 +42,10 @@ pub struct State {
     /// In-memory mirror of open documents; LSP gives us deltas but the
     /// indexer needs the full source.
     pub open_docs: HashMap<Url, String>,
+    /// Per-document parsed `Tree`, kept alongside the source so we can
+    /// hand the old tree to `parse(src, Some(&old))` on `didChange` and
+    /// let tree-sitter reuse unchanged subtrees.
+    pub trees: std::sync::Mutex<HashMap<Url, tree_sitter::Tree>>,
     /// Read-through LRU for repeated identical queries. Flushed on every
     /// write event.
     pub cache: LruCache,
@@ -104,6 +108,7 @@ impl Backend {
                 fts: std::sync::Mutex::new(None),
                 graph: std::sync::Mutex::new(None),
                 open_docs: HashMap::new(),
+                trees: std::sync::Mutex::new(HashMap::new()),
                 cache: LruCache::new(),
             })),
         }
@@ -112,7 +117,7 @@ impl Backend {
     fn server_capabilities() -> ServerCapabilities {
         ServerCapabilities {
             text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                TextDocumentSyncKind::FULL,
+                TextDocumentSyncKind::INCREMENTAL,
             )),
             hover_provider: Some(HoverProviderCapability::Simple(true)),
             definition_provider: Some(OneOf::Left(true)),
@@ -218,15 +223,50 @@ impl LanguageServer for Backend {
     }
 
     async fn did_change(&self, p: DidChangeTextDocumentParams) {
-        // FULL sync — server capabilities request FULL, so each event is the whole doc.
-        if let Some(change) = p.content_changes.into_iter().next() {
-            let mut st = self.state.write().await;
-            st.open_docs.insert(p.text_document.uri.clone(), change.text.clone());
-            let root = st.repo_root.clone();
-            st.cache.invalidate_all();
-            drop(st);
-            self.index_uri(&p.text_document.uri, &change.text, &root).await;
+        // INCREMENTAL sync — each event has a `range`. We apply changes
+        // to the in-memory mirror AND to the cached parse tree so the
+        // next parse can reuse subtrees outside the touched region.
+        let uri = p.text_document.uri.clone();
+        let mut text = {
+            let st = self.state.read().await;
+            st.open_docs.get(&uri).cloned().unwrap_or_default()
+        };
+
+        // Apply each change to the in-memory text and accumulate edits
+        // to apply to the cached tree.
+        let mut tree_edits = Vec::with_capacity(p.content_changes.len());
+        let mut had_full_replace = false;
+        for change in p.content_changes {
+            if change.range.is_none() {
+                // Full replace event — drop the tree, replace the text.
+                text = change.text;
+                had_full_replace = true;
+                tree_edits.clear();
+            } else if let Some(edit) = crate::incremental::apply_change(&mut text, &change) {
+                tree_edits.push(edit);
+            }
         }
+
+        let final_text = text.clone();
+        let mut st = self.state.write().await;
+        st.open_docs.insert(uri.clone(), final_text.clone());
+        let root = st.repo_root.clone();
+        st.cache.invalidate_all();
+
+        if had_full_replace {
+            st.trees.lock().unwrap().remove(&uri);
+        } else if !tree_edits.is_empty() {
+            // Apply the edits to the cached tree so the next reparse
+            // can pick up subtrees outside the changed range.
+            let mut trees = st.trees.lock().unwrap();
+            if let Some(t) = trees.get_mut(&uri) {
+                for edit in &tree_edits {
+                    t.edit(edit);
+                }
+            }
+        }
+        drop(st);
+        self.index_uri(&uri, &final_text, &root).await;
     }
 
     async fn did_save(&self, p: DidSaveTextDocumentParams) {
@@ -251,6 +291,7 @@ impl LanguageServer for Backend {
     async fn did_close(&self, p: DidCloseTextDocumentParams) {
         let mut st = self.state.write().await;
         st.open_docs.remove(&p.text_document.uri);
+        st.trees.lock().unwrap().remove(&p.text_document.uri);
     }
 
     async fn document_symbol(
@@ -567,10 +608,12 @@ impl Backend {
             None => return,
         };
 
+        let uri_owned = uri.clone();
         let result: AResult<()> = tokio::task::spawn_blocking({
             let rel = rel.clone();
             let src = src.to_string();
             let state = self.state.clone();
+            let uri = uri_owned;
             move || -> AResult<()> {
                 let st = state.blocking_read();
                 st.ensure_store();
@@ -589,16 +632,6 @@ impl Backend {
                 if let Some(l) = lang {
                     if l.handled_internally() {
                         let (syms, edges, lang_tag) = match l {
-                            #[cfg(feature = "swift")]
-                            Lang::Swift => {
-                                let (s, e) = crate::swift::extract(&rel, &src)?;
-                                (s, e, "swift")
-                            }
-                            #[cfg(feature = "bash")]
-                            Lang::Bash => {
-                                let (s, e) = crate::bash::extract(&rel, &src)?;
-                                (s, e, "bash")
-                            }
                             #[cfg(feature = "yaml")]
                             Lang::Yaml => {
                                 let (s, e) = crate::yaml::extract(&rel, &src)?;
@@ -621,14 +654,35 @@ impl Backend {
                     }
                 }
 
-                // crabcc-core languages: delegate to its extractor.
+                // crabcc-core languages (now including Swift and Bash):
+                // delegate to its extractor. We drive the parser
+                // ourselves so we can reuse the cached `Tree` from the
+                // last edit — `parser.parse(src, Some(&old_tree))` lets
+                // tree-sitter skip subtrees outside the InputEdit
+                // ranges that `did_change` already applied to that tree.
                 if let Some(detected) = crabcc_core::extract::detect_lang(std::path::Path::new(&rel)) {
-                    let (syms, edges) = crabcc_core::extract::extract_file_with_edges(
-                        &rel, &src, detected,
-                    )?;
+                    let ts_lang = crabcc_core::extract::language(detected)?;
+                    let mut parser = tree_sitter::Parser::new();
+                    parser
+                        .set_language(&ts_lang)
+                        .map_err(|e| anyhow::anyhow!("set_language({detected}): {e}"))?;
+
+                    let old_tree = st.trees.lock().unwrap().remove(&uri);
+                    let new_tree = parser
+                        .parse(&src, old_tree.as_ref())
+                        .ok_or_else(|| anyhow::anyhow!("parse failed for {rel}"))?;
+
+                    let (syms, edges) = crabcc_core::extract::extract_from_root(
+                        new_tree.root_node(),
+                        src.as_bytes(),
+                        &rel,
+                        detected,
+                    );
                     let fid = store.upsert_file(&rel, &sha, mtime, detected)?;
                     store.replace_symbols(fid, &syms)?;
                     store.replace_edges(fid, &edges)?;
+                    // Re-cache the freshly-parsed tree.
+                    st.trees.lock().unwrap().insert(uri.clone(), new_tree);
                 }
                 Ok(())
             }

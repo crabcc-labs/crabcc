@@ -15,6 +15,7 @@
 //!   cargo bench -p ucracc-lsp --bench extractor_cost
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
+#[cfg(any(feature = "yaml", feature = "markdown"))]
 use tree_sitter::Parser;
 
 const SWIFT_SRC: &str = r#"
@@ -61,6 +62,7 @@ Type something.
 More.
 "#;
 
+#[cfg(any(feature = "yaml", feature = "markdown"))]
 fn parse_only(lang: &tree_sitter::Language, src: &str) {
     let mut p = Parser::new();
     p.set_language(lang).unwrap();
@@ -68,29 +70,31 @@ fn parse_only(lang: &tree_sitter::Language, src: &str) {
     black_box(t);
 }
 
-#[cfg(feature = "swift")]
 fn bench_swift(c: &mut Criterion) {
-    let lang = tree_sitter_swift::LANGUAGE.into();
-    c.bench_function("parse_only_swift", |b| {
-        b.iter(|| parse_only(&lang, black_box(SWIFT_SRC)))
-    });
+    // crabcc-core owns swift parsing as of v0.2.0 — bench through its
+    // public API so the number reflects what consumers actually pay.
     c.bench_function("parse_and_walk_swift", |b| {
         b.iter(|| {
-            let (s, e) = ucracc_lsp::swift::extract("u.swift", black_box(SWIFT_SRC)).unwrap();
+            let (s, e) = crabcc_core::extract::extract_file_with_edges(
+                "u.swift",
+                black_box(SWIFT_SRC),
+                "swift",
+            )
+            .unwrap();
             black_box((s, e));
         })
     });
 }
 
-#[cfg(feature = "bash")]
 fn bench_bash(c: &mut Criterion) {
-    let lang = tree_sitter_bash::LANGUAGE.into();
-    c.bench_function("parse_only_bash", |b| {
-        b.iter(|| parse_only(&lang, black_box(BASH_SRC)))
-    });
     c.bench_function("parse_and_walk_bash", |b| {
         b.iter(|| {
-            let (s, e) = ucracc_lsp::bash::extract("u.sh", black_box(BASH_SRC)).unwrap();
+            let (s, e) = crabcc_core::extract::extract_file_with_edges(
+                "u.sh",
+                black_box(BASH_SRC),
+                "bash",
+            )
+            .unwrap();
             black_box((s, e));
         })
     });
@@ -124,18 +128,89 @@ fn bench_markdown(c: &mut Criterion) {
     });
 }
 
-#[cfg(not(feature = "swift"))]
-fn bench_swift(_: &mut Criterion) {}
-#[cfg(not(feature = "bash"))]
-fn bench_bash(_: &mut Criterion) {}
 #[cfg(not(feature = "yaml"))]
 fn bench_yaml(_: &mut Criterion) {}
 #[cfg(not(feature = "markdown"))]
 fn bench_markdown(_: &mut Criterion) {}
 
+/// Demonstrates the tree-sitter incremental-reparse win on a single-byte
+/// edit in a ~100-function Rust file. Compares:
+///   * full_reparse   — parse the whole file from scratch
+///   * incremental    — parse with the previously-edited Tree as input
+fn bench_incremental_reparse(c: &mut Criterion) {
+    // Build a ~100-fn Rust source (~3 KLOC of identifiers).
+    let mut src = String::new();
+    for i in 0..100 {
+        src.push_str(&format!(
+            "pub fn handler_{i}(input: &str) -> String {{\n    let mid = format!(\"{{input}}-{i}\");\n    helper_{i}(&mid)\n}}\n\nfn helper_{i}(s: &str) -> String {{\n    s.to_string()\n}}\n\n"
+        ));
+    }
+    let ts_lang = crabcc_core::extract::language("rust").unwrap();
+
+    c.bench_function("full_reparse_rust_100fn", |b| {
+        b.iter(|| {
+            let mut p = tree_sitter::Parser::new();
+            p.set_language(&ts_lang).unwrap();
+            let t = p.parse(black_box(&src), None).unwrap();
+            black_box(t);
+        });
+    });
+
+    // Set up an edited prior tree (one byte appended to one identifier).
+    let mut warm_parser = tree_sitter::Parser::new();
+    warm_parser.set_language(&ts_lang).unwrap();
+    let original_tree = warm_parser.parse(&src, None).unwrap();
+    let needle = "handler_42";
+    let pos = src.find(needle).unwrap();
+    let mut edited_src = src.clone();
+    edited_src.insert(pos + needle.len(), 'X');
+
+    // Build the InputEdit that describes the insertion.
+    let line = src[..pos].matches('\n').count();
+    let col = pos - src[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let start_byte = pos + needle.len();
+    let edit = tree_sitter::InputEdit {
+        start_byte,
+        old_end_byte: start_byte,
+        new_end_byte: start_byte + 1,
+        start_position: tree_sitter::Point {
+            row: line,
+            column: col + needle.len(),
+        },
+        old_end_position: tree_sitter::Point {
+            row: line,
+            column: col + needle.len(),
+        },
+        new_end_position: tree_sitter::Point {
+            row: line,
+            column: col + needle.len() + 1,
+        },
+    };
+
+    c.bench_function("incremental_reparse_rust_100fn_one_byte_edit", |b| {
+        b.iter_batched(
+            // Each iteration starts from a fresh edited tree (parsing the
+            // original then applying the edit) so we measure only the
+            // incremental reparse cost, not the setup.
+            || {
+                let mut p = tree_sitter::Parser::new();
+                p.set_language(&ts_lang).unwrap();
+                let mut t = p.parse(&src, None).unwrap();
+                t.edit(&edit);
+                (p, t)
+            },
+            |(mut p, prior)| {
+                let t = p.parse(black_box(&edited_src), Some(&prior)).unwrap();
+                black_box(t);
+            },
+            criterion::BatchSize::SmallInput,
+        );
+    });
+}
+
 criterion_group!(
     name = benches;
     config = Criterion::default().sample_size(50).warm_up_time(std::time::Duration::from_millis(300));
-    targets = bench_swift, bench_bash, bench_yaml, bench_markdown
+    targets = bench_swift, bench_bash, bench_yaml, bench_markdown, bench_incremental_reparse
 );
 criterion_main!(benches);
