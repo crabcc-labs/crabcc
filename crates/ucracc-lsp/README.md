@@ -1,5 +1,9 @@
 # `ucracc-lsp`
 
+> Deeper docs: see [`docs/HOW_IT_WORKS.md`](docs/HOW_IT_WORKS.md) for the
+> user-facing LSP method reference, custom command catalog, and the
+> developer-facing architecture / extension guide.
+
 A **navigation + retrieval** Language Server Protocol server backed by
 the `crabcc` symbol DB. Coexists with semantic LSPs (rust-analyzer,
 sourcekit-lsp, pyright, tsserver) — does **not** replace them. Optimised
