@@ -1,8 +1,8 @@
 use std::path::Path;
 
-/// Languages ucracc-lsp explicitly supports. Anything outside this set
-/// falls through to crabcc-core's own detection (which adds Ruby + Go),
-/// or is skipped if even that doesn't recognise it.
+/// Languages ucracc-lsp explicitly supports. Swift is parsed by this
+/// crate (because crabcc-core's grammar fleet doesn't carry it);
+/// everything else is delegated to crabcc-core's extractor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lang {
     Rust,
@@ -10,6 +10,8 @@ pub enum Lang {
     Tsx,
     JavaScript,
     Python,
+    Ruby,
+    Go,
     Swift,
 }
 
@@ -21,6 +23,8 @@ impl Lang {
             Lang::Tsx => "tsx",
             Lang::JavaScript => "javascript",
             Lang::Python => "python",
+            Lang::Ruby => "ruby",
+            Lang::Go => "go",
             Lang::Swift => "swift",
         }
     }
@@ -32,6 +36,8 @@ impl Lang {
             "tsx" => Lang::Tsx,
             "js" | "jsx" | "mjs" | "cjs" => Lang::JavaScript,
             "py" | "pyi" => Lang::Python,
+            "rb" | "rake" | "gemspec" => Lang::Ruby,
+            "go" => Lang::Go,
             "swift" => Lang::Swift,
             _ => return None,
         })
@@ -57,5 +63,7 @@ pub const SUPPORTED_LANGUAGE_IDS: &[&str] = &[
     "javascript",
     "javascriptreact",
     "python",
+    "ruby",
+    "go",
     "swift",
 ];

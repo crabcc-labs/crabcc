@@ -78,11 +78,56 @@ func sayHello(_ who: String) {
 }
 "#;
 
+pub const RUBY_SRC: &str = r#"
+class UcraccRuby
+  def initialize(name)
+    @name = name
+  end
+
+  def greet
+    say_hello(@name)
+  end
+end
+
+def say_hello(who)
+  puts "hello, #{who}"
+end
+"#;
+
+pub const GO_SRC: &str = r#"
+package ucracc
+
+import "fmt"
+
+type UcraccGo struct {
+    Name string
+}
+
+func (u *UcraccGo) Greet() {
+    sayHello(u.Name)
+}
+
+func sayHello(who string) {
+    fmt.Printf("hello, %s\n", who)
+}
+"#;
+
+/// A second Rust file that uses `say_hello` from `ucracc.rs` — used by
+/// the cross-file `references` test to make sure we don't only return
+/// same-file hits.
+pub const RUST_USER_SRC: &str = r#"
+fn external_user() {
+    crate::say_hello("from-another-file");
+}
+"#;
+
 pub fn all() -> &'static [(&'static str, &'static str)] {
     &[
         ("ucracc.rs", RUST_SRC),
         ("ucracc.ts", TS_SRC),
         ("ucracc.py", PY_SRC),
         ("ucracc.swift", SWIFT_SRC),
+        ("ucracc.rb", RUBY_SRC),
+        ("ucracc.go", GO_SRC),
     ]
 }

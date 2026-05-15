@@ -33,6 +33,8 @@ merge results.
 | TypeScript/TSX  | ✓      | ✓     | crabcc-core extractor                  |
 | JavaScript/JSX  | ✓      | ✓     | crabcc-core extractor                  |
 | Python          | ✓      | ✓     | crabcc-core extractor                  |
+| Ruby            | ✓      | ✓     | crabcc-core extractor                  |
+| Go              | ✓      | ✓     | crabcc-core extractor                  |
 | Swift           | ✓      | ✓     | this crate (tree-sitter-swift)         |
 
 ## Features
@@ -109,8 +111,13 @@ cargo test -p ucracc-lsp --tests
 ```
 
 - `tests/integration_lsp.rs` — drives the real `Backend` through
-  `LanguageServer` trait methods. Covers documentSymbol across all four
-  language families, definition, references, hover, workspace/symbol.
+  `LanguageServer` trait methods. Covers:
+  - documentSymbol across 6 languages (Rust, TS, Python, Ruby, Go, Swift),
+  - definition, hover, workspace/symbol,
+  - references **single-file** and **cross-file**,
+  - **cache invalidation on `didChange`** (rename round-trip),
+  - **callHierarchy** prepare + incomingCalls.
+
   No subprocess, no JSON-RPC framing layer (that's tower-lsp's
   responsibility, not ours).
 - `tests/swift_extractor.rs` — correctness check for the Swift
