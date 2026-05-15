@@ -30,6 +30,7 @@ fn intern_lang(lang: &str) -> Option<&'static str> {
         "python" => "python",
         "swift" => "swift",
         "bash" => "bash",
+        "java" => "java",
         _ => return None,
     })
 }
@@ -76,6 +77,7 @@ pub fn detect_lang(path: &Path) -> Option<&'static str> {
         "py" | "pyi" => "python",
         "swift" => "swift",
         "sh" | "bash" | "zsh" => "bash",
+        "java" => "java",
         _ => return None,
     })
 }
@@ -183,6 +185,7 @@ fn ts_language(lang: &str) -> Result<tree_sitter::Language> {
         "python" => tree_sitter_python::LANGUAGE.into(),
         "swift" => tree_sitter_swift::LANGUAGE.into(),
         "bash" => tree_sitter_bash::LANGUAGE.into(),
+        "java" => tree_sitter_java::LANGUAGE.into(),
         _ => return Err(anyhow!("unsupported lang: {lang}")),
     })
 }
@@ -361,6 +364,10 @@ fn is_callable(lang: &str, kind: &str) -> bool {
             "function_declaration" | "init_declaration" | "deinit_declaration"
         ),
         "bash" => matches!(kind, "function_definition"),
+        // Java has no top-level functions — `method_declaration` always
+        // sits inside a class/interface/enum body, and `constructor_declaration`
+        // is the canonical class constructor.
+        "java" => matches!(kind, "method_declaration" | "constructor_declaration"),
         _ => false,
     }
 }
@@ -473,6 +480,31 @@ fn call_target(node: &Node, src: &[u8], lang: &str) -> Option<(String, u32)> {
             let name = node.child_by_field_name("name")?;
             Some((name.utf8_text(src).ok()?.to_string(), line))
         }
+        // Java: `method_invocation` carries the called method's name on its
+        // `name` field. We intentionally ignore the receiver (the `object`
+        // field) so `obj.foo()` and `Cls.foo()` both surface as `foo`,
+        // matching how every other language extractor in this file resolves
+        // selector-style calls. `object_creation_expression` (`new Foo(...)`)
+        // resolves to the type name so constructor edges land on the class.
+        ("java", "method_invocation") => {
+            let name = node.child_by_field_name("name")?;
+            Some((name.utf8_text(src).ok()?.to_string(), line))
+        }
+        ("java", "object_creation_expression") => {
+            let ty = node.child_by_field_name("type")?;
+            // The type field is a type_identifier or generic_type. For the
+            // generic case we want just the head (`List<Foo>` -> `List`).
+            let raw = match ty.kind() {
+                "type_identifier" => ty.utf8_text(src).ok()?.to_string(),
+                "generic_type" => ty
+                    .child_by_field_name("name")
+                    .or_else(|| ty.child(0))
+                    .and_then(|n| n.utf8_text(src).ok())
+                    .map(|s| strip_generics(s).to_string())?,
+                _ => return None,
+            };
+            Some((raw, line))
+        }
         _ => None,
     }
 }
@@ -570,11 +602,25 @@ fn symbol_kind_for(lang: &str, kind: &str) -> Option<SymbolKind> {
             "property_declaration" => Some(SymbolKind::Var),
             _ => None,
         },
-        ("bash", k) => match k {
-            "function_definition" => Some(SymbolKind::Function),
-            // variable_assignment is intentionally not surfaced — inside
-            // fn bodies it floods the outline; we'd want a parent-aware
-            // emission that the generic walk() doesn't model. Leave it.
+        // Bash: only `function_definition` becomes a symbol.
+        // variable_assignment is intentionally not surfaced — inside fn bodies
+        // it floods the outline; we'd want a parent-aware emission that the
+        // generic walk() doesn't model. Leave it.
+        ("bash", "function_definition") => Some(SymbolKind::Function),
+        ("java", k) => match k {
+            "class_declaration" => Some(SymbolKind::Class),
+            "interface_declaration" => Some(SymbolKind::Interface),
+            // Annotation types (`@interface Foo`) are interfaces in Java's
+            // type system; collapse them under Interface for v1.
+            "annotation_type_declaration" => Some(SymbolKind::Interface),
+            "enum_declaration" => Some(SymbolKind::Enum),
+            // Java records (Java 14+) are concise immutable data classes —
+            // closer in spirit to Rust structs than to Java classes.
+            "record_declaration" => Some(SymbolKind::Struct),
+            // Java has no top-level functions: every method lives in a
+            // class/interface/enum body. The walk() recursion sets parent
+            // correctly via the enclosing declaration.
+            "method_declaration" | "constructor_declaration" => Some(SymbolKind::Method),
             _ => None,
         },
         _ => None,
@@ -698,6 +744,34 @@ fn visibility_for(lang: &str, node: &Node, src: &[u8]) -> Option<String> {
             let _ = (node, src);
             None
         }
+        "java" => {
+            // Java modifiers are a child node (kind = "modifiers") containing
+            // tokens like `public`, `protected`, `private`, plus annotations
+            // and `static`/`final`/`abstract`. Absent modifier == package-
+            // private (the default). We surface "pub"/"protected"/"priv"/"pkg"
+            // in priority order so an agent can tell apart hidden vs default.
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "modifiers" {
+                    let text = child.utf8_text(src).unwrap_or("");
+                    // Private wins over protected wins over public if multiple
+                    // appeared (which would be invalid Java, but be defensive).
+                    if text.contains("private") {
+                        return Some("priv".into());
+                    }
+                    if text.contains("protected") {
+                        return Some("protected".into());
+                    }
+                    if text.contains("public") {
+                        return Some("pub".into());
+                    }
+                    // Modifiers node present but no access keyword → still pkg.
+                    return Some("pkg".into());
+                }
+            }
+            // No modifiers child at all → package-private (the default).
+            Some("pkg".into())
+        }
         _ => None,
     }
 }
@@ -722,6 +796,7 @@ mod tests {
         assert_eq!(detect_lang(&PathBuf::from("a.go")), Some("go"));
         assert_eq!(detect_lang(&PathBuf::from("a.py")), Some("python"));
         assert_eq!(detect_lang(&PathBuf::from("a.pyi")), Some("python"));
+        assert_eq!(detect_lang(&PathBuf::from("a.java")), Some("java"));
         assert_eq!(detect_lang(&PathBuf::from("Rakefile")), None);
         assert_eq!(detect_lang(&PathBuf::from("a.md")), None);
     }
@@ -1306,5 +1381,118 @@ mod tests {
     #[test]
     fn extract_edges_unsupported_lang_errors() {
         assert!(extract_edges("a.txt", "x", "klingon").is_err());
+    }
+
+    // ---- Java ----
+
+    #[test]
+    fn java_class_with_method_has_parent() {
+        let src =
+            "public class Greeter {\n  public String greet(String name) { return name; }\n}\n";
+        let syms = extract_file("Greeter.java", src, "java").unwrap();
+        let n = names(&syms);
+        assert!(n.contains(&"Greeter"), "names: {n:?}");
+        assert!(n.contains(&"greet"), "names: {n:?}");
+        let cls = syms.iter().find(|s| s.name == "Greeter").unwrap();
+        assert!(matches!(cls.kind, SymbolKind::Class));
+        let m = syms.iter().find(|s| s.name == "greet").unwrap();
+        assert_eq!(m.parent.as_deref(), Some("Greeter"));
+        assert!(matches!(m.kind, SymbolKind::Method));
+    }
+
+    #[test]
+    fn java_constructor_is_method_with_class_parent() {
+        let src = "public class Foo {\n  public Foo(int x) {}\n}\n";
+        let syms = extract_file("Foo.java", src, "java").unwrap();
+        let ctor = syms
+            .iter()
+            .find(|s| s.name == "Foo" && matches!(s.kind, SymbolKind::Method));
+        assert!(ctor.is_some(), "expected constructor symbol; got: {syms:?}");
+        assert_eq!(ctor.unwrap().parent.as_deref(), Some("Foo"));
+    }
+
+    #[test]
+    fn java_interface_and_enum() {
+        let src =
+            "public interface User { String name(); }\npublic enum Color { RED, GREEN, BLUE }\n";
+        let syms = extract_file("a.java", src, "java").unwrap();
+        let n = names(&syms);
+        assert!(n.contains(&"User"));
+        assert!(n.contains(&"Color"));
+        let i = syms.iter().find(|s| s.name == "User").unwrap();
+        assert!(matches!(i.kind, SymbolKind::Interface));
+        let e = syms.iter().find(|s| s.name == "Color").unwrap();
+        assert!(matches!(e.kind, SymbolKind::Enum));
+    }
+
+    #[test]
+    fn java_record_is_struct() {
+        // Java 14+ record — concise immutable data class.
+        let src = "public record Point(int x, int y) {}\n";
+        let syms = extract_file("Point.java", src, "java").unwrap();
+        let p = syms.iter().find(|s| s.name == "Point").unwrap();
+        assert!(matches!(p.kind, SymbolKind::Struct), "got: {:?}", p.kind);
+    }
+
+    #[test]
+    fn java_visibility_levels() {
+        let src = "
+public class Outer {
+  public void pubMethod() {}
+  protected void protMethod() {}
+  private void privMethod() {}
+  void pkgMethod() {}
+}
+";
+        let syms = extract_file("Outer.java", src, "java").unwrap();
+        let v = |name: &str| {
+            syms.iter()
+                .find(|s| s.name == name)
+                .and_then(|s| s.visibility.clone())
+                .unwrap_or_default()
+        };
+        assert_eq!(v("Outer"), "pub");
+        assert_eq!(v("pubMethod"), "pub");
+        assert_eq!(v("protMethod"), "protected");
+        assert_eq!(v("privMethod"), "priv");
+        assert_eq!(v("pkgMethod"), "pkg");
+    }
+
+    #[test]
+    fn java_method_invocation_edges() {
+        let src = "
+class C {
+  void high() {
+    helper();
+    other.foo();
+  }
+  void helper() {}
+}
+";
+        let es = edges("C.java", src, "java");
+        let names = dst_names(&es);
+        assert!(names.contains(&"helper"), "edges: {es:?}");
+        // Receiver-style call resolves to the method name, ignoring the receiver.
+        assert!(names.contains(&"foo"), "edges: {es:?}");
+        // Both calls should attribute to the enclosing method `high`.
+        let helper = es.iter().find(|e| e.dst_name == "helper").unwrap();
+        assert_eq!(helper.src_symbol.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn java_constructor_call_edge_resolves_to_type() {
+        let src = "
+class C {
+  void make() {
+    new Foo();
+    new Bar<String>();
+  }
+}
+";
+        let es = edges("C.java", src, "java");
+        let names = dst_names(&es);
+        // `new Foo()` lands as a call edge to `Foo`; generic head is stripped.
+        assert!(names.contains(&"Foo"), "edges: {es:?}");
+        assert!(names.contains(&"Bar"), "edges: {es:?}");
     }
 }

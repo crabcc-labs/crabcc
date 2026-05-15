@@ -31,11 +31,7 @@ pub fn memory_search(repo_root: &Path, args: &[Value]) -> Result<Value> {
         .first()
         .and_then(|v| v.as_str())
         .ok_or_else(|| anyhow::anyhow!("memory.search: arg 0 (query) must be a string"))?;
-    let limit = args
-        .get(1)
-        .and_then(|v| v.as_u64())
-        .unwrap_or(10)
-        .min(200) as usize;
+    let limit = args.get(1).and_then(|v| v.as_u64()).unwrap_or(10).min(200) as usize;
     let palace = Palace::open(repo_root)?;
     let result = palace.search(query, limit)?;
 
@@ -62,8 +58,7 @@ pub fn webfetch(args: &[Value]) -> Result<Value> {
     let results = match rt {
         Ok(handle) => {
             let url2 = url.clone();
-            handle
-                .block_on(async move { fetch_and_clean(&[url2], FetchOpts::default()).await })
+            handle.block_on(async move { fetch_and_clean(&[url2], FetchOpts::default()).await })
         }
         Err(_) => {
             let rt = tokio::runtime::Builder::new_current_thread()

@@ -5,9 +5,9 @@
 use crabcc_core::types::{Hit, Symbol, SymbolKind as CcKind};
 use std::path::{Path, PathBuf};
 use tower_lsp::lsp_types::{
-    CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, DocumentSymbol,
-    Hover, HoverContents, Location, MarkupContent, MarkupKind, Position, Range,
-    SymbolInformation, SymbolKind as LspKind, Url, WorkspaceSymbol,
+    CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, DocumentSymbol, Hover,
+    HoverContents, Location, MarkupContent, MarkupKind, Position, Range, SymbolInformation,
+    SymbolKind as LspKind, Url, WorkspaceSymbol,
 };
 
 pub fn to_url(root: &Path, rel: &str) -> Option<Url> {
@@ -55,7 +55,10 @@ fn hit_range(h: &Hit) -> Range {
     let line = h.line.saturating_sub(1);
     let col = h.col.saturating_sub(1);
     Range {
-        start: Position { line, character: col },
+        start: Position {
+            line,
+            character: col,
+        },
         end: Position {
             line,
             character: col + 1,
@@ -175,7 +178,11 @@ pub fn call_hierarchy_item(root: &Path, s: &Symbol) -> Option<CallHierarchyItem>
     })
 }
 
-pub fn incoming_calls(root: &Path, caller_name: &str, hits: Vec<Hit>) -> Vec<CallHierarchyIncomingCall> {
+pub fn incoming_calls(
+    root: &Path,
+    caller_name: &str,
+    hits: Vec<Hit>,
+) -> Vec<CallHierarchyIncomingCall> {
     hits.into_iter()
         .filter_map(|h| {
             let uri = to_url(root, &h.file)?;
@@ -207,10 +214,7 @@ pub fn incoming_calls(root: &Path, caller_name: &str, hits: Vec<Hit>) -> Vec<Cal
         .collect()
 }
 
-pub fn outgoing_calls(
-    root: &Path,
-    callees: Vec<Symbol>,
-) -> Vec<CallHierarchyOutgoingCall> {
+pub fn outgoing_calls(root: &Path, callees: Vec<Symbol>) -> Vec<CallHierarchyOutgoingCall> {
     callees
         .into_iter()
         .filter_map(|s| {
