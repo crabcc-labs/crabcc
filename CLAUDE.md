@@ -134,10 +134,9 @@ respect" for the full list.
 2. Per-crate deep-dives (these stay in-tree — the `docs/` *inside* each crate is tracked):
    - [`crates/crabcc-core/docs/HOW_IT_WORKS.md`](./crates/crabcc-core/docs/HOW_IT_WORKS.md) — library + internals reference (extractor, parser pool, schema).
    - [`crates/ucracc-lsp/docs/HOW_IT_WORKS.md`](./crates/ucracc-lsp/docs/HOW_IT_WORKS.md) — LSP user + developer reference.
-3. The repo-root `docs/` is a **private submodule** (`peterlodri-sec/crabcc-docs`) — architecture notes,
-   roadmap, and research live there. To populate locally:
-   ```
-   git submodule update --init docs
-   ```
-   The previous `docs/ARCHITECTURE.md`, `docs/ROADMAP-v2.5.md`, `docs/RESEARCH-mempalace.md`, etc. are
-   inside that submodule.
+3. Repo-root `docs/` is in-tree (not a submodule anymore — see commit history). Notable contents:
+   - [`docs/desktop/ARCHITECTURE.md`](./docs/desktop/ARCHITECTURE.md) and [`DESIGN-BRIEF.md`](./docs/desktop/DESIGN-BRIEF.md) — `crabcc-desktop` design + architecture.
+   - [`docs/RUST-ANTHOLOGY.md`](./docs/RUST-ANTHOLOGY.md) — Rust patterns reference.
+   - [`docs/PROCESS-SPAWNING.md`](./docs/PROCESS-SPAWNING.md) — agent process management notes.
+   - `docs/RESEARCH-tts-voice-control-*.md` — TTS dossiers (foss / 2026 candidates).
+   - `docs/desktop/design-refs/` — UI mockup PNGs (~2.6 MB, reference material for the desktop redesign).

@@ -1,0 +1,326 @@
+<html><head><meta charset="utf-8"/>
+<script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+<script id="tailwind-config">
+  tailwind.config = {
+    darkMode: "class",
+    theme: {
+      extend: {
+        "colors": {
+                "surface-variant": "#353437",
+                "surface-tint": "#adc6ff",
+                "primary-fixed": "#d8e2ff",
+                "secondary-fixed": "#70ff76",
+                "surface-dim": "#131315",
+                "tertiary-fixed-dim": "#ffb868",
+                "surface-container-low": "#1b1b1d",
+                "inverse-surface": "#e4e2e4",
+                "on-secondary-fixed": "#002204",
+                "on-error": "#690005",
+                "secondary": "#42e355",
+                "tertiary": "#ffb868",
+                "background": "#131315",
+                "surface-container": "#1f1f21",
+                "surface-bright": "#39393b",
+                "secondary-fixed-dim": "#42e355",
+                "on-background": "#e4e2e4",
+                "surface-container-lowest": "#0e0e10",
+                "surface": "#131315",
+                "tertiary-fixed": "#ffddbb",
+                "on-secondary-fixed-variant": "#005313",
+                "on-primary-fixed-variant": "#004493",
+                "surface-container-highest": "#353437",
+                "on-tertiary-fixed-variant": "#673d00",
+                "on-tertiary-fixed": "#2b1700",
+                "surface-container-high": "#2a2a2c",
+                "on-primary": "#002e69",
+                "primary-container": "#4b8eff",
+                "on-surface-variant": "#c1c6d7",
+                "on-tertiary-container": "#3f2300",
+                "on-primary-container": "#00285c",
+                "tertiary-container": "#ce7f00",
+                "inverse-primary": "#005bc1",
+                "error": "#ffb4ab",
+                "primary": "#adc6ff",
+                "secondary-container": "#04c339",
+                "on-secondary": "#00390a",
+                "primary-fixed-dim": "#adc6ff",
+                "outline-variant": "#414755",
+                "on-primary-fixed": "#001a41",
+                "on-tertiary": "#482900",
+                "on-secondary-container": "#00480f",
+                "on-surface": "#e4e2e4",
+                "outline": "#8b90a0",
+                "error-container": "#93000a",
+                "on-error-container": "#ffdad6",
+                "inverse-on-surface": "#303032"
+        },
+        "borderRadius": {
+                "DEFAULT": "0.25rem",
+                "lg": "0.5rem",
+                "xl": "0.75rem",
+                "full": "9999px"
+        },
+        "spacing": {
+                "margin-safe": "16px",
+                "unit": "4px",
+                "item-gap": "8px",
+                "gutter": "1px",
+                "panel-padding": "12px"
+        },
+        "fontFamily": {
+                "headline-sm": ["Inter"],
+                "data-mono": ["Space Grotesk"],
+                "label-xs": ["Space Grotesk"],
+                "body-md": ["Inter"]
+        },
+        "fontSize": {
+                "headline-sm": ["14px", {"lineHeight": "20px", "letterSpacing": "-0.01em", "fontWeight": "600"}],
+                "data-mono": ["12px", {"lineHeight": "16px", "letterSpacing": "0.02em", "fontWeight": "500"}],
+                "label-xs": ["10px", {"lineHeight": "12px", "fontWeight": "700"}],
+                "body-md": ["13px", {"lineHeight": "18px", "fontWeight": "400"}]
+        }
+      },
+    },
+  }
+</script>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&amp;display=swap" rel="stylesheet"/>
+<style>
+  .material-symbols-outlined {
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 20;
+    font-size: 16px;
+  }
+  body { background-color: #000000; color: #e4e2e4; margin: 0; overflow: hidden; }
+  .grid-pattern {
+    background-image: linear-gradient(#1f1f21 1px, transparent 1px), linear-gradient(90deg, #1f1f21 1px, transparent 1px);
+    background-size: 20px 20px;
+  }
+  .liquid-glass {
+    background-color: rgba(10, 10, 12, 0.6);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-color: rgba(255, 255, 255, 0.08);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.05), 0 8px 32px 0 rgba(0, 0, 0, 0.8);
+  }
+  .glass-edge-glow-blue {
+    box-shadow: inset 0 0 8px rgba(0, 122, 255, 0.1), 0 0 1px rgba(0, 122, 255, 0.3);
+  }
+  .glass-edge-glow-primary {
+    box-shadow: inset 0 0 8px rgba(173, 198, 255, 0.1), 0 0 1px rgba(173, 198, 255, 0.3);
+  }
+</style>
+</head><body class="dark font-body-md text-on-surface overflow-hidden h-screen flex flex-col">
+<!-- TopNavBar (JSON Managed) -->
+<header class="flex justify-between items-center w-full px-3 h-12 border-b border-[#1F1F1F] bg-black z-50">
+<div class="flex items-center gap-6">
+<span class="font-black text-lg tracking-widest text-white uppercase">CRAB_CC_V1.0</span>
+<nav class="flex items-center gap-4">
+<a class="font-mono text-xs tracking-tighter uppercase text-[#555555] hover:text-white transition-colors" href="#">Launchpad</a>
+<a class="font-mono text-xs tracking-tighter uppercase text-[#555555] hover:text-white transition-colors" href="#">Timeline</a>
+<a class="font-mono text-xs tracking-tighter uppercase text-[#555555] hover:text-white transition-colors" href="#">Agents</a>
+<a class="font-mono text-xs tracking-tighter uppercase text-[#007AFF] border-b border-[#007AFF] pb-1" href="#">Graph</a>
+</nav>
+</div>
+<div class="flex items-center gap-3">
+<button class="text-[#555555] hover:text-[#007AFF] transition-colors"><span class="material-symbols-outlined">terminal</span></button>
+<button class="text-[#555555] hover:text-[#007AFF] transition-colors"><span class="material-symbols-outlined">settings_input_component</span></button>
+<button class="text-[#555555] hover:text-[#007AFF] transition-colors"><span class="material-symbols-outlined">notifications</span></button>
+</div>
+</header>
+<div class="flex flex-1 overflow-hidden">
+<!-- SideNavBar (JSON Managed) -->
+<aside class="w-48 flex flex-col h-full border-r border-[#1F1F1F] liquid-glass relative z-40">
+<div class="p-3 border-b border-[#1F1F1F]/30">
+<div class="flex items-center gap-2">
+<div class="w-2 h-2 bg-secondary rounded-full shadow-[0_0_8px_rgba(66,227,85,0.6)]"></div>
+<span class="font-mono text-[10px] uppercase font-bold text-white tracking-widest">OP_SEC</span>
+</div>
+<div class="font-mono text-[8px] text-[#555555] mt-1">STATUS_NOMINAL</div>
+</div>
+<nav class="flex-1 py-2">
+<a class="text-[#555555] px-3 py-2 flex items-center gap-2 hover:bg-white/5 font-mono text-[10px] uppercase font-bold transition-colors" href="#">
+<span class="material-symbols-outlined">memory</span> Nodes
+        </a>
+<a class="bg-white/5 text-white border-l-2 border-[#007AFF] px-3 py-2 flex items-center gap-2 font-mono text-[10px] uppercase font-bold glass-edge-glow-blue" href="#">
+<span class="material-symbols-outlined">hub</span> Clusters
+        </a>
+<a class="text-[#555555] px-3 py-2 flex items-center gap-2 hover:bg-white/5 font-mono text-[10px] uppercase font-bold transition-colors" href="#">
+<span class="material-symbols-outlined">build</span> Tool_Chain
+        </a>
+<a class="text-[#555555] px-3 py-2 flex items-center gap-2 hover:bg-white/5 font-mono text-[10px] uppercase font-bold transition-colors" href="#">
+<span class="material-symbols-outlined">list_alt</span> Logs
+        </a>
+<a class="text-[#555555] px-3 py-2 flex items-center gap-2 hover:bg-white/5 font-mono text-[10px] uppercase font-bold transition-colors" href="#">
+<span class="material-symbols-outlined">bug_report</span> Debug
+        </a>
+</nav>
+<div class="p-3">
+<button class="w-full bg-[#007AFF] text-black font-mono text-[10px] font-black py-2 tracking-tighter hover:opacity-90 active:scale-[0.98] transition-all shadow-[0_0_15px_rgba(0,122,255,0.3)]">
+          SPAWN_AGENT
+        </button>
+</div>
+<div class="border-t border-[#1F1F1F]/30 py-2">
+<a class="text-[#555555] px-3 py-1 flex items-center gap-2 hover:text-white font-mono text-[9px] uppercase transition-colors" href="#">
+<span class="material-symbols-outlined">description</span> Docs
+        </a>
+<a class="text-[#555555] px-3 py-1 flex items-center gap-2 hover:text-white font-mono text-[9px] uppercase transition-colors" href="#">
+<span class="material-symbols-outlined">help_center</span> Support
+        </a>
+</div>
+</aside>
+<!-- Main Content Canvas -->
+<main class="flex-1 flex overflow-hidden relative">
+<!-- Graph Topology Area -->
+<section class="flex-1 bg-black relative grid-pattern flex flex-col">
+<!-- Canvas Header / HUD -->
+<div class="absolute top-3 left-3 right-3 flex justify-between items-start pointer-events-none z-20">
+<div class="flex flex-col gap-1 pointer-events-auto">
+<div class="liquid-glass border border-white/10 px-2 py-1 flex items-center gap-3">
+<span class="font-label-xs text-label-xs text-primary uppercase">Cluster_ID: 0x9F42</span>
+<div class="h-3 w-px bg-white/10"></div>
+<span class="font-label-xs text-label-xs text-secondary uppercase">Edges: 1,402</span>
+<div class="h-3 w-px bg-white/10"></div>
+<span class="font-label-xs text-label-xs text-white uppercase">Density: 0.82</span>
+</div>
+</div>
+<div class="flex gap-2 pointer-events-auto">
+<button class="liquid-glass border border-white/10 p-1.5 text-[#555555] hover:text-white hover:bg-white/10 transition-colors"><span class="material-symbols-outlined">zoom_in</span></button>
+<button class="liquid-glass border border-white/10 p-1.5 text-[#555555] hover:text-white hover:bg-white/10 transition-colors"><span class="material-symbols-outlined">zoom_out</span></button>
+<button class="liquid-glass border border-white/10 p-1.5 text-[#555555] hover:text-white hover:bg-white/10 transition-colors"><span class="material-symbols-outlined">recenter</span></button>
+<button class="liquid-glass border border-white/10 p-1.5 text-[#555555] hover:text-white hover:bg-white/10 transition-colors"><span class="material-symbols-outlined">layers</span></button>
+</div>
+</div>
+<!-- Central Graph Simulation Rendering -->
+<div class="flex-1 relative overflow-hidden flex items-center justify-center">
+<div class="absolute inset-0">
+<img class="w-full h-full object-cover" data-alt="A highly complex and detailed 3D knowledge graph visualization consisting of thousands of interconnected nodes and glowing edges. The nodes are represented as crystalline geometric structures in a deep electric blue, while the connections are fine, pulsating lines of light. The background is a profound pitch black with a subtle digital grid pattern. The lighting is focused and dramatic, highlighting specific data clusters with a high-tech developer aesthetic." src="https://lh3.googleusercontent.com/aida-public/AB6AXuDoHRuhELW18wCUeFZ18hxuU3GMI2xVEaqULXBqPlwIej5ONOqqoazwIpOslWKww8kTykCv-BKDLpfGPmYuspqdslY7CFPzwC1zvI-4qEMLDew8ace8SGka_4rbaymJK-OQntkg-ONyUBV3xiHSRj5H2C7PqvoSP86XonjmqLNtClPoNb4oER6U98ibkfVJDMdTT3jMgqKz1ZcgSCr-D6LRS2Ql-NZk8QsOAJMHBkCc2EHvTaZSJdA89iyo0t9dR6y9o5Hq2bcapZzP"/>
+</div>
+<!-- Focal Node Overlays (Simulated UI) -->
+<div class="absolute top-[40%] left-[30%] border border-[#007AFF] liquid-glass px-2 py-1 shadow-[0_0_15px_rgba(0,122,255,0.2)]">
+<div class="font-label-xs text-label-xs text-[#007AFF] uppercase">Root_Memory_Buffer</div>
+<div class="w-16 h-0.5 bg-[#007AFF] mt-1"></div>
+</div>
+<div class="absolute top-[55%] right-[25%] border border-secondary liquid-glass px-2 py-1 shadow-[0_0_15px_rgba(66,227,85,0.1)]">
+<div class="font-label-xs text-label-xs text-secondary uppercase">Vector_Index_v4</div>
+<div class="w-12 h-0.5 bg-secondary mt-1"></div>
+</div>
+</div>
+<!-- Timeline / Load Factor Scrubber -->
+<div class="h-16 border-t border-[#1F1F1F]/30 liquid-glass px-3 flex items-center gap-4 relative z-40">
+<span class="font-label-xs text-label-xs text-[#555555] uppercase shrink-0">Temporal_Flow</span>
+<div class="flex-1 h-8 bg-black/40 border border-white/5 relative flex items-end p-1 gap-px overflow-hidden glass-edge-glow-primary">
+<!-- Simulated Data Bars -->
+<div class="flex-1 bg-primary/20 h-[30%]"></div>
+<div class="flex-1 bg-primary/30 h-[45%]"></div>
+<div class="flex-1 bg-primary/20 h-[35%]"></div>
+<div class="flex-1 bg-primary/50 h-[80%]"></div>
+<div class="flex-1 bg-primary/40 h-[60%]"></div>
+<div class="flex-1 bg-primary/20 h-[20%]"></div>
+<div class="flex-1 bg-primary/30 h-[40%]"></div>
+<div class="flex-1 bg-primary/80 h-[95%]"></div>
+<div class="flex-1 bg-primary/40 h-[50%]"></div>
+<div class="flex-1 bg-primary/10 h-[15%]"></div>
+<div class="flex-1 bg-primary/20 h-[25%]"></div>
+<div class="flex-1 bg-[#007AFF] h-[100%] w-1 absolute left-[60%] shadow-[0_0_12px_#007AFF]"></div>
+</div>
+<span class="font-data-mono text-data-mono text-white shrink-0">T-04:22:15.003</span>
+</div>
+</section>
+<!-- Right Sidebar: Node Metadata & Ingest -->
+<aside class="w-80 border-l border-[#1F1F1F]/30 liquid-glass flex flex-col z-40 relative">
+<!-- Sidebar Header -->
+<div class="p-3 border-b border-[#1F1F1F]/30 bg-white/5">
+<div class="flex justify-between items-center mb-1">
+<h2 class="font-headline-sm text-headline-sm text-white uppercase tracking-wider">Node_Inspect</h2>
+<button class="text-[#555555] hover:text-white transition-colors"><span class="material-symbols-outlined">close</span></button>
+</div>
+<p class="font-label-xs text-label-xs text-[#555555]">SELECTED_UUID: 8F2A-019B-992C</p>
+</div>
+<!-- Metadata Grid -->
+<div class="flex-1 overflow-y-auto">
+<div class="p-3 border-b border-[#1F1F1F]/30">
+<div class="flex justify-between py-1 border-b border-white/5">
+<span class="font-label-xs text-label-xs text-[#555555] uppercase">Classification</span>
+<span class="font-data-mono text-data-mono text-primary uppercase">Semantic_Entity</span>
+</div>
+<div class="flex justify-between py-1 border-b border-white/5">
+<span class="font-label-xs text-label-xs text-[#555555] uppercase">Relational_Weight</span>
+<span class="font-data-mono text-data-mono text-white">0.9942</span>
+</div>
+<div class="flex justify-between py-1 border-b border-white/5">
+<span class="font-label-xs text-label-xs text-[#555555] uppercase">Last_Mutation</span>
+<span class="font-data-mono text-data-mono text-white">2m 4s AGO</span>
+</div>
+<div class="flex justify-between py-1 border-b border-white/5">
+<span class="font-label-xs text-label-xs text-[#555555] uppercase">Ingress_Source</span>
+<span class="font-data-mono text-data-mono text-secondary">AGENT_ALPHA_01</span>
+</div>
+</div>
+<!-- Memory Ingest Controls -->
+<div class="p-3 space-y-4">
+<div class="space-y-2">
+<label class="font-label-xs text-label-xs text-[#555555] uppercase">Direct_Memory_Inject</label>
+<textarea class="w-full h-32 bg-black/40 border border-white/10 p-2 font-data-mono text-data-mono text-white focus:outline-none focus:border-[#007AFF] resize-none liquid-glass" placeholder="Enter RAW_JSON or MD_CONTENT..."></textarea>
+</div>
+<div class="space-y-1">
+<label class="font-label-xs text-label-xs text-[#555555] uppercase">Context_Priority</label>
+<div class="flex gap-px bg-white/10 border border-white/10 liquid-glass p-0.5">
+<button class="flex-1 bg-transparent text-[#555555] font-label-xs py-1.5 uppercase hover:text-white transition-colors">Low</button>
+<button class="flex-1 bg-primary text-black font-label-xs py-1.5 uppercase font-bold shadow-[0_0_10px_rgba(173,198,255,0.4)]">Standard</button>
+<button class="flex-1 bg-transparent text-[#555555] font-label-xs py-1.5 uppercase hover:text-white transition-colors">High</button>
+</div>
+</div>
+<button class="w-full border border-secondary/50 text-secondary font-mono text-[10px] font-bold py-2 uppercase hover:bg-secondary/10 hover:border-secondary transition-all glass-edge-glow-primary">
+              Commit_to_Graph
+            </button>
+</div>
+<!-- Neighbor List -->
+<div class="p-3 border-t border-[#1F1F1F]/30">
+<h3 class="font-label-xs text-label-xs text-[#555555] uppercase mb-2">Connected_Peers</h3>
+<div class="space-y-1">
+<div class="flex items-center justify-between p-2 bg-white/5 border border-white/5 hover:border-white/20 transition-colors cursor-pointer group">
+<div class="flex items-center gap-2">
+<div class="w-1.5 h-1.5 bg-[#007AFF] shadow-[0_0_5px_#007AFF]"></div>
+<span class="font-data-mono text-data-mono text-white group-hover:text-[#007AFF]">Data_Provider_09</span>
+</div>
+<span class="material-symbols-outlined text-[#555555] text-[12px]">arrow_forward_ios</span>
+</div>
+<div class="flex items-center justify-between p-2 bg-white/5 border border-white/5 hover:border-white/20 transition-colors cursor-pointer group">
+<div class="flex items-center gap-2">
+<div class="w-1.5 h-1.5 bg-[#007AFF] shadow-[0_0_5px_#007AFF]"></div>
+<span class="font-data-mono text-data-mono text-white group-hover:text-[#007AFF]">Cache_Flush_Trigger</span>
+</div>
+<span class="material-symbols-outlined text-[#555555] text-[12px]">arrow_forward_ios</span>
+</div>
+<div class="flex items-center justify-between p-2 bg-white/5 border border-white/5 hover:border-white/20 transition-colors cursor-pointer group">
+<div class="flex items-center gap-2">
+<div class="w-1.5 h-1.5 bg-secondary shadow-[0_0_5px_rgba(66,227,85,0.6)]"></div>
+<span class="font-data-mono text-data-mono text-white group-hover:text-secondary">Validation_Logic_B</span>
+</div>
+<span class="material-symbols-outlined text-[#555555] text-[12px]">arrow_forward_ios</span>
+</div>
+</div>
+</div>
+</div>
+<!-- Sidebar Footer Status -->
+<div class="p-2 bg-black/40 border-t border-[#1F1F1F]/30 flex items-center justify-between">
+<div class="flex items-center gap-1.5">
+<div class="w-1 h-4 bg-[#007AFF] shadow-[0_0_5px_#007AFF]"></div>
+<span class="font-label-xs text-label-xs text-[#555555] uppercase">Ready</span>
+</div>
+<span class="font-data-mono text-[9px] text-[#555555]">PID: 10229</span>
+</div>
+</aside>
+</main>
+</div>
+<!-- Footer Shell (Minimalist Info) -->
+<footer class="h-6 border-t border-[#1F1F1F] bg-black flex items-center px-3 justify-between z-50">
+<div class="flex gap-4">
+<span class="font-label-xs text-label-xs text-[#555555] uppercase">System_Load: 12.4%</span>
+<span class="font-label-xs text-label-xs text-[#555555] uppercase">Memory: 4.2GB / 16GB</span>
+</div>
+<div class="flex gap-4">
+<span class="font-label-xs text-label-xs text-[#555555] uppercase">UTC: 12:45:10</span>
+<span class="font-label-xs text-label-xs text-[#007AFF] uppercase">Sync_Active</span>
+</div>
+</footer>
+</body></html>
