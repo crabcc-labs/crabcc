@@ -131,7 +131,13 @@ respect" for the full list.
 ## Where to read next
 
 1. [`AGENTS.md`](./AGENTS.md) — agent rules + workspace layout. **Start here.**
-2. [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md) — data model + indexing pipeline.
-3. [`docs/ROADMAP-v2.5.md`](./docs/ROADMAP-v2.5.md) — what's coming next.
-4. [`docs/RESEARCH-mempalace.md`](./docs/RESEARCH-mempalace.md) — memory-layer port plan.
-5. [`docs/RESEARCH-fsst.md`](./docs/RESEARCH-fsst.md) — FSST integration design.
+2. Per-crate deep-dives (these stay in-tree — the `docs/` *inside* each crate is tracked):
+   - [`crates/crabcc-core/docs/HOW_IT_WORKS.md`](./crates/crabcc-core/docs/HOW_IT_WORKS.md) — library + internals reference (extractor, parser pool, schema).
+   - [`crates/ucracc-lsp/docs/HOW_IT_WORKS.md`](./crates/ucracc-lsp/docs/HOW_IT_WORKS.md) — LSP user + developer reference.
+3. The repo-root `docs/` is a **private submodule** (`peterlodri-sec/crabcc-docs`) — architecture notes,
+   roadmap, and research live there. To populate locally:
+   ```
+   git submodule update --init docs
+   ```
+   The previous `docs/ARCHITECTURE.md`, `docs/ROADMAP-v2.5.md`, `docs/RESEARCH-mempalace.md`, etc. are
+   inside that submodule.
