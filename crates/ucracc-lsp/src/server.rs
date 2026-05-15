@@ -28,8 +28,14 @@ pub struct Backend {
 
 pub struct State {
     pub repo_root: PathBuf,
+    /// Path to `.crabcc/index.db`. Recorded at `initialize` time;
+    /// the file is NOT opened until first use (lazy load).
+    pub db_path: PathBuf,
+    /// Path to `.crabcc/tantivy/`. Same lazy treatment as `db_path`.
+    pub fts_dir: PathBuf,
     /// SQLite store. Behind a sync Mutex because rusqlite::Connection is
-    /// !Sync; we never hold it across `.await`.
+    /// !Sync; we never hold it across `.await`. `None` until the first
+    /// handler that needs it triggers `ensure_store`.
     pub store: std::sync::Mutex<Option<Store>>,
     pub fts: std::sync::Mutex<Option<Fts>>,
     pub graph: std::sync::Mutex<Option<CallGraph>>,
@@ -41,12 +47,59 @@ pub struct State {
     pub cache: LruCache,
 }
 
+impl State {
+    /// Open the SQLite store on first call; cheap no-op on subsequent
+    /// calls. Returns `true` if the store is now available.
+    pub fn ensure_store(&self) -> bool {
+        let mut g = self.store.lock().unwrap();
+        if g.is_some() {
+            return true;
+        }
+        if !self.db_path.exists() {
+            return false;
+        }
+        match Store::open(&self.db_path) {
+            Ok(s) => {
+                *g = Some(s);
+                true
+            }
+            Err(e) => {
+                tracing::warn!(target: "ucracc_lsp", error = %e, "ensure_store failed");
+                false
+            }
+        }
+    }
+
+    /// Same idempotent lazy-open contract for the tantivy sidecar.
+    pub fn ensure_fts(&self) -> bool {
+        let mut g = self.fts.lock().unwrap();
+        if g.is_some() {
+            return true;
+        }
+        if !self.fts_dir.exists() {
+            return false;
+        }
+        match Fts::open(&self.fts_dir) {
+            Ok(f) => {
+                *g = Some(f);
+                true
+            }
+            Err(e) => {
+                tracing::warn!(target: "ucracc_lsp", error = %e, "ensure_fts failed");
+                false
+            }
+        }
+    }
+}
+
 impl Backend {
     pub fn new(client: Client) -> Self {
         Self {
             client,
             state: Arc::new(RwLock::new(State {
                 repo_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+                db_path: PathBuf::new(),
+                fts_dir: PathBuf::new(),
                 store: std::sync::Mutex::new(None),
                 fts: std::sync::Mutex::new(None),
                 graph: std::sync::Mutex::new(None),
@@ -95,32 +148,22 @@ impl LanguageServer for Backend {
             }))
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
-        let db_path = root.join(".crabcc/index.db");
-        let fts_dir = root.join(".crabcc/tantivy");
-
-        let (store_opt, fts_opt) = tokio::task::spawn_blocking({
-            let db = db_path.clone();
-            let fts = fts_dir.clone();
-            move || {
-                let s = if db.exists() { Store::open(&db).ok() } else { None };
-                let f = if fts.exists() { Fts::open(&fts).ok() } else { None };
-                (s, f)
-            }
-        })
-        .await
-        .unwrap_or((None, None));
-
+        // Record paths; do NOT open Store/Fts yet. They're lazy-opened
+        // on first use (or prefetched from the `initialized` notification
+        // below). This keeps `initialize` in the tens-of-microseconds
+        // range instead of paying the ~1 ms SQLite/tantivy open cost
+        // before the editor has even sent a request.
         let mut st = self.state.write().await;
         st.repo_root = root.clone();
-        *st.store.lock().unwrap() = store_opt;
-        *st.fts.lock().unwrap() = fts_opt;
+        st.db_path = root.join(".crabcc/index.db");
+        st.fts_dir = root.join(".crabcc/tantivy");
         drop(st);
 
         info!(
             target: "ucracc_lsp",
             root = %root.display(),
             langs = SUPPORTED_LANGUAGE_IDS.len(),
-            "initialized"
+            "initialized (lazy)"
         );
 
         Ok(InitializeResult {
@@ -133,10 +176,24 @@ impl LanguageServer for Backend {
     }
 
     async fn initialized(&self, _: InitializedParams) {
-        let st = self.state.read().await;
-        let has_store = st.store.lock().unwrap().is_some();
-        if !has_store {
-            warn!(target: "ucracc_lsp", "no .crabcc/index.db at {} — run `crabcc index` first", st.repo_root.display());
+        // Prefetch the store + fts in the background so the first hover
+        // / definition request doesn't pay the cold-open cost. If the
+        // user never sends one, no I/O ever happens.
+        let state = self.state.clone();
+        let prefetch = tokio::task::spawn_blocking(move || {
+            let st = state.blocking_read();
+            let store_ok = st.ensure_store();
+            let _ = st.ensure_fts();
+            (store_ok, st.repo_root.clone())
+        })
+        .await;
+
+        let (store_ok, repo_root) = match prefetch {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        if !store_ok {
+            warn!(target: "ucracc_lsp", "no .crabcc/index.db at {} — run `crabcc index` first", repo_root.display());
             let _ = self
                 .client
                 .show_message(
@@ -179,7 +236,8 @@ impl LanguageServer for Backend {
         let state = self.state.clone();
         tokio::task::spawn_blocking(move || {
             let st = state.blocking_read();
-            let store_guard = st.store.lock().unwrap();
+            st.ensure_store();
+        let store_guard = st.store.lock().unwrap();
             if let Some(store) = store_guard.as_ref() {
                 let _ = index::refresh(&st.repo_root, store);
                 // Graph is now potentially stale.
@@ -212,6 +270,7 @@ impl LanguageServer for Backend {
             }
         }
 
+        st.ensure_store();
         let store_guard = st.store.lock().unwrap();
         let store = match store_guard.as_ref() {
             Some(s) => s,
@@ -248,6 +307,7 @@ impl LanguageServer for Backend {
             }
         }
 
+        st.ensure_store();
         let store_guard = st.store.lock().unwrap();
         let store = match store_guard.as_ref() {
             Some(s) => s,
@@ -273,6 +333,7 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
         let root = st.repo_root.clone();
+        st.ensure_store();
         let store_guard = st.store.lock().unwrap();
         let store = match store_guard.as_ref() {
             Some(s) => s,
@@ -313,6 +374,7 @@ impl LanguageServer for Backend {
             }
         }
 
+        st.ensure_store();
         let store_guard = st.store.lock().unwrap();
         let store = match store_guard.as_ref() {
             Some(s) => s,
@@ -345,6 +407,8 @@ impl LanguageServer for Backend {
             }
         }
         let root = st.repo_root.clone();
+        st.ensure_fts();
+        st.ensure_store();
         let fts_guard = st.fts.lock().unwrap();
         let store_guard = st.store.lock().unwrap();
         let store = match store_guard.as_ref() {
@@ -390,6 +454,7 @@ impl LanguageServer for Backend {
             Some(w) => w,
             None => return Ok(None),
         };
+        st.ensure_store();
         let store_guard = st.store.lock().unwrap();
         let store = match store_guard.as_ref() {
             Some(s) => s,
@@ -410,6 +475,7 @@ impl LanguageServer for Backend {
         let st = self.state.read().await;
         let name = p.item.name.clone();
         let root = st.repo_root.clone();
+        st.ensure_store();
         let store_guard = st.store.lock().unwrap();
         let store = match store_guard.as_ref() {
             Some(s) => s,
@@ -430,7 +496,8 @@ impl LanguageServer for Backend {
         // Ensure the call graph is built.
         let need_build = st.graph.lock().unwrap().is_none();
         if need_build {
-            let store_guard = st.store.lock().unwrap();
+            st.ensure_store();
+        let store_guard = st.store.lock().unwrap();
             if let Some(store) = store_guard.as_ref() {
                 if let Ok(g) = CallGraph::build_from_edges(store) {
                     *st.graph.lock().unwrap() = Some(g);
@@ -449,6 +516,7 @@ impl LanguageServer for Backend {
             .unwrap_or_default();
         drop(graph_guard);
 
+        st.ensure_store();
         let store_guard = st.store.lock().unwrap();
         let store = match store_guard.as_ref() {
             Some(s) => s,
@@ -505,7 +573,8 @@ impl Backend {
             let state = self.state.clone();
             move || -> AResult<()> {
                 let st = state.blocking_read();
-                let store_guard = st.store.lock().unwrap();
+                st.ensure_store();
+        let store_guard = st.store.lock().unwrap();
                 let store = match store_guard.as_ref() {
                     Some(s) => s,
                     None => return Ok(()),
@@ -516,13 +585,40 @@ impl Backend {
                     .map(|d| d.as_secs() as i64)
                     .unwrap_or(0);
 
-                #[cfg(feature = "swift")]
-                if matches!(Lang::from_path(std::path::Path::new(&rel)), Some(Lang::Swift)) {
-                    let (syms, edges) = crate::swift::extract(&rel, &src)?;
-                    let fid = store.upsert_file(&rel, &sha, mtime, "swift")?;
-                    store.replace_symbols(fid, &syms)?;
-                    store.replace_edges(fid, &edges)?;
-                    return Ok(());
+                let lang = Lang::from_path(std::path::Path::new(&rel));
+                if let Some(l) = lang {
+                    if l.handled_internally() {
+                        let (syms, edges, lang_tag) = match l {
+                            #[cfg(feature = "swift")]
+                            Lang::Swift => {
+                                let (s, e) = crate::swift::extract(&rel, &src)?;
+                                (s, e, "swift")
+                            }
+                            #[cfg(feature = "bash")]
+                            Lang::Bash => {
+                                let (s, e) = crate::bash::extract(&rel, &src)?;
+                                (s, e, "bash")
+                            }
+                            #[cfg(feature = "yaml")]
+                            Lang::Yaml => {
+                                let (s, e) = crate::yaml::extract(&rel, &src)?;
+                                (s, e, "yaml")
+                            }
+                            #[cfg(feature = "markdown")]
+                            Lang::Markdown => {
+                                let (s, e) = crate::markdown::extract(&rel, &src)?;
+                                (s, e, "markdown")
+                            }
+                            // If a `handled_internally` variant is reached
+                            // with its feature disabled, fall through to the
+                            // crabcc-core path which will skip it.
+                            _ => return Ok(()),
+                        };
+                        let fid = store.upsert_file(&rel, &sha, mtime, lang_tag)?;
+                        store.replace_symbols(fid, &syms)?;
+                        store.replace_edges(fid, &edges)?;
+                        return Ok(());
+                    }
                 }
 
                 // crabcc-core languages: delegate to its extractor.

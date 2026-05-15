@@ -36,6 +36,9 @@ merge results.
 | Ruby            | ✓      | ✓     | crabcc-core extractor                  |
 | Go              | ✓      | ✓     | crabcc-core extractor                  |
 | Swift           | ✓      | ✓     | this crate (tree-sitter-swift)         |
+| Bash            | ✓      | ✓     | this crate (tree-sitter-bash) — commands as call edges |
+| YAML            | ✓      | —     | this crate (tree-sitter-yaml) — top-level keys, no edges |
+| Markdown        | ✓      | —     | this crate (tree-sitter-md) — heading outline, no edges |
 
 ## Features
 
@@ -84,13 +87,20 @@ Apple silicon, dev fixtures (single Rust file, ~10 symbols, 1 call edge).
 after cache flush. **LSP cached** = repeat of the same call in the same
 edit-session.
 
-| Operation             | Baseline | LSP cold | LSP cached | Cache win |
-|-----------------------|----------|----------|------------|-----------|
-| cold start            | 720 µs   | 1.05 ms  | n/a        | n/a       |
-| `documentSymbol`      | 8.2 µs   | 8.7 µs   | 3.7 µs     | 2.4×      |
-| `definition`          | 6.2 µs   | 7.2 µs   | 1.1 µs     | 6.5×      |
-| `hover`               | 6.2 µs   | 6.9 µs   | 1.2 µs     | 5.7×      |
-| `workspace/symbol`    | 601 µs   | 604 µs   | 1.1 µs     | **550×**  |
+| Operation                | Baseline | LSP cold | LSP cached | Cache win |
+|--------------------------|----------|----------|------------|-----------|
+| `initialize` only (lazy) | n/a      | **24 µs**| n/a        | n/a       |
+| `initialize + initialized` | n/a    | 1.01 ms  | n/a        | n/a       |
+| `documentSymbol`         | 8.2 µs   | 8.7 µs   | 3.7 µs     | 2.4×      |
+| `definition`             | 6.2 µs   | 7.2 µs   | 1.1 µs     | 6.5×      |
+| `hover`                  | 6.2 µs   | 6.9 µs   | 1.2 µs     | 5.7×      |
+| `workspace/symbol`       | 601 µs   | 604 µs   | 1.1 µs     | **550×**  |
+
+`initialize` returns in tens of microseconds because Store + Fts are
+**lazy-opened**. The 1 ms SQLite + tantivy open happens on the background
+`initialized` notification; if the user never sends a request, no I/O
+ever happens. First request after a cold launch pays the open cost once
+(then never again until process restart).
 
 The dispatch wrapper adds < 1 µs per hot-path call (URL parse + Mutex
 acquire + Tokio task hop). Cold start is dominated by tantivy mmap

@@ -124,7 +124,30 @@ fn bench_cold_open(c: &mut Criterion) {
         });
     });
 
-    c.bench_function("cold_open_lsp_initialize", |b| {
+    c.bench_function("cold_open_lsp_initialize_only", |b| {
+        // Pure `initialize` — what the editor actually waits for before
+        // it can send its first request. With lazy load, no I/O.
+        let rt = Runtime::new().unwrap();
+        let root = root.clone();
+        b.iter(|| {
+            rt.block_on(async {
+                let (svc, _socket) = LspService::new(Backend::new);
+                svc.inner()
+                    .initialize(InitializeParams {
+                        root_uri: Some(Url::from_file_path(&root).unwrap()),
+                        ..Default::default()
+                    })
+                    .await
+                    .unwrap();
+                black_box(svc);
+            });
+        });
+    });
+
+    c.bench_function("cold_open_lsp_initialize_and_initialized", |b| {
+        // Full handshake — initialize + initialized (which prefetches
+        // Store + Fts in the background and waits for it). Apples to
+        // the pre-lazy baseline.
         let rt = Runtime::new().unwrap();
         let root = root.clone();
         b.iter(|| {

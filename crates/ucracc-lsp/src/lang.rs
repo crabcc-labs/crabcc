@@ -1,8 +1,8 @@
 use std::path::Path;
 
-/// Languages ucracc-lsp explicitly supports. Swift is parsed by this
-/// crate (because crabcc-core's grammar fleet doesn't carry it);
-/// everything else is delegated to crabcc-core's extractor.
+/// Languages ucracc-lsp explicitly supports. Languages parsed by this
+/// crate (Swift, Bash, YAML, Markdown) are gated on the respective
+/// Cargo features; everything else is delegated to crabcc-core.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Lang {
     Rust,
@@ -13,6 +13,9 @@ pub enum Lang {
     Ruby,
     Go,
     Swift,
+    Bash,
+    Yaml,
+    Markdown,
 }
 
 impl Lang {
@@ -26,6 +29,9 @@ impl Lang {
             Lang::Ruby => "ruby",
             Lang::Go => "go",
             Lang::Swift => "swift",
+            Lang::Bash => "bash",
+            Lang::Yaml => "yaml",
+            Lang::Markdown => "markdown",
         }
     }
 
@@ -39,6 +45,9 @@ impl Lang {
             "rb" | "rake" | "gemspec" => Lang::Ruby,
             "go" => Lang::Go,
             "swift" => Lang::Swift,
+            "sh" | "bash" | "zsh" => Lang::Bash,
+            "yaml" | "yml" => Lang::Yaml,
+            "md" | "markdown" => Lang::Markdown,
             _ => return None,
         })
     }
@@ -47,10 +56,12 @@ impl Lang {
         p.extension().and_then(|e| e.to_str()).and_then(Self::from_ext)
     }
 
-    /// Is this a language ucracc-lsp handles internally (Swift), as opposed
-    /// to one crabcc-core indexes for us?
+    /// Languages parsed by this crate (vs delegated to crabcc-core).
     pub fn handled_internally(self) -> bool {
-        matches!(self, Lang::Swift)
+        matches!(
+            self,
+            Lang::Swift | Lang::Bash | Lang::Yaml | Lang::Markdown
+        )
     }
 }
 
@@ -66,4 +77,7 @@ pub const SUPPORTED_LANGUAGE_IDS: &[&str] = &[
     "ruby",
     "go",
     "swift",
+    "shellscript",
+    "yaml",
+    "markdown",
 ];

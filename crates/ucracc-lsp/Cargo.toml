@@ -10,10 +10,16 @@ license.workspace = true
 # and hover/definition/references < 20 ms p95.
 
 [features]
-default = ["swift"]
-# Pulls tree-sitter-swift. Default ON because crabcc-core's grammar fleet
-# does not cover Swift and the user explicitly wants Swift support.
+default = ["swift", "bash", "yaml", "markdown"]
+# Pulls tree-sitter-swift. crabcc-core's grammar fleet does not cover Swift.
 swift = ["dep:tree-sitter-swift"]
+# tree-sitter-bash. Extracts function_definition + variable_assignment.
+bash = ["dep:tree-sitter-bash"]
+# tree-sitter-yaml. Surfaces top-level keys as DocumentSymbols (nav only,
+# no call edges — YAML isn't code).
+yaml = ["dep:tree-sitter-yaml"]
+# tree-sitter-md. Surfaces ATX/setext headings as a doc outline.
+markdown = ["dep:tree-sitter-md"]
 # Enables the workspace/executeCommand `ucracc.memory.search` command.
 memory = ["dep:crabcc-memory"]
 # Enables `ucracc.webfetch`.
@@ -38,6 +44,9 @@ tower-lsp = "0.20"
 
 tree-sitter = { workspace = true }
 tree-sitter-swift = { version = "0.7", optional = true }
+tree-sitter-bash = { version = "0.25", optional = true }
+tree-sitter-yaml = { version = "0.7", optional = true }
+tree-sitter-md = { version = "0.5", optional = true }
 moka = { workspace = true }
 
 reqwest = { workspace = true, optional = true }
@@ -59,5 +68,9 @@ serde_json = { workspace = true }
 
 [[bench]]
 name = "baseline_vs_lsp"
+harness = false
+
+[[bench]]
+name = "extractor_cost"
 harness = false
 

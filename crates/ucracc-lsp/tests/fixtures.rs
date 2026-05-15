@@ -121,6 +121,53 @@ fn external_user() {
 }
 "#;
 
+pub const BASH_SRC: &str = r#"#!/usr/bin/env bash
+UCRACC_NAME="ucracc"
+
+ucracc_greet() {
+    local who="$1"
+    echo "hello, $who"
+}
+
+ucracc_main() {
+    ucracc_greet "$UCRACC_NAME"
+}
+
+ucracc_main
+"#;
+
+pub const YAML_SRC: &str = r#"
+name: ucracc-ci
+on:
+  push:
+    branches: [main]
+jobs:
+  ucracc-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo test -p ucracc-lsp
+"#;
+
+pub const MARKDOWN_SRC: &str = r#"# UcraccLsp
+
+A short description.
+
+## Installation
+
+Run `cargo install`.
+
+## Usage
+
+### Quick start
+
+Type something.
+
+### Advanced
+
+More things.
+"#;
+
 pub fn all() -> &'static [(&'static str, &'static str)] {
     &[
         ("ucracc.rs", RUST_SRC),
@@ -129,5 +176,8 @@ pub fn all() -> &'static [(&'static str, &'static str)] {
         ("ucracc.swift", SWIFT_SRC),
         ("ucracc.rb", RUBY_SRC),
         ("ucracc.go", GO_SRC),
+        ("ucracc.sh", BASH_SRC),
+        ("ucracc.yaml", YAML_SRC),
+        ("ucracc.md", MARKDOWN_SRC),
     ]
 }

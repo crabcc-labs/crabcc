@@ -88,6 +88,12 @@ async fn document_symbol_covers_all_languages() {
         ("ucracc.go", "go", "UcraccGo"),
         #[cfg(feature = "swift")]
         ("ucracc.swift", "swift", "UcraccSwift"),
+        #[cfg(feature = "bash")]
+        ("ucracc.sh", "shellscript", "ucracc_greet"),
+        #[cfg(feature = "yaml")]
+        ("ucracc.yaml", "yaml", "jobs"),
+        #[cfg(feature = "markdown")]
+        ("ucracc.md", "markdown", "UcraccLsp"),
     ] {
         let uri = uri_for(&root, file);
         open_doc(&svc, uri.clone(), lang_id, fixtures::all().iter().find(|(n, _)| *n == file).unwrap().1).await;

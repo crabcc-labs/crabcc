@@ -3,12 +3,18 @@
 //! per-language extractors live here so they can be unit/integration
 //! tested without spawning a subprocess.
 
+#[cfg(feature = "bash")]
+pub mod bash;
 pub mod cache;
 pub mod commands;
 pub mod handlers;
 pub mod lang;
+#[cfg(feature = "markdown")]
+pub mod markdown;
 #[cfg(feature = "rerank")]
 pub mod rerank;
 pub mod server;
 #[cfg(feature = "swift")]
 pub mod swift;
+#[cfg(feature = "yaml")]
+pub mod yaml;
