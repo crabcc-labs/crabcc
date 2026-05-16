@@ -33,13 +33,26 @@ agent-sandbox = []
 # See apps/crabcc-agents/README.md for the worker side and
 # `--transport bullmq` / `CRABCC_AGENT_TRANSPORT=bullmq` to opt in.
 agents-bullmq = ["dep:bullmq-rs", "dep:redis", "dep:futures-util"]
+# Optional dashboard / SSE viewer (`crabcc serve`). Pulls in tiny_http +
+# tokio-rt + the entire `crabcc-viz` crate (~3500 LOC). Off by default
+# so `cargo install crabcc-cli` is fast for users who only want the
+# CLI surface (sym/refs/callers/outline/etc.) and the MCP server.
+viz = ["dep:crabcc-viz"]
+# Opt-in OTLP / Telegram / file-rotation tracing layers
+# (telemetry::init's full pipeline). The base `tracing` macros remain
+# compiled (they're cheap no-ops without a subscriber); only the heavy
+# `tracing-subscriber` + `tracing-appender` init pulls in. Off by
+# default for a lean default install.
+telemetry = ["dep:tracing-subscriber", "dep:tracing-appender"]
 
 [dependencies]
 crabcc-core   = { workspace = true, features = ["jobs"] }
 crabcc-fetch  = { workspace = true }
 crabcc-mcp    = { workspace = true }
 crabcc-memory = { workspace = true }
-crabcc-viz    = { workspace = true }
+# `viz` feature — see [features]. Drops the dashboard / SSE viewer + its
+# tokio-rt + tiny_http + html2md transitive cost from the default install.
+crabcc-viz    = { workspace = true, optional = true }
 anyhow        = { workspace = true }
 clap          = { workspace = true }
 tokio                    = { workspace = true }
@@ -59,10 +72,13 @@ serde_json    = { workspace = true }
 sha2          = { workspace = true }
 sonic-rs      = { workspace = true }
 toml          = { workspace = true }
-tracing       = { workspace = true }
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
-# Issue #90 — non-blocking writer; hot path returns in O(ns).
-tracing-appender = { workspace = true }
+# `tracing` macros stay default — they're lightweight (compile away to
+# no-ops without a subscriber). The heavy `tracing-subscriber` + the
+# `tracing-appender` non-blocking writer move behind the `telemetry`
+# feature so the default install path doesn't pay the compile cost.
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"], optional = true }
+tracing-appender   = { workspace = true, optional = true }
 
 # agents-bullmq feature — see [features].
 bullmq-rs    = { version = "1", optional = true }

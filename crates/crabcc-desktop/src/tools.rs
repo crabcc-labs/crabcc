@@ -198,8 +198,7 @@ fn echo_tool() -> Tool {
     }
     Tool {
         name: "desktop.echo".into(),
-        description: "Echo `text` back unchanged. Connectivity smoke test for `tools/call`."
-            .into(),
+        description: "Echo `text` back unchanged. Connectivity smoke test for `tools/call`.".into(),
         input_schema: serde_json::json!({
             "type": "object",
             "properties": {

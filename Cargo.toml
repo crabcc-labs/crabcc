@@ -28,9 +28,9 @@ members = [
 ]
 
 [workspace.package]
-version = "3.0.0-rc.3"
+version = "4.0.0"
 edition = "2021"
-rust-version = "1.87"
+rust-version = "1.86"
 license = "MIT"
 repository = "https://github.com/peterlodri-sec/crabcc"
 
@@ -62,6 +62,7 @@ tree-sitter-go = "0.25"
 tree-sitter-python = "0.25"
 tree-sitter-swift = "0.7"
 tree-sitter-bash = "0.25"
+tree-sitter-java = "0.23"
 ast-grep-core = "0.42"
 ast-grep-language = "0.42"
 sha2 = "0.11"

@@ -14,6 +14,7 @@ pub enum Lang {
     Go,
     Swift,
     Bash,
+    Java,
     Yaml,
     Markdown,
 }
@@ -30,6 +31,7 @@ impl Lang {
             Lang::Go => "go",
             Lang::Swift => "swift",
             Lang::Bash => "bash",
+            Lang::Java => "java",
             Lang::Yaml => "yaml",
             Lang::Markdown => "markdown",
         }
@@ -46,6 +48,7 @@ impl Lang {
             "go" => Lang::Go,
             "swift" => Lang::Swift,
             "sh" | "bash" | "zsh" => Lang::Bash,
+            "java" => Lang::Java,
             "yaml" | "yml" => Lang::Yaml,
             "md" | "markdown" => Lang::Markdown,
             _ => return None,
@@ -53,7 +56,9 @@ impl Lang {
     }
 
     pub fn from_path(p: &Path) -> Option<Self> {
-        p.extension().and_then(|e| e.to_str()).and_then(Self::from_ext)
+        p.extension()
+            .and_then(|e| e.to_str())
+            .and_then(Self::from_ext)
     }
 
     /// Languages parsed by this crate (vs delegated to crabcc-core).
@@ -78,6 +83,7 @@ pub const SUPPORTED_LANGUAGE_IDS: &[&str] = &[
     "go",
     "swift",
     "shellscript",
+    "java",
     "yaml",
     "markdown",
 ];

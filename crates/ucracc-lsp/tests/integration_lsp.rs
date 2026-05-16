@@ -12,12 +12,11 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 use tower_lsp::lsp_types::{
     CallHierarchyIncomingCallsParams, CallHierarchyPrepareParams, DidChangeTextDocumentParams,
-    DidOpenTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse,
-    GotoDefinitionParams, GotoDefinitionResponse, HoverParams, InitializeParams,
-    InitializedParams, PartialResultParams, Position, ReferenceContext, ReferenceParams,
-    TextDocumentContentChangeEvent, TextDocumentIdentifier, TextDocumentItem,
-    TextDocumentPositionParams, Url, VersionedTextDocumentIdentifier,
-    WorkDoneProgressParams, WorkspaceSymbolParams,
+    DidOpenTextDocumentParams, DocumentSymbolParams, DocumentSymbolResponse, GotoDefinitionParams,
+    GotoDefinitionResponse, HoverParams, InitializeParams, InitializedParams, PartialResultParams,
+    Position, ReferenceContext, ReferenceParams, TextDocumentContentChangeEvent,
+    TextDocumentIdentifier, TextDocumentItem, TextDocumentPositionParams, Url,
+    VersionedTextDocumentIdentifier, WorkDoneProgressParams, WorkspaceSymbolParams,
 };
 use tower_lsp::{LanguageServer, LspService};
 
@@ -56,7 +55,12 @@ async fn boot(root: PathBuf) -> tower_lsp::LspService<ucracc_lsp::server::Backen
     service
 }
 
-async fn open_doc(svc: &tower_lsp::LspService<ucracc_lsp::server::Backend>, uri: Url, lang: &str, src: &str) {
+async fn open_doc(
+    svc: &tower_lsp::LspService<ucracc_lsp::server::Backend>,
+    uri: Url,
+    lang: &str,
+    src: &str,
+) {
     svc.inner()
         .did_open(DidOpenTextDocumentParams {
             text_document: TextDocumentItem {
@@ -86,9 +90,9 @@ async fn document_symbol_covers_all_languages() {
         ("ucracc.py", "python", "UcraccPipeline"),
         ("ucracc.rb", "ruby", "UcraccRuby"),
         ("ucracc.go", "go", "UcraccGo"),
-        #[cfg(feature = "swift")]
+        // Swift and Bash moved to crabcc-core as of v0.2.0 — they're always
+        // available now, no feature gate required.
         ("ucracc.swift", "swift", "UcraccSwift"),
-        #[cfg(feature = "bash")]
         ("ucracc.sh", "shellscript", "ucracc_greet"),
         #[cfg(feature = "yaml")]
         ("ucracc.yaml", "yaml", "jobs"),
@@ -96,7 +100,13 @@ async fn document_symbol_covers_all_languages() {
         ("ucracc.md", "markdown", "UcraccLsp"),
     ] {
         let uri = uri_for(&root, file);
-        open_doc(&svc, uri.clone(), lang_id, fixtures::all().iter().find(|(n, _)| *n == file).unwrap().1).await;
+        open_doc(
+            &svc,
+            uri.clone(),
+            lang_id,
+            fixtures::all().iter().find(|(n, _)| *n == file).unwrap().1,
+        )
+        .await;
 
         let resp = svc
             .inner()
@@ -136,8 +146,8 @@ async fn goto_definition_rust() {
 
     // Position chosen to land somewhere inside `say_hello` on the
     // `greet` body. We find the line and column manually for stability.
-    let (line, character) = find_position(fixtures::RUST_SRC, "say_hello(&self.name)")
-        .expect("locate call site");
+    let (line, character) =
+        find_position(fixtures::RUST_SRC, "say_hello(&self.name)").expect("locate call site");
 
     let resp = svc
         .inner()
@@ -216,8 +226,8 @@ async fn hover_returns_signature() {
     let uri = uri_for(&root, "ucracc.rs");
     open_doc(&svc, uri.clone(), "rust", fixtures::RUST_SRC).await;
 
-    let (line, character) = find_position(fixtures::RUST_SRC, "pub struct UcraccStore")
-        .expect("locate struct");
+    let (line, character) =
+        find_position(fixtures::RUST_SRC, "pub struct UcraccStore").expect("locate struct");
 
     let resp = svc
         .inner()
@@ -240,7 +250,10 @@ async fn hover_returns_signature() {
         other => panic!("unexpected hover contents: {other:?}"),
     };
     assert!(text.contains("UcraccStore"), "hover missing symbol: {text}");
-    assert!(text.contains("ucracc.rs"), "hover missing file path: {text}");
+    assert!(
+        text.contains("ucracc.rs"),
+        "hover missing file path: {text}"
+    );
 }
 
 /// `workspace/symbol` with a prefix must return matches across files.

@@ -6,6 +6,193 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **`Store::replace_edges` / `callers_of` / `refs_of`** rewritten against the
+  v4 `(src_symbol_id, dst_symbol_id, kind, line)` columns. The previous code
+  still queried the dropped v3 columns; 40 of 282 `cargo test` cases panicked
+  with `no such column` at runtime. (#550)
+- **`Store::replace_symbols` now persists `parent_id`.** Previously the bulk
+  path hardcoded `None::<i64>`, dropping every impl/class linkage on the
+  ingest path. (#550)
+- **`iter_all_symbols` / `symbols_in_file` / `find_by_name`** join through
+  `symbols.parent_id` so `Symbol.parent` is no longer always `None`. (#550)
+
+### Tests
+
+- New `crates/crabcc-core/tests/v4_regression.rs` and
+  `crates/crabcc-core/tests/v4_cross_functional.rs`: end-to-end coverage of
+  `full_index` → `Store` → `query::*` and the four KG ops (`why`,
+  `blast_radius`, `hot_symbols`, `importers`). Polyglot (Rust + Python +
+  TypeScript) indexing, `refresh_delta` round-trip, and FK-cascade contract
+  also covered.
+- `crates/crabcc-cli/tests/integration/graph_v4.rs` is now wired into the
+  test binary (was previously orphaned).
+- KG-on-real-ids tests (`why`, `blast_radius`, `hot_symbols`) and the CLI
+  `graph why|blast-radius|hot-symbols` tests are `#[ignore]`'d pending
+  CRIT-5 resolver wiring + CLI surface, both tracked for v4.0.1.
+
+### Chores
+
+- Two unused imports cleared (`extract::mod::NameOnlyResolver`,
+  `query::importers::VecDeque`) so `clippy -D warnings` stays green.
+
+## [4.0.0] — 2026-05-16
+
+Data Layer 2.0. Breaking schema change: edges are now keyed by
+`symbol_id` foreign-keys instead of `dst_name TEXT`, restoring resolution
+for `Foo::open` vs `Bar::open` and enabling real knowledge-graph traversal.
+Three first-class symbol resolvers (Rust, JS/TS, Python). Four new graph
+ops (`blast-radius`, `why`, `hot-symbols`, `importers`). Pre-v4 indexes
+are auto-wiped and rebuilt on first open via the v3.2 `needs_reindex`
+plumbing — no flag, no migrator, no user choice.
+
+### Breaking
+- **Schema v4.** The `edges` table is rebuilt with `(src_symbol_id,
+  dst_symbol_id)` FK columns; the pre-v4 `(src_file_id, src_symbol TEXT,
+  dst_name TEXT)` shape is dropped. `symbols` gains `qualified TEXT` and
+  `parent_id INTEGER REFERENCES symbols(id)` (replacing the loose
+  `parent TEXT`). A new `unresolved_names` sentinel table backs name-only
+  recall for languages without a resolver yet (Ruby, Java, Swift).
+- **`CallGraph` public API.** `outgoing`, `incoming`, `cycles`, `orphans`
+  now take and return `i64` symbol-IDs instead of `String` symbol names.
+  Callers that need human-readable output resolve IDs back to qualified
+  names via `Store::find_by_name` at render time. The v1.0.0 `build_legacy`
+  walker is removed — v4 indexes always populate the `edges` table.
+
+### Added
+- **`crabcc graph blast-radius <symbol> [--depth N] [--kind …]`** —
+  reverse transitive closure: everything that transitively depends on the
+  given symbol.
+- **`crabcc graph why <src> <dst> [--max-depth N]`** — shortest
+  call-graph path between two symbols (bidirectional BFS).
+- **`crabcc graph hot-symbols [--top N] [--kind …]`** — symbols ranked
+  by in-degree (most-called first).
+- **`crabcc graph importers <path> [--depth N]`** — file-level edge
+  rollup: which files transitively reference the given path.
+- The same four ops are exposed as MCP tools: `graph.blast_radius`,
+  `graph.why`, `graph.hot_symbols`, `graph.importers`.
+- **Resolvers.** First-class scope walkers for Rust (use_, mod, impl),
+  TypeScript / JavaScript (ES imports, class scope), and Python (imports,
+  class scope) in `crabcc-core::extract::{resolve_rust, resolve_ts,
+  resolve_python}`. The extractor is now two-pass (pass-1 collects defs,
+  pass-2 routes uses through a `Resolver` trait).
+
+### Changed
+- **`crabcc graph walk/cycles/orphans`** keep their flag shape but their
+  output now references symbol-IDs (and qualified names) rather than raw
+  destination strings — collisions like `Foo::open` vs `Bar::open` are no
+  longer collapsed.
+- Indexes built before v4.0.0 are auto-wiped and rebuilt on first open.
+  Stale-index detection moves from the v3.2 `ref_edges_built` flag to a
+  new `schema_v4_built` flag. Users see a `crabcc: index built with
+  schema v3; wiping and re-indexing for symbol-ID edges...` message
+  identical in shape to the v3.2 message they already saw on first
+  upgrade. Full re-index of this 13k-file repo completes in <60 s on an
+  M-series Mac.
+
+## [3.2.0] — 2026-05-16
+
+Bug fixes for `lookup refs` and `lookup callers` LSP/CLI commands.
+
+### Fixed
+- `lookup refs <struct>` no longer returns `[]` for Rust structs, enums, and
+  type aliases. The Rust extractor now emits `kind=ref` edges for every
+  `type_identifier` node in non-definition position (return types, parameter
+  types, let bindings, impl headers, struct construction, generic arguments).
+- `lookup callers <fn>` with qualified names (e.g. `crate::module::Fn`)
+  now matches correctly. A `bare_name()` helper strips path qualifiers before
+  the edge lookup. `query_refs` falls back to `query_callers` for languages
+  without dedicated ref-extraction support.
+- Indexes built before v3.2.0 are automatically detected on open via
+  `schema_version` (bumped from 2 to 3). A stale index is wiped and rebuilt
+  transparently before serving the first command, including an FTS sidecar
+  rebuild.
+
+## [3.1.0] — 2026-05-16
+
+Pre-release cleanup cycle. Pure refactor — no behaviour change,
+no public-API break. Three large single files modularized, one
+panic-on-bad-path replaced with proper error propagation, MSRV
+and broken doc references brought back in sync, and one round of
+patch-level dependency bumps.
+
+### Added
+- Per-crate `docs/HOW_IT_WORKS.md` now linked from `README.md`,
+  `AGENTS.md`, `CONTRIBUTING.md`, and `DESIGN.md` as the
+  canonical deep-dive entry points.
+
+### Changed
+- **`crates/crabcc-memory/src/palace.rs`** (1778 LoC) split into
+  `palace/{mod,search_mode,path,registry,rrf}.rs`. Public API
+  preserved via `pub use` re-exports; external imports through
+  `crabcc_memory::palace::{Palace, PalaceRegistry, SearchMode,
+  find_git_root, resolve_db_path, DEFAULT_PALACE_CACHE_CAPACITY,
+  GIT_ROOT_CACHE_TTL, PALACE_CACHE_TTI}` keep working unchanged.
+- **`crates/crabcc-memory/src/backend/sqlite.rs`** (1696 LoC) split
+  into `sqlite/{mod,encoding,ensure}.rs`. The `Backend` impl stays
+  intact in `mod.rs`; only the pure-function helpers move out.
+- **`crates/crabcc-mcp/src/lib.rs`** (2430 LoC) split into
+  `transport.rs`, `schema.rs`, `dispatch.rs`. Public exports
+  (`serve_*`, `handle*`, `tools_def*`, `OPENAPI_YAML`,
+  `dev_mode_from_env`) preserved; `memory.rs`'s
+  `use crate::{arg_str, str_field, tool_schema}` import preserved
+  via a `pub(crate) use schema::*` re-export.
+- **`crates/crabcc-viz/src/lib.rs`** (3562 LoC) split — extracted
+  `banner.rs` (179 LoC), `query.rs` (85 LoC), `graph.rs` (196 LoC),
+  `bootstrap.rs` (129 LoC), `memory_view.rs` (99 LoC). lib.rs now
+  2905 LoC, mostly the agent surface + tests.
+- **Cargo.toml** — `rust-version` corrected from `1.87` → `1.86`
+  to match `clippy.toml` (the `fsst-rs 0.5.10` floor is the actual
+  MSRV bottleneck). README badge + Dockerfile already reflected
+  1.86.
+
+### Fixed
+- **`crates/crabcc-cli/src/main.rs`** — `db.parent().unwrap()`
+  during `create_dir_all` now propagates via `anyhow::Context`
+  instead of panicking on pathological db paths.
+
+### Removed
+- **`docs/{ARCHITECTURE,ROADMAP-v2.5,RESEARCH-{fsst,mempalace,
+  storage}}.md`** dead links scrubbed from `README.md`,
+  `AGENTS.md`, `CONTRIBUTING.md`, `DESIGN.md`, and
+  `apps/crabcc-notify-ext-poc/README.md`. Replaced with links
+  to the live `crates/crabcc-core/docs/HOW_IT_WORKS.md` /
+  `docs/RUST-ANTHOLOGY.md` / `docs/desktop/ARCHITECTURE.md` files
+  that are actually on disk. (The original `docs/ARCHITECTURE.md`
+  was intentionally untracked in #53.)
+- **`.summary/v1.6-summary.xml`** stale release-summary artifact
+  (regeneratable via `task gen-summary`).
+
+### Deprecated (will be removed in 3.2.0)
+- The hidden flat / pre-grouping CLI aliases — `crabcc {sym, refs,
+  callers, outline, files, grep, fuzzy, prefix, refresh, watch,
+  fts-rebuild, track, install-claude, upgrade, completions, openapi,
+  compress, agent-run, agent-ls, agent-guard, agent-kills,
+  ollama-stack, model-info, debug-service-discovery}` — were
+  superseded by the `crabcc <group> <op>` form in #177 (e.g.
+  `crabcc lookup sym`, `crabcc setup install-claude`, `crabcc agent
+  run`, `crabcc info services`). They continue to work in 3.1.0
+  with a deprecation warning; a follow-up PR will remove the
+  variants + dispatchers entirely.
+
+### Dependencies
+- `cargo update` — 44 transitive patch/minor bumps:
+  - `tokio` 1.52.1 → 1.52.3
+  - `tonic` + `tonic-prost` 0.14.5 → 0.14.6
+  - `tower-http` 0.6.8 → 0.6.10
+  - `pin-project` 1.1.11 → 1.1.13
+  - `openssl` 0.10.78 → 0.10.79 (security)
+  - `serde_with` 3.19.0 → 3.20.0
+  - `winnow` 1.0.2 → 1.0.3, `siphasher` 1.0.2 → 1.0.3
+  - `tree-sitter-{dart,scala,swift,kotlin}` grammars
+  - `wasm-bindgen` 0.2.120 → 0.2.121
+  - Removed transitives: `plain v0.2.3`, `redox_syscall v0.7.4`
+
+No workspace dependency pins (Cargo.toml `[workspace.dependencies]`)
+changed; major bumps (`clap 5`, `ast-grep 0.43`, `fastembed 6`,
+`moka 0.13`, Edition 2024) deliberately deferred.
+
 ## [3.0.0-rc.3] — 2026-05-04
 
 Desktop theme + layout alignment release. The GPUI binary now

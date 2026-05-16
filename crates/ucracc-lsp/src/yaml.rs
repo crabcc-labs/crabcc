@@ -19,13 +19,27 @@ pub fn extract(file: &str, src: &str) -> Result<(Vec<Symbol>, Vec<Edge>)> {
         .parse(src, None)
         .ok_or_else(|| anyhow!("yaml parse failed for {file}"))?;
     let mut symbols = Vec::new();
-    walk(tree.root_node(), src.as_bytes(), file, None, 0, &mut symbols);
+    walk(
+        tree.root_node(),
+        src.as_bytes(),
+        file,
+        None,
+        0,
+        &mut symbols,
+    );
     Ok((symbols, Vec::new()))
 }
 
 const MAX_DEPTH: u32 = 2;
 
-fn walk(node: Node, src: &[u8], file: &str, parent: Option<&str>, depth: u32, out: &mut Vec<Symbol>) {
+fn walk(
+    node: Node,
+    src: &[u8],
+    file: &str,
+    parent: Option<&str>,
+    depth: u32,
+    out: &mut Vec<Symbol>,
+) {
     if node.kind() == "block_mapping_pair" || node.kind() == "flow_pair" {
         let key_node = node.child_by_field_name("key");
         let key_text = key_node

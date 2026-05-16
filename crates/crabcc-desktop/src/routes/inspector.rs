@@ -49,9 +49,8 @@ pub struct InspectorRoute {
 impl InspectorRoute {
     pub fn new(state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         cx.observe(&state, |_, _, cx| cx.notify()).detach();
-        let query_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Filter by server / method / tool…")
-        });
+        let query_input = cx
+            .new(|cx| InputState::new(window, cx).placeholder("Filter by server / method / tool…"));
         cx.subscribe_in(&query_input, window, |this, state, event, _, cx| {
             if let InputEvent::Change = event {
                 this.query_lower = state.read(cx).value().to_string().to_lowercase();
@@ -152,9 +151,12 @@ impl Render for InspectorRoute {
                             .text_color(foreground)
                             .child(SharedString::new_static("Inspector")),
                     )
-                    .child(div().text_xs().text_color(muted).child(SharedString::from(
-                        format!("{shown} / {total} events"),
-                    ))),
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(SharedString::from(format!("{shown} / {total} events"))),
+                    ),
             )
             .child(
                 h_flex()
@@ -217,7 +219,9 @@ impl Render for InspectorRoute {
                     "Pick a row on the left to see its params and result.",
                 ))
                 .into_any_element(),
-            Some(e) => detail_pane(&e, foreground, muted, border, panel, danger, cx).into_any_element(),
+            Some(e) => {
+                detail_pane(&e, foreground, muted, border, panel, danger, cx).into_any_element()
+            }
         };
 
         v_flex()
@@ -308,13 +312,7 @@ fn row(
         .border_color(border)
         .when(selected, |d| d.bg(accent.opacity(0.10)))
         .cursor_pointer()
-        .child(
-            div()
-                .w(px(74.))
-                .text_xs()
-                .text_color(muted)
-                .child(ts),
-        )
+        .child(div().w(px(74.)).text_xs().text_color(muted).child(ts))
         .child(
             div()
                 .w(px(110.))
@@ -337,13 +335,7 @@ fn row(
                 .text_color(foreground)
                 .child(method_label),
         )
-        .child(
-            div()
-                .w(px(64.))
-                .text_xs()
-                .text_color(muted)
-                .child(latency),
-        )
+        .child(div().w(px(64.)).text_xs().text_color(muted).child(latency))
         .child(
             div()
                 .w(px(20.))
@@ -377,27 +369,25 @@ fn detail_pane(
                 .child(SharedString::from(format!("#{} · {}", id, e.method))),
         )
         .child(
-            h_flex()
-                .gap_2()
-                .child(
-                    div()
-                        .px_2()
-                        .py(px(2.))
-                        .text_xs()
-                        .text_color(muted)
-                        .border_1()
-                        .border_color(muted)
-                        .rounded_md()
-                        .cursor_pointer()
-                        .child(SharedString::new_static("close"))
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _window, cx| {
-                                this.clear_selection();
-                                cx.notify();
-                            }),
-                        ),
-                ),
+            h_flex().gap_2().child(
+                div()
+                    .px_2()
+                    .py(px(2.))
+                    .text_xs()
+                    .text_color(muted)
+                    .border_1()
+                    .border_color(muted)
+                    .rounded_md()
+                    .cursor_pointer()
+                    .child(SharedString::new_static("close"))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _window, cx| {
+                            this.clear_selection();
+                            cx.notify();
+                        }),
+                    ),
+            ),
         );
 
     let params_block = json_block(

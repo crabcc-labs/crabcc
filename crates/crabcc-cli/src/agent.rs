@@ -377,8 +377,8 @@ impl AgentRuntime for SubprocessRuntime {
             // Best-effort bin-dir setup. Failures (read-only FS, broken
             // symlink) just degrade us to the parent PATH; the agent
             // still runs, just without our preferred binary order.
-            let _ = crabcc_viz::runtime::ensure_bin_dir(home_path);
-            cmd.env("PATH", crabcc_viz::runtime::agent_path(home_path));
+            let _ = crabcc_core::agent_runtime::ensure_bin_dir(home_path);
+            cmd.env("PATH", crabcc_core::agent_runtime::agent_path(home_path));
         }
 
         if req.dry_run {

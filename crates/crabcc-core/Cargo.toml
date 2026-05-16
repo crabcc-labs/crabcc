@@ -54,6 +54,7 @@ tree-sitter-go = { workspace = true }
 tree-sitter-python = { workspace = true }
 tree-sitter-swift = { workspace = true }
 tree-sitter-bash = { workspace = true }
+tree-sitter-java = { workspace = true }
 ast-grep-core = { workspace = true }
 ast-grep-language = { workspace = true }
 sha2 = { workspace = true }

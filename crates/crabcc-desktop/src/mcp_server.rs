@@ -177,9 +177,7 @@ fn handle_connection(
 
     loop {
         let mut line = String::new();
-        let n = reader
-            .read_line(&mut line)
-            .context("read JSON-RPC line")?;
+        let n = reader.read_line(&mut line).context("read JSON-RPC line")?;
         if n == 0 {
             return Ok(()); // EOF — peer closed the connection.
         }
@@ -191,12 +189,7 @@ fn handle_connection(
         let req: JsonRpcMessage = match serde_json::from_str(line) {
             Ok(r) => r,
             Err(e) => {
-                send_error(
-                    &mut writer,
-                    None,
-                    -32700,
-                    &format!("parse error: {e}"),
-                )?;
+                send_error(&mut writer, None, -32700, &format!("parse error: {e}"))?;
                 continue;
             }
         };
@@ -262,12 +255,7 @@ fn handle_connection(
                 let params = match req.params {
                     Some(p) => p,
                     None => {
-                        send_error(
-                            &mut writer,
-                            req.id,
-                            -32602,
-                            "missing params for tools/call",
-                        )?;
+                        send_error(&mut writer, req.id, -32602, "missing params for tools/call")?;
                         continue;
                     }
                 };
@@ -317,21 +305,19 @@ fn handle_connection(
                     )?;
                     continue;
                 }
-                let params: SamplingRequest = match req
-                    .params
-                    .and_then(|p| serde_json::from_value(p).ok())
-                {
-                    Some(p) => p,
-                    None => {
-                        send_error(
-                            &mut writer,
-                            req.id,
-                            -32602,
-                            "invalid params for sampling/createMessage",
-                        )?;
-                        continue;
-                    }
-                };
+                let params: SamplingRequest =
+                    match req.params.and_then(|p| serde_json::from_value(p).ok()) {
+                        Some(p) => p,
+                        None => {
+                            send_error(
+                                &mut writer,
+                                req.id,
+                                -32602,
+                                "invalid params for sampling/createMessage",
+                            )?;
+                            continue;
+                        }
+                    };
                 match handler.handle(params) {
                     Ok(resp) => {
                         let val = serde_json::to_value(&resp).unwrap_or(Value::Null);
@@ -363,12 +349,7 @@ fn send_result(writer: &mut UnixStream, id: Option<Value>, result: Value) -> Res
     write_msg(writer, &msg)
 }
 
-fn send_error(
-    writer: &mut UnixStream,
-    id: Option<Value>,
-    code: i32,
-    message: &str,
-) -> Result<()> {
+fn send_error(writer: &mut UnixStream, id: Option<Value>, code: i32, message: &str) -> Result<()> {
     let msg = serde_json::json!({
         "jsonrpc": "2.0",
         "id": id,
@@ -383,9 +364,7 @@ fn send_error(
 fn write_msg(writer: &mut UnixStream, msg: &Value) -> Result<()> {
     let mut s = serde_json::to_string(msg).context("serialize message")?;
     s.push('\n');
-    writer
-        .write_all(s.as_bytes())
-        .context("write to socket")?;
+    writer.write_all(s.as_bytes()).context("write to socket")?;
     Ok(())
 }
 

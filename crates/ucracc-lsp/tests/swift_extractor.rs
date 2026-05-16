@@ -13,12 +13,9 @@ use crabcc_core::SymbolKind;
 
 #[test]
 fn swift_class_func_call_edge_extraction() {
-    let (syms, edges) = crabcc_core::extract::extract_file_with_edges(
-        "ucracc.swift",
-        fixtures::SWIFT_SRC,
-        "swift",
-    )
-    .expect("swift extraction must succeed");
+    let (syms, edges) =
+        crabcc_core::extract::extract_file_with_edges("ucracc.swift", fixtures::SWIFT_SRC, "swift")
+            .expect("swift extraction must succeed");
 
     // We must capture: the public class, its init, its greet method, the
     // free `sayHello` function.
@@ -47,7 +44,10 @@ fn swift_class_func_call_edge_extraction() {
     let has_call = edges
         .iter()
         .any(|e| e.dst_name == "sayHello" && e.kind == "call");
-    assert!(has_call, "missing call edge greet -> sayHello; got {edges:?}");
+    assert!(
+        has_call,
+        "missing call edge greet -> sayHello; got {edges:?}"
+    );
 
     // Lines must be 1-based and ordered.
     assert!(class.line_start > 0);

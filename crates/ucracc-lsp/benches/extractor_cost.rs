@@ -89,12 +89,9 @@ fn bench_swift(c: &mut Criterion) {
 fn bench_bash(c: &mut Criterion) {
     c.bench_function("parse_and_walk_bash", |b| {
         b.iter(|| {
-            let (s, e) = crabcc_core::extract::extract_file_with_edges(
-                "u.sh",
-                black_box(BASH_SRC),
-                "bash",
-            )
-            .unwrap();
+            let (s, e) =
+                crabcc_core::extract::extract_file_with_edges("u.sh", black_box(BASH_SRC), "bash")
+                    .unwrap();
             black_box((s, e));
         })
     });
@@ -159,7 +156,7 @@ fn bench_incremental_reparse(c: &mut Criterion) {
     // Set up an edited prior tree (one byte appended to one identifier).
     let mut warm_parser = tree_sitter::Parser::new();
     warm_parser.set_language(&ts_lang).unwrap();
-    let original_tree = warm_parser.parse(&src, None).unwrap();
+    let _original_tree = warm_parser.parse(&src, None).unwrap();
     let needle = "handler_42";
     let pos = src.find(needle).unwrap();
     let mut edited_src = src.clone();

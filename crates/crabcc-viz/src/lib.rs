@@ -24,11 +24,21 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+mod banner;
+mod bootstrap;
+mod graph;
+mod memory_view;
+mod query;
 pub mod runtime;
 
 use anyhow::{Context, Result};
-use crabcc_core::graph::{CallGraph, GraphHit};
+use banner::print_banner;
+use bootstrap::{bootstrap_snapshot, BootstrapSnapshot};
+use crabcc_core::graph::CallGraph;
 use crabcc_core::store::Store;
+use graph::{graph_snapshot, EdgeOut, NodeOut};
+use memory_view::memory_recent;
+use query::url_decode;
 use serde::Serialize;
 use tiny_http::{Header, Method, Request, Response, Server};
 
@@ -121,189 +131,6 @@ pub fn serve(cfg: Config) -> Result<()> {
         }
     }
     serve_with_listener(listener, &cfg.root)
-}
-
-/// Multi-line startup banner showing version, bound URL, repo root, index
-/// presence, and a few quick links. Goes to stderr so a piping invocation
-/// like `crabcc serve --no-open 2>/dev/null` is silent. ANSI colors honor
-/// `NO_COLOR` (https://no-color.org) and are stripped if stderr isn't a tty.
-fn print_banner(cfg: &Config, addr: SocketAddr, init: Option<&runtime::InitOutcome>) {
-    let c = Style::for_stderr();
-    let url = format!("http://{}:{}", addr.ip(), addr.port());
-    let index_db = cfg.root.join(".crabcc").join("index.db");
-    let graph_json = cfg.root.join(".crabcc").join("graph.json");
-
-    let index_state = describe_path(&index_db);
-    let graph_state = describe_path(&graph_json);
-
-    let mut routes = String::new();
-    routes.push_str(&format!(
-        "  {} {}/                         (interactive call-graph viewer)\n",
-        c.dim("GET"),
-        url
-    ));
-    routes.push_str(&format!(
-        "  {} {}/live                     (live monitoring dashboard)\n",
-        c.dim("GET"),
-        url
-    ));
-    routes.push_str(&format!(
-        "  {} {}/api/graph?root=&dir=&depth=\n",
-        c.dim("GET"),
-        url
-    ));
-    routes.push_str(&format!(
-        "  {} {}/api/activity?since=TS&limit=N\n",
-        c.dim("GET"),
-        url
-    ));
-    routes.push_str(&format!(
-        "  {} {}/api/memory/recent?since=TS&limit=N\n",
-        c.dim("GET"),
-        url
-    ));
-    routes.push_str(&format!(
-        "  {} {}/api/memory/graph?limit=N\n",
-        c.dim("GET"),
-        url
-    ));
-    routes.push_str(&format!(
-        "  {} {}/api/memory/get?id=ID\n",
-        c.dim("GET"),
-        url
-    ));
-    routes.push_str(&format!("  {} {}/api/memory/ingest\n", c.dim("POST"), url));
-    routes.push_str(&format!("  {} {}/api/bootstrap\n", c.dim("GET"), url));
-    routes.push_str(&format!("  {} {}/api/health\n", c.dim("GET"), url));
-
-    eprintln!();
-    eprintln!(
-        "{}  {}",
-        c.brand("crabcc viz"),
-        c.dim(&format!("v{}", env!("CARGO_PKG_VERSION")))
-    );
-    eprintln!("{}", c.dim("─".repeat(54).as_str()));
-    eprintln!("  {}    {}", c.label("listen"), c.bold(&url));
-    eprintln!("  {}      {}", c.label("root"), cfg.root.display());
-    eprintln!("  {}     {}", c.label("index"), index_state);
-    eprintln!("  {}     {}", c.label("graph"), graph_state);
-    eprintln!("  {}      {}", c.label("bind"), describe_bind(cfg.bind, &c));
-    eprintln!(
-        "  {}   {}",
-        c.label("threads"),
-        c.dim("tiny_http default pool")
-    );
-    if let Some(o) = init {
-        let bits = format!(
-            "{} files, {} symbols, {} graph edges, {} drawers",
-            o.files, o.symbols, o.graph_edges, o.drawers
-        );
-        let action = if o.created_index {
-            "indexed"
-        } else {
-            "refreshed"
-        };
-        eprintln!("  {}      {} ({bits})", c.label("init"), action);
-    } else if !cfg.init {
-        eprintln!(
-            "  {}      {}",
-            c.label("init"),
-            c.dim("skipped (--no-init)")
-        );
-    }
-    eprintln!();
-    eprintln!("{}", c.dim("routes"));
-    eprint!("{routes}");
-    eprintln!();
-    eprintln!("  {} {}", c.dim("→"), c.dim("Ctrl-C to stop"));
-    eprintln!();
-}
-
-fn describe_path(p: &Path) -> String {
-    match std::fs::metadata(p) {
-        Ok(meta) => {
-            let size = meta.len();
-            let kb = size as f64 / 1024.0;
-            let suffix = if kb >= 1024.0 {
-                format!("{:.1} MB", kb / 1024.0)
-            } else if kb >= 1.0 {
-                format!("{kb:.1} KB")
-            } else {
-                format!("{size} B")
-            };
-            format!("{} ({})", p.display(), suffix)
-        }
-        Err(_) => format!(
-            "{} (missing — run `crabcc index` and `crabcc graph build`)",
-            p.display()
-        ),
-    }
-}
-
-fn describe_bind(ip: IpAddr, c: &Style) -> String {
-    if ip.is_loopback() {
-        format!("{} {}", ip, c.dim("(loopback only)"))
-    } else {
-        format!(
-            "{} {}",
-            ip,
-            c.warn("(non-loopback — viewer is unauthenticated)")
-        )
-    }
-}
-
-/// Tiny ANSI helper that disables colors when `NO_COLOR` is set, when
-/// `CRABCC_NO_COLOR` is set (project-specific override), or when stderr
-/// is not a tty (e.g. redirected to a logfile). We don't pull in `nu-ansi`
-/// or `colored` for this — half a dozen escape codes don't justify a dep.
-struct Style {
-    on: bool,
-}
-
-impl Style {
-    fn for_stderr() -> Self {
-        let no_color =
-            std::env::var_os("NO_COLOR").is_some() || std::env::var_os("CRABCC_NO_COLOR").is_some();
-        #[cfg(unix)]
-        let is_tty = libc_isatty(2);
-        #[cfg(not(unix))]
-        let is_tty = true;
-        Self {
-            on: !no_color && is_tty,
-        }
-    }
-    fn brand(&self, s: &str) -> String {
-        self.wrap(s, "\x1b[1;38;5;208m")
-    }
-    fn label(&self, s: &str) -> String {
-        self.wrap(s, "\x1b[38;5;244m")
-    }
-    fn dim(&self, s: &str) -> String {
-        self.wrap(s, "\x1b[2m")
-    }
-    fn bold(&self, s: &str) -> String {
-        self.wrap(s, "\x1b[1m")
-    }
-    fn warn(&self, s: &str) -> String {
-        self.wrap(s, "\x1b[1;33m")
-    }
-    fn wrap(&self, s: &str, prefix: &str) -> String {
-        if self.on {
-            format!("{prefix}{s}\x1b[0m")
-        } else {
-            s.to_string()
-        }
-    }
-}
-
-#[cfg(unix)]
-fn libc_isatty(fd: i32) -> bool {
-    // SAFETY: `isatty` only inspects a file-descriptor table entry; no
-    // pointer dereference, no aliasing concerns.
-    unsafe extern "C" {
-        fn isatty(fd: i32) -> i32;
-    }
-    unsafe { isatty(fd) == 1 }
 }
 
 /// Reserve the requested port (or an ephemeral one when `port == 0`)
@@ -481,188 +308,6 @@ fn handle(request: Request, root: &Path) -> Result<()> {
         },
         _ => respond_status(request, 404, "not found"),
     }
-}
-
-#[derive(Serialize)]
-struct GraphSnapshot {
-    root: String,
-    dir: String,
-    depth: usize,
-    truncated: bool,
-    nodes: Vec<NodeOut>,
-    edges: Vec<EdgeOut>,
-}
-
-#[derive(Serialize)]
-struct NodeOut {
-    id: String,
-    depth: usize,
-    /// Symbol kind when the node id resolves to an indexed symbol —
-    /// `function` / `struct` / `enum` / `trait` / `const` / `type` /
-    /// `macro`. `None` for nodes whose id couldn't be matched (call
-    /// targets the indexer didn't catch — extern crate fns, std, etc).
-    /// Added in #301 so the desktop graph drawer can render a kind
-    /// badge without a follow-up RPC.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    kind: Option<String>,
-    /// Repo-relative file path of the symbol's defining site.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    file: Option<String>,
-    /// 1-based line number of the symbol's defining site.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    line: Option<u32>,
-    /// Single-line signature (e.g. `pub fn open(path: &Path) -> Result<Store>`).
-    /// `None` when the indexer didn't capture one (rare for fns,
-    /// common for type aliases / consts depending on language plugin).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    signature: Option<String>,
-}
-
-impl NodeOut {
-    /// Build a `NodeOut` and try to enrich it from the symbol index.
-    /// Looks up `id` via [`crabcc_core::query::find_symbol`] and takes
-    /// the first match (callers / call targets are referenced by name,
-    /// so multiple definitions with the same name simply pick one
-    /// deterministic choice — same trade-off `crabcc sym` makes).
-    fn from_id_with_store(id: String, depth: usize, store: &Store) -> Self {
-        let metadata = crabcc_core::query::find_symbol(store, &id)
-            .ok()
-            .and_then(|hits| hits.into_iter().next());
-        match metadata {
-            Some(sym) => Self {
-                id,
-                depth,
-                kind: Some(symbol_kind_str(&sym.kind).to_string()),
-                file: Some(sym.file),
-                line: Some(sym.line_start),
-                signature: sym.signature,
-            },
-            None => Self {
-                id,
-                depth,
-                kind: None,
-                file: None,
-                line: None,
-                signature: None,
-            },
-        }
-    }
-}
-
-/// Map [`crabcc_core::types::SymbolKind`] to the wire string used in
-/// the seed-graph response. Mirrors the enum's `#[serde(rename_all =
-/// "snake_case")]` Serialize impl exactly so the wire shape is
-/// identical to whatever `crabcc_core` emits elsewhere. Keep in
-/// lockstep with the openapi spec's `GraphNode.kind` enum.
-fn symbol_kind_str(k: &crabcc_core::types::SymbolKind) -> &'static str {
-    use crabcc_core::types::SymbolKind as K;
-    match k {
-        K::Function => "function",
-        K::Method => "method",
-        K::Class => "class",
-        K::Struct => "struct",
-        K::Enum => "enum",
-        K::Trait => "trait",
-        K::Interface => "interface",
-        K::Const => "const",
-        K::Var => "var",
-        K::Type => "type",
-        K::Macro => "macro",
-    }
-}
-
-#[derive(Serialize)]
-struct EdgeOut {
-    src: String,
-    dst: String,
-}
-
-/// Build a bounded BFS snapshot of the call graph for the given root symbol.
-///
-/// The raw `CallGraph::incoming` / `CallGraph::outgoing` return only the
-/// frontier symbol names + their depths; the viewer additionally needs the
-/// edges *between* those nodes so the canvas layout has something to render.
-/// We materialize the induced subgraph here by walking each node's outgoing
-/// (or incoming) adjacency and keeping only edges where both endpoints are
-/// in the BFS frontier.
-fn graph_snapshot(root: &Path, query: &str) -> Result<GraphSnapshot> {
-    let q = parse_query(query)?;
-    let depth = q.depth.min(MAX_DEPTH);
-
-    // Open the SQLite store and the cached graph. We don't try to refresh
-    // the index here — `crabcc serve` is a viewer, not an indexer; users
-    // run `crabcc index` / `crabcc refresh` separately. (Phase 2 will push
-    // a "stale index" notice over WebSocket when the on-disk db mtime moves.)
-    let db = root.join(".crabcc").join("index.db");
-    let store = Store::open(&db).with_context(|| format!("opening store at {}", db.display()))?;
-    let graph_path = root.join(".crabcc").join("graph.json");
-    let graph = if graph_path.exists() {
-        CallGraph::load(&graph_path)?
-    } else {
-        CallGraph::build(&store, root)?
-    };
-
-    let dir = q.dir.as_str();
-    let frontier: Vec<GraphHit> = match dir {
-        "callees" => graph.outgoing(&q.root, depth),
-        _ => graph.incoming(&q.root, depth),
-    };
-
-    // The frontier from `incoming` / `outgoing` excludes the root itself.
-    // Add it back at depth 0 so the canvas has a recognizable focus point.
-    // Each node is enriched with kind / file / line / signature via
-    // `NodeOut::from_id_with_store` (#301) so the desktop drawer can
-    // render the full symbol header without a follow-up RPC.
-    let mut nodes: Vec<NodeOut> =
-        std::iter::once(NodeOut::from_id_with_store(q.root.clone(), 0, &store))
-            .chain(
-                frontier
-                    .into_iter()
-                    .map(|h| NodeOut::from_id_with_store(h.name, h.depth, &store)),
-            )
-            .collect();
-    let truncated = nodes.len() > MAX_NODES;
-    if truncated {
-        nodes.truncate(MAX_NODES);
-    }
-
-    let in_set: std::collections::HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
-    let mut edges: Vec<EdgeOut> = Vec::with_capacity(nodes.len() * 2);
-    for n in &nodes {
-        // For a `callees` view we draw edges in the call direction
-        // (root → callee), and for `callers` we draw caller → root. The
-        // direction of the arrow visualizes "who calls whom" in both modes.
-        if dir == "callees" {
-            if let Some(neighbors) = graph.callees.get(&n.id) {
-                for nb in neighbors {
-                    if in_set.contains(nb.as_str()) {
-                        edges.push(EdgeOut {
-                            src: n.id.clone(),
-                            dst: nb.clone(),
-                        });
-                    }
-                }
-            }
-        } else if let Some(neighbors) = graph.callers.get(&n.id) {
-            for nb in neighbors {
-                if in_set.contains(nb.as_str()) {
-                    edges.push(EdgeOut {
-                        src: nb.clone(),
-                        dst: n.id.clone(),
-                    });
-                }
-            }
-        }
-    }
-
-    Ok(GraphSnapshot {
-        root: q.root,
-        dir: q.dir,
-        depth,
-        truncated,
-        nodes,
-        edges,
-    })
 }
 
 /// One-shot "what has the agent been doing?" snapshot for the live overlay.
@@ -1019,228 +664,6 @@ fn parse_activity_query(raw: &str) -> Result<ActivityQuery> {
     })
 }
 
-// ── /api/bootstrap ──────────────────────────────────────────────────────
-//
-// One-shot "what does the live dashboard need to know on first paint?"
-// snapshot. Combines repo metadata with index sidecar stats so the
-// header section can render before we wait on /api/activity. Fast: a
-// cold call against an indexed repo on this machine measures sub-50ms.
-
-#[derive(Serialize)]
-struct BootstrapSnapshot {
-    repo: String,
-    root: String,
-    version: &'static str,
-    index: IndexState,
-    graph: GraphState,
-    memory: MemoryState,
-}
-
-#[derive(Serialize)]
-struct IndexState {
-    present: bool,
-    files: usize,
-    symbols: usize,
-    edges: usize,
-    db_bytes: u64,
-    db_mtime: u64,
-}
-
-#[derive(Serialize)]
-struct GraphState {
-    present: bool,
-    edges: usize,
-    callers: usize,
-    callees: usize,
-}
-
-#[derive(Serialize)]
-struct MemoryState {
-    present: bool,
-    drawers: usize,
-}
-
-fn bootstrap_snapshot(root: &Path) -> Result<BootstrapSnapshot> {
-    let repo = root
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("?")
-        .to_string();
-    let db_path = root.join(".crabcc").join("index.db");
-    let graph_path = root.join(".crabcc").join("graph.json");
-    // Memory db moved to $CRABCC_HOME/repos/<slug>-<hash6>/memory.db
-    // (#479) so worktrees of one repo share a drawer store and
-    // `git clean -fdx` doesn't blow it away. resolve_db_path is the
-    // single source of truth for the layout.
-    let memory_path = crabcc_memory::resolve_db_path(root)
-        .unwrap_or_else(|_| root.join(".crabcc").join("memory.db"));
-
-    let mut index = IndexState {
-        present: db_path.exists(),
-        files: 0,
-        symbols: 0,
-        edges: 0,
-        db_bytes: 0,
-        db_mtime: 0,
-    };
-    if let Ok(meta) = std::fs::metadata(&db_path) {
-        index.db_bytes = meta.len();
-        index.db_mtime = meta
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-    }
-    if index.present {
-        // Open in read-only-ish fashion via Store — costs about a stat
-        // plus three count(*) round-trips, all cheap on an indexed db.
-        if let Ok(store) = crabcc_core::store::Store::open(&db_path) {
-            index.files = store.list_files().map(|v| v.len()).unwrap_or(0);
-            index.symbols = store.iter_all_symbols().map(|v| v.len()).unwrap_or(0);
-            index.edges = store.edge_count().map(|n| n as usize).unwrap_or(0);
-        }
-    }
-
-    let mut graph = GraphState {
-        present: graph_path.exists(),
-        edges: 0,
-        callers: 0,
-        callees: 0,
-    };
-    if graph.present {
-        if let Ok(g) = crabcc_core::graph::CallGraph::load(&graph_path) {
-            graph.edges = g.edge_count;
-            graph.callers = g.callers.len();
-            graph.callees = g.callees.len();
-        }
-    }
-
-    let mut memory = MemoryState {
-        present: memory_path.exists(),
-        drawers: 0,
-    };
-    if memory.present {
-        // Palace::open does its own bootstrap; we don't want a fresh
-        // schema-create as a side effect of a viewer GET. Drop into the
-        // raw rusqlite path used by the backend instead.
-        if let Ok(conn) = rusqlite::Connection::open_with_flags(
-            &memory_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        ) {
-            if let Ok(n) =
-                conn.query_row("select count(*) from drawers", [], |r| r.get::<_, i64>(0))
-            {
-                memory.drawers = n as usize;
-            }
-        }
-    }
-
-    Ok(BootstrapSnapshot {
-        repo,
-        root: root.display().to_string(),
-        version: env!("CARGO_PKG_VERSION"),
-        index,
-        graph,
-        memory,
-    })
-}
-
-// ── /api/memory/recent ──────────────────────────────────────────────────
-//
-// Returns the most-recently-created memory drawers for the live feed's
-// "new entries" column. Uses raw SQL against the memory db (read-only
-// flags) rather than `Palace::list_drawers` because we don't want the
-// schema-bootstrap side effects of `Palace::open` on every poll.
-
-#[derive(Serialize)]
-struct MemoryRecentSnapshot {
-    present: bool,
-    cursor: i64,
-    drawers: Vec<DrawerOut>,
-}
-
-#[derive(Serialize)]
-struct DrawerOut {
-    id: i64,
-    wing: String,
-    room: Option<String>,
-    source_id: String,
-    body_preview: String,
-    created_at: i64,
-}
-
-fn memory_recent(root: &Path, query: &str) -> Result<MemoryRecentSnapshot> {
-    let mut since: i64 = 0;
-    let mut limit: usize = 20;
-    for pair in query.split('&').filter(|s| !s.is_empty()) {
-        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
-        let v = url_decode(v);
-        match k {
-            "since" => since = v.parse().unwrap_or(0),
-            "limit" => limit = v.parse::<usize>().unwrap_or(20).clamp(1, 200),
-            _ => {}
-        }
-    }
-    // Same path resolution as `bootstrap_snapshot` — see #479. The
-    // legacy `.crabcc/memory.db` is also checked as a fallback for
-    // installs that haven't run the migrating `Palace::open` yet.
-    let memory_path = crabcc_memory::resolve_db_path(root)
-        .unwrap_or_else(|_| root.join(".crabcc").join("memory.db"));
-    if !memory_path.exists() {
-        return Ok(MemoryRecentSnapshot {
-            present: false,
-            cursor: since,
-            drawers: vec![],
-        });
-    }
-    let conn = rusqlite::Connection::open_with_flags(
-        &memory_path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )?;
-    // The drawer body can be huge; preview only the first ~240 chars
-    // for the live feed. Clients that want the full body call
-    // `crabcc memory get <id>` (a separate, more expensive path).
-    // The drawers schema uses FKs to `wings` + `rooms` (not flat columns),
-    // so we LEFT JOIN to surface human-readable names. body_enc != 0
-    // means FSST-compressed; we skip those rows in the preview because
-    // decoding requires the codec from `~/.crabcc/fsst.symbols` and we
-    // don't want the live feed to depend on optional sidecars. The
-    // count line above already includes them, so the preview just
-    // shows fewer rows than `count` when compression is on — that's
-    // fine for a live dashboard.
-    let mut stmt = conn.prepare(
-        "SELECT d.id, w.name, r.name, d.source_id, substr(d.body, 1, 240), d.created_at \
-         FROM drawers d \
-         LEFT JOIN wings w ON w.id = d.wing_id \
-         LEFT JOIN rooms r ON r.id = d.room_id \
-         WHERE d.created_at > ?1 AND d.body_enc = 0 \
-         ORDER BY d.created_at DESC \
-         LIMIT ?2",
-    )?;
-    let rows = stmt.query_map(rusqlite::params![since, limit as i64], |r| {
-        Ok(DrawerOut {
-            id: r.get(0)?,
-            wing: r.get::<_, Option<String>>(1)?.unwrap_or_else(|| "?".into()),
-            room: r.get::<_, Option<String>>(2)?,
-            source_id: r.get(3)?,
-            body_preview: r.get(4)?,
-            created_at: r.get(5)?,
-        })
-    })?;
-    let mut drawers: Vec<DrawerOut> = rows.filter_map(|r| r.ok()).collect();
-    let cursor = drawers.iter().map(|d| d.created_at).max().unwrap_or(since);
-    // Reverse so the JSON is oldest-first within the page; the
-    // frontend prepends each event to its list which gives the user
-    // the natural "newest at top" ordering after concatenation.
-    drawers.reverse();
-    Ok(MemoryRecentSnapshot {
-        present: true,
-        cursor,
-        drawers,
-    })
-}
-
 // ── /api/seed-graph ─────────────────────────────────────────────────────
 //
 // "What should the live relation graph show before any agent has run?"
@@ -1286,74 +709,106 @@ fn seed_graph(root: &Path, query: &str) -> Result<SeedSnapshot> {
     let db = root.join(".crabcc").join("index.db");
     let store = Store::open(&db).with_context(|| format!("opening store at {}", db.display()))?;
 
-    // Combined-degree ranking: a node's "importance" for the seed view
-    // is the sum of its outgoing + incoming edge counts. This biases
-    // toward central / heavily-traversed symbols, which are usually
-    // the more interesting starting points than leaf-of-the-tree fns.
-    let mut degree: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    // v4: graph keys are symbol_ids (i64). Build degree by id, then
+    // resolve names for the sort so the seed list is deterministic.
+    let mut degree: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
     for (k, v) in &graph.callees {
-        *degree.entry(k.as_str()).or_insert(0) += v.len();
+        *degree.entry(*k).or_insert(0) += v.len();
         for nb in v {
-            *degree.entry(nb.as_str()).or_insert(0) += 1;
+            *degree.entry(*nb).or_insert(0) += 1;
         }
     }
-    let mut ranked: Vec<(&str, usize)> = degree.into_iter().collect();
-    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
+    let mut ranked: Vec<(i64, usize, String)> = Vec::new();
+    for (id, deg) in &degree {
+        if let Ok(Some(name)) = store.symbol_name_by_id(*id) {
+            ranked.push((*id, *deg, name));
+        }
+    }
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.2.cmp(&b.2)));
     let seeds: Vec<String> = ranked
         .iter()
         .take(limit)
-        .map(|(s, _)| s.to_string())
+        .map(|(_, _, n)| n.clone())
+        .collect();
+    let seed_ids: std::collections::HashSet<i64> = ranked
+        .iter()
+        .take(limit)
+        .map(|(id, _, _)| *id)
         .collect();
 
     // Materialize the induced subgraph: for each seed, pull its direct
     // callers + callees and keep edges where both endpoints are in
     // the seed set OR are an immediate neighbor of one.
-    let mut node_set: std::collections::HashSet<String> = seeds.iter().cloned().collect();
-    for s in &seeds {
-        if let Some(callees) = graph.callees.get(s) {
+    let mut node_id_set: std::collections::HashSet<i64> = seed_ids.clone();
+    for seed_id in &seed_ids {
+        if let Some(callees) = graph.callees.get(seed_id) {
             for c in callees {
-                node_set.insert(c.clone());
+                node_id_set.insert(*c);
             }
         }
-        if let Some(callers) = graph.callers.get(s) {
+        if let Some(callers) = graph.callers.get(seed_id) {
             for c in callers {
-                node_set.insert(c.clone());
+                node_id_set.insert(*c);
             }
         }
     }
     // Cap total nodes — really popular seeds blow up the snapshot
     // otherwise (one symbol with 200 callers floods the canvas).
     let cap = MAX_NODES.min(seeds.len() * 12);
-    if node_set.len() > cap {
+    if node_id_set.len() > cap {
         // Keep the seeds first, then add neighbors deterministically
         // by sorted name until we hit `cap`.
-        let mut out: std::collections::BTreeSet<String> = seeds.iter().cloned().collect();
-        let mut others: Vec<&String> = node_set.iter().filter(|n| !out.contains(*n)).collect();
-        others.sort();
-        for n in others.into_iter().take(cap.saturating_sub(out.len())) {
-            out.insert(n.clone());
+        let mut out: std::collections::BTreeSet<i64> = seed_ids.iter().copied().collect();
+        let mut others: Vec<(i64, String)> = node_id_set
+            .iter()
+            .filter(|n| !out.contains(n))
+            .filter_map(|id| {
+                store
+                    .symbol_name_by_id(*id)
+                    .ok()
+                    .flatten()
+                    .map(|n| (*id, n))
+            })
+            .collect();
+        others.sort_by(|a, b| a.1.cmp(&b.1));
+        for (id, _) in others.into_iter().take(cap.saturating_sub(out.len())) {
+            out.insert(id);
         }
-        node_set = out.into_iter().collect();
+        node_id_set = out.into_iter().collect();
     }
 
-    let nodes: Vec<NodeOut> = node_set
+    // Build id→name map for edge construction + node enrichment.
+    let mut id_to_name: std::collections::HashMap<i64, String> =
+        std::collections::HashMap::new();
+    let nodes: Vec<NodeOut> = node_id_set
         .iter()
         .map(|id| {
+            let name = store
+                .symbol_name_by_id(*id)
+                .ok()
+                .flatten()
+                .unwrap_or_else(|| id.to_string());
+            id_to_name.insert(*id, name);
             // Seeds are "depth 0" (queried-equivalent), neighbors are 1.
-            let depth = if seeds.contains(id) { 0 } else { 1 };
-            NodeOut::from_id_with_store(id.clone(), depth, &store)
+            let depth = if seed_ids.contains(id) { 0 } else { 1 };
+            NodeOut::from_id_with_store(*id, depth, &store)
         })
         .collect();
     let mut edges: Vec<EdgeOut> = Vec::new();
     for (src, dsts) in &graph.callees {
-        if !node_set.contains(src) {
+        if !node_id_set.contains(src) {
             continue;
         }
         for d in dsts {
-            if node_set.contains(d) {
+            if node_id_set.contains(d) {
+                let src_name = id_to_name
+                    .get(src)
+                    .cloned()
+                    .unwrap_or_else(|| src.to_string());
+                let dst_name = id_to_name.get(d).cloned().unwrap_or_else(|| d.to_string());
                 edges.push(EdgeOut {
-                    src: src.clone(),
-                    dst: d.clone(),
+                    src: src_name,
+                    dst: dst_name,
                 });
             }
         }
@@ -1364,87 +819,6 @@ fn seed_graph(root: &Path, query: &str) -> Result<SeedSnapshot> {
         edges,
         seeds,
     })
-}
-
-struct Query {
-    root: String,
-    dir: String,
-    depth: usize,
-}
-
-fn parse_query(raw: &str) -> Result<Query> {
-    let mut root = None;
-    let mut dir = String::from("callers");
-    let mut depth = 2usize;
-    for pair in raw.split('&').filter(|s| !s.is_empty()) {
-        let (k, v) = match pair.split_once('=') {
-            Some(kv) => kv,
-            None => (pair, ""),
-        };
-        let v = url_decode(v);
-        match k {
-            "root" => root = Some(v),
-            "dir" => {
-                if v == "callers" || v == "callees" {
-                    dir = v;
-                } else {
-                    anyhow::bail!("dir must be 'callers' or 'callees'");
-                }
-            }
-            "depth" => {
-                depth = v
-                    .parse::<usize>()
-                    .map_err(|_| anyhow::anyhow!("depth must be a non-negative integer"))?;
-            }
-            _ => {}
-        }
-    }
-    let root = root.ok_or_else(|| anyhow::anyhow!("missing required parameter: root"))?;
-    if root.is_empty() {
-        anyhow::bail!("root must be non-empty");
-    }
-    Ok(Query { root, dir, depth })
-}
-
-/// Minimal percent-decoder for query-string values. We only accept ASCII
-/// printable identifiers + a few separators here, so a hand-rolled decoder
-/// avoids pulling in a urlencoding crate just for this one call site.
-fn url_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            }
-            b'%' if i + 2 < bytes.len() => {
-                let hex = &bytes[i + 1..i + 3];
-                if let (Some(h), Some(l)) = (hex_digit(hex[0]), hex_digit(hex[1])) {
-                    out.push((h << 4) | l);
-                    i += 3;
-                } else {
-                    out.push(b'%');
-                    i += 1;
-                }
-            }
-            b => {
-                out.push(b);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8(out).unwrap_or_default()
-}
-
-fn hex_digit(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
 }
 
 // ── /api/agents — list, log tail, launch ────────────────────────────────
@@ -2266,8 +1640,13 @@ fn random_query(_request: Request, root: &Path) -> Result<()> {
     let graph_path = root.join(".crabcc").join("graph.json");
     let mut symbols: Vec<String> = Vec::new();
     if let Ok(g) = CallGraph::load(&graph_path) {
-        for k in g.callees.keys() {
-            symbols.push(k.clone());
+        let db = root.join(".crabcc").join("index.db");
+        if let Ok(store) = Store::open(&db) {
+            for k in g.callees.keys() {
+                if let Ok(Some(name)) = store.symbol_name_by_id(*k) {
+                    symbols.push(name);
+                }
+            }
         }
     }
     if symbols.is_empty() {
@@ -3307,6 +2686,7 @@ mod agent_meta_tests {
 
 #[cfg(test)]
 mod tests {
+    use super::query::parse_query;
     use super::*;
 
     /// Routes the `serve` HTTP handler matches today. Hand-maintained

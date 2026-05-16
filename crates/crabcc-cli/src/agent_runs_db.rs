@@ -29,7 +29,6 @@
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Default DB location: `~/.crabcc/_internal.db`. Singleton across all
 /// repos for the current user — there is exactly one DB.
@@ -47,9 +46,14 @@ pub fn open(path: &Path) -> Result<Connection> {
         Connection::open(path).with_context(|| format!("open agent runs db {}", path.display()))?;
     // Sequoia-tolerant pragmas: WAL keeps reader (menubar) + writer
     // (agent.rs) from blocking each other.
+    // mmap + cache PRAGMAs mirror crabcc-core::store::Store::open — keeps
+    // index lookups (idx_agent_runs_*, idx_kill_events_*) hitting mapped
+    // memory instead of the OS page cache as the runs table grows.
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;\n\
          PRAGMA synchronous  = NORMAL;\n\
+         PRAGMA mmap_size    = 30000000000;\n\
+         PRAGMA cache_size   = -64000;\n\
          CREATE TABLE IF NOT EXISTS agent_runs (\n\
            id           TEXT PRIMARY KEY,\n\
            started_ts   INTEGER NOT NULL,\n\
@@ -176,10 +180,7 @@ pub fn list_kill_events(conn: &Connection, limit: usize) -> Result<Vec<KillEvent
 }
 
 fn now_ts() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+    crabcc_core::time::unix_now_secs() as i64
 }
 
 /// Insert a new run row at lifecycle start. PID can be filled in later

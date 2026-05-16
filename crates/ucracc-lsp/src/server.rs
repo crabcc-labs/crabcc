@@ -2,7 +2,6 @@ use crate::cache::{Key as CacheKey, LruCache};
 use crate::commands;
 use crate::handlers;
 use crate::lang::{Lang, SUPPORTED_LANGUAGE_IDS};
-use std::sync::Arc as StdArc;
 use anyhow::Result as AResult;
 use crabcc_core::{
     fts::Fts,
@@ -13,6 +12,7 @@ use crabcc_core::{
 };
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc as StdArc;
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::RwLock;
@@ -148,9 +148,12 @@ impl LanguageServer for Backend {
             .root_uri
             .as_ref()
             .and_then(|u| u.to_file_path().ok())
-            .or_else(|| params.workspace_folders.as_ref().and_then(|wf| {
-                wf.first().and_then(|f| f.uri.to_file_path().ok())
-            }))
+            .or_else(|| {
+                params
+                    .workspace_folders
+                    .as_ref()
+                    .and_then(|wf| wf.first().and_then(|f| f.uri.to_file_path().ok()))
+            })
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
         // Record paths; do NOT open Store/Fts yet. They're lazy-opened
@@ -215,11 +218,13 @@ impl LanguageServer for Backend {
 
     async fn did_open(&self, p: DidOpenTextDocumentParams) {
         let mut st = self.state.write().await;
-        st.open_docs.insert(p.text_document.uri.clone(), p.text_document.text.clone());
+        st.open_docs
+            .insert(p.text_document.uri.clone(), p.text_document.text.clone());
         let root = st.repo_root.clone();
         st.cache.invalidate_all();
         drop(st);
-        self.index_uri(&p.text_document.uri, &p.text_document.text, &root).await;
+        self.index_uri(&p.text_document.uri, &p.text_document.text, &root)
+            .await;
     }
 
     async fn did_change(&self, p: DidChangeTextDocumentParams) {
@@ -277,7 +282,7 @@ impl LanguageServer for Backend {
         tokio::task::spawn_blocking(move || {
             let st = state.blocking_read();
             st.ensure_store();
-        let store_guard = st.store.lock().unwrap();
+            let store_guard = st.store.lock().unwrap();
             if let Some(store) = store_guard.as_ref() {
                 let _ = index::refresh(&st.repo_root, store);
                 // Graph is now potentially stale.
@@ -429,10 +434,7 @@ impl LanguageServer for Backend {
         Ok(h)
     }
 
-    async fn symbol(
-        &self,
-        p: WorkspaceSymbolParams,
-    ) -> RpcResult<Option<Vec<SymbolInformation>>> {
+    async fn symbol(&self, p: WorkspaceSymbolParams) -> RpcResult<Option<Vec<SymbolInformation>>> {
         let q = p.query;
         if q.is_empty() {
             return Ok(Some(Vec::new()));
@@ -538,31 +540,46 @@ impl LanguageServer for Backend {
         let need_build = st.graph.lock().unwrap().is_none();
         if need_build {
             st.ensure_store();
-        let store_guard = st.store.lock().unwrap();
+            let store_guard = st.store.lock().unwrap();
             if let Some(store) = store_guard.as_ref() {
-                if let Ok(g) = CallGraph::build_from_edges(store) {
+                if let Ok(g) = CallGraph::build(store, &root) {
                     *st.graph.lock().unwrap() = Some(g);
                 }
             }
         }
-        let graph_guard = st.graph.lock().unwrap();
-        let graph = match graph_guard.as_ref() {
-            Some(g) => g,
-            None => return Ok(Some(Vec::new())),
-        };
-        let callees: Vec<String> = graph
-            .callees
-            .get(&name)
-            .map(|s| s.iter().cloned().collect())
-            .unwrap_or_default();
-        drop(graph_guard);
 
+        // v4: graph keys are symbol_ids (i64), not names. Resolve the
+        // requested name to a SymbolId, walk callees as ids, then resolve
+        // each callee id back to a name string for the existing
+        // find_symbol-by-name path below.
         st.ensure_store();
         let store_guard = st.store.lock().unwrap();
         let store = match store_guard.as_ref() {
             Some(s) => s,
             None => return Ok(Some(Vec::new())),
         };
+
+        let name_id = match store.symbol_id_by_name(&name).ok().flatten() {
+            Some(id) => id,
+            None => return Ok(Some(Vec::new())),
+        };
+
+        let graph_guard = st.graph.lock().unwrap();
+        let graph = match graph_guard.as_ref() {
+            Some(g) => g,
+            None => return Ok(Some(Vec::new())),
+        };
+        let callee_ids: Vec<i64> = graph
+            .callees
+            .get(&name_id)
+            .map(|s| s.iter().copied().collect())
+            .unwrap_or_default();
+        drop(graph_guard);
+
+        let callees: Vec<String> = callee_ids
+            .iter()
+            .filter_map(|id| store.symbol_name_by_id(*id).ok().flatten())
+            .collect();
         let mut targets = Vec::new();
         for callee in callees.iter().take(200) {
             if let Ok(syms) = find_symbol(store, callee) {
@@ -617,7 +634,7 @@ impl Backend {
             move || -> AResult<()> {
                 let st = state.blocking_read();
                 st.ensure_store();
-        let store_guard = st.store.lock().unwrap();
+                let store_guard = st.store.lock().unwrap();
                 let store = match store_guard.as_ref() {
                     Some(s) => s,
                     None => return Ok(()),
@@ -660,7 +677,9 @@ impl Backend {
                 // last edit — `parser.parse(src, Some(&old_tree))` lets
                 // tree-sitter skip subtrees outside the InputEdit
                 // ranges that `did_change` already applied to that tree.
-                if let Some(detected) = crabcc_core::extract::detect_lang(std::path::Path::new(&rel)) {
+                if let Some(detected) =
+                    crabcc_core::extract::detect_lang(std::path::Path::new(&rel))
+                {
                     let ts_lang = crabcc_core::extract::language(detected)?;
                     let mut parser = tree_sitter::Parser::new();
                     parser

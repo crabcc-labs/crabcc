@@ -30,14 +30,16 @@ fi
 
 run_rust=0
 run_shell=0
+run_image=0
 while IFS= read -r f; do
     case "$f" in
         *.rs|Cargo.toml|Cargo.lock|crates/*/Cargo.toml) run_rust=1 ;;
         scripts/install-aliases.sh|scripts/aliases-smoke.sh) run_shell=1 ;;
+        *.png|*.PNG|*.jpg|*.JPG|*.jpeg|*.JPEG) run_image=1 ;;
     esac
 done <<<"$changed"
 
-if [ "$run_rust" = "0" ] && [ "$run_shell" = "0" ]; then
+if [ "$run_rust" = "0" ] && [ "$run_shell" = "0" ] && [ "$run_image" = "0" ]; then
     exit 0
 fi
 
@@ -75,6 +77,25 @@ if [ "$run_rust" = "1" ]; then
         # shellcheck disable=SC2086
         git add $fmt_changed
         echo "$fmt_changed" | sed 's/^/    /'
+    fi
+fi
+
+# Lossless image compression. Shrinks staged PNG/JPEG before commit so the
+# repo doesn't accumulate fat assets. Uses oxipng + jpegoptim if installed;
+# warns and continues if missing. Re-stages the now-smaller files.
+if [ "$run_image" = "1" ]; then
+    echo "  → compress-images (staged PNG/JPEG)"
+    if [ -x "$REPO_ROOT/scripts/compress-images.sh" ]; then
+        bash "$REPO_ROOT/scripts/compress-images.sh" --staged
+        # Re-stage anything compress-images shrunk.
+        img_changed="$(git diff --name-only --diff-filter=M | grep -iE '\.(png|jpe?g)$' || true)"
+        if [ -n "$img_changed" ]; then
+            echo "[crabcc-hooks] re-staging compressed images:"
+            echo "$img_changed" | while IFS= read -r f; do git add "$f"; done
+            echo "$img_changed" | sed 's/^/    /'
+        fi
+    else
+        echo "  ⚠ scripts/compress-images.sh not executable — skipping" >&2
     fi
 fi
 
