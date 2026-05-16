@@ -1,0 +1,50 @@
+name: contexthub-promote
+
+# Push AGENTS.md / CLAUDE.md / SKILL.md / commands to the LangSmith
+# Context Hub whenever main changes (staging) or a release tag fires
+# (production). Requires the LANGSMITH_API_KEY repo secret to be set.
+
+on:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  promote:
+    name: promote (${{ github.event_name == 'release' && 'production' || 'staging' }})
+    runs-on: ubuntu-latest
+    env:
+      LANGSMITH_ENDPOINT: https://eu.api.smith.langchain.com
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: validate secret
+        run: |
+          if [ -z "${{ secrets.LANGSMITH_API_KEY }}" ]; then
+            echo "::error::LANGSMITH_API_KEY secret is not set. Add it under Settings > Secrets > Actions."
+            exit 1
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: install langsmith sdk
+        run: pip install "langsmith>=0.7.35"
+
+      - name: push to context hub (staging)
+        if: github.event_name == 'push'
+        env:
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+        run: python scripts/contexthub_push.py --env staging
+
+      - name: push to context hub (production)
+        if: github.event_name == 'release'
+        env:
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+        run: python scripts/contexthub_push.py --env production
