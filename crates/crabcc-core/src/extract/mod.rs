@@ -9,6 +9,8 @@ use std::path::Path;
 use tree_sitter::{Node, Parser};
 
 pub mod resolve_rust;
+pub mod resolve_ts;
+pub mod resolve_python;
 
 // Per-thread parser pool. Constructing a `Parser` and calling
 // `set_language` is ~5–10 µs of pure overhead per call (LR table init).
@@ -387,7 +389,7 @@ fn collect_imports_from_node(node: Node, src: &[u8], lang: &str, out: &mut Vec<I
                 if let Ok(module) = source.utf8_text(src) {
                     let module = module.trim_matches('"').trim_matches('\'').to_string();
                     out.push(ImportSpec {
-                        raw: module, alias: None, from_module: None,
+                        local: module.clone(), qualified: module,
                         /* symbols list — not yet broken out per-spec */ // simplified for now
                     });
                 }
@@ -397,7 +399,7 @@ fn collect_imports_from_node(node: Node, src: &[u8], lang: &str, out: &mut Vec<I
             // Simplified Python import collection
             if let Ok(text) = node.utf8_text(src) {
                 out.push(ImportSpec {
-                    raw: text.to_string(), alias: None, from_module: None,
+                    local: text.to_string(), qualified: text.to_string(),
                     /* symbols list — not yet broken out per-spec */
                 });
             }
@@ -406,7 +408,7 @@ fn collect_imports_from_node(node: Node, src: &[u8], lang: &str, out: &mut Vec<I
             if let Ok(text) = node.utf8_text(src) {
                 let txt = text.replace("import ", "").replace(';', "").trim().to_string();
                 out.push(ImportSpec {
-                    raw: txt, alias: None, from_module: None,
+                    local: txt.clone(), qualified: txt,
                     /* symbols list — not yet broken out per-spec */
                 });
             }

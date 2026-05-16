@@ -32,9 +32,12 @@ pub struct SymbolId(pub i64);
 ///   (`"bar"` for `use bar::Foo`, `"react"` for ES imports).
 #[derive(Debug, Clone)]
 pub struct ImportSpec {
-    pub raw: String,
-    pub alias: Option<String>,
-    pub from_module: Option<String>,
+    /// Locally-visible name (`Foo` in `use bar::Foo`, the imported symbol's
+    /// in-scope handle). Resolvers match against this on use-site lookups.
+    pub local: String,
+    /// Fully-qualified path (`bar::Foo` for the same example). Resolvers
+    /// pass this to `SymbolIndex::lookup_qualified` for cross-file lookups.
+    pub qualified: String,
 }
 
 /// Per-file scope context passed to every resolver call. Borrows from
@@ -72,6 +75,18 @@ pub trait Resolver: Send + Sync {
 /// extractor will route every edge through `upsert_unresolved_sentinel`,
 /// preserving the old name-based query surface.
 pub struct NameOnlyResolver;
+
+/// Cross-file symbol index queried by the per-language resolvers during
+/// pass 2. The extractor passes an `Arc<dyn SymbolIndex>` so resolvers
+/// can resolve `Foo::method` (where `Foo` lives in a different file) to
+/// a concrete `SymbolId`. Store-backed impl lands when the extractor
+/// is wired to pass it in; resolvers carry stubs in tests.
+pub trait SymbolIndex: Send + Sync {
+    /// Look up by fully-qualified name (e.g. "crate::module::Foo").
+    fn lookup_qualified(&self, qualified: &str) -> Option<SymbolId>;
+    /// Look up by bare name; returns all candidates across files.
+    fn lookup_by_name(&self, name: &str) -> Vec<SymbolId>;
+}
 
 impl Resolver for NameOnlyResolver {
     fn resolve_ref(&self, _scope: &ScopeCtx, _name: &str) -> Option<SymbolId> {
