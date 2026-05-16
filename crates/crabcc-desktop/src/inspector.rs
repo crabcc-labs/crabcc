@@ -53,8 +53,8 @@ pub enum Status {
 impl Status {
     pub fn glyph(&self) -> &'static str {
         match self {
-            Status::Pending => "\u{23F3}", // ⏳
-            Status::Ok => "\u{2713}",      // ✓
+            Status::Pending => "\u{23F3}",    // ⏳
+            Status::Ok => "\u{2713}",         // ✓
             Status::Err { .. } => "\u{26A0}", // ⚠
         }
     }
@@ -349,11 +349,7 @@ impl InspectorSamplingObserver {
 }
 
 impl crate::sampling::SamplingObserver for InspectorSamplingObserver {
-    fn on_request(
-        &self,
-        request: &crate::sampling::SamplingRequest,
-        chosen_model: &str,
-    ) -> u64 {
+    fn on_request(&self, request: &crate::sampling::SamplingRequest, chosen_model: &str) -> u64 {
         let id = CallEvent::next_id();
         let params = serde_json::to_string_pretty(request).unwrap_or_else(|_| "{}".into());
         let evt = CallEvent {
@@ -375,9 +371,7 @@ impl crate::sampling::SamplingObserver for InspectorSamplingObserver {
         // Best-effort: drop on closed channel (gpui pump gone,
         // app shutting down). Instrumentation must never break the
         // call path.
-        let _ = self
-            .tx
-            .send(crate::state::AppEvent::InspectorRecord(evt));
+        let _ = self.tx.send(crate::state::AppEvent::InspectorRecord(evt));
         id
     }
 
@@ -414,9 +408,7 @@ impl crate::sampling::SamplingObserver for InspectorSamplingObserver {
             result_pretty,
             parent_id: Some(request_id),
         };
-        let _ = self
-            .tx
-            .send(crate::state::AppEvent::InspectorRecord(evt));
+        let _ = self.tx.send(crate::state::AppEvent::InspectorRecord(evt));
     }
 
     fn on_subcall_request(
@@ -447,9 +439,7 @@ impl crate::sampling::SamplingObserver for InspectorSamplingObserver {
             // parent — flat hierarchy is enough today.
             parent_id: Some(parent_id),
         };
-        let _ = self
-            .tx
-            .send(crate::state::AppEvent::InspectorRecord(evt));
+        let _ = self.tx.send(crate::state::AppEvent::InspectorRecord(evt));
         id
     }
 
@@ -487,9 +477,7 @@ impl crate::sampling::SamplingObserver for InspectorSamplingObserver {
             result_pretty,
             parent_id: Some(parent_id),
         };
-        let _ = self
-            .tx
-            .send(crate::state::AppEvent::InspectorRecord(evt));
+        let _ = self.tx.send(crate::state::AppEvent::InspectorRecord(evt));
     }
 }
 
