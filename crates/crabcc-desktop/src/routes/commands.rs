@@ -648,14 +648,12 @@ const CATALOG: &[Category] = &[
     Category {
         name: "MCP (runnable)",
         blurb: "Smoke tests for the MCP-native surfaces. Click to fire an end-to-end probe.",
-        commands: &[
-            Command {
-                invocation: "sampling.test",
-                summary: "POST sampling/createMessage to the local LiteLLM stack — \
+        commands: &[Command {
+            invocation: "sampling.test",
+            summary: "POST sampling/createMessage to the local LiteLLM stack — \
                           surfaces a parent/child CallEvent pair in the Inspector route.",
-                runnable: Some(RunnableCommand::TestSampling),
-            },
-        ],
+            runnable: Some(RunnableCommand::TestSampling),
+        }],
     },
     Category {
         name: "SYMBOLS",

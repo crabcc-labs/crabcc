@@ -53,9 +53,7 @@ impl ResourceSnapshot {
     /// provider skip emitting an empty snippet list (which would
     /// trigger a no-op summary call).
     pub fn is_empty(&self) -> bool {
-        self.agents_text.is_empty()
-            && self.activity_text.is_empty()
-            && self.memory_text.is_empty()
+        self.agents_text.is_empty() && self.activity_text.is_empty() && self.memory_text.is_empty()
     }
 }
 
