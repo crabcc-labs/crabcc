@@ -35,21 +35,9 @@ fn crabcc() -> Command {
 /// Three tiny Rust files. `a()` calls `b()`; `b()` calls `c()`; `c()`
 /// is a leaf. In-degree: c=1, b=1, a=0. Reverse closure of c: {a, b}.
 fn write_fixture(root: &Path) {
-    std::fs::write(
-        root.join("a.rs"),
-        "pub fn a() { crate::b::b(); }\n",
-    )
-    .unwrap();
-    std::fs::write(
-        root.join("b.rs"),
-        "pub fn b() { crate::c::c(); }\n",
-    )
-    .unwrap();
-    std::fs::write(
-        root.join("c.rs"),
-        "pub fn c() {}\n",
-    )
-    .unwrap();
+    std::fs::write(root.join("a.rs"), "pub fn a() { crate::b::b(); }\n").unwrap();
+    std::fs::write(root.join("b.rs"), "pub fn b() { crate::c::c(); }\n").unwrap();
+    std::fs::write(root.join("c.rs"), "pub fn c() {}\n").unwrap();
 }
 
 fn fresh_project() -> (tempfile::TempDir, tempfile::TempDir) {

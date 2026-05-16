@@ -293,11 +293,7 @@ fn delete_file_cascades_symbols_and_edges() {
     // We query by (name, file) to disambiguate.
     let b_file_id: i64 = store
         .conn()
-        .query_row(
-            "SELECT id FROM files WHERE path = 'b.rs'",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT id FROM files WHERE path = 'b.rs'", [], |r| r.get(0))
         .unwrap();
     let b_id_before: i64 = store
         .symbol_id_by_name_file("b", b_file_id)

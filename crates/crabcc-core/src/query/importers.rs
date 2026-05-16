@@ -28,11 +28,7 @@ pub struct FileImporter {
     pub depth: usize,
 }
 
-pub fn importers(
-    store: &Store,
-    target_path: &str,
-    max_depth: usize,
-) -> Result<Vec<FileImporter>> {
+pub fn importers(store: &Store, target_path: &str, max_depth: usize) -> Result<Vec<FileImporter>> {
     let conn = store.conn();
 
     // Resolve target file_id. Unknown path → empty result.
@@ -75,8 +71,7 @@ pub fn importers(
         }
         // Build the SQL fresh each wave because the IN-list size changes.
         let dst_ids: Vec<i64> = reached.iter().copied().collect();
-        let placeholders: Vec<String> =
-            (0..dst_ids.len()).map(|i| format!("?{}", i + 1)).collect();
+        let placeholders: Vec<String> = (0..dst_ids.len()).map(|i| format!("?{}", i + 1)).collect();
         let sql = format!(
             "SELECT s_src.file_id, COUNT(*) AS edges \
              FROM edges e \
@@ -92,10 +87,9 @@ pub fn importers(
             .iter()
             .map(|i| Box::new(*i) as Box<dyn rusqlite::ToSql>)
             .collect();
-        let rows = stmt.query_map(
-            params_from_iter(bound.iter().map(|b| b.as_ref())),
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)? as usize)),
-        )?;
+        let rows = stmt.query_map(params_from_iter(bound.iter().map(|b| b.as_ref())), |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)? as usize))
+        })?;
         let mut next_frontier: HashSet<i64> = HashSet::new();
         for r in rows {
             let (src_file_id, edges) = r?;
@@ -122,8 +116,7 @@ pub fn importers(
     {
         let ids: Vec<i64> = result.keys().copied().collect();
         if !ids.is_empty() {
-            let placeholders: Vec<String> =
-                (0..ids.len()).map(|i| format!("?{}", i + 1)).collect();
+            let placeholders: Vec<String> = (0..ids.len()).map(|i| format!("?{}", i + 1)).collect();
             let sql = format!(
                 "SELECT id, path FROM files WHERE id IN ({})",
                 placeholders.join(",")
@@ -133,10 +126,10 @@ pub fn importers(
                 .iter()
                 .map(|i| Box::new(*i) as Box<dyn rusqlite::ToSql>)
                 .collect();
-            let rows = stmt.query_map(
-                params_from_iter(bound.iter().map(|b| b.as_ref())),
-                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
-            )?;
+            let rows = stmt
+                .query_map(params_from_iter(bound.iter().map(|b| b.as_ref())), |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })?;
             for r in rows {
                 let (id, path) = r?;
                 if let Some((depth, edge_count)) = result.get(&id).copied() {

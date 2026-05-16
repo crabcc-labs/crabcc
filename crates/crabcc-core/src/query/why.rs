@@ -60,12 +60,10 @@ pub fn why(store: &Store, src: i64, dst: i64, max_depth: usize) -> Result<Option
     let mut frontier_fwd: VecDeque<i64> = VecDeque::from([src]);
     let mut frontier_rev: VecDeque<i64> = VecDeque::from([dst]);
 
-    let mut fwd_stmt = conn.prepare(
-        "SELECT dst_symbol_id, kind, line FROM edges WHERE src_symbol_id = ?1",
-    )?;
-    let mut rev_stmt = conn.prepare(
-        "SELECT src_symbol_id, kind, line FROM edges WHERE dst_symbol_id = ?1",
-    )?;
+    let mut fwd_stmt =
+        conn.prepare("SELECT dst_symbol_id, kind, line FROM edges WHERE src_symbol_id = ?1")?;
+    let mut rev_stmt =
+        conn.prepare("SELECT src_symbol_id, kind, line FROM edges WHERE dst_symbol_id = ?1")?;
 
     // Alternate one BFS level on each side until they meet or budget runs out.
     let mut hops_done: usize = 0;
@@ -90,7 +88,13 @@ pub fn why(store: &Store, src: i64, dst: i64, max_depth: usize) -> Result<Option
                     if seen_rev.contains(&nxt) {
                         // Frontiers met at `nxt` — reconstruct.
                         return Ok(Some(build_path(
-                            store, src, dst, nxt, &parent_fwd, &parent_rev, &edge_meta,
+                            store,
+                            src,
+                            dst,
+                            nxt,
+                            &parent_fwd,
+                            &parent_rev,
+                            &edge_meta,
                         )?));
                     }
                     next_fwd.push_back(nxt);
@@ -125,7 +129,13 @@ pub fn why(store: &Store, src: i64, dst: i64, max_depth: usize) -> Result<Option
                     edge_meta.entry((prv, cur)).or_insert((kind, line));
                     if seen_fwd.contains(&prv) {
                         return Ok(Some(build_path(
-                            store, src, dst, prv, &parent_fwd, &parent_rev, &edge_meta,
+                            store,
+                            src,
+                            dst,
+                            prv,
+                            &parent_fwd,
+                            &parent_rev,
+                            &edge_meta,
                         )?));
                     }
                     next_rev.push_back(prv);
@@ -156,7 +166,9 @@ fn build_path(
     let mut front: Vec<i64> = vec![meet];
     let mut cur = meet;
     while cur != src {
-        let prev = *parent_fwd.get(&cur).expect("parent_fwd should chain back to src");
+        let prev = *parent_fwd
+            .get(&cur)
+            .expect("parent_fwd should chain back to src");
         front.push(prev);
         cur = prev;
     }
@@ -166,7 +178,9 @@ fn build_path(
     let mut back: Vec<i64> = Vec::new();
     let mut cur = meet;
     while cur != dst {
-        let nxt = *parent_rev.get(&cur).expect("parent_rev should chain back to dst");
+        let nxt = *parent_rev
+            .get(&cur)
+            .expect("parent_rev should chain back to dst");
         back.push(nxt);
         cur = nxt;
     }

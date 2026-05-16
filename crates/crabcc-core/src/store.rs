@@ -188,7 +188,6 @@ impl Store {
         &self.conn
     }
 
-
     pub fn analyze(&self) -> Result<()> {
         self.conn.execute_batch("ANALYZE;").context("ANALYZE")?;
         Ok(())
@@ -203,7 +202,13 @@ impl Store {
             .conn
             .prepare("SELECT src_symbol_id, dst_symbol_id, line FROM edges WHERE kind = 'call'")?;
         let rows = stmt
-            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))?
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -214,11 +219,9 @@ impl Store {
     pub fn symbol_name_by_id(&self, id: i64) -> Result<Option<String>> {
         let name = self
             .conn
-            .query_row(
-                "SELECT name FROM symbols WHERE id = ?1",
-                params![id],
-                |r| r.get::<_, String>(0),
-            )
+            .query_row("SELECT name FROM symbols WHERE id = ?1", params![id], |r| {
+                r.get::<_, String>(0)
+            })
             .optional()?;
         Ok(name)
     }
@@ -260,11 +263,9 @@ impl Store {
     pub fn get_file_id(&self, path: &str) -> Result<Option<i64>> {
         let id = self
             .conn
-            .query_row(
-                "SELECT id FROM files WHERE path = ?1",
-                params![path],
-                |r| r.get::<_, i64>(0),
-            )
+            .query_row("SELECT id FROM files WHERE path = ?1", params![path], |r| {
+                r.get::<_, i64>(0)
+            })
             .optional()?;
         Ok(id)
     }
@@ -302,7 +303,8 @@ impl Store {
         // `name → id` map is complete before we touch parent_id. Pass 2 UPDATEs
         // parent_id from `Symbol.parent` (the parent's bare name) within the same
         // file. Input order isn't required to be parent-before-child.
-        let mut name_to_id: std::collections::HashMap<String, i64> = std::collections::HashMap::with_capacity(symbols.len());
+        let mut name_to_id: std::collections::HashMap<String, i64> =
+            std::collections::HashMap::with_capacity(symbols.len());
         for s in symbols {
             // SQLite type-affinity: BLOB stored in a TEXT column. `signature_enc=1` is the source of truth on encoding.
             #[cfg(feature = "compress")]
@@ -1149,10 +1151,30 @@ mod tests {
         let (_dir, store) = tmp_store();
         let fid = store.upsert_file("a.rs", "h", 0, "rust").unwrap();
         let src_id = store
-            .insert_symbol(fid, "caller", None, SymbolKind::Function, None, 1, 3, None, None)
+            .insert_symbol(
+                fid,
+                "caller",
+                None,
+                SymbolKind::Function,
+                None,
+                1,
+                3,
+                None,
+                None,
+            )
             .unwrap();
         let dst_id = store
-            .insert_symbol(fid, "callee", None, SymbolKind::Function, None, 5, 7, None, None)
+            .insert_symbol(
+                fid,
+                "callee",
+                None,
+                SymbolKind::Function,
+                None,
+                5,
+                7,
+                None,
+                None,
+            )
             .unwrap();
 
         let edge = Edge {
