@@ -35,7 +35,7 @@ install instructions; this document is the deeper dive.
 
 ### Languages
 
-Ten languages, all backed by tree-sitter. The columns mark whether
+Eleven languages, all backed by tree-sitter. The columns mark whether
 documentSymbol / call-edge-driven features (`references`, `callHierarchy`)
 are available.
 
@@ -49,6 +49,7 @@ are available.
 | Go                | ✓ | ✓ | crabcc-core |
 | Swift             | ✓ | ✓ | crabcc-core (v0.2+) |
 | Bash              | ✓ | ✓ | crabcc-core (v0.2+) |
+| Java              | ✓ | ✓ | crabcc-core (v3.0.0-rc.4+) — class / interface / enum / record / method / constructor; method_invocation + object_creation_expression as call edges |
 | YAML              | ✓ | — | ucracc-lsp (keys only) |
 | Markdown          | ✓ | — | ucracc-lsp (heading outline) |
 
@@ -296,7 +297,8 @@ the SQLite hit by 5–500× depending on the operation. The biggest win is
 
 #### Add a new language already supported by crabcc-core
 
-(e.g. Kotlin, Java, if crabcc-core gets them in the future):
+(e.g. Kotlin, C++, C#, if crabcc-core gets them in the future — Java
+landed in v3.0.0-rc.4):
 
 1. Add the variant to `Lang` in `src/lang.rs`.
 2. Add the extension to `from_ext`.

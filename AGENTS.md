@@ -208,8 +208,9 @@ idempotent — the existing `(source_id, sha256)` UNIQUE constraint
 on `drawers` makes re-runs return the same id without inserting.
 
 Memory roadmap status (issue #2): M0 (persistent backend) ✅ → M0.5
-(`sqlite-vec` ANN, `--features memory-vec`) ✅ → M1a (FTS5 BM25 + RRF
-hybrid) ✅ → M1b (`fastembed-rs`, `--features memory-embed`) ✅ → M2
+(`sqlite-vec` ANN, `memory-vec` — **default since v3.0.0-rc.4**) ✅ →
+M1a (FTS5 BM25 + RRF hybrid) ✅ → M1b (`fastembed-rs`,
+`--features memory-embed`) ✅ → M2
 (miners) ✅ → bench gate (`task memory-bench`, ≥ 96.6% R@5 on synthetic
 fixture) ✅. Future M3-full (KG ops) tracked separately. See
 `docs/RESEARCH-mempalace.md` for the design.
