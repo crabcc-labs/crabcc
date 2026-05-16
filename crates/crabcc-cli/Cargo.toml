@@ -82,7 +82,7 @@ tracing-appender   = { workspace = true, optional = true }
 
 # agents-bullmq feature — see [features].
 bullmq-rs    = { version = "1", optional = true }
-redis        = { version = "0.28", default-features = false, features = ["tokio-comp", "connection-manager", "streams"], optional = true }
+redis        = { version = "1.2", default-features = false, features = ["tokio-comp", "connection-manager", "streams"], optional = true }
 futures-util = { version = "0.3", optional = true }
 # Issue #112 follow-up — jemalloc as the global allocator on the binary
 # crate. ~5-12% on alloc-heavy paths (extract.rs, MCP serve_io). MSVC
