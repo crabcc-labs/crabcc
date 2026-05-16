@@ -1059,4 +1059,96 @@ mod tests {
         let hits = store.find_by_name("does_not_exist").unwrap();
         assert!(hits.is_empty());
     }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // v4 regression tests — see docs/superpowers/reviews/v4-hackathon/.
+    // These exist to fail loudly until the v4 critical findings are fixed.
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// CRIT-2: `replace_edges` and `iter_call_edges` must operate on the v4
+    /// `(src_symbol_id, dst_symbol_id)` schema. The previous body used the
+    /// dropped v3 columns (`src_file_id`, `src_symbol`, `dst_name`) and
+    /// every call panicked at runtime with `no such column`.
+    #[test]
+    fn replace_edges_writes_against_v4_columns() {
+        let (_dir, store) = tmp_store();
+        let fid = store.upsert_file("a.rs", "h", 0, "rust").unwrap();
+        let src_id = store
+            .insert_symbol(fid, "caller", None, SymbolKind::Function, None, 1, 3, None, None)
+            .unwrap();
+        let dst_id = store
+            .insert_symbol(fid, "callee", None, SymbolKind::Function, None, 5, 7, None, None)
+            .unwrap();
+
+        let edge = Edge {
+            src_file: "a.rs".into(),
+            src_symbol: Some("caller".into()),
+            dst_name: "callee".into(),
+            kind: "call".into(),
+            line: 2,
+        };
+
+        store
+            .replace_edges(fid, &[edge])
+            .expect("replace_edges must not error with `no such column` against v4 schema");
+
+        // Round-trip via the v4 resolved-edge accessor — the edge must land
+        // with both endpoints set to real symbol ids (no sentinel substitution
+        // through the bulk path).
+        let edges = store.iter_call_edges_resolved().unwrap();
+        assert!(
+            edges.iter().any(|(s, d, _)| *s == src_id && *d == dst_id),
+            "replace_edges did not persist a row resolvable via v4 columns; got {edges:?}"
+        );
+    }
+
+    /// CRIT-3: `replace_symbols` must persist `parent_id` when the input
+    /// `Symbol` has a `parent`. The previous body hardcoded `None::<i64>`,
+    /// silently dropping the impl/class link for every symbol on the bulk
+    /// path. We assert by reading the raw column — `find_by_name` independently
+    /// hardcodes `NULL AS parent` (HIGH issue), so a parent_id-aware test must
+    /// bypass it.
+    #[test]
+    fn replace_symbols_persists_parent_id_on_methods() {
+        let (_dir, store) = tmp_store();
+        let fid = store.upsert_file("a.rs", "h", 0, "rust").unwrap();
+
+        // Two symbols in one bulk call. The class is written first so the
+        // method's `parent` lookup-by-name has something to point at.
+        store
+            .replace_symbols(
+                fid,
+                &[
+                    sym("Greeter", SymbolKind::Class, None),
+                    sym("greet", SymbolKind::Method, Some("Greeter")),
+                ],
+            )
+            .unwrap();
+
+        // Raw read of the `parent_id` column for the method row.
+        let parent_id: Option<i64> = store
+            .conn()
+            .query_row(
+                "SELECT parent_id FROM symbols WHERE name = 'greet' AND file_id = ?1",
+                params![fid],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        // Look up the class's row id for the assertion message.
+        let greeter_id: i64 = store
+            .conn()
+            .query_row(
+                "SELECT id FROM symbols WHERE name = 'Greeter' AND file_id = ?1",
+                params![fid],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(
+            parent_id,
+            Some(greeter_id),
+            "replace_symbols dropped the parent link for `greet` (expected parent_id={greeter_id})"
+        );
+    }
 }
