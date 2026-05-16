@@ -14,6 +14,10 @@ set -euo pipefail
 # opencode installs into ~/.opencode/bin which is not on the default
 # non-login shell PATH.
 export PATH="$HOME/.opencode/bin:$PATH"
+# Default ORCH_BASE_BRANCH to the current branch so worktree base and
+# allow-list diff base always match where the integrator is working.
+export ORCH_BASE_BRANCH="${ORCH_BASE_BRANCH:-$(git -C "$(git rev-parse --show-toplevel)" rev-parse --abbrev-ref HEAD)}"
+
 
 MODELS=(
     "openrouter/tencent/hy3-preview"
