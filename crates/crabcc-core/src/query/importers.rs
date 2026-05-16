@@ -14,7 +14,7 @@ use crate::store::Store;
 use anyhow::Result;
 use rusqlite::{params, params_from_iter};
 use serde::Serialize;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Serialize)]
 pub struct FileImporter {

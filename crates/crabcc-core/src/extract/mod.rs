@@ -1,4 +1,4 @@
-use crate::resolve::{ImportSpec, NameOnlyResolver, Resolver, ScopeCtx, SymbolId};
+use crate::resolve::{ImportSpec, Resolver, ScopeCtx, SymbolId};
 use crate::store::Store;
 use crate::types::{Edge, Symbol, SymbolKind};
 use anyhow::{anyhow, Result};
