@@ -11,20 +11,31 @@ members = [
     "crates/crabcc-memory-bench",
     "crates/crabcc-viz",
     "crates/ucracc-lsp",
-    # apps/crabcc-telegram: excluded from workspace — uses teloxide which
-    # triggers a nightly libc ICE under -Z polonius + -Z randomize-layout.
-    # Build standalone: cd apps/crabcc-telegram && cargo build --release
-    # Track: https://github.com/rust-lang/rust/issues (libc ICE on nightly)
-    #
-    # crates/crabcc-desktop: also excluded — gpui-component pulls a hard
-    # dep on `tree-sitter = "0.25"` (links = "tree-sitter", so cargo
-    # enforces a single version workspace-wide), and crabcc-core is on
-    # tree-sitter 0.22 with its grammar fleet at 0.21. Joining the
-    # workspace would force a coordinated tree-sitter-22→25 bump across
-    # six grammar crates. The desktop crate talks to the rest of crabcc
-    # over HTTP/SSE (loopback only), so no path dep is required —
-    # standalone build keeps each side on its own pace.
-    # Build: cd crates/crabcc-desktop && cargo run --release
+]
+
+# Crates that exist on disk under crates/ or apps/ but are intentionally
+# excluded from this workspace. tools/check-workspace-members.sh enforces
+# that every discovered Cargo.toml appears in either `members` above or
+# `exclude` here — guards against cargo #9853 auto-discovery surprises.
+#
+# apps/crabcc-telegram: excluded — uses teloxide which triggers a nightly
+#   libc ICE under -Z polonius + -Z randomize-layout.
+#   Build standalone: cd apps/crabcc-telegram && cargo build --release
+#   Track: https://github.com/rust-lang/rust/issues (libc ICE on nightly)
+#
+# crates/crabcc-desktop: excluded — gpui-component pulls a hard dep on
+#   `tree-sitter = "0.25"` (links = "tree-sitter", so cargo enforces a
+#   single version workspace-wide), and crabcc-core is on tree-sitter 0.22.
+#   Talks to the rest of crabcc over HTTP/SSE (loopback only); standalone
+#   build keeps each side on its own pace.
+#   Build: cd crates/crabcc-desktop && cargo run --release
+#
+# apps/crabcc-agents: excluded — experimental agents app, not yet
+#   integrated into the main workspace build.
+exclude = [
+    "apps/crabcc-telegram",
+    "crates/crabcc-desktop",
+    "apps/crabcc-agents",
 ]
 
 [workspace.package]

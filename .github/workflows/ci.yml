@@ -47,6 +47,17 @@ env:
   CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
 
 jobs:
+  workspace-members-check:
+    name: workspace members coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: install jq
+        run: sudo apt-get install -y --no-install-recommends jq
+      - uses: dtolnay/rust-toolchain@stable
+      - name: check workspace member coverage
+        run: bash tools/check-workspace-members.sh
+
   lint:
     name: lint (fmt + clippy)
     runs-on: ubuntu-latest

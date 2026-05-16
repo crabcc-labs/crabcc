@@ -114,9 +114,15 @@ tasks:
       - "{{.CRABCC}} agent-ls --limit 10"
       - "{{.CRABCC}} agent-kills --limit 10"
 
+  check:workspace-members:
+    desc: Assert every crates/ and apps/ Cargo.toml is in workspace members or exclude (guards cargo #9853)
+    cmds:
+      - bash tools/check-workspace-members.sh
+
   ci:
     desc: Local CI dry-run — fmt + clippy + test + smoke
     cmds:
+      - task: check:workspace-members
       - task: fmt-check
       - task: lint
       - task: test
