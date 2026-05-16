@@ -118,6 +118,26 @@ assert "final list: failed row visible" "[[ $FAILED_ROWS -ge 1 ]]"
 "$QUEUE" claim alpha >/dev/null && EMPTY_CLAIM_EXIT=0 || EMPTY_CLAIM_EXIT=$?
 assert_eq "claim on empty queue: exits 2" "$EMPTY_CLAIM_EXIT" "2"
 
+# ── step 11 (v0.1): migration added the three new columns ────────────────────
+COL_LIST="$(sqlite3 "$AGENTS_DB" "PRAGMA table_info(agent_tasks);" | awk -F'|' '{print $2}' | sort | tr '\n' ' ')"
+assert "v0.1: wave_id column present"              "[[ \"\$COL_LIST\" == *wave_id* ]]"
+assert "v0.1: langsmith_example_id column present" "[[ \"\$COL_LIST\" == *langsmith_example_id* ]]"
+assert "v0.1: validator_scores column present"     "[[ \"\$COL_LIST\" == *validator_scores* ]]"
+
+# ── step 12 (v0.1): enqueue with --wave-id / --example-id ────────────────────
+WAVE_TASK="$("$QUEUE" enqueue alpha '{"op":"test","ref":"main"}' --wave-id WAVE1 --example-id EX1)"
+assert "v0.1: wave-enqueue returns numeric id" "[[ \"\$WAVE_TASK\" =~ ^[0-9]+\$ ]]"
+
+STORED_WAVE="$(sqlite3 "$AGENTS_DB" "SELECT wave_id FROM agent_tasks WHERE id=$WAVE_TASK;")"
+STORED_EX="$(sqlite3 "$AGENTS_DB"   "SELECT langsmith_example_id FROM agent_tasks WHERE id=$WAVE_TASK;")"
+assert_eq "v0.1: wave_id stored"              "$STORED_WAVE" "WAVE1"
+assert_eq "v0.1: langsmith_example_id stored" "$STORED_EX"   "EX1"
+
+# ── step 13 (v0.1): list-by-wave returns the row ─────────────────────────────
+WAVE_JSON="$("$QUEUE" list-by-wave WAVE1)"
+WAVE_COUNT="$(echo "$WAVE_JSON" | jq 'length')"
+assert_eq "v0.1: list-by-wave returns one row" "$WAVE_COUNT" "1"
+
 # ── result ───────────────────────────────────────────────────────────────────
 if [[ $fail -eq 0 ]]; then
     echo ""
