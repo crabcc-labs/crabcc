@@ -141,9 +141,13 @@ log INFO upload_ok wave_id="$WAVE_ID" experiment_id="$experiment_id" dataset_id=
 
 # Print the experiment URL.  The LangSmith URL pattern for EU:
 # https://eu.smith.langchain.com/projects/<experiment_id>
-LANGSMITH_BASE_UI="${LANGSMITH_ENDPOINT/api\./}"
+# Resolve the endpoint with the SAME default that langsmith.sh uses, so we
+# don't trip set -u when only LANGSMITH_API_KEY is exported.
+LANGSMITH_BASE_API="${LANGSMITH_ENDPOINT:-https://eu.api.smith.langchain.com/api/v1}"
+LANGSMITH_BASE_UI="${LANGSMITH_BASE_API/api\./}"
+LANGSMITH_BASE_UI="${LANGSMITH_BASE_UI%/api/v1}"
 LANGSMITH_BASE_UI="${LANGSMITH_BASE_UI%/api}"
-# Fallback for non-standard endpoints.
+# Final fallback for non-standard endpoint shapes.
 LANGSMITH_BASE_UI="${LANGSMITH_BASE_UI:-https://eu.smith.langchain.com}"
 
 printf '%s/projects/%s\n' "$LANGSMITH_BASE_UI" "$experiment_id"
