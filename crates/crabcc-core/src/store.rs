@@ -605,6 +605,39 @@ mod tests {
     }
 
     #[test]
+    fn fresh_store_does_not_need_reindex() {
+        let (_dir, store) = tmp_store();
+        assert!(!store.needs_reindex, "fresh DB should not trigger reindex");
+    }
+
+    #[test]
+    fn schema_v2_triggers_needs_reindex() {
+        use rusqlite::Connection;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("idx.db");
+
+        {
+            let _store = Store::open(&db).unwrap();
+        }
+
+        {
+            let conn = Connection::open(&db).unwrap();
+            conn.execute(
+                "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '2')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let store = Store::open(&db).unwrap();
+        assert!(
+            store.needs_reindex,
+            "index with schema_version=2 must set needs_reindex"
+        );
+    }
+
+    #[test]
     fn upsert_then_find() {
         let (_dir, store) = tmp_store();
         let fid = store
