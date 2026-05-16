@@ -703,48 +703,13 @@ pub struct EdgeHit {
     pub src_symbol: Option<String>,
 }
 
-/// In v1.0.0 the `edges.src_symbol` column was INTEGER (FK to symbols.id) but
-/// was never populated. v2.0 uses TEXT (the enclosing symbol name) to mirror
-/// `dst_name` and avoid a join on every caller query. The table is always
-/// empty for v1.0.0 users, so dropping and recreating is loss-free.
-fn migrate_edges_text(conn: &Connection) -> Result<()> {
-    let mut stmt = conn.prepare("PRAGMA table_info(edges)")?;
-    let mut rows = stmt.query([])?;
-    let mut needs_migrate = false;
-    while let Some(row) = rows.next()? {
-        let name: String = row.get(1)?;
-        let coltype: String = row.get(2)?;
-        if name == "src_symbol" && coltype.eq_ignore_ascii_case("INTEGER") {
-            needs_migrate = true;
-            break;
-        }
-    }
-    drop(rows);
-    drop(stmt);
-    if needs_migrate {
-        conn.execute_batch(
-            "DROP TABLE IF EXISTS edges;
-             CREATE TABLE edges (
-                id          INTEGER PRIMARY KEY,
-                src_file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-                src_symbol  TEXT,
-                dst_name    TEXT    NOT NULL,
-                kind        TEXT    NOT NULL,
-                line        INTEGER NOT NULL
-             );
-             CREATE INDEX IF NOT EXISTS idx_edges_dst      ON edges(dst_name);
-             CREATE INDEX IF NOT EXISTS idx_edges_src      ON edges(src_file_id);
-             CREATE INDEX IF NOT EXISTS idx_edges_dst_kind ON edges(dst_name, kind);
-             INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '3');",
-        )?;
-    } else {
-        // Fresh DB or already migrated — make sure the kind-composite index
-        // exists for older v2 builds that predate it.
-        conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_edges_dst_kind ON edges(dst_name, kind);
-             INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '3');",
-        )?;
-    }
+/// v4: dead. Pre-v4 indexes are wiped + rebuilt by the `needs_reindex`
+/// auto-wipe path in `main.rs` before any code reads them, so in-place
+/// schema migration is never invoked. Keeping the function as a no-op
+/// preserves the call site in `Store::open_with_compress` (one fewer
+/// edit during the hackathon) and lets future v4→v5 migrations slot
+/// in here.
+fn migrate_edges_text(_conn: &Connection) -> Result<()> {
     Ok(())
 }
 
