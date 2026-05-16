@@ -6,6 +6,24 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+## [3.2.0] — 2026-05-16
+
+Bug fixes for `lookup refs` and `lookup callers` LSP/CLI commands.
+
+### Fixed
+- `lookup refs <struct>` no longer returns `[]` for Rust structs, enums, and
+  type aliases. The Rust extractor now emits `kind=ref` edges for every
+  `type_identifier` node in non-definition position (return types, parameter
+  types, let bindings, impl headers, struct construction, generic arguments).
+- `lookup callers <fn>` with qualified names (e.g. `crate::module::Fn`)
+  now matches correctly. A `bare_name()` helper strips path qualifiers before
+  the edge lookup. `query_refs` falls back to `query_callers` for languages
+  without dedicated ref-extraction support.
+- Indexes built before v3.2.0 are automatically detected on open via
+  `schema_version` (bumped from 2 to 3). A stale index is wiped and rebuilt
+  transparently before serving the first command, including an FTS sidecar
+  rebuild.
+
 ## [3.1.0] — 2026-05-16
 
 Pre-release cleanup cycle. Pure refactor — no behaviour change,
