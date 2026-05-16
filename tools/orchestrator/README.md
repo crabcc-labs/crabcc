@@ -2,6 +2,42 @@
 
 Bash helpers for the crabcc agent orchestration pipeline.
 
+## Architecture
+
+End-to-end pipeline from a LangSmith dataset to a LangSmith experiment, with a
+SQLite queue as the durable middle:
+
+```
+LangSmith dataset
+  │
+  ▼  import-dataset.sh     (fan-out)
+queue.sh enqueue --wave-id W --example-id E
+  │
+  ▼  run-task.sh           (existing; one worker per claim)
+queue.sh claim → agent (per agents/<name>.toml manifest)
+  │
+  ▼  check-and-done.sh     (validator: empty_result, schema_shaped, latency_floor)
+queue.sh done | fail   (persists validator_scores)
+  │
+  ▼  upload-experiment.sh  (collect terminal rows via list-by-wave)
+langsmith.sh upload-experiment
+  │
+  ▼
+LangSmith experiment named  <agent>@<manifest_sha_short>
+```
+
+Two boundaries to keep in mind:
+
+- **Manifest sha** flows from `agents/<name>.toml` (via `resolve-manifest.sh`)
+  through the queue row's `manifest_sha` column into the experiment name —
+  this is the version stamp.
+- **wave_id** groups a set of tasks that should upload together as one
+  experiment. `import-dataset.sh` generates it; `upload-experiment.sh` consumes
+  it via `queue.sh list-by-wave`.
+
+See `docs/superpowers/specs/2026-05-16-swe-agent-versioning-queue-design.md`
+for the full design (v1 + v0.1).
+
 ## Environment variables
 
 | Variable | Required | Default | Description |

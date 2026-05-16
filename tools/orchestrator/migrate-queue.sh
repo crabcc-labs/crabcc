@@ -20,7 +20,10 @@ if ! command -v sqlite3 >/dev/null 2>&1; then
     exit 1
 fi
 
-mkdir -p "$(dirname "$AGENTS_DB")"
+mkdir -p "$(dirname "$AGENTS_DB")" || {
+    echo "migrate-queue.sh: failed to create parent directory for $AGENTS_DB" >&2
+    exit 1
+}
 
 # True iff agent_tasks table is present.
 base_table_present() {

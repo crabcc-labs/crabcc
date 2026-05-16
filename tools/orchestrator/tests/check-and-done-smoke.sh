@@ -164,17 +164,33 @@ print('ok' if required.issubset(d.keys()) else 'missing:' + str(required - d.key
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Assertion 7: Non-existent task_id → exit 1 with clear error
+# Assertion 7: Non-existent (but well-formed) task_id → exit 1 + 'not found'
 # ─────────────────────────────────────────────────────────────────────────────
 {
     printf '{"answer":"irrelevant"}' > "$result_file"
-    err_out="$("$ORCH_DIR/check-and-done.sh" "nonexistent-task-id-xyz" "$result_file" 2>&1 || true)"
+    # 999999 is a well-formed (numeric) task id that no enqueue produced.
+    err_out="$("$ORCH_DIR/check-and-done.sh" 999999 "$result_file" 2>&1 || true)"
     exit_code=0
-    "$ORCH_DIR/check-and-done.sh" "nonexistent-task-id-xyz" "$result_file" >/dev/null 2>/dev/null || exit_code=$?
+    "$ORCH_DIR/check-and-done.sh" 999999 "$result_file" >/dev/null 2>/dev/null || exit_code=$?
     if [[ "$exit_code" -eq 1 && "$err_out" == *"not found"* ]]; then
         assert "7: nonexistent task_id → exit 1 + 'not found'" "ok"
     else
         assert "7: nonexistent task_id → exit 1 + 'not found'" "got exit=$exit_code msg='$err_out'"
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Assertion 7b: Malformed (non-numeric) task_id → exit 1 with format error
+# ─────────────────────────────────────────────────────────────────────────────
+{
+    printf '{"answer":"irrelevant"}' > "$result_file"
+    err_out="$("$ORCH_DIR/check-and-done.sh" "not-a-number" "$result_file" 2>&1 || true)"
+    exit_code=0
+    "$ORCH_DIR/check-and-done.sh" "not-a-number" "$result_file" >/dev/null 2>/dev/null || exit_code=$?
+    if [[ "$exit_code" -eq 1 && "$err_out" == *"must be a positive integer"* ]]; then
+        assert "7b: malformed task_id → exit 1 + format error" "ok"
+    else
+        assert "7b: malformed task_id → exit 1 + format error" "got exit=$exit_code msg='$err_out'"
     fi
 }
 

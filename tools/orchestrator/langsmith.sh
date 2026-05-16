@@ -59,8 +59,16 @@ api_call() {
     local url="$LANGSMITH_ENDPOINT$path"
     [[ -n "$query" ]] && url="${url}?${query}"
 
+    # Pass the API key via --config file (chmod 600) instead of -H on the
+    # command line, so it does NOT appear in `ps` output of any other user
+    # on the host while curl runs.
+    local cfg_file
+    cfg_file="$(mktemp)"
+    chmod 600 "$cfg_file"
+    printf 'header = "X-API-Key: %s"\n' "$LANGSMITH_API_KEY" > "$cfg_file"
+
     local curl_args=(-fsS -X "$method"
-        -H "X-API-Key: $LANGSMITH_API_KEY"
+        --config "$cfg_file"
         -H "Content-Type: application/json"
         -H "Accept: application/json"
     )
@@ -75,7 +83,7 @@ api_call() {
     http_code="$(curl "${curl_args[@]}" -o "$response_file" -w '%{http_code}' "$url" 2>/tmp/langsmith_curl_err)" || {
         local curl_err
         curl_err="$(cat /tmp/langsmith_curl_err 2>/dev/null || true)"
-        rm -f "$response_file"
+        rm -f "$response_file" "$cfg_file"
         log ERROR http_error method="$method" path="$path" curl_error="$curl_err"
         echo "langsmith.sh: HTTP request failed: $curl_err" >&2
         exit 1
@@ -83,7 +91,7 @@ api_call() {
 
     local body
     body="$(cat "$response_file")"
-    rm -f "$response_file"
+    rm -f "$response_file" "$cfg_file"
 
     if [[ "$http_code" -lt 200 || "$http_code" -ge 300 ]]; then
         local excerpt

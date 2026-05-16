@@ -9,7 +9,12 @@
 # Heuristics (each scored 0=pass / 1=fail):
 #   empty_result            result is {}, null, "", or {"content":""}
 #   schema_shaped           top-level keys include properties/type/description/enum
-#   latency_floor_violation (completed_at - claimed_at) < 2 seconds
+#   latency_floor_violation (completed_at - claimed_at) < CHECK_AND_DONE_LATENCY_FLOOR_SEC
+#                           (default 2 seconds)
+#
+# Environment:
+#   CHECK_AND_DONE_LATENCY_FLOOR_SEC  minimum acceptable completion time
+#                                     in whole seconds (default: 2)
 #
 # Aggregate:
 #   validator_pass          1 if all checks pass, else 0
@@ -38,8 +43,19 @@ fi
 TASK_ID="$1"
 RESULT_FILE="$2"
 
+if [[ ! "$TASK_ID" =~ ^[0-9]+$ ]]; then
+    echo "check-and-done: task-id must be a positive integer, got: $TASK_ID" >&2
+    exit 1
+fi
+
 if [[ ! -f "$RESULT_FILE" ]]; then
     echo "check-and-done: result file not found: $RESULT_FILE" >&2
+    exit 1
+fi
+
+LATENCY_FLOOR_SEC="${CHECK_AND_DONE_LATENCY_FLOOR_SEC:-2}"
+if [[ ! "$LATENCY_FLOOR_SEC" =~ ^[0-9]+$ ]]; then
+    echo "check-and-done: CHECK_AND_DONE_LATENCY_FLOOR_SEC must be a non-negative integer, got: $LATENCY_FLOOR_SEC" >&2
     exit 1
 fi
 
@@ -120,7 +136,7 @@ fi
 score_latency=0
 if [[ "$claimed_at" =~ ^[0-9]+$ && "$completed_at" =~ ^[0-9]+$ ]]; then
     elapsed=$(( completed_at - claimed_at ))
-    if [[ $elapsed -lt 2 ]]; then
+    if [[ $elapsed -lt $LATENCY_FLOOR_SEC ]]; then
         score_latency=1
     fi
 else
