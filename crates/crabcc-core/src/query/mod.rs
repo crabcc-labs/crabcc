@@ -1,12 +1,17 @@
 use crate::pattern;
 use crate::refs;
-use crate::store::Store;
+use crate::store::{EdgeHit, Store};
 use crate::types::{Hit, Symbol, SymbolKind};
 use ahash::AHashMap;
 use anyhow::Result;
 use serde::Serialize;
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
+
+pub mod blast_radius;
+pub mod hot_symbols;
+pub mod importers;
+pub mod why;
 
 /// How many entries each top-N list in `Output::Summary` returns.
 /// Sized so the summary stays under a few KB even for hits-heavy queries —
@@ -269,10 +274,46 @@ pub fn callers_via_edges(
     mode: Mode,
     file_filter: Option<&HashSet<String>>,
 ) -> Result<Output> {
+    // The edges table stores only bare method names (e.g. `open`, not
+    // `Store::open`), so strip the qualifier before the SQL lookup.
+    let name = bare_name(name);
     if !is_safe_identifier(name) {
         return Ok(empty_for(mode));
     }
     let edge_hits = store.callers_of(name)?;
+    edge_hits_to_output(store, root, mode, file_filter, edge_hits)
+}
+
+/// Edge-driven `lookup refs` fast path: same shape as `callers_via_edges`
+/// but pulls every reference-like kind (`call` ∪ `ref`). The CLI surface
+/// uses this when the SQL edge index is populated; mirrors the LSP
+/// `references` handler.
+pub fn refs_via_edges(
+    store: &Store,
+    root: &Path,
+    name: &str,
+    mode: Mode,
+    file_filter: Option<&HashSet<String>>,
+) -> Result<Output> {
+    let name = bare_name(name);
+    if !is_safe_identifier(name) {
+        return Ok(empty_for(mode));
+    }
+    let edge_hits = store.refs_of(name)?;
+    edge_hits_to_output(store, root, mode, file_filter, edge_hits)
+}
+
+/// Shared post-processing for `callers_via_edges` / `refs_via_edges` —
+/// applies the file filter then dispatches on `Mode`. Loads snippets from
+/// disk grouped per file for the `Hits` shape so each file is read at most
+/// once even when many edges land in it.
+fn edge_hits_to_output(
+    store: &Store,
+    root: &Path,
+    mode: Mode,
+    file_filter: Option<&HashSet<String>>,
+    edge_hits: Vec<EdgeHit>,
+) -> Result<Output> {
     let edge_hits: Vec<_> = match file_filter {
         Some(set) => edge_hits
             .into_iter()
@@ -306,8 +347,6 @@ pub fn callers_via_edges(
             build_summary(store, &pairs, limit)
         }
         Mode::Hits { limit } => {
-            // Group by file so the on-demand snippet read happens once per file
-            // regardless of how many callers landed in it.
             let mut grouped: BTreeMap<String, Vec<u32>> = BTreeMap::new();
             for h in edge_hits {
                 grouped.entry(h.file).or_default().push(h.line);
@@ -366,6 +405,14 @@ fn is_safe_identifier(s: &str) -> bool {
         && !s.chars().next().unwrap().is_ascii_digit()
 }
 
+/// Strip a Rust path qualifier — `Store::open` → `open`. The edges table
+/// stores bare method names, so we drop the type qualifier before the SQL
+/// lookup. Lossy: `Foo::open` and `Bar::open` collapse onto `open` and the
+/// union of their call sites is returned.
+fn bare_name(name: &str) -> &str {
+    name.rsplit("::").next().unwrap_or(name)
+}
+
 fn compact_snippet(s: &str) -> String {
     let one_line: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
     if one_line.len() > 80 {
@@ -399,6 +446,21 @@ pub fn query_refs(
             Err(_) => Vec::new(),
         },
     )?;
+    // refs::find_refs only covers JS/TS/Ruby. For everything else (Rust,
+    // Python, Go, Swift, Bash, Java) it errors and `r` is empty. Fall back
+    // to the broader edge-based index (call ∪ ref) so type references
+    // surface alongside call sites — mirrors the LSP `references` handler.
+    // When edges aren't populated (legacy v1 indexes) drop to the walker
+    // path inside `query_callers` so the surface stays non-empty.
+    let r = if r.count() == 0 {
+        if edges_ready(store)? {
+            refs_via_edges(store, root, name, mode, file_filter)?
+        } else {
+            query_callers(store, root, name, mode, file_filter)?
+        }
+    } else {
+        r
+    };
     tracing::debug!(
         target: "crabcc_core::query",
         name,
@@ -514,7 +576,7 @@ fn early_stop(mode: &Mode, hits_len: usize, files_len: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::index::build_index;
+    use crate::index::{build_index, full_index};
 
     fn write(p: &Path, body: &str) {
         std::fs::write(p, body).unwrap();
@@ -997,5 +1059,68 @@ mod tests {
             }
             _ => panic!("expected Files"),
         }
+    }
+
+    fn fixture_rust() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(
+            &root.join("lib.rs"),
+            "pub struct Store;\n\
+             impl Store {\n    pub fn open() -> Store { Store }\n}\n\
+             pub fn run() {\n    let _ = Store::open();\n}\n",
+        );
+        let store = Store::open(&root.join("idx.db")).unwrap();
+        // full_index flips edges_populated='1' — required to exercise the
+        // callers_via_edges fast path that real `crabcc index` runs use.
+        full_index(root, &store).unwrap();
+        (dir, store)
+    }
+
+    #[test]
+    fn bare_name_strips_rust_qualifier() {
+        assert_eq!(bare_name("Store::open"), "open");
+        assert_eq!(bare_name("a::b::c"), "c");
+        assert_eq!(bare_name("open"), "open");
+        assert_eq!(bare_name(""), "");
+    }
+
+    #[test]
+    fn refs_falls_back_to_callers_for_rust() {
+        // Regression: refs::find_refs only supports JS/TS/Ruby, so Rust
+        // queries used to return [] silently. query_refs now falls back
+        // to the edge-based caller index when the walker is empty.
+        let (dir, store) = fixture_rust();
+        let hits = find_refs(&store, dir.path(), "open").unwrap();
+        assert!(
+            !hits.is_empty(),
+            "expected Rust callers via fallback, got: {hits:?}"
+        );
+    }
+
+    #[test]
+    fn callers_resolves_qualified_rust_names() {
+        // Regression: `Store::open` was rejected by is_safe_identifier;
+        // the edges table only stores the bare method name, so strip the
+        // qualifier and query the tail.
+        let (dir, store) = fixture_rust();
+        let hits = find_callers(&store, dir.path(), "Store::open").unwrap();
+        assert!(
+            !hits.is_empty(),
+            "Store::open should resolve to bare 'open' call site, got: {hits:?}"
+        );
+    }
+
+    #[test]
+    fn refs_finds_rust_struct_usages() {
+        // End-to-end: extractor emits kind=ref edges for `type_identifier`
+        // uses, refs_via_edges queries both `call` and `ref` kinds, so
+        // structs (which are never *called*) now surface their usages.
+        let (dir, store) = fixture_rust();
+        let hits = find_refs(&store, dir.path(), "Store").unwrap();
+        assert!(
+            !hits.is_empty(),
+            "Store struct should have ref hits from impl/return-type, got: {hits:?}"
+        );
     }
 }

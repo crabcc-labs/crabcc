@@ -1,13 +1,12 @@
 # crabcc-notify-ext-poc — placeholder
 
+> **Status:** not started — tracked for a future cycle. No Xcode project
+> exists here yet. This README documents the intended layout and build
+> pipeline so the work can be picked up later.
+
 Future home of the **`UNNotificationContentExtension`** (Swift +
 Storyboard / SwiftUI) that renders custom-styled crabcc notification
 banners on macOS / iOS / iPadOS.
-
-> Phase-0 placeholder only — there is no Xcode project here yet. The
-> entire architecture, rationale, and constraints are documented in
-> [`../../crates/crabcc-desktop/docs/RESEARCH-apple-rich-notifications-dossier.md`](../../crates/crabcc-desktop/docs/RESEARCH-apple-rich-notifications-dossier.md)
-> and the [phasing in the research doc](../../crates/crabcc-desktop/docs/RESEARCH-native-desktop-and-rich-notifications.md#track-c--native-macos-rich-notifications).
 
 ## Why this lives outside `crates/`
 

@@ -22,12 +22,10 @@
 
 use std::collections::VecDeque;
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
 
 use gpui::{Context, Entity, SharedString};
-use tracing::{debug, info};
+use tracing::debug;
 
-use crate::inspector::{CallEvent, INSPECTOR_RING_CAP};
 use crate::api::types::{
     AgentKillResponse, AgentKillsResponse, AgentLaunchRequest, AgentLaunchResponse, AgentLog,
     AgentModelsResponse, AgentProfilesResponse, AgentStatus, Bootstrap, DiscoveryReport,
@@ -36,8 +34,15 @@ use crate::api::types::{
     TelemetrySnapshot,
 };
 use crate::api::Client;
-use crate::sse::{self, SseEvent};
+use crate::inspector::{CallEvent, INSPECTOR_RING_CAP};
+use crate::sse::SseEvent;
 use crate::toasts::{Toast, ToastLevel, MAX_VISIBLE_TOASTS};
+
+use self::workers::{run_command, try_send_app_event};
+
+pub(crate) mod build;
+pub(crate) mod workers;
+pub use build::build;
 
 /// Cap on the in-memory recent-activity buffer. Tuned for the
 /// DashboardHome tile (~5 visible rows + headroom). Large queries
@@ -49,13 +54,6 @@ const ACTIVITY_BUFFER: usize = 64;
 /// has to scroll through history, which isn't useful when newer log
 /// lines are always more relevant.
 const TELEMETRY_BUFFER: usize = 256;
-/// Telemetry poll interval. 3s matches the existing web `usePolling.ts`
-/// cadence on the React side; tuned to surface logs near-real-time
-/// without hammering the server when nothing's happening.
-const TELEMETRY_POLL: Duration = Duration::from_secs(3);
-/// Memory drawer refresh cadence. Drawers churn slower than telemetry
-/// — the typical write rate is "human ingest from CLI", so 10s is fine.
-const MEMORY_POLL: Duration = Duration::from_secs(10);
 
 /// Bundle of one-shot prefetch results, all fired on the same OS
 /// thread at startup. Each field carries its own `Result` so a dead
@@ -1237,356 +1235,6 @@ impl AppState {
             }
         })
         .detach();
-    }
-}
-
-/// Spawn the four background workers and return both the receiver
-/// (drained by the gpui pump via [`AppState::pump_events`]) and a
-/// cloned sender — the latter is stashed on `AppState::ingest_tx` so
-/// one-shot UI-driven work (memory ingest, future agent spawn) can
-/// post events back into the same channel from a detached thread.
-///
-/// Workers run on their own OS threads — no async runtime needed, and
-/// [`flume::Receiver::recv_async`] works inside gpui's smol-flavored
-/// `cx.spawn`.
-/// Bounded buffer for the multiplexed `AppEvent` channel. Four
-/// background workers (prefetch + SSE bridge + telemetry poll +
-/// memory poll) plus the four UI submit paths funnel through this
-/// channel; the gpui pump drains it on the main thread. Cap of 512
-/// is ~3 minutes of runway at the union of typical worker rates;
-/// overflow (a stuck pump) logs a warn-level line and drops the
-/// individual event rather than block any worker. See the
-/// `try_send_app_event` helper for the policy.
-const APP_CHANNEL_CAP: usize = 512;
-
-/// Dispatch a [`crate::routes::commands::RunnableCommand`] to the
-/// matching [`Client`] method. Used by the worker thread spawned in
-/// [`AppState::submit_command_run`]. Returns the response as a
-/// pretty-printed JSON string — every response type derives
-/// `Serialize` (sweep landed in this PR), so the launchpad's inline
-/// result block reads as proper JSON instead of Rust Debug format.
-fn run_command(
-    client: &Client,
-    cmd: crate::routes::commands::RunnableCommand,
-    tx: &flume::Sender<AppEvent>,
-) -> anyhow::Result<String> {
-    use crate::routes::commands::RunnableCommand as RC;
-    fn pretty<T: serde::Serialize>(v: T) -> anyhow::Result<String> {
-        Ok(serde_json::to_string_pretty(&v)?)
-    }
-    match cmd {
-        RC::Health => pretty(client.health()?),
-        RC::Bootstrap => pretty(client.bootstrap()?),
-        RC::Services => pretty(client.services()?),
-        RC::Agents => pretty(client.agents()?),
-        RC::AgentProfiles => pretty(client.agent_profiles()?),
-        RC::AgentKills => pretty(client.agent_kills()?),
-        RC::AgentModels => pretty(client.agent_models()?),
-        RC::OllamaKey => pretty(client.ollama_key()?),
-        RC::OtlpHealth => pretty(client.otlp_health()?),
-        RC::Reindex => pretty(client.reindex()?),
-        RC::RandomQuery => pretty(client.random_query()?),
-        RC::SeedGraph => pretty(client.seed_graph()?),
-        RC::MemoryRecent => pretty(client.memory_recent()?),
-        RC::TestSampling => run_test_sampling(tx),
-    }
-}
-
-/// Smoke test for the MCP sampling-offer. Builds a
-/// [`LiteLlmSamplingHandler`] with the inspector observer attached
-/// and fires a small `sampling/createMessage` so the route layer
-/// can show a real round-trip end-to-end. Returns the response
-/// JSON for inline display.
-fn run_test_sampling(tx: &flume::Sender<AppEvent>) -> anyhow::Result<String> {
-    use crate::sampling::{
-        Content, LiteLlmSamplingHandler, Message, ModelHint, ModelPreferences, Role,
-        SamplingHandler, SamplingMeta, SamplingRequest,
-    };
-    use std::sync::Arc;
-
-    let handler = LiteLlmSamplingHandler::from_env()
-        .map_err(|e| anyhow::anyhow!("build handler: {e}"))?
-        .with_observer(Arc::new(crate::inspector::InspectorSamplingObserver::new(
-            tx.clone(),
-        )));
-
-    // Tight smoke prompt — small max_tokens so this returns in a
-    // few seconds even on cold-loaded qwen3.5:35b.
-    let request = SamplingRequest {
-        messages: vec![Message {
-            role: Role::User,
-            content: Content::Text {
-                text: "Say 'inspector loop is live' in three words exactly.".into(),
-            },
-        }],
-        model_preferences: Some(ModelPreferences {
-            hints: vec![
-                ModelHint {
-                    name: "qwen3.5".into(),
-                },
-                ModelHint {
-                    name: "qwen2.5-coder".into(),
-                },
-            ],
-            cost_priority: Some(1.0),
-            ..Default::default()
-        }),
-        system_prompt: Some("You are terse.".into()),
-        max_tokens: Some(64),
-        stop_sequences: vec!["</think>".into()],
-        temperature: Some(0.2),
-        include_context: None,
-        meta: Some(SamplingMeta { sampling_depth: 0 }),
-    };
-
-    let response = handler
-        .handle(request)
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    Ok(serde_json::to_string_pretty(&response)?)
-}
-
-/// Best-effort `AppEvent` send. Drops the event (with a warn log)
-/// if the channel is full — preferable to blocking a worker thread
-/// on a stuck pump. Returns `Ok(())` on successful send, `Err(())`
-/// when the receiver has been dropped (caller should treat as
-/// shutdown signal).
-fn try_send_app_event(tx: &flume::Sender<AppEvent>, evt: AppEvent) -> Result<(), ()> {
-    match tx.try_send(evt) {
-        Ok(()) => Ok(()),
-        Err(flume::TrySendError::Disconnected(_)) => Err(()),
-        Err(flume::TrySendError::Full(_)) => {
-            tracing::warn!(
-                target: "crabcc::state",
-                cap = APP_CHANNEL_CAP,
-                "app-event channel full, dropping event"
-            );
-            // We deliberately don't propagate as Err here — the
-            // channel is still alive, just saturated. Caller treats
-            // the same as a successful send for control-flow purposes.
-            Ok(())
-        }
-    }
-}
-
-pub fn spawn_workers(base_url: &str) -> (flume::Sender<AppEvent>, flume::Receiver<AppEvent>) {
-    let (tx, rx) = flume::bounded::<AppEvent>(APP_CHANNEL_CAP);
-
-    // One-shot prefetch — bootstrap + services + seed-graph all on the
-    // same thread. The seed-graph response is ~20 KB / 96 nodes today
-    // so an extra HTTP round-trip at startup is fine; promote to a
-    // background-on-demand fetch if the graph grows large.
-    {
-        let tx = tx.clone();
-        let base = base_url.to_string();
-        std::thread::Builder::new()
-            .name("crabcc-prefetch".into())
-            .spawn(move || {
-                debug!(target: "crabcc::state", thread = "prefetch", "starting");
-                let client = Client::with_base_url(base);
-                let prefetch = Prefetch {
-                    bootstrap: client.bootstrap(),
-                    services: client.services(),
-                    graph: client.seed_graph(),
-                    memory_recent: client.memory_recent(),
-                    otlp_health: client.otlp_health(),
-                    agent_profiles: client.agent_profiles(),
-                    agent_kills: client.agent_kills(),
-                    agent_models: client.agent_models(),
-                    ollama_key: client.ollama_key(),
-                };
-                // Receiver disconnect is fine — app shutdown raced us.
-                let _ = try_send_app_event(&tx, AppEvent::Initial(Box::new(prefetch)));
-                debug!(target: "crabcc::state", thread = "prefetch", "exiting");
-            })
-            .expect("prefetch thread spawn");
-    }
-
-    // Long-lived SSE pump. Wrap each `SseEvent` in `AppEvent::Sse` on
-    // its way out so `AppState::apply` only has one match arm shape.
-    let sse_rx = sse::spawn_worker(base_url);
-    {
-        let tx = tx.clone();
-        std::thread::Builder::new()
-            .name("crabcc-sse-bridge".into())
-            .spawn(move || {
-                info!(target: "crabcc::state", thread = "sse-bridge", "starting");
-                while let Ok(evt) = sse_rx.recv() {
-                    if try_send_app_event(&tx, AppEvent::Sse(evt)).is_err() {
-                        info!(target: "crabcc::state", thread = "sse-bridge", "exiting (rx dropped)");
-                        return;
-                    }
-                }
-                info!(target: "crabcc::state", thread = "sse-bridge", "exiting (sse channel closed)");
-            })
-            .expect("sse bridge thread spawn");
-    }
-
-    // Long-lived telemetry poller. Synchronous loop on its own thread,
-    // sleeps `TELEMETRY_POLL` between attempts. We don't track the
-    // cursor inside the worker — the gpui-side `AppState::apply` owns
-    // it, but the worker passes the latest known cursor back through
-    // its own captured copy so we don't reset on transient failures.
-    {
-        let tx = tx.clone();
-        let base = base_url.to_string();
-        std::thread::Builder::new()
-            .name("crabcc-telemetry".into())
-            .spawn(move || {
-                info!(target: "crabcc::state", thread = "telemetry", "starting");
-                let client = Client::with_base_url(base);
-                let mut cursor: i64 = 0;
-                loop {
-                    if tx.is_disconnected() {
-                        info!(target: "crabcc::state", thread = "telemetry", "exiting (rx dropped)");
-                        return;
-                    }
-                    let result = client.telemetry(Some(cursor), 100);
-                    if let Ok(snapshot) = &result {
-                        cursor = snapshot.cursor as i64;
-                    }
-                    if try_send_app_event(&tx, AppEvent::Telemetry(result)).is_err() {
-                        info!(target: "crabcc::state", thread = "telemetry", "exiting (send fail)");
-                        return;
-                    }
-                    std::thread::sleep(TELEMETRY_POLL);
-                }
-            })
-            .expect("telemetry thread spawn");
-    }
-
-    // Long-lived memory-drawer poller. Slower cadence than telemetry —
-    // drawer creation is a human-driven event from `crabcc memory
-    // ingest`, so 10s is plenty. Mirrors the telemetry pattern: GET,
-    // send, sleep, repeat.
-    {
-        let tx = tx.clone();
-        let base = base_url.to_string();
-        std::thread::Builder::new()
-            .name("crabcc-memory-poll".into())
-            .spawn(move || {
-                info!(target: "crabcc::state", thread = "memory-poll", "starting");
-                let client = Client::with_base_url(base);
-                loop {
-                    if tx.is_disconnected() {
-                        info!(target: "crabcc::state", thread = "memory-poll", "exiting (rx dropped)");
-                        return;
-                    }
-                    // First tick fires immediately after `MEMORY_POLL`
-                    // — the prefetch worker already covered the cold
-                    // path, so we can sleep before the first GET to
-                    // skip a redundant fetch at startup.
-                    std::thread::sleep(MEMORY_POLL);
-                    if tx
-                        .send(AppEvent::MemoryRefresh(client.memory_recent()))
-                        .is_err()
-                    {
-                        info!(target: "crabcc::state", thread = "memory-poll", "exiting (send fail)");
-                        return;
-                    }
-                }
-            })
-            .expect("memory-poll thread spawn");
-    }
-
-    (tx, rx)
-}
-
-/// Returns the AppState entity wired up with workers. Call from inside
-/// a gpui context (e.g. `cx.new(|cx| build(cx, base))`).
-pub fn build(cx: &mut Context<AppState>, base_url: &str) -> AppState {
-    let (tx, rx) = spawn_workers(base_url);
-    let entity = cx.entity();
-    AppState::pump_events(&entity, rx, cx);
-    // Pre-allocate the resource snapshot Arc — shared between the
-    // sampling-handler's ResourceProvider (worker thread) and the
-    // AppState writer (gpui thread, via `apply()` → refresh).
-    // Always created; only stashed on AppState if the MCP server
-    // actually starts (saves the per-event refresh cost otherwise).
-    let resource_snapshot = Arc::new(RwLock::new(
-        crate::resources::ResourceSnapshot::default(),
-    ));
-    let mcp_server = try_start_mcp_server(tx.clone(), resource_snapshot.clone());
-    let resource_snapshot_field = mcp_server.as_ref().map(|_| resource_snapshot);
-    let mut state = AppState {
-        workers: Some(WorkerHandles {
-            tx,
-            base_url: base_url.to_string(),
-        }),
-        mcp_server,
-        resource_snapshot: resource_snapshot_field,
-        ..AppState::new()
-    };
-    // Inspector-route demo seed. Opt-in via env var so production
-    // binaries don't carry synthetic state. See
-    // `crate::inspector::seed_demo_events` for the event set.
-    if std::env::var_os("CRABCC_DESKTOP_INSPECTOR_DEMO").is_some() {
-        crate::inspector::seed_demo_events(&mut state);
-    }
-    state
-}
-
-/// Best-effort MCP server startup. Resolves the socket path,
-/// builds a [`crate::sampling::LiteLlmSamplingHandler`] from env,
-/// wires the inspector observer + the resource provider, spawns
-/// the listener thread. Returns `None` (with a warn log) on any
-/// failure — the desktop continues running without an MCP surface,
-/// which is the right behaviour for hosts that haven't set
-/// `LITELLM_MASTER_KEY`.
-fn try_start_mcp_server(
-    tx: flume::Sender<AppEvent>,
-    resource_snapshot: Arc<RwLock<crate::resources::ResourceSnapshot>>,
-) -> Option<crate::mcp_server::McpServerHandle> {
-    let socket_path = match crate::mcp_server::default_socket_path() {
-        Some(p) => p,
-        None => {
-            info!(
-                target: "crabcc::state",
-                "MCP server: no socket path resolvable (HOME unset?); skipping",
-            );
-            return None;
-        }
-    };
-
-    let handler = match crate::sampling::LiteLlmSamplingHandler::from_env() {
-        Ok(h) => h,
-        Err(e) => {
-            info!(
-                target: "crabcc::state",
-                error = %e,
-                "MCP server: sampling handler not available; skipping",
-            );
-            return None;
-        }
-    };
-    let observer = Arc::new(crate::inspector::InspectorSamplingObserver::new(tx));
-    let provider = Arc::new(crate::resources::AppStateResourceProvider::new(
-        resource_snapshot,
-    ));
-    let handler = Arc::new(
-        handler
-            .with_observer(observer)
-            .with_resource_provider(provider),
-    );
-    let tools = Arc::new(crate::tools::ToolRegistry::with_defaults());
-
-    match crate::mcp_server::spawn(socket_path.clone(), handler, tools) {
-        Ok(h) => {
-            info!(
-                target: "crabcc::state",
-                path = %socket_path.display(),
-                "MCP server started",
-            );
-            Some(h)
-        }
-        Err(e) => {
-            tracing::warn!(
-                target: "crabcc::state",
-                error = %e,
-                path = %socket_path.display(),
-                "MCP server startup failed",
-            );
-            None
-        }
     }
 }
 

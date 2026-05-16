@@ -22,7 +22,6 @@
 
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Number of snapshots to retain per repo. Older ones are pruned
 /// after every successful snapshot. Adjustable via env, but the
@@ -69,10 +68,7 @@ pub fn repo_slug(repo: &Path) -> String {
 }
 
 fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    crabcc_core::time::unix_now_secs()
 }
 
 /// Files (relative to `<repo>/.crabcc/`) we copy verbatim into the

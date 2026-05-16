@@ -14,51 +14,22 @@
 //! constraint — re-adding an unchanged drawer returns its existing id.
 //! Wing/room rows are auto-created within the same transaction.
 
+mod encoding;
+mod ensure;
+
 use crate::backend::{cosine, Backend, LexicalQuery};
 use crate::types::*;
 use anyhow::{anyhow, Context, Result};
 use crabcc_core::hash::sha256_hex;
+use encoding::{blob_to_vec, fts_match_string, now_secs, vec_to_blob};
+#[cfg(feature = "memory-vec")]
+use ensure::register_sqlite_vec_once;
+use ensure::{ensure_room, ensure_wing};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::Mutex;
 
-const SCHEMA: &str = include_str!("../../schema/001_init.sql");
-
-/// Register the bundled `sqlite-vec` C extension as a SQLite auto-extension
-/// so every subsequent `Connection::open` picks it up. Once-only per process —
-/// `sqlite3_auto_extension` is cumulative; calling it twice would install the
-/// same entry point twice. `Once::call_once` guarantees the body runs at most
-/// once, so this helper is safe to call from every `Backend::open`.
-///
-/// v2.5.1 (#17) — extension registration; the `drawers_vec` virtual table is
-/// created in `Backend::open` (gated `IF NOT EXISTS`).
-#[cfg(feature = "memory-vec")]
-fn register_sqlite_vec_once() {
-    use std::sync::Once;
-    static REGISTERED: Once = Once::new();
-    REGISTERED.call_once(|| {
-        // Safety: `sqlite_vec::sqlite3_vec_init` is the C entry point of the
-        // bundled sqlite-vec extension. Its real C signature matches the
-        // `sqlite3_auto_extension` contract; the Rust binding declares it
-        // zero-arg, so we transmute through `*const ()` to the explicit
-        // SQLite extension entry-point type. Same pattern as the upstream
-        // sqlite-vec Rust binding's own test, with the explicit type
-        // annotation clippy's `missing_transmute_annotations` lint requires.
-        type SqliteExtInit = unsafe extern "C" fn(
-            *mut rusqlite::ffi::sqlite3,
-            *mut *mut std::os::raw::c_char,
-            *const rusqlite::ffi::sqlite3_api_routines,
-        ) -> std::os::raw::c_int;
-        unsafe {
-            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute::<
-                *const (),
-                SqliteExtInit,
-            >(
-                sqlite_vec::sqlite3_vec_init as *const (),
-            )));
-        }
-    });
-}
+const SCHEMA: &str = include_str!("../../../schema/001_init.sql");
 
 pub struct SqliteBackend {
     conn: Mutex<Connection>,
@@ -324,88 +295,6 @@ impl SqliteBackend {
         )?;
         Ok(())
     }
-}
-
-fn now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
-/// Build an FTS5 MATCH expression from raw user input. We tokenize on
-/// non-alphanumerics + apostrophes, drop empties, and OR the terms — that
-/// way "fox jumps" matches drawers containing either word, mirroring how
-/// most search UIs work. Bare user text would be parsed as an FTS query
-/// (and `'` / `"` could cause syntax errors), so this normalisation also
-/// hardens the path against accidental query-string injection.
-fn fts_match_string(input: &str) -> String {
-    // Capacity hint: most user queries are 1-4 tokens. Starting at 8
-    // skips the early Vec doublings (4 → 8) for the common case while
-    // costing ~64 B of stack on the rare long-query path.
-    let mut terms: Vec<String> = Vec::with_capacity(8);
-    for word in input
-        .split(|c: char| !(c.is_alphanumeric() || c == '\''))
-        .filter(|w| !w.is_empty())
-    {
-        // Wrap each token in double quotes so FTS5 treats it as a literal
-        // phrase rather than parsing internal apostrophes / digits.
-        let mut buf = String::with_capacity(word.len() + 2);
-        buf.push('"');
-        for ch in word.chars() {
-            if ch == '"' {
-                buf.push_str("\"\"");
-            } else {
-                buf.push(ch);
-            }
-        }
-        buf.push('"');
-        terms.push(buf);
-    }
-    if terms.is_empty() {
-        // Empty MATCH would be an FTS5 syntax error; substitute a token
-        // that cannot exist in any drawer body. Returns zero rows cleanly.
-        return "\"\u{e000}\"".into();
-    }
-    terms.join(" OR ")
-}
-
-fn vec_to_blob(v: &[f32]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(v.len() * 4);
-    for x in v {
-        out.extend_from_slice(&x.to_le_bytes());
-    }
-    out
-}
-
-fn blob_to_vec(b: &[u8]) -> Vec<f32> {
-    b.chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect()
-}
-
-fn ensure_wing(conn: &Connection, name: &str) -> Result<i64> {
-    conn.execute(
-        "INSERT OR IGNORE INTO wings(name, kind, created_at) VALUES (?1, 'project', ?2)",
-        params![name, now_secs()],
-    )?;
-    let id: i64 = conn.query_row("SELECT id FROM wings WHERE name = ?1", params![name], |r| {
-        r.get(0)
-    })?;
-    Ok(id)
-}
-
-fn ensure_room(conn: &Connection, wing_id: i64, name: &str) -> Result<i64> {
-    conn.execute(
-        "INSERT OR IGNORE INTO rooms(wing_id, name) VALUES (?1, ?2)",
-        params![wing_id, name],
-    )?;
-    let id: i64 = conn.query_row(
-        "SELECT id FROM rooms WHERE wing_id = ?1 AND name = ?2",
-        params![wing_id, name],
-        |r| r.get(0),
-    )?;
-    Ok(id)
 }
 
 impl Backend for SqliteBackend {

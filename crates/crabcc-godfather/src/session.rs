@@ -8,7 +8,6 @@ use anyhow::Result;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub type SessionId = String;
 
@@ -118,10 +117,7 @@ fn stable_id(app: &str, pid: u32, ts: u64) -> String {
 }
 
 fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    crabcc_core::time::unix_now_secs()
 }
 
 #[cfg(test)]

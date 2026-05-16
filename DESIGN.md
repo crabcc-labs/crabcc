@@ -374,5 +374,5 @@ flags it.
   brief (the *what*).
 - `AGENTS.md` — repo-wide agent guidance.
 - `CLAUDE.md` — Claude Code-specific tips for working in this repo.
-- `docs/ARCHITECTURE.md` — server-side data model + indexing
-  pipeline.
+- `crates/crabcc-core/docs/HOW_IT_WORKS.md` — server-side data model +
+  indexing pipeline.

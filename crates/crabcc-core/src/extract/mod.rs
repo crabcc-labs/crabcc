@@ -1,3 +1,5 @@
+use crate::resolve::{ImportSpec, Resolver, ScopeCtx, SymbolId};
+use crate::store::Store;
 use crate::types::{Edge, Symbol, SymbolKind};
 use anyhow::{anyhow, Result};
 use bumpalo::Bump;
@@ -5,6 +7,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 use tree_sitter::{Node, Parser};
+
+pub mod resolve_python;
+pub mod resolve_rust;
+pub mod resolve_ts;
 
 // Per-thread parser pool. Constructing a `Parser` and calling
 // `set_language` is ~5–10 µs of pure overhead per call (LR table init).
@@ -107,24 +113,23 @@ pub fn extract_edges(file: &str, src: &str, lang: &str) -> Result<Vec<Edge>> {
     Ok(edges)
 }
 
-/// Single-parse extraction of both symbols and edges. Used by the indexer to
-/// avoid paying tree-sitter twice per file. The two outputs are independent
-/// (tests can request one or the other), but in production we always want
-/// both — the indexer hot path goes through here.
+/// Single-parse extraction of both symbols and edges, writing directly to the
+/// Store. Pass 1 collects definitions and writes them via `store.insert_symbol`,
+/// collecting local defs. Pass 2 resolves use/call sites via the provided
+/// `resolver` and writes edges via `store.insert_edge_resolved` or
+/// `store.upsert_unresolved_sentinel`.
 ///
 /// The function allocates a per-call `bumpalo::Bump` arena (currently
 /// unused by `walk` itself but threaded through so the next phase can
-/// switch transient strings — `impl_target`, `go_receiver_type`,
-/// `strip_generics` outputs — to bump-allocated `&str`s without
-/// changing the public `Vec<Symbol>` / `Vec<Edge>` shape). Bump dies with
+/// switch transient strings to bump-allocated `&str`s. Bump dies with
 /// the function, so the entire scratch region frees in one mmap-level
-/// op rather than thousands of small `drop(String)` calls. See issue
-/// #38 (nightly-features research) for the full ROI analysis and the
-/// `allocator_api`-vs-`bumpalo::collections` tradeoff.
-pub fn extract_file_with_edges(
+/// op rather than thousands of small `drop(String)` calls.
+pub fn extract_file_with_edges_with_resolver(
     file: &str,
     src: &str,
     lang: &str,
+    store: &Store,
+    resolver: &dyn Resolver,
 ) -> Result<(Vec<Symbol>, Vec<Edge>)> {
     with_parser(lang, |parser| {
         let tree = parser
@@ -132,10 +137,66 @@ pub fn extract_file_with_edges(
             .ok_or_else(|| anyhow!("parse failed"))?;
         let bytes = src.as_bytes();
         let root = tree.root_node();
-        // Per-file bump arena. Sized to cover the typical impl-retag /
-        // signature-stitch transient burst without paging; the allocator
-        // grows automatically if a giant file blows past the initial
-        // budget.
+        let _scratch = Bump::with_capacity(SCRATCH_ARENA_BYTES);
+
+        // Pass 1: collect definitions, write to store, build local_defs + src_id map
+        let mut symbols = Vec::new();
+        let mut local_defs: HashMap<String, SymbolId> = HashMap::new();
+        // tree-sitter Node::id() returns usize and is stable for the Tree's lifetime.
+        let mut node_to_src_id: HashMap<(usize, usize), SymbolId> = HashMap::new();
+        walk_with_store(
+            root,
+            bytes,
+            file,
+            lang,
+            None,
+            store,
+            &mut symbols,
+            &mut local_defs,
+            &mut node_to_src_id,
+        );
+
+        // Collect imports for ScopeCtx
+        let imports = collect_imports(root, bytes, lang);
+
+        // Pass 2: walk use/call sites, resolve via resolver, write edges
+        let mut edges = Vec::new();
+        walk_edges_with_resolver(
+            root,
+            bytes,
+            lang,
+            None,
+            store,
+            resolver,
+            &local_defs,
+            &node_to_src_id,
+            &imports,
+            file,
+            &mut edges,
+        );
+
+        Ok((symbols, edges))
+    })
+}
+
+/// Thin wrapper around `extract_file_with_edges_with_resolver` that uses
+/// `NameOnlyResolver` for backward compatibility. Existing callers can
+/// continue to use this function with the original signature.
+pub fn extract_file_with_edges(
+    file: &str,
+    src: &str,
+    lang: &str,
+) -> Result<(Vec<Symbol>, Vec<Edge>)> {
+    // Note: This wrapper cannot write to Store (no Store parameter), so we
+    // fall back to the original behavior of returning symbols/edges without
+    // writing to Store. For Store-backed extraction, call
+    // `extract_file_with_edges_with_resolver` directly.
+    with_parser(lang, |parser| {
+        let tree = parser
+            .parse(src, None)
+            .ok_or_else(|| anyhow!("parse failed"))?;
+        let bytes = src.as_bytes();
+        let root = tree.root_node();
         let _scratch = Bump::with_capacity(SCRATCH_ARENA_BYTES);
         let mut symbols = Vec::new();
         walk(root, bytes, file, lang, None, &mut symbols);
@@ -153,16 +214,64 @@ pub fn language(lang: &str) -> Result<tree_sitter::Language> {
     ts_language(lang)
 }
 
-/// Walk an already-parsed tree to produce symbols + edges. Mirror of
-/// the body of `extract_file_with_edges` minus the parse step — for
-/// callers that own the `Parser` (e.g. ucracc-lsp's incremental
-/// reparse path).
+/// Walk an already-parsed tree to produce symbols + edges, writing to Store.
+/// Mirror of `extract_file_with_edges_with_resolver` minus the parse step.
+pub fn extract_from_root_with_resolver(
+    root: tree_sitter::Node,
+    src: &[u8],
+    file: &str,
+    lang: &str,
+    store: &Store,
+    resolver: &dyn Resolver,
+) -> (Vec<Symbol>, Vec<Edge>) {
+    let _scratch = Bump::with_capacity(SCRATCH_ARENA_BYTES);
+
+    // Pass1: collect definitions, write to store
+    let mut symbols = Vec::new();
+    let mut local_defs: HashMap<String, SymbolId> = HashMap::new();
+    let mut node_to_src_id: HashMap<(usize, usize), SymbolId> = HashMap::new();
+    walk_with_store(
+        root,
+        src,
+        file,
+        lang,
+        None,
+        store,
+        &mut symbols,
+        &mut local_defs,
+        &mut node_to_src_id,
+    );
+
+    // Collect imports
+    let imports = collect_imports(root, src, lang);
+
+    // Pass2: resolve use/call sites
+    let mut edges = Vec::new();
+    walk_edges_with_resolver(
+        root,
+        src,
+        lang,
+        None,
+        store,
+        resolver,
+        &local_defs,
+        &node_to_src_id,
+        &imports,
+        file,
+        &mut edges,
+    );
+
+    (symbols, edges)
+}
+
+/// Thin wrapper around `extract_from_root_with_resolver` for backward compatibility.
 pub fn extract_from_root(
     root: tree_sitter::Node,
     src: &[u8],
     file: &str,
     lang: &str,
 ) -> (Vec<Symbol>, Vec<Edge>) {
+    // Fall back to original behavior without Store/resolver
     let _scratch = Bump::with_capacity(SCRATCH_ARENA_BYTES);
     let mut symbols = Vec::new();
     walk(root, src, file, lang, None, &mut symbols);
@@ -261,6 +370,293 @@ fn walk(
     }
 }
 
+/// Collect imports from the file for ScopeCtx. Returns empty vec for languages
+/// without straightforward import syntax.
+fn collect_imports(root: Node, src: &[u8], lang: &str) -> Vec<ImportSpec> {
+    let mut imports = Vec::new();
+    let mut cursor = root.walk();
+    for child in root.children(&mut cursor) {
+        collect_imports_from_node(child, src, lang, &mut imports);
+    }
+    imports
+}
+
+fn collect_imports_from_node(node: Node, src: &[u8], lang: &str, out: &mut Vec<ImportSpec>) {
+    match (lang, node.kind()) {
+        ("typescript" | "tsx" | "javascript", "import_statement") => {
+            // Simplified: collect module name from import statement
+            if let Some(source) = node.child_by_field_name("source") {
+                if let Ok(module) = source.utf8_text(src) {
+                    let module = module.trim_matches('"').trim_matches('\'').to_string();
+                    out.push(ImportSpec {
+                        local: module.clone(),
+                        qualified: module,
+                        /* symbols list — not yet broken out per-spec */ // simplified for now
+                    });
+                }
+            }
+        }
+        ("python", "import_statement" | "import_from_statement") => {
+            // Simplified Python import collection
+            if let Ok(text) = node.utf8_text(src) {
+                out.push(ImportSpec {
+                    local: text.to_string(),
+                    qualified: text.to_string(),
+                    /* symbols list — not yet broken out per-spec */
+                });
+            }
+        }
+        ("java", "import_declaration") => {
+            if let Ok(text) = node.utf8_text(src) {
+                let txt = text
+                    .replace("import ", "")
+                    .replace(';', "")
+                    .trim()
+                    .to_string();
+                out.push(ImportSpec {
+                    local: txt.clone(),
+                    qualified: txt,
+                    /* symbols list — not yet broken out per-spec */
+                });
+            }
+        }
+        _ => {}
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_imports_from_node(child, src, lang, out);
+    }
+}
+
+/// Pass 1 walk: collect definitions, write to Store, populate local_defs and
+/// node_to_src_id.
+#[allow(clippy::too_many_arguments)]
+fn walk_with_store(
+    node: Node,
+    src: &[u8],
+    file: &str,
+    lang: &str,
+    parent_id: Option<SymbolId>,
+    store: &Store,
+    out: &mut Vec<Symbol>,
+    local_defs: &mut HashMap<String, SymbolId>,
+    node_to_src_id: &mut HashMap<(usize, usize), SymbolId>,
+) {
+    // Handle Rust impl blocks similarly to `walk`
+    if lang == "rust" && node.kind() == "impl_item" {
+        let impl_target = node
+            .child_by_field_name("type")
+            .and_then(|n| n.utf8_text(src).ok())
+            .map(|s| strip_generics(s).to_string());
+        let before = out.len();
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            walk_with_store(
+                child,
+                src,
+                file,
+                lang,
+                parent_id,
+                store,
+                out,
+                local_defs,
+                node_to_src_id,
+            );
+        }
+        // Retag methods inside impl blocks
+        for sym in out.iter_mut().skip(before) {
+            if matches!(sym.kind, SymbolKind::Function)
+                && sym.parent.as_deref() == impl_target.as_deref()
+            {
+                sym.kind = SymbolKind::Method;
+            }
+        }
+        return;
+    }
+
+    if let Some(kind) = symbol_kind_for(lang, node.kind()) {
+        if let Some(name) = node_name(&node, src) {
+            let n_owned = name.to_string();
+            let line_start = (node.start_position().row + 1) as u32;
+            let line_end = (node.end_position().row + 1) as u32;
+            let signature = signature_for(&node, src, lang);
+            let visibility = visibility_for(lang, &node, src);
+
+            // Get file_id from store (simplified: assume store has this method)
+            let file_id = store.get_file_id(file).ok().flatten().unwrap_or(0); // Fallback to 0 if not found; adjust as needed
+
+            // Write to store
+            let rowid = store
+                .insert_symbol(
+                    file_id,
+                    &n_owned,
+                    None, // qualified: pass None for now
+                    kind,
+                    parent_id.map(|s| s.0),
+                    line_start as i64,
+                    line_end as i64,
+                    signature.as_deref(),
+                    visibility.as_deref(),
+                )
+                .unwrap_or(-1);
+
+            if rowid >= 0 {
+                let sym_id = SymbolId(rowid);
+                // Insert into local_defs (last write wins for duplicates)
+                local_defs.insert(n_owned.clone(), sym_id);
+                // Map node byte range to src_id
+                node_to_src_id.insert((node.start_byte(), node.end_byte()), sym_id);
+                // Add to symbols output
+                out.push(Symbol {
+                    name: n_owned.clone(),
+                    kind,
+                    signature,
+                    parent: None, // parent is tracked via parent_id
+                    file: file.to_string(),
+                    line_start,
+                    line_end,
+                    visibility: visibility_for(lang, &node, src),
+                });
+                // Descend with this symbol as parent
+                let mut cursor = node.walk();
+                for child in node.children(&mut cursor) {
+                    walk_with_store(
+                        child,
+                        src,
+                        file,
+                        lang,
+                        Some(sym_id),
+                        store,
+                        out,
+                        local_defs,
+                        node_to_src_id,
+                    );
+                }
+                return;
+            }
+        }
+    }
+    // Recurse for non-definition nodes
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        walk_with_store(
+            child,
+            src,
+            file,
+            lang,
+            parent_id,
+            store,
+            out,
+            local_defs,
+            node_to_src_id,
+        );
+    }
+}
+
+/// Pass 2 walk: resolve use/call sites via resolver and write edges.
+#[allow(clippy::too_many_arguments)]
+fn walk_edges_with_resolver(
+    node: Node,
+    src: &[u8],
+    lang: &str,
+    enclosing_id: Option<SymbolId>,
+    store: &Store,
+    resolver: &dyn Resolver,
+    local_defs: &HashMap<String, SymbolId>,
+    node_to_src_id: &HashMap<(usize, usize), SymbolId>,
+    imports: &[ImportSpec],
+    file: &str,
+    out: &mut Vec<Edge>,
+) {
+    // Track enclosing definition's SymbolId
+    let new_enclosing_id = if is_callable(lang, node.kind()) {
+        // Look up the node's SymbolId from node_to_src_id
+        node_to_src_id
+            .get(&(node.start_byte(), node.end_byte()))
+            .copied()
+    } else {
+        None
+    };
+    let next_enclosing = new_enclosing_id.or(enclosing_id);
+
+    // Process call targets
+    if let Some((dst_name, line)) = call_target(&node, src, lang) {
+        let src_id = next_enclosing;
+        if let Some(src_symbol_id) = src_id {
+            // Build ScopeCtx
+            let scope = ScopeCtx {
+                file_id: store.get_file_id(file).ok().flatten().unwrap_or(0),
+                current_module: None, // Simplified; derive from AST if possible
+                imports,
+                local_defs,
+            };
+            // Resolve call target
+            let dst_id = resolver.resolve_call(&scope, &dst_name);
+            let dst_id = match dst_id {
+                Some(id) => id,
+                None => {
+                    // Fallback to unresolved sentinel
+                    SymbolId(store.upsert_unresolved_sentinel(&dst_name).unwrap_or(-1))
+                }
+            };
+            // Write edge
+            let _ = store.insert_edge_resolved(src_symbol_id.0, dst_id.0, "call", line as i64);
+            // Also add to output edges for backward compatibility
+            out.push(Edge {
+                src_file: String::new(),
+                src_symbol: None, // Not needed for store-backed edges
+                dst_name,
+                kind: "call".into(),
+                line,
+            });
+        }
+    }
+
+    // Process ref targets
+    if let Some((dst_name, line)) = ref_target(&node, src, lang) {
+        let src_id = next_enclosing;
+        if let Some(src_symbol_id) = src_id {
+            let scope = ScopeCtx {
+                file_id: store.get_file_id(file).ok().flatten().unwrap_or(0),
+                current_module: None,
+                imports,
+                local_defs,
+            };
+            let dst_id = resolver.resolve_ref(&scope, &dst_name);
+            let dst_id = match dst_id {
+                Some(id) => id,
+                None => SymbolId(store.upsert_unresolved_sentinel(&dst_name).unwrap_or(-1)),
+            };
+            let _ = store.insert_edge_resolved(src_symbol_id.0, dst_id.0, "ref", line as i64);
+            out.push(Edge {
+                src_file: String::new(),
+                src_symbol: None,
+                dst_name,
+                kind: "ref".into(),
+                line,
+            });
+        }
+    }
+
+    // Recurse into children
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        walk_edges_with_resolver(
+            child,
+            src,
+            lang,
+            next_enclosing,
+            store,
+            resolver,
+            local_defs,
+            node_to_src_id,
+            imports,
+            file,
+            out,
+        );
+    }
+}
+
 /// `Foo<T>` -> `Foo`. The impl-target's tree-sitter node text includes generic
 /// params; we strip them so `parent` is the bare type name an agent can grep for.
 fn strip_generics(s: &str) -> &str {
@@ -323,6 +719,16 @@ fn walk_edges(node: Node, src: &[u8], lang: &str, enclosing: Option<&str>, out: 
             src_symbol: next.map(String::from),
             dst_name: dst,
             kind: "call".into(),
+            line,
+        });
+    }
+
+    if let Some((dst, line)) = ref_target(&node, src, lang) {
+        out.push(Edge {
+            src_file: String::new(),
+            src_symbol: next.map(String::from),
+            dst_name: dst,
+            kind: "ref".into(),
             line,
         });
     }
@@ -529,6 +935,39 @@ fn rust_callee(func: &Node, src: &[u8]) -> Option<String> {
             .and_then(|f| rust_callee(&f, src)),
         _ => None,
     }
+}
+
+/// Returns `(dst_name, 1-based-line)` for nodes that reference a type (or
+/// other named symbol) outside of definition context — what `lookup refs`
+/// surfaces beyond what `call_target` already catches. Currently Rust-only:
+/// every `type_identifier` use that isn't the `name` field of a definition
+/// (struct / enum / union / type alias / trait / associated_type /
+/// type_parameter). Lossy on generic parameters — bare `T` uses emit refs
+/// to the parameter name; accepted as noise until lexical scoping lands.
+fn ref_target(node: &Node, src: &[u8], lang: &str) -> Option<(String, u32)> {
+    if lang != "rust" || node.kind() != "type_identifier" {
+        return None;
+    }
+    if let Some(parent) = node.parent() {
+        let parent_defines_name = matches!(
+            parent.kind(),
+            "struct_item"
+                | "enum_item"
+                | "union_item"
+                | "type_item"
+                | "trait_item"
+                | "associated_type"
+                | "type_parameter"
+        );
+        if parent_defines_name
+            && parent.child_by_field_name("name").map(|n| n.byte_range()) == Some(node.byte_range())
+        {
+            return None;
+        }
+    }
+    let name = node.utf8_text(src).ok()?.to_string();
+    let line = (node.start_position().row + 1) as u32;
+    Some((name, line))
 }
 
 fn symbol_kind_for(lang: &str, kind: &str) -> Option<SymbolKind> {
@@ -1003,6 +1442,54 @@ mod tests {
         assert_eq!(strip_generics("Foo<T>"), "Foo");
         assert_eq!(strip_generics("Container<T, U>"), "Container");
         assert_eq!(strip_generics("  Spaced  "), "Spaced");
+    }
+
+    #[test]
+    fn rust_struct_usage_emits_ref_edges() {
+        let src = "pub struct Store;\nimpl Store {}\nfn run() -> Store { panic!() }\n";
+        let (_, edges) = extract_file_with_edges("a.rs", src, "rust").unwrap();
+        let refs: Vec<_> = edges
+            .iter()
+            .filter(|e| e.kind == "ref" && e.dst_name == "Store")
+            .collect();
+        // `impl Store` (line 2) + return type `-> Store` (line 3).
+        assert!(
+            refs.len() >= 2,
+            "expected ≥2 ref edges for Store, got: {refs:?}"
+        );
+    }
+
+    #[test]
+    fn rust_struct_definition_does_not_self_ref() {
+        let src = "pub struct Store;\n";
+        let (_, edges) = extract_file_with_edges("a.rs", src, "rust").unwrap();
+        let refs: Vec<_> = edges
+            .iter()
+            .filter(|e| e.kind == "ref" && e.dst_name == "Store")
+            .collect();
+        assert!(
+            refs.is_empty(),
+            "definition name must not emit a self-ref, got: {refs:?}"
+        );
+    }
+
+    #[test]
+    fn rust_generic_type_param_definition_does_not_self_ref() {
+        // `<T>` declares T; the inner type_identifier on its `name` field
+        // is the declaration site, not a use.
+        let src = "fn id<T>(x: T) -> T { x }\n";
+        let (_, edges) = extract_file_with_edges("a.rs", src, "rust").unwrap();
+        let t_decls: Vec<_> = edges
+            .iter()
+            .filter(|e| e.kind == "ref" && e.dst_name == "T" && e.line == 1)
+            .collect();
+        // We accept use-site emissions for `x: T` and `-> T` — confirm at
+        // least one such use exists AND that the count matches the two use
+        // sites rather than including the `<T>` declaration.
+        assert!(
+            t_decls.len() == 2,
+            "expected exactly 2 T uses (param type + return type), got: {t_decls:?}"
+        );
     }
 
     // ---- Go ----

@@ -9,7 +9,7 @@ Short version: open an issue (use a [template](.github/ISSUE_TEMPLATE/)), branch
 | Human contributor | This file. |
 | AI coding agent (any) | [`AGENTS.md`](AGENTS.md) |
 | Claude Code specifically | [`CLAUDE.md`](CLAUDE.md) |
-| Trying to understand the architecture | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) |
+| Trying to understand the symbol-index internals | [`crates/crabcc-core/docs/HOW_IT_WORKS.md`](crates/crabcc-core/docs/HOW_IT_WORKS.md) |
 | Curious about labels | [`.github/LABELS.md`](.github/LABELS.md) |
 
 ## Getting set up

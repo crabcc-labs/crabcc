@@ -14,7 +14,6 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::cleanup::{self, Retention};
 use crate::event::{self, Event, Severity};
@@ -392,10 +391,7 @@ fn default_db_path() -> Result<PathBuf> {
 }
 
 fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    crabcc_core::time::unix_now_secs()
 }
 
 #[cfg(test)]
