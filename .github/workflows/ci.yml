@@ -110,6 +110,11 @@ jobs:
       # rust-cache warms via cache-directories above. First run compiles
       # + caches; every subsequent run restores in <1s.
       - name: install wild linker
+        # CARGO_TARGET_*_RUSTFLAGS is set globally to -fuse-ld=wild; clear it
+        # for this step so cargo doesn't try to link wild itself with wild.
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: ""
+          RUSTFLAGS: ""
         run: command -v wild || cargo install --git https://github.com/davidlattimore/wild wild-linker
 
       # Issue #87 — Pillar 3 (PR-only-changed-files CI). On PR, scope
@@ -203,6 +208,9 @@ jobs:
           cache-directories: ~/.cargo/bin
 
       - name: install wild linker
+        env:
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: ""
+          RUSTFLAGS: ""
         run: command -v wild || cargo install --git https://github.com/davidlattimore/wild wild-linker
 
       - name: install cargo-nextest (JUnit reporter)
