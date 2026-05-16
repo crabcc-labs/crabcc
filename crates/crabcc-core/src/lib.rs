@@ -78,6 +78,7 @@ pub mod outline;
 pub mod pattern;
 pub mod query;
 pub mod refs;
+pub mod resolve;
 pub mod service_discovery;
 pub mod store;
 pub mod time;
