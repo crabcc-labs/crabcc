@@ -143,6 +143,16 @@ split-debuginfo = "unpacked"
 # the test rebuild loop.
 debug           = 1
 
+# CI smoke-test profile — used by the 'build binary for smoke test' step in
+# ci.yml. Inherits from dev (no LTO, fast link) with two CI-specific tweaks:
+# incremental=false shrinks target/ by ~20% (fewer small files → faster cache
+# save/restore); split-debuginfo=off drops .dwp sidecars on Linux.
+[profile.ci]
+inherits        = "dev"
+debug           = 1
+incremental     = false
+split-debuginfo = "off"
+
 [profile.release-native]
 inherits = "release"
 

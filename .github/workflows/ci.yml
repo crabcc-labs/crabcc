@@ -47,18 +47,34 @@ env:
   CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
 
 jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: ""  # override global; cargo fmt never invokes rustc
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
   lint:
-    name: lint (fmt + clippy)
+    name: lint (clippy)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
-          # Issue #87 — Pillar 3: need history for git-diff scoping.
-          fetch-depth: 0
+          # fetch-depth 0 only needed on PRs to diff HEAD against base;
+          # push-to-main always runs --workspace so depth 1 is enough.
+          fetch-depth: ${{ github.event_name == 'pull_request' && 0 || 1 }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy, rustfmt
+          components: clippy
 
       - uses: mozilla-actions/sccache-action@v0.0.10
 
@@ -76,6 +92,10 @@ jobs:
       # once `RUSTC_WRAPPER=sccache` is set above.
       - uses: Swatinem/rust-cache@v2
         with:
+          # Bump prefix-key (e.g. v1 → v2) to force-clear the cache when
+          # the toolchain or profile set changes and the old entry would
+          # otherwise cause subtle cache-poisoning failures.
+          prefix-key: "v1"
           shared-key: ci-lint
           # cache-on-failure isn't the default (false). True keeps the
           # cache warm across a flaky lint job — next attempt starts
@@ -85,6 +105,9 @@ jobs:
           # taiki-e/install-action artifacts, etc) — adds <1% size,
           # saves a fresh download next run.
           cache-all-crates: "true"
+          # Don't write a new cache entry for cancelled runs — the partial
+          # target/ would poison the next warm start.
+          save-if: ${{ !cancelled() }}
 
       # Issue #87 — Pillar 3 (PR-only-changed-files CI). On PR, scope
       # clippy + aliases-smoke to changed crates / scripts. On push to
@@ -130,10 +153,6 @@ jobs:
             echo "aliases_smoke=1" >> "$GITHUB_OUTPUT"
           fi
 
-      # fmt is workspace-wide unconditionally — sub-second; no value in scoping.
-      - name: cargo fmt --check
-        run: cargo fmt --all -- --check
-
       # Scoped clippy: PR runs only against changed crates; push-to-main
       # runs `--workspace`. Empty scope (docs-only PR) skips entirely.
       # `--all-targets` covers lib + bins + tests + examples + benches —
@@ -160,8 +179,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          # Need git history to diff PR head against base for crate scoping.
-          fetch-depth: 0
+          # fetch-depth 0 only needed on PRs to diff HEAD against base;
+          # push-to-main always runs --workspace so depth 1 is enough.
+          fetch-depth: ${{ github.event_name == 'pull_request' && 0 || 1 }}
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -177,9 +197,11 @@ jobs:
       # RUSTFLAGS for clippy vs nextest would poison a shared key).
       - uses: Swatinem/rust-cache@v2
         with:
+          prefix-key: "v1"
           shared-key: ci-ubuntu
           cache-on-failure: "true"
           cache-all-crates: "true"
+          save-if: ${{ !cancelled() }}
 
       - name: install cargo-nextest (JUnit reporter)
         uses: taiki-e/install-action@v2
@@ -244,15 +266,14 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
-      # nextest compiles in test mode; the smoke step exercises the release
-      # binary so end-users hit the same path. Build it explicitly here.
-      # `continue-on-error: true` keeps these from gating CI / future releases
-      # — the 150+ unit tests already cover correctness. Smoke is a signal
-      # only.
-      - name: build release binary for smoke test
+      # nextest compiles in test mode; the smoke step exercises the CLI binary.
+      # Dev profile is fast to build (no LTO) and sufficient for correctness
+      # smoke — we're not benchmarking here. `continue-on-error: true` keeps
+      # smoke informational; the 150+ unit tests gate correctness.
+      - name: build binary for smoke test
         if: steps.scope.outputs.smoke == '1'
         continue-on-error: true
-        run: cargo build --release -p crabcc-cli
+        run: cargo build -p crabcc-cli --profile ci
 
       # Trimmed smoke set: index → sym → callers. Covers the hot path that
       # 99% of agent traffic hits. The fuller set (outline / files / prefix /
@@ -271,7 +292,7 @@ jobs:
           export function hello(name: string) { return name; }
           hello("world");
           EOF
-          BIN="$GITHUB_WORKSPACE/target/release/crabcc"
+          BIN="$GITHUB_WORKSPACE/target/ci/crabcc"
           "$BIN" index
           "$BIN" sym hello | jq -e '.[0].name == "hello"'
           "$BIN" callers hello --count | jq -e '.count >= 1'
