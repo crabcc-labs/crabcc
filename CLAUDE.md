@@ -81,9 +81,10 @@ claude mcp add crabcc -- crabcc --mcp
 `.crabcc/memory.db` stores per-repo notes. Issue #2's epic is closed
 end-to-end:
 
-- **Storage** — `SqliteBackend` (WAL + FSST drawer-body compression)
-  and an optional `sqlite-vec` ANN scaffold behind `--features
-  memory-vec`.
+- **Storage** — `SqliteBackend` (WAL + FSST drawer-body compression).
+  `sqlite-vec` ANN extension auto-loads on `Backend::open` (the
+  `memory-vec` feature is **default since v3.0.0-rc.4** — opt out with
+  `default-features = false` if you want the brute-force cosine path).
 - **Hybrid search** — FTS5 BM25 ⊕ cosine KNN fused via Reciprocal
   Rank Fusion (k = 60). `crabcc memory search QUERY [--mode lexical|vector|hybrid]`.
 - **Real embeddings** — `FastEmbedder` (MiniLM-L6-v2, 384-dim) behind
