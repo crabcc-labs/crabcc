@@ -256,13 +256,14 @@ while :; do
 done
 rm -f "$PROMPT_BUF"
 
-COMMITS_AHEAD="$(git -C "$WORKTREE" rev-list --count "main..$BRANCH")"
+BASE_REF="${ORCH_BASE_BRANCH:-main}"
+COMMITS_AHEAD="$(git -C "$WORKTREE" rev-list --count "$BASE_REF..$BRANCH")"
 if [[ "$COMMITS_AHEAD" -eq 0 ]]; then
     echo "[task $TASK_ID] no commit produced on $BRANCH" >&2
     exit 60
 fi
 
-CHANGED_FILES="$(git -C "$WORKTREE" diff --name-only "main..$BRANCH")"
+CHANGED_FILES="$(git -C "$WORKTREE" diff --name-only "$BASE_REF..$BRANCH")"
 VIOLATIONS=""
 while IFS= read -r changed; do
     [[ -z "$changed" ]] && continue
