@@ -1,3 +1,4 @@
+use crate::resolve::SymbolId;
 use crate::types::{Edge, Symbol, SymbolKind};
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -193,21 +194,21 @@ impl Store {
         Ok(())
     }
 
-    /// Iterate every call-kind edge (src_symbol_id, dst_symbol_id, line).
-    /// Used by graph.rs's `walk` / `cycles` / `orphans` upgrade in v4 where
-    /// we walk the symbol-ID-keyed call graph. Streams the full table — fine
-    /// at the workspace sizes we target (max ~20k call edges on this repo).
-    pub fn iter_call_edges_resolved(&self) -> Result<Vec<(i64, i64, i64)>> {
+    /// Iterate every call-kind edge. Returns typed [`CallEdge`] values.
+    /// Used by graph.rs's `build` in v4 where we fold the symbol-ID-keyed
+    /// call graph in a single scan. Streams the full table — fine at the
+    /// workspace sizes we target (max ~20k call edges on this repo).
+    pub fn iter_call_edges_resolved(&self) -> Result<Vec<CallEdge>> {
         let mut stmt = self
             .conn
             .prepare("SELECT src_symbol_id, dst_symbol_id, line FROM edges WHERE kind = 'call'")?;
         let rows = stmt
             .query_map([], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, i64>(1)?,
-                    r.get::<_, i64>(2)?,
-                ))
+                Ok(CallEdge {
+                    src: SymbolId::from_raw_for_sql(r.get::<_, i64>(0)?),
+                    dst: SymbolId::from_raw_for_sql(r.get::<_, i64>(1)?),
+                    line: r.get::<_, i64>(2)? as u32,
+                })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
@@ -216,12 +217,15 @@ impl Store {
     /// Reverse of `symbol_id_by_name`: id → bare name. Used by consumers
     /// (LSP, MCP) that walked the symbol-id graph and need to surface names
     /// in user-facing output.
-    pub fn symbol_name_by_id(&self, id: i64) -> Result<Option<String>> {
+    pub fn symbol_name_by_id(&self, id: SymbolId) -> Result<Option<String>> {
+        let raw = id.into_raw();
         let name = self
             .conn
-            .query_row("SELECT name FROM symbols WHERE id = ?1", params![id], |r| {
-                r.get::<_, String>(0)
-            })
+            .query_row(
+                "SELECT name FROM symbols WHERE id = ?1",
+                params![raw],
+                |r| r.get::<_, String>(0),
+            )
             .optional()?;
         Ok(name)
     }
@@ -229,7 +233,7 @@ impl Store {
     /// Resolve a bare name to the first matching SymbolId across all files.
     /// Coarse — multiple files may define the same name. Used by MCP/CLI
     /// graph dispatch when the user typed just a name without file context.
-    pub fn symbol_id_by_name(&self, name: &str) -> Result<Option<i64>> {
+    pub fn symbol_id_by_name(&self, name: &str) -> Result<Option<SymbolId>> {
         let id = self
             .conn
             .query_row(
@@ -238,14 +242,14 @@ impl Store {
                 |r| r.get::<_, i64>(0),
             )
             .optional()?;
-        Ok(id)
+        Ok(id.map(SymbolId::from_raw_for_sql))
     }
 
     /// Resolve a bare name + file_id pair to a SymbolId. Returns the first
     /// match (callers handle ambiguity). Used by the CLI graph subcommand
     /// dispatch to turn user-typed symbol names into the IDs the query/*
     /// modules expect.
-    pub fn symbol_id_by_name_file(&self, name: &str, file_id: i64) -> Result<Option<i64>> {
+    pub fn symbol_id_by_name_file(&self, name: &str, file_id: i64) -> Result<Option<SymbolId>> {
         let id = self
             .conn
             .query_row(
@@ -254,7 +258,7 @@ impl Store {
                 |r| r.get::<_, i64>(0),
             )
             .optional()?;
-        Ok(id)
+        Ok(id.map(SymbolId::from_raw_for_sql))
     }
 
     /// Look up the rowid for a previously-upserted file path. None when the
@@ -408,7 +412,7 @@ impl Store {
                 Some(id) => id,
                 None => self.upsert_unresolved_sentinel(&e.dst_name)?,
             };
-            insert.execute(params![src_id, dst_id, e.kind, e.line])?;
+            insert.execute(params![src_id.into_raw(), dst_id.into_raw(), e.kind, e.line])?;
         }
         Ok(())
     }
@@ -588,12 +592,12 @@ impl Store {
         name: &str,
         qualified: Option<&str>,
         kind: SymbolKind,
-        parent_id: Option<i64>,
+        parent_id: Option<SymbolId>,
         line_start: i64,
         line_end: i64,
         signature: Option<&str>,
         visibility: Option<&str>,
-    ) -> Result<i64> {
+    ) -> Result<SymbolId> {
         self.conn.execute(
             "INSERT INTO symbols(file_id, name, qualified, kind, parent_id,
                                   line_start, line_end, signature, signature_enc, visibility)
@@ -603,14 +607,14 @@ impl Store {
                 name,
                 qualified,
                 kind_str(kind),
-                parent_id,
+                parent_id.map(|id| id.into_raw()),
                 line_start,
                 line_end,
                 signature,
                 visibility,
             ],
         )?;
-        Ok(self.conn.last_insert_rowid())
+        Ok(SymbolId::from_raw_for_sql(self.conn.last_insert_rowid()))
     }
 
     /// Insert one resolved edge. `kind` must be one of `'call' | 'ref' |
@@ -618,15 +622,20 @@ impl Store {
     /// this; we surface a SQL error if a caller passes anything else).
     pub fn insert_edge_resolved(
         &self,
-        src_symbol_id: i64,
-        dst_symbol_id: i64,
+        src_symbol_id: SymbolId,
+        dst_symbol_id: SymbolId,
         kind: &str,
         line: i64,
     ) -> Result<()> {
         self.conn.execute(
             "INSERT INTO edges(src_symbol_id, dst_symbol_id, kind, line)
              VALUES (?1, ?2, ?3, ?4)",
-            params![src_symbol_id, dst_symbol_id, kind, line],
+            params![
+                src_symbol_id.into_raw(),
+                dst_symbol_id.into_raw(),
+                kind,
+                line
+            ],
         )?;
         Ok(())
     }
@@ -642,7 +651,7 @@ impl Store {
     /// mtime=0), created lazily on first call. The `unresolved_names` table
     /// holds the `(name, symbol_id)` mapping; `UNIQUE(name)` makes the
     /// SELECT-then-INSERT race-safe under the single-writer model.
-    pub fn upsert_unresolved_sentinel(&self, name: &str) -> Result<i64> {
+    pub fn upsert_unresolved_sentinel(&self, name: &str) -> Result<SymbolId> {
         // Fast path: already mapped.
         if let Some(id) = self
             .conn
@@ -653,7 +662,7 @@ impl Store {
             )
             .optional()?
         {
-            return Ok(id);
+            return Ok(SymbolId::from_raw_for_sql(id));
         }
 
         // Ensure the synthetic anchor file exists. `upsert_file` is idempotent
@@ -684,7 +693,7 @@ impl Store {
             params![name],
             |row| row.get(0),
         )?;
-        Ok(final_id)
+        Ok(SymbolId::from_raw_for_sql(final_id))
     }
 
     /// Decode a row's `signature` column, honoring `signature_enc`. Centralized
@@ -815,6 +824,17 @@ pub struct EdgeHit {
     pub file: String,
     pub line: u32,
     pub src_symbol: Option<String>,
+}
+
+/// One resolved call edge returned by [`Store::iter_call_edges_resolved`].
+/// Named struct so consumers can destructure by field rather than by
+/// positional index — eliminates the silent `(src, dst, _line)` confusion
+/// that the old `Vec<(i64, i64, i64)>` shape created.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+pub struct CallEdge {
+    pub src: SymbolId,
+    pub dst: SymbolId,
+    pub line: u32,
 }
 
 /// v4: dead. Pre-v4 indexes are wiped + rebuilt by the `needs_reindex`
@@ -1225,7 +1245,7 @@ mod tests {
         // through the bulk path).
         let edges = store.iter_call_edges_resolved().unwrap();
         assert!(
-            edges.iter().any(|(s, d, _)| *s == src_id && *d == dst_id),
+            edges.iter().any(|e| e.src == src_id && e.dst == dst_id),
             "replace_edges did not persist a row resolvable via v4 columns; got {edges:?}"
         );
     }

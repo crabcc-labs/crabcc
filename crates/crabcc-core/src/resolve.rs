@@ -17,8 +17,41 @@ use std::collections::HashMap;
 
 /// Newtype around a `symbols.id` (i64). Hands-off — the resolver receives
 /// these from pass 1 and hands them back to pass 2 unchanged.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SymbolId(pub i64);
+///
+/// The inner `i64` is private. Use `into_raw()` to unwrap at SQL-binding
+/// sites or `from_raw_for_sql()` to re-wrap a rowid coming back from the
+/// DB. The `_for_sql` suffix on the constructor is intentional — it
+/// discourages use outside the SQL-binding layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct SymbolId(i64);
+
+impl SymbolId {
+    /// Unwrap to the raw SQLite rowid. Use only at SQL-binding call sites.
+    pub fn into_raw(self) -> i64 {
+        self.0
+    }
+
+    /// Wrap a rowid retrieved from the database. The `_for_sql` suffix
+    /// discourages use outside the `store` / query SQL-binding layer.
+    pub fn from_raw_for_sql(v: i64) -> Self {
+        Self(v)
+    }
+}
+
+/// `pub(crate)` conversion so only `crabcc-core` internals can cast freely.
+/// External crates must go through `into_raw()` / `from_raw_for_sql()`.
+impl From<i64> for SymbolId {
+    fn from(v: i64) -> Self {
+        Self(v)
+    }
+}
+
+impl From<SymbolId> for i64 {
+    fn from(id: SymbolId) -> Self {
+        id.0
+    }
+}
 
 /// One ES/Python/Rust import the extractor saw at file scope. The resolver
 /// uses this list to map a bare name (e.g. `Foo` in `let x: Foo = ...`)
@@ -121,7 +154,7 @@ mod tests {
     #[test]
     fn name_only_resolver_returns_none_for_calls() {
         let mut defs = HashMap::new();
-        defs.insert("foo".to_string(), SymbolId(42));
+        defs.insert("foo".to_string(), SymbolId::from_raw_for_sql(42));
         let imports = vec![ImportSpec {
             local: "Bar".into(),
             qualified: "baz::Bar".into(),

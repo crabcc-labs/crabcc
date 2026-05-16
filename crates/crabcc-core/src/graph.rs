@@ -1,7 +1,7 @@
 //! Knowledge-base graph sidecar — caller/callee relationships over
 //! symbol-IDs (v4).
 //!
-//! - v4 keys adjacency by `symbol_id` (i64), not by symbol name. This
+//! - v4 keys adjacency by `SymbolId`, not by symbol name. This
 //!   restores resolution: `Foo::open` and `Bar::open` are distinct nodes,
 //!   so transitive walks don't collapse them.
 //! - Built from the `edges` table populated at extract time by the
@@ -18,7 +18,8 @@
 //! - `cycles()` returns non-trivial SCCs (Tarjan, iterative);
 //!   `orphans()` returns symbol-IDs with outgoing edges but no incoming.
 
-use crate::store::Store;
+use crate::resolve::SymbolId;
+use crate::store::{CallEdge, Store};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
@@ -27,10 +28,10 @@ use std::path::Path;
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct CallGraph {
     /// Outgoing: caller symbol_id -> set of callee symbol_ids.
-    pub callees: BTreeMap<i64, BTreeSet<i64>>,
+    pub callees: BTreeMap<SymbolId, BTreeSet<SymbolId>>,
     /// Reverse: callee symbol_id -> set of caller symbol_ids (computed on load).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub callers: BTreeMap<i64, BTreeSet<i64>>,
+    pub callers: BTreeMap<SymbolId, BTreeSet<SymbolId>>,
     /// Total number of edges. For sanity checks + reporting.
     #[serde(default)]
     pub edge_count: usize,
@@ -38,7 +39,7 @@ pub struct CallGraph {
 
 #[derive(Debug, Serialize)]
 pub struct GraphHit {
-    pub symbol_id: i64,
+    pub symbol_id: SymbolId,
     pub depth: usize,
 }
 
@@ -49,7 +50,7 @@ impl CallGraph {
     pub fn build(store: &Store, _root: &Path) -> Result<Self> {
         let t0 = std::time::Instant::now();
         let mut g = Self::default();
-        for (src, dst, _line) in store.iter_call_edges_resolved()? {
+        for CallEdge { src, dst, .. } in store.iter_call_edges_resolved()? {
             let inserted = g.callees.entry(src).or_default().insert(dst);
             g.callers.entry(dst).or_default().insert(src);
             if inserted {
@@ -69,7 +70,7 @@ impl CallGraph {
     }
 
     /// BFS over outgoing edges starting at `start_id`.
-    pub fn outgoing(&self, start_id: i64, depth: usize) -> Vec<GraphHit> {
+    pub fn outgoing(&self, start_id: SymbolId, depth: usize) -> Vec<GraphHit> {
         let t0 = std::time::Instant::now();
         let r = bfs(&self.callees, start_id, depth);
         tracing::info!(
@@ -85,7 +86,7 @@ impl CallGraph {
     }
 
     /// BFS over reverse edges (who calls `start_id`?).
-    pub fn incoming(&self, start_id: i64, depth: usize) -> Vec<GraphHit> {
+    pub fn incoming(&self, start_id: SymbolId, depth: usize) -> Vec<GraphHit> {
         let t0 = std::time::Instant::now();
         let r = bfs(&self.callers, start_id, depth);
         tracing::info!(
@@ -103,7 +104,7 @@ impl CallGraph {
     /// Strongly connected components of size >= 2 (mutual recursion / cycles).
     /// Returned components are sorted by ascending symbol_id; the outer list
     /// is sorted by first-element id for stable output.
-    pub fn cycles(&self) -> Vec<Vec<i64>> {
+    pub fn cycles(&self) -> Vec<Vec<SymbolId>> {
         let t0 = std::time::Instant::now();
         let mut sccs = tarjan_scc(&self.callees);
         sccs.retain(|c| c.len() >= 2);
@@ -123,9 +124,9 @@ impl CallGraph {
 
     /// IDs that are in `callees` (i.e. they call something) but never appear
     /// as a callee. Dead-code triage starting point.
-    pub fn orphans(&self) -> Vec<i64> {
+    pub fn orphans(&self) -> Vec<SymbolId> {
         let t0 = std::time::Instant::now();
-        let mut out: Vec<i64> = self
+        let mut out: Vec<SymbolId> = self
             .callees
             .keys()
             .copied()
@@ -166,10 +167,14 @@ impl CallGraph {
     }
 }
 
-fn bfs(adj: &BTreeMap<i64, BTreeSet<i64>>, start: i64, depth: usize) -> Vec<GraphHit> {
+fn bfs(
+    adj: &BTreeMap<SymbolId, BTreeSet<SymbolId>>,
+    start: SymbolId,
+    depth: usize,
+) -> Vec<GraphHit> {
     let mut out = Vec::new();
-    let mut seen: HashSet<i64> = HashSet::new();
-    let mut q: VecDeque<(i64, usize)> = VecDeque::new();
+    let mut seen: HashSet<SymbolId> = HashSet::new();
+    let mut q: VecDeque<(SymbolId, usize)> = VecDeque::new();
     q.push_back((start, 0));
     seen.insert(start);
     while let Some((node, d)) = q.pop_front() {
@@ -195,24 +200,24 @@ fn bfs(adj: &BTreeMap<i64, BTreeSet<i64>>, start: i64, depth: usize) -> Vec<Grap
 
 /// Tarjan's strongly-connected-components — iterative implementation to
 /// avoid blowing the stack on deep call chains.
-fn tarjan_scc(adj: &BTreeMap<i64, BTreeSet<i64>>) -> Vec<Vec<i64>> {
-    let mut idx: BTreeMap<i64, usize> = BTreeMap::new();
-    let mut lowlink: BTreeMap<i64, usize> = BTreeMap::new();
-    let mut on_stack: HashSet<i64> = HashSet::new();
-    let mut stack: Vec<i64> = Vec::new();
+fn tarjan_scc(adj: &BTreeMap<SymbolId, BTreeSet<SymbolId>>) -> Vec<Vec<SymbolId>> {
+    let mut idx: BTreeMap<SymbolId, usize> = BTreeMap::new();
+    let mut lowlink: BTreeMap<SymbolId, usize> = BTreeMap::new();
+    let mut on_stack: HashSet<SymbolId> = HashSet::new();
+    let mut stack: Vec<SymbolId> = Vec::new();
     let mut next_index: usize = 0;
-    let mut sccs: Vec<Vec<i64>> = Vec::new();
+    let mut sccs: Vec<Vec<SymbolId>> = Vec::new();
 
     enum Frame {
-        Enter(i64),
+        Enter(SymbolId),
         Resume {
-            node: i64,
+            node: SymbolId,
             iter_pos: usize,
-            children: Vec<i64>,
+            children: Vec<SymbolId>,
         },
     }
 
-    let mut nodes: Vec<i64> = adj.keys().copied().collect();
+    let mut nodes: Vec<SymbolId> = adj.keys().copied().collect();
     nodes.sort();
     for start in nodes {
         if idx.contains_key(&start) {
@@ -227,7 +232,7 @@ fn tarjan_scc(adj: &BTreeMap<i64, BTreeSet<i64>>) -> Vec<Vec<i64>> {
                     next_index += 1;
                     stack.push(node);
                     on_stack.insert(node);
-                    let children: Vec<i64> = adj
+                    let children: Vec<SymbolId> = adj
                         .get(&node)
                         .map(|s| s.iter().copied().collect())
                         .unwrap_or_default();
