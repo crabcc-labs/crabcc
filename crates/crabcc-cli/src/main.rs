@@ -43,6 +43,7 @@ mod model_info;
 mod read;
 mod root_resolver;
 mod status;
+#[cfg(feature = "telemetry")]
 mod telemetry;
 #[cfg(test)]
 mod test_support;
@@ -246,7 +247,10 @@ enum StackOp {
 
 #[derive(Subcommand)]
 enum SetupOp {
-    /// Symlink the crabcc skill + slash-command into `~/.claude/`.
+    /// Install the crabcc skill + slash commands into Claude Code's
+    /// config dir (`$CLAUDE_CONFIG_DIR` or `$HOME/.claude`). Symlinks
+    /// to the live source when run inside the crabcc checkout; writes
+    /// embedded copies otherwise.
     InstallClaude {
         #[arg(long)]
         yes: bool,
@@ -256,6 +260,9 @@ enum SetupOp {
         with_ollama_stack: bool,
         #[arg(long)]
         print_stack_instructions: bool,
+        /// Print planned operations without touching disk.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Check GitHub for a newer release; optionally clean local sidecars.
     Upgrade {
@@ -563,6 +570,8 @@ enum Cmd {
         with_ollama_stack: bool,
         #[arg(long)]
         print_stack_instructions: bool,
+        #[arg(long)]
+        dry_run: bool,
     },
     #[command(hide = true)]
     Upgrade {
@@ -969,6 +978,11 @@ fn main() -> Result<()> {
     // third-party chatter (tantivy commits, sqlite stmts) stays at warn.
     // Hold the guard for the lifetime of main so the non-blocking
     // writer flushes on shutdown.
+    // The full telemetry pipeline (OTLP / Telegram / file rotation) lives
+    // behind the `telemetry` feature so the default install doesn't pull
+    // in `tracing-subscriber` + `tracing-appender`. The base `tracing`
+    // macros remain compiled — they just no-op without a subscriber.
+    #[cfg(feature = "telemetry")]
     let _telemetry = telemetry::init();
     // Closed-pipe (e.g. piping to `head`) should exit silently, not panic.
     reset_sigpipe();
@@ -1081,12 +1095,14 @@ fn main() -> Result<()> {
                 print_hooks,
                 with_ollama_stack,
                 print_stack_instructions,
+                dry_run,
             } => {
                 return install::run(install::InstallOptions {
                     yes: *yes,
                     print_hooks_only: *print_hooks,
                     with_ollama_stack: *with_ollama_stack,
                     print_stack_instructions: *print_stack_instructions,
+                    dry_run: *dry_run,
                 });
             }
             SetupOp::Upgrade {
@@ -1116,6 +1132,7 @@ fn main() -> Result<()> {
         print_hooks,
         with_ollama_stack,
         print_stack_instructions,
+        dry_run,
     }) = &cli.cmd
     {
         deprecation_warn("install-claude", "setup", "install-claude");
@@ -1124,6 +1141,7 @@ fn main() -> Result<()> {
             print_hooks_only: *print_hooks,
             with_ollama_stack: *with_ollama_stack,
             print_stack_instructions: *print_stack_instructions,
+            dry_run: *dry_run,
         });
     }
     if let Some(Cmd::Upgrade {
@@ -1247,7 +1265,9 @@ fn main() -> Result<()> {
     }
 
     // `serve` boots crabcc-viz; doesn't need the symbol Store opened
-    // here (the viz server lazy-opens its own).
+    // here (the viz server lazy-opens its own). Gated behind the `viz`
+    // feature so the default install doesn't pull in the dashboard.
+    #[cfg(feature = "viz")]
     if let Some(Cmd::Serve {
         port,
         bind,
@@ -1256,6 +1276,14 @@ fn main() -> Result<()> {
     }) = cli.cmd.as_ref()
     {
         return run_serve(&root, *port, bind, *no_open, !*no_init);
+    }
+    #[cfg(not(feature = "viz"))]
+    if matches!(cli.cmd.as_ref(), Some(Cmd::Serve { .. })) {
+        anyhow::bail!(
+            "this crabcc was built without the `viz` feature. Re-install with \
+             `cargo install crabcc-cli --features viz` to enable the \
+             dashboard / SSE viewer."
+        );
     }
 
     // agent group
@@ -2223,6 +2251,7 @@ fn run_backup(root: &Path, op: &BackupOp) -> Result<()> {
     }
 }
 
+#[cfg(feature = "viz")]
 fn run_serve(root: &Path, port: u16, bind: &str, no_open: bool, init: bool) -> Result<()> {
     let bind: std::net::IpAddr = bind
         .parse()
