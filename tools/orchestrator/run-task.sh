@@ -187,7 +187,7 @@ while ! shlock -f "$WT_LOCK" -p $$ 2>/dev/null; do
     sleep 0.1
 done
 WT_OK=1
-git -C "$REPO" worktree add -b "$BRANCH" "$WORKTREE" main >/dev/null 2>&1 || WT_OK=0
+git -C "$REPO" worktree add -b "$BRANCH" "$WORKTREE" "${ORCH_BASE_BRANCH:-main}" >/dev/null 2>&1 || WT_OK=0
 rm -f "$WT_LOCK"
 if [[ $WT_OK -eq 0 ]]; then
     echo "[task $TASK_ID] failed to create worktree at $WORKTREE on $BRANCH" >&2
