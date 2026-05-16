@@ -664,7 +664,6 @@ fn parse_activity_query(raw: &str) -> Result<ActivityQuery> {
     })
 }
 
-
 // ── /api/seed-graph ─────────────────────────────────────────────────────
 //
 // "What should the live relation graph show before any agent has run?"

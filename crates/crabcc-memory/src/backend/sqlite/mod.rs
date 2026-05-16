@@ -297,7 +297,6 @@ impl SqliteBackend {
     }
 }
 
-
 impl Backend for SqliteBackend {
     fn add(&self, drawers: &[DrawerInsert]) -> Result<Vec<DrawerId>> {
         let mut conn = self.conn.lock().map_err(|_| anyhow!("poisoned mutex"))?;
