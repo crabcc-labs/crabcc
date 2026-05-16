@@ -236,7 +236,7 @@ $ crabcc refs Assessment --files-only --limit 10
 - [Status & roadmap](#status)
 - [Contributing](#contributing)
 
-Deep dives: [`ARCHITECTURE.md`](./ARCHITECTURE.md) · [`docs/RESEARCH-mempalace.md`](./docs/RESEARCH-mempalace.md) · [`docs/RESEARCH-fsst.md`](./docs/RESEARCH-fsst.md) · [`docs/RESEARCH-storage.md`](./docs/RESEARCH-storage.md) · [`examples/`](./examples/) · [`man/crabcc.1`](./man/crabcc.1)
+Deep dives: [`crates/crabcc-core/docs/HOW_IT_WORKS.md`](./crates/crabcc-core/docs/HOW_IT_WORKS.md) · [`docs/RUST-ANTHOLOGY.md`](./docs/RUST-ANTHOLOGY.md) · [`examples/`](./examples/) · [`man/crabcc.1`](./man/crabcc.1)
 
 ---
 
@@ -696,7 +696,7 @@ clap parses ─► memory::Cmd::Search { query, limit, wing, room, mode }
 
 The two rankers run independently against the same `memory.db`; RRF fuses ranks (not raw scores), which is why hybrid out-performs either ranker alone without needing per-corpus score normalization.
 
-For deeper architectural detail, mermaid diagrams of the data flow and threading model, and runbooks for adding features, see [`ARCHITECTURE.md`](./ARCHITECTURE.md).
+For deeper architectural detail of the symbol-index pipeline see [`crates/crabcc-core/docs/HOW_IT_WORKS.md`](./crates/crabcc-core/docs/HOW_IT_WORKS.md).
 
 ---
 
@@ -780,7 +780,7 @@ dropped in v1.0.1 — `cargo install` from source.)
 | Watch + Graph sidecars | ✅ shipped (v1.0.0) | — |
 | SQLite tuning + +14 coverage tests | ✅ shipped (v1.0.0) | — |
 | CI: nextest + JUnit XML artifact | ✅ shipped (v1.0.0) | — |
-| ARCHITECTURE.md + install.sh + brew skeleton | ✅ shipped (v1.0.0) | — |
+| install.sh + brew skeleton | ✅ shipped (v1.0.0) | — |
 | Languages: Go, Python, Rust | ✅ shipped (v1.1.0) | [#4](https://github.com/peterlodri-sec/crabcc/issues/4) |
 | CI optimizations (sccache, smarter cache) | ✅ shipped | [#6](https://github.com/peterlodri-sec/crabcc/issues/6) |
 | FSST string compression | ✅ shipped (v2.0.0) | [#1](https://github.com/peterlodri-sec/crabcc/issues/1) |
@@ -789,8 +789,6 @@ dropped in v1.0.1 — `cargo install` from source.)
 | `crabcc upgrade` + shell completions | ✅ shipped (v2.1.0) | — |
 | **Memory: semantic search (M0.5 + M1)** | 🚧 v2.5 sprint 1 | [#2](https://github.com/peterlodri-sec/crabcc/issues/2) |
 | **Distribution: brew tap, mdBook, demos** | 🚧 v2.5 sprint 2 | [#5](https://github.com/peterlodri-sec/crabcc/issues/5) |
-
-Full v2.5 plan: [`docs/ROADMAP-v2.5.md`](./docs/ROADMAP-v2.5.md).
 
 ---
 
