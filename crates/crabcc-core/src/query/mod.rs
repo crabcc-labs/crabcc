@@ -9,6 +9,9 @@ use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 pub mod blast_radius;
+pub mod why;
+pub mod hot_symbols;
+pub mod importers;
 
 /// How many entries each top-N list in `Output::Summary` returns.
 /// Sized so the summary stays under a few KB even for hits-heavy queries —
