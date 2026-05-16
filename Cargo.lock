@@ -955,10 +955,10 @@ dependencies = [
  "bullmq-rs",
  "clap",
  "clap_complete",
- "crabcc-core 4.0.0",
- "crabcc-fetch 4.0.0",
+ "crabcc-core",
+ "crabcc-fetch",
  "crabcc-mcp",
- "crabcc-memory 4.0.0",
+ "crabcc-memory",
  "crabcc-viz",
  "futures-util",
  "htmd",
@@ -978,37 +978,6 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
-]
-
-[[package]]
-name = "crabcc-core"
-version = "3.0.0-rc.3"
-dependencies = [
- "ahash",
- "anyhow",
- "ast-grep-core",
- "ast-grep-language",
- "bumpalo",
- "fsst-rs",
- "ignore",
- "memchr",
- "notify-debouncer-mini",
- "rusqlite",
- "serde",
- "serde_json",
- "serde_yml",
- "sha2",
- "tantivy",
- "tracing",
- "tree-sitter",
- "tree-sitter-bash",
- "tree-sitter-go",
- "tree-sitter-javascript",
- "tree-sitter-python",
- "tree-sitter-ruby",
- "tree-sitter-rust",
- "tree-sitter-swift",
- "tree-sitter-typescript",
 ]
 
 [[package]]
@@ -1053,21 +1022,6 @@ dependencies = [
 
 [[package]]
 name = "crabcc-fetch"
-version = "3.0.0-rc.3"
-dependencies = [
- "anyhow",
- "bytes",
- "htmd",
- "linkify",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
-name = "crabcc-fetch"
 version = "4.0.0"
 dependencies = [
  "anyhow",
@@ -1088,7 +1042,7 @@ version = "4.0.0"
 dependencies = [
  "anyhow",
  "clap",
- "crabcc-core 4.0.0",
+ "crabcc-core",
  "criterion 0.5.1",
  "ctrlc",
  "libc",
@@ -1107,8 +1061,8 @@ name = "crabcc-mcp"
 version = "4.0.0"
 dependencies = [
  "anyhow",
- "crabcc-core 4.0.0",
- "crabcc-memory 4.0.0",
+ "crabcc-core",
+ "crabcc-memory",
  "criterion 0.8.2",
  "serde_json",
  "tempfile",
@@ -1118,24 +1072,10 @@ dependencies = [
 
 [[package]]
 name = "crabcc-memory"
-version = "3.0.0-rc.3"
-dependencies = [
- "anyhow",
- "crabcc-core 3.0.0-rc.3",
- "moka",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2",
- "tracing",
-]
-
-[[package]]
-name = "crabcc-memory"
 version = "4.0.0"
 dependencies = [
  "anyhow",
- "crabcc-core 4.0.0",
+ "crabcc-core",
  "fastembed",
  "moka",
  "rusqlite",
@@ -1153,7 +1093,7 @@ version = "4.0.0"
 dependencies = [
  "anyhow",
  "clap",
- "crabcc-memory 4.0.0",
+ "crabcc-memory",
  "serde",
  "serde_json",
  "tempfile",
@@ -1161,12 +1101,12 @@ dependencies = [
 
 [[package]]
 name = "crabcc-viz"
-version = "3.0.0-rc.3"
+version = "4.0.0"
 dependencies = [
  "anyhow",
- "crabcc-core 3.0.0-rc.3",
- "crabcc-fetch 3.0.0-rc.3",
- "crabcc-memory 3.0.0-rc.3",
+ "crabcc-core",
+ "crabcc-fetch",
+ "crabcc-memory",
  "rusqlite",
  "serde",
  "serde_json",
@@ -5994,9 +5934,9 @@ name = "ucracc-lsp"
 version = "4.0.0"
 dependencies = [
  "anyhow",
- "crabcc-core 4.0.0",
- "crabcc-fetch 4.0.0",
- "crabcc-memory 4.0.0",
+ "crabcc-core",
+ "crabcc-fetch",
+ "crabcc-memory",
  "criterion 0.5.1",
  "fastembed",
  "moka",
