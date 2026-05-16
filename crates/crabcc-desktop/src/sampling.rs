@@ -26,8 +26,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Default LiteLLM proxy endpoint per
-/// `install/ollama-stack/docker-compose.yml`. Override via
-/// [`LiteLlmSamplingHandler::with_endpoint`].
+/// `install/ollama-stack/docker-compose.yml`. Override via the
+/// `LITELLM_ENDPOINT` env var picked up by [`LiteLlmSamplingHandler::from_env`].
 pub const DEFAULT_LITELLM_ENDPOINT: &str = "http://127.0.0.1:4000/v1/chat/completions";
 
 /// Hard cap on `_meta.samplingDepth`. Per spec §12.1 — reject
@@ -475,21 +475,6 @@ impl LiteLlmSamplingHandler {
         })
     }
 
-    pub fn with_endpoint(mut self, endpoint: impl Into<String>) -> Self {
-        self.endpoint = endpoint.into();
-        self
-    }
-
-    pub fn with_catalog(mut self, catalog: Vec<ModelEntry>) -> Self {
-        self.catalog = catalog;
-        self
-    }
-
-    pub fn with_host_ram_gb(mut self, gb: u32) -> Self {
-        self.host_ram_gb = gb;
-        self
-    }
-
     pub fn with_observer(mut self, observer: Arc<dyn SamplingObserver>) -> Self {
         self.observer = Some(observer);
         self
@@ -497,11 +482,6 @@ impl LiteLlmSamplingHandler {
 
     pub fn with_resource_provider(mut self, provider: Arc<dyn ResourceProvider>) -> Self {
         self.resource_provider = Some(provider);
-        self
-    }
-
-    pub fn with_summary_model(mut self, model: impl Into<String>) -> Self {
-        self.summary_model = model.into();
         self
     }
 

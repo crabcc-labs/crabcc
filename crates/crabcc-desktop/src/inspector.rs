@@ -61,9 +61,6 @@ impl Status {
     pub fn is_err(&self) -> bool {
         matches!(self, Status::Err { .. })
     }
-    pub fn is_pending(&self) -> bool {
-        matches!(self, Status::Pending)
-    }
 }
 
 /// Filter selector for the timeline view. `Status::Err` doesn't
