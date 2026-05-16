@@ -111,7 +111,8 @@ pub(crate) fn bootstrap_snapshot(root: &Path) -> Result<BootstrapSnapshot> {
             &memory_path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         ) {
-            if let Ok(n) = conn.query_row("select count(*) from drawers", [], |r| r.get::<_, i64>(0))
+            if let Ok(n) =
+                conn.query_row("select count(*) from drawers", [], |r| r.get::<_, i64>(0))
             {
                 memory.drawers = n as usize;
             }
