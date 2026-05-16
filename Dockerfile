@@ -33,9 +33,9 @@ ENV CARGO_INCREMENTAL=0
 
 # sccache — ~60-80% recompile-time reduction with a shared cache volume.
 # Mount `crabcc-sccache:/root/.cache/sccache` to persist across runs.
-# wild, sccache, and nextest are installed together so they share one
-# registry fetch and land in the same image layer.
-RUN cargo install sccache wild cargo-nextest --locked
+# sccache and nextest from crates.io; wild from git (library-only on crates.io).
+RUN cargo install sccache cargo-nextest --locked \
+ && cargo install --git https://github.com/davidlattimore/wild
 ENV RUSTC_WRAPPER=sccache
 
 WORKDIR /work

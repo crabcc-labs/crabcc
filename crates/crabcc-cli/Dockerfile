@@ -63,12 +63,13 @@ ENV CARGO_INCREMENTAL=0
 
 WORKDIR /src
 
-# Install wild linker. Mounted cargo registry cache keeps this instant on
-# rebuilds — the compiled binary lands in /usr/local/cargo/bin/wild which
-# is persistent across BuildKit cache runs.
+# Install wild linker from git (published on crates.io as a library only).
+# The git clone is cached in the mounted /usr/local/cargo/git volume so
+# subsequent rebuilds skip the network fetch.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
-    cargo install wild --locked
+    --mount=type=cache,target=/usr/local/cargo/bin \
+    cargo install --git https://github.com/davidlattimore/wild
 
 # --- dependency caching via BuildKit mounts -------------------------------
 #

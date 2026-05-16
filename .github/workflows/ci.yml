@@ -48,7 +48,7 @@ env:
   CC: cc
   # Linux-only wild linker — pure-Rust drop-in for GNU ld, comparable
   # to mold in link-time savings (~3-5x on this workspace). Installed
-  # once via `cargo install wild --locked` and cached by rust-cache;
+  # once via `cargo install --git …/wild` and cached by rust-cache;
   # no apt dependency.  The flag is a no-op on macOS jobs.
   CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: cc
   CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=wild"
@@ -105,11 +105,12 @@ jobs:
           # Persist cargo-installed binaries (wild, sccache, nextest).
           cache-directories: ~/.cargo/bin
 
-      # wild linker — pure-Rust, no apt dependency; travels in
-      # ~/.cargo/bin which is warmed by rust-cache above. First run
-      # compiles + caches; every subsequent run restores in <1s.
+      # wild linker — published on crates.io as a library only; binary
+      # must be installed from git source. Travels in ~/.cargo/bin which
+      # rust-cache warms via cache-directories above. First run compiles
+      # + caches; every subsequent run restores in <1s.
       - name: install wild linker
-        run: command -v wild || cargo install wild --locked
+        run: command -v wild || cargo install --git https://github.com/davidlattimore/wild
 
       # Issue #87 — Pillar 3 (PR-only-changed-files CI). On PR, scope
       # clippy + aliases-smoke to changed crates / scripts. On push to
@@ -202,7 +203,7 @@ jobs:
           cache-directories: ~/.cargo/bin
 
       - name: install wild linker
-        run: command -v wild || cargo install wild --locked
+        run: command -v wild || cargo install --git https://github.com/davidlattimore/wild
 
       - name: install cargo-nextest (JUnit reporter)
         uses: taiki-e/install-action@v2
