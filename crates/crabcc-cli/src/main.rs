@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use crabcc_core::{query, store::Store};
 use std::path::{Path, PathBuf};
@@ -1455,7 +1455,10 @@ fn main() -> Result<()> {
         return run_loop(&root, op);
     }
 
-    std::fs::create_dir_all(db.parent().unwrap())?;
+    let db_parent = db
+        .parent()
+        .with_context(|| format!("db path {} has no parent directory", db.display()))?;
+    std::fs::create_dir_all(db_parent)?;
     let store = Store::open_with_compress(&db, cli.compress)?;
     let fts_dir = resolved.fts_dir();
 
