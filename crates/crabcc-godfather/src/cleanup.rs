@@ -97,7 +97,14 @@ pub fn prune_now(conn: &Connection, retention: &Retention) -> Result<PruneStats>
     // Order matters — delete leaf rows first (samples / events / crashes)
     // before sessions, so foreign-key-shaped joins by id keep working
     // for the duration of the wall-clock window.
-    let samples_deleted = conn.execute(
+    //
+    // Wrap the four DELETEs in a single transaction (#488): each
+    // `conn.execute` would otherwise be its own implicit transaction →
+    // four fsyncs per prune. Coalescing into one TX cuts that to a
+    // single fsync. VACUUM below stays outside the TX (it can't run
+    // inside one).
+    let tx = conn.unchecked_transaction()?;
+    let samples_deleted = tx.execute(
         "DELETE FROM _crab_resource_sample WHERE ts < ?1",
         params![resource_cutoff],
     )?;
@@ -106,25 +113,26 @@ pub fn prune_now(conn: &Connection, retention: &Retention) -> Result<PruneStats>
     // schema::apply hasn't backfilled yet (#488). Empty-string `severity`
     // is the new-row sentinel — it's never 'crash', so ignoring the
     // TEXT branch when severity_int is set is correct.
-    let events_deleted = conn.execute(
+    let events_deleted = tx.execute(
         "DELETE FROM _crab_event
          WHERE ts < ?1
            AND (severity_int IS NOT NULL AND severity_int != 4
                 OR severity_int IS NULL AND severity != 'crash')",
         params![event_cutoff],
     )?;
-    let crashes_deleted = conn.execute(
+    let crashes_deleted = tx.execute(
         "DELETE FROM _crab_crash WHERE ts < ?1",
         params![crash_cutoff],
     )?;
     // Only drop sessions whose `ended_at` is also stale — never drop
     // an active session even if it was started long ago (a supervisor
     // running for months is a feature, not a leak).
-    let sessions_deleted = conn.execute(
+    let sessions_deleted = tx.execute(
         "DELETE FROM _crab_session
              WHERE ended_at IS NOT NULL AND ended_at < ?1",
         params![session_cutoff],
     )?;
+    tx.commit()?;
 
     let mut stats = PruneStats {
         events_deleted,
