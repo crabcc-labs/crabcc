@@ -555,14 +555,10 @@ fn ensure_opencode(yes: bool) -> Result<()> {
             opencode_bin.display()
         );
         if !yes && !confirm("  Add ~/.opencode/bin to PATH in shell profile? [y/N] ")? {
-            println!(
-                "  skipped — add manually: export PATH=\"$HOME/.opencode/bin:$PATH\""
-            );
+            println!("  skipped — add manually: export PATH=\"$HOME/.opencode/bin:$PATH\"");
             return Ok(());
         }
-        append_to_profile(
-            "export PATH=\"$HOME/.opencode/bin:$PATH\"  # crabcc install-claude",
-        )?;
+        append_to_profile("export PATH=\"$HOME/.opencode/bin:$PATH\"  # crabcc install-claude")?;
         println!("  restart your shell or run: export PATH=\"$HOME/.opencode/bin:$PATH\"");
     } else {
         println!("opencode: not installed — get it from https://opencode.ai");
@@ -609,11 +605,9 @@ fn ensure_bash5(yes: bool) -> Result<()> {
 
     if brew_bash.exists() {
         println!("  homebrew bash 5 already installed at /opt/homebrew/bin/bash");
-        if !yes
-            && !confirm(
-                "  Prepend /opt/homebrew/bin to PATH in shell profile (makes env bash → bash5)? [y/N] ",
-            )?
-        {
+        if !yes && !confirm(
+            "  Prepend /opt/homebrew/bin to PATH in shell profile (makes env bash → bash5)? [y/N] ",
+        )? {
             println!(
                 "  skipped — call dispatch manually with: \
                  /opt/homebrew/bin/bash $(which orch-dispatch-wave)"

@@ -140,11 +140,18 @@ impl Store {
 
         #[cfg(feature = "compress")]
         {
-            Ok(Self { conn, codec, needs_reindex })
+            Ok(Self {
+                conn,
+                codec,
+                needs_reindex,
+            })
         }
         #[cfg(not(feature = "compress"))]
         {
-            Ok(Self { conn, needs_reindex })
+            Ok(Self {
+                conn,
+                needs_reindex,
+            })
         }
     }
 
@@ -618,7 +625,10 @@ mod tests {
 
         // No ref_edges_built key yet → needs rebuild.
         let store = Store::open(&db).unwrap();
-        assert!(store.needs_reindex, "fresh DB must need reindex before mark");
+        assert!(
+            store.needs_reindex,
+            "fresh DB must need reindex before mark"
+        );
 
         // After marking, next open sees the key and clears the flag.
         store.mark_ref_edges_built().unwrap();
@@ -646,6 +656,112 @@ mod tests {
             store.needs_reindex,
             "index without ref_edges_built must set needs_reindex on every open"
         );
+    }
+
+    #[test]
+    fn concurrent_open_does_not_race() {
+        // WAL + busy_timeout should let multiple threads open and migrate the
+        // same DB without deadlock or corruption. Regression test for the
+        // narrow window where `migrate_edges_text` runs an `execute_batch`
+        // (implicit BEGIN/COMMIT) on every open — N concurrent opens used to
+        // be a worry on systems with aggressive disk-level fsync timings.
+        let dir = tempfile::tempdir().unwrap();
+        let db = std::sync::Arc::new(dir.path().join("idx.db"));
+
+        // Seed the DB so all threads hit the "already exists" migration path,
+        // then mark it built so post-open queries are deterministic.
+        {
+            let s = Store::open(&db).unwrap();
+            s.mark_ref_edges_built().unwrap();
+        }
+
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let db = std::sync::Arc::clone(&db);
+                std::thread::spawn(move || {
+                    let s = Store::open(&db).expect("concurrent open must succeed");
+                    // Touch a meta-table query to force a real read against
+                    // the shared connection — if the WAL fsync window is
+                    // mishandled, this is where it shows up.
+                    assert!(!s.needs_reindex, "marked DB should not flag reindex");
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().expect("worker thread panicked");
+        }
+
+        // After all threads exit, the DB must still be readable and in the
+        // expected state. No `is_locked` / corrupt-image errors.
+        let final_store = Store::open(&db).unwrap();
+        assert!(
+            !final_store.needs_reindex,
+            "DB must remain consistent after concurrent opens"
+        );
+    }
+
+    #[test]
+    fn wipe_and_rebuild_releases_old_handle() {
+        // Mirrors the CLI's wipe-and-rebuild pattern (`main.rs:1111`):
+        // drop the stale store, delete the DB file, reopen fresh. On every
+        // platform the file deletion must succeed — i.e. dropping the Store
+        // must actually close its SQLite handle, not just leak it. Without
+        // explicit drop semantics, sqlite3 cleanup runs at process exit and
+        // the file stays mmap-pinned (Windows: ERROR_SHARING_VIOLATION;
+        // Linux: silently retains inodes, surfacing later as bloat).
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("idx.db");
+
+        // Build a populated store so the underlying file is non-trivial.
+        {
+            let s = Store::open(&db).unwrap();
+            let fid = s.upsert_file("a.rs", "h1", 0, "rust").unwrap();
+            s.replace_symbols(fid, &[sym("foo", SymbolKind::Function, None)])
+                .unwrap();
+            drop(s); // close handle before unlinking
+        }
+
+        // WAL sidecar files (`-wal`, `-shm`) live next to the main DB.
+        // Unlinking just `idx.db` is what the CLI does today; verify it
+        // succeeds even when sidecars are present.
+        assert!(db.exists(), "DB must exist before wipe");
+        std::fs::remove_file(&db).expect("must be able to delete the DB after drop");
+        assert!(!db.exists(), "DB file must be gone after remove_file");
+
+        // Reopen: brand-new DB, empty symbols, no stale connection holding
+        // the inode open.
+        let fresh = Store::open(&db).unwrap();
+        assert!(
+            fresh.needs_reindex,
+            "fresh DB must report needs_reindex until marked"
+        );
+        let hits = fresh.find_by_name("foo").unwrap();
+        assert!(
+            hits.is_empty(),
+            "fresh DB must not surface symbols from the old (deleted) file"
+        );
+    }
+
+    #[test]
+    fn many_open_drop_cycles_do_not_leak() {
+        // Stress test for the connection-drop path: in a tight loop, open
+        // and immediately drop the Store. Without correct Drop on the
+        // underlying rusqlite Connection (which closes the sqlite3 handle
+        // and frees mmap regions), this would leak fds and grow the
+        // process RSS linearly. We can't easily assert on rss inside a
+        // unit test, but we *can* assert the loop doesn't panic / error
+        // out — fd exhaustion (EMFILE) surfaces as a `sqlite open` error
+        // from `Connection::open` once the per-process fd cap is hit.
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("idx.db");
+
+        // 512 cycles comfortably exceeds the default soft fd limit on most
+        // Linux distros (1024) if Drop were broken — each Store::open uses
+        // ~3 fds (main DB + WAL + SHM).
+        for i in 0..512 {
+            let s = Store::open(&db).unwrap_or_else(|e| panic!("cycle {i} open failed: {e}"));
+            drop(s);
+        }
     }
 
     #[test]
