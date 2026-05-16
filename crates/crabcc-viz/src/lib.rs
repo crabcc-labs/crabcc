@@ -30,9 +30,9 @@ pub mod runtime;
 
 use anyhow::{Context, Result};
 use banner::print_banner;
-use query::{parse_query, url_decode};
 use crabcc_core::graph::{CallGraph, GraphHit};
 use crabcc_core::store::Store;
+use query::{parse_query, url_decode};
 use serde::Serialize;
 use tiny_http::{Header, Method, Request, Response, Server};
 
@@ -1186,7 +1186,6 @@ fn seed_graph(root: &Path, query: &str) -> Result<SeedSnapshot> {
         seeds,
     })
 }
-
 
 // ── /api/agents — list, log tail, launch ────────────────────────────────
 //
