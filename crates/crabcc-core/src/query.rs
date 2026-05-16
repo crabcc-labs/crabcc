@@ -269,6 +269,9 @@ pub fn callers_via_edges(
     mode: Mode,
     file_filter: Option<&HashSet<String>>,
 ) -> Result<Output> {
+    // The edges table stores only bare method names (e.g. `open`, not
+    // `Store::open`), so strip the qualifier before the SQL lookup.
+    let name = bare_name(name);
     if !is_safe_identifier(name) {
         return Ok(empty_for(mode));
     }
@@ -366,6 +369,14 @@ fn is_safe_identifier(s: &str) -> bool {
         && !s.chars().next().unwrap().is_ascii_digit()
 }
 
+/// Strip a Rust path qualifier — `Store::open` → `open`. The edges table
+/// stores bare method names, so we drop the type qualifier before the SQL
+/// lookup. Lossy: `Foo::open` and `Bar::open` collapse onto `open` and the
+/// union of their call sites is returned.
+fn bare_name(name: &str) -> &str {
+    name.rsplit("::").next().unwrap_or(name)
+}
+
 fn compact_snippet(s: &str) -> String {
     let one_line: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
     if one_line.len() > 80 {
@@ -399,6 +410,15 @@ pub fn query_refs(
             Err(_) => Vec::new(),
         },
     )?;
+    // refs::find_refs only covers JS/TS/Ruby. For everything else (Rust,
+    // Python, Go, Swift, Bash, Java) it errors and `r` is empty. Fall back
+    // to the call-edge index so the CLI surface matches the LSP's
+    // `references` handler (server.rs unions find_refs ∪ find_callers).
+    let r = if r.count() == 0 {
+        query_callers(store, root, name, mode, file_filter)?
+    } else {
+        r
+    };
     tracing::debug!(
         target: "crabcc_core::query",
         name,
@@ -514,7 +534,7 @@ fn early_stop(mode: &Mode, hits_len: usize, files_len: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::index::build_index;
+    use crate::index::{build_index, full_index};
 
     fn write(p: &Path, body: &str) {
         std::fs::write(p, body).unwrap();
@@ -997,5 +1017,55 @@ mod tests {
             }
             _ => panic!("expected Files"),
         }
+    }
+
+    fn fixture_rust() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(
+            &root.join("lib.rs"),
+            "pub struct Store;\n\
+             impl Store {\n    pub fn open() -> Store { Store }\n}\n\
+             pub fn run() {\n    let _ = Store::open();\n}\n",
+        );
+        let store = Store::open(&root.join("idx.db")).unwrap();
+        // full_index flips edges_populated='1' — required to exercise the
+        // callers_via_edges fast path that real `crabcc index` runs use.
+        full_index(root, &store).unwrap();
+        (dir, store)
+    }
+
+    #[test]
+    fn bare_name_strips_rust_qualifier() {
+        assert_eq!(bare_name("Store::open"), "open");
+        assert_eq!(bare_name("a::b::c"), "c");
+        assert_eq!(bare_name("open"), "open");
+        assert_eq!(bare_name(""), "");
+    }
+
+    #[test]
+    fn refs_falls_back_to_callers_for_rust() {
+        // Regression: refs::find_refs only supports JS/TS/Ruby, so Rust
+        // queries used to return [] silently. query_refs now falls back
+        // to the edge-based caller index when the walker is empty.
+        let (dir, store) = fixture_rust();
+        let hits = find_refs(&store, dir.path(), "open").unwrap();
+        assert!(
+            !hits.is_empty(),
+            "expected Rust callers via fallback, got: {hits:?}"
+        );
+    }
+
+    #[test]
+    fn callers_resolves_qualified_rust_names() {
+        // Regression: `Store::open` was rejected by is_safe_identifier;
+        // the edges table only stores the bare method name, so strip the
+        // qualifier and query the tail.
+        let (dir, store) = fixture_rust();
+        let hits = find_callers(&store, dir.path(), "Store::open").unwrap();
+        assert!(
+            !hits.is_empty(),
+            "Store::open should resolve to bare 'open' call site, got: {hits:?}"
+        );
     }
 }
