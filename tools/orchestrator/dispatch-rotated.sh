@@ -10,6 +10,11 @@
 
 set -euo pipefail
 
+# Ensure opencode is on PATH regardless of how this script is invoked.
+# opencode installs into ~/.opencode/bin which is not on the default
+# non-login shell PATH.
+export PATH="$HOME/.opencode/bin:$PATH"
+
 MODELS=(
     "openrouter/tencent/hy3-preview"
     "openrouter/deepseek/deepseek-v4-flash"
