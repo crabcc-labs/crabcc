@@ -1111,7 +1111,21 @@ fn main() -> Result<()> {
         .parent()
         .with_context(|| format!("db path {} has no parent directory", db.display()))?;
     std::fs::create_dir_all(db_parent)?;
-    let store = Store::open_with_compress(&db, cli.compress)?;
+    let store = {
+        let s = Store::open_with_compress(&db, cli.compress)?;
+        if s.needs_reindex {
+            eprintln!(
+                "crabcc: index predates ref-edge support (schema v2); wiping and re-indexing..."
+            );
+            drop(s);
+            let _ = std::fs::remove_file(&db);
+            let fresh = Store::open_with_compress(&db, cli.compress)?;
+            crabcc_core::index::full_index(&root, &fresh)?;
+            fresh
+        } else {
+            s
+        }
+    };
     let fts_dir = resolved.fts_dir();
 
     // Determine a canonical command name for logging.

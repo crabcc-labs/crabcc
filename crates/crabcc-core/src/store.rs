@@ -17,6 +17,9 @@ pub struct Store {
     /// is byte-identical to the pre-FSST path.
     #[cfg(feature = "compress")]
     codec: Option<crate::compress::Codec>,
+    /// True when the DB was opened with a schema older than v3 (pre-ref-edges).
+    /// The caller should wipe and rebuild to get accurate `lookup refs` results.
+    pub needs_reindex: bool,
 }
 
 // Connection is `Send` since rusqlite 0.20; assert at compile time so a future
@@ -66,6 +69,18 @@ impl Store {
         conn.pragma_update(None, "cache_size", -64_000_i64).ok();
         conn.busy_timeout(std::time::Duration::from_millis(2_000))?;
         conn.execute_batch(SCHEMA).context("apply schema")?;
+        // Capture schema_version *before* migrations so we can detect stale indexes.
+        // None = fresh DB (no meta row yet); Some(v) = previously-built index at version v.
+        let pre_version: Option<i64> = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .unwrap_or(None)
+            .and_then(|s| s.parse().ok());
+
         // Idempotent migration: pre-FSST DBs lack `symbols.signature_enc`. The
         // schema above declares it for new DBs; for older indexes we ALTER
         // TABLE in place. PRAGMA table_info is the standard "does this column
@@ -120,13 +135,17 @@ impl Store {
         #[cfg(not(feature = "compress"))]
         let _ = compress; // silence unused-arg warning when feature is off
 
+        // Index was built without ref-edge support if schema_version < 3.
+        // Fresh DBs have pre_version = None and need no rebuild.
+        let needs_reindex = pre_version.map_or(false, |v| v < 3);
+
         #[cfg(feature = "compress")]
         {
-            Ok(Self { conn, codec })
+            Ok(Self { conn, codec, needs_reindex })
         }
         #[cfg(not(feature = "compress"))]
         {
-            Ok(Self { conn })
+            Ok(Self { conn, needs_reindex })
         }
     }
 
@@ -515,14 +534,14 @@ fn migrate_edges_text(conn: &Connection) -> Result<()> {
              CREATE INDEX IF NOT EXISTS idx_edges_dst      ON edges(dst_name);
              CREATE INDEX IF NOT EXISTS idx_edges_src      ON edges(src_file_id);
              CREATE INDEX IF NOT EXISTS idx_edges_dst_kind ON edges(dst_name, kind);
-             INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '2');",
+             INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '3');",
         )?;
     } else {
         // Fresh DB or already migrated — make sure the kind-composite index
         // exists for older v2 builds that predate it.
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_edges_dst_kind ON edges(dst_name, kind);
-             INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '2');",
+             INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '3');",
         )?;
     }
     Ok(())
