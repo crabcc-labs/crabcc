@@ -11,7 +11,7 @@
 set -euo pipefail
 
 MODELS=(
-    "openrouter/tencent/hunyuan-3-preview"
+    "openrouter/tencent/hy3-preview"
     "openrouter/deepseek/deepseek-v4-flash"
     "openrouter/deepseek/deepseek-v3.2-exp"
     "openrouter/deepseek/deepseek-v4-pro"
