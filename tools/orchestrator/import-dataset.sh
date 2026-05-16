@@ -26,9 +26,11 @@ AGENT="$2"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LANGSMITH="$SCRIPT_DIR/langsmith.sh"
 QUEUE="$SCRIPT_DIR/queue.sh"
+RESOLVE="$SCRIPT_DIR/resolve-manifest.sh"
 
 [[ -x "$LANGSMITH" ]] || { echo "import-dataset.sh: langsmith.sh not executable: $LANGSMITH" >&2; exit 1; }
 [[ -x "$QUEUE"     ]] || { echo "import-dataset.sh: queue.sh not executable: $QUEUE" >&2; exit 1; }
+[[ -x "$RESOLVE"   ]] || { echo "import-dataset.sh: resolve-manifest.sh not executable: $RESOLVE" >&2; exit 1; }
 
 log() {
     local level="$1"; shift
@@ -39,6 +41,20 @@ log() {
 }
 
 die() { log ERROR fatal msg="$*"; exit 1; }
+
+# ── resolve agent manifest (for MANIFEST_SHA stamping) ────────────────────────
+# Without this, every queue row gets manifest_sha=NULL and upload-experiment.sh
+# names experiments "agent@unknown" — defeating versioned-experiment comparison.
+MANIFEST_SHA=""
+if eval_out="$("$RESOLVE" "$AGENT" 2>&1)"; then
+    MANIFEST_SHA="$(printf '%s' "$eval_out" | sed -n 's/^MANIFEST_SHA=//p' | head -1)"
+fi
+if [[ -z "$MANIFEST_SHA" ]]; then
+    log WARN manifest_unresolved agent="$AGENT" \
+        msg="resolve-manifest.sh did not return MANIFEST_SHA; queue rows will have manifest_sha=NULL"
+else
+    log INFO manifest_resolved agent="$AGENT" manifest_sha="$MANIFEST_SHA"
+fi
 
 # ── resolve dataset ───────────────────────────────────────────────────────────
 
@@ -95,14 +111,20 @@ while IFS= read -r example; do
         --argjson out "$outputs" \
         '{langsmith_example_id: $eid, dataset_name: $dname, wave_id: $wid, inputs: $inp, expected_outputs: $out}')"
 
-    # Attempt to use --wave-id and --example-id flags if queue.sh supports them.
-    # Fall back to embedding them in the payload (which we already do) and log WARN.
-    if "$QUEUE" enqueue "$AGENT" "$payload" --wave-id "$WAVE_ID" --example-id "$example_id" >/dev/null 2>/tmp/queue_enqueue_err; then
-        log INFO enqueue_ok agent="$AGENT" example_id="$example_id" wave_id="$WAVE_ID"
+    # queue.sh enqueue: <agent> <payload> [manifest_sha] [--wave-id X] [--example-id Y]
+    # MANIFEST_SHA is passed as the 3rd positional only when non-empty so the
+    # legacy "no sha" enqueue path stays available for unstamped runs.
+    enqueue_args=("$AGENT" "$payload")
+    [[ -n "$MANIFEST_SHA" ]] && enqueue_args+=("$MANIFEST_SHA")
+    enqueue_args+=(--wave-id "$WAVE_ID" --example-id "$example_id")
+
+    if "$QUEUE" enqueue "${enqueue_args[@]}" >/dev/null 2>/tmp/queue_enqueue_err; then
+        log INFO enqueue_ok agent="$AGENT" example_id="$example_id" \
+            wave_id="$WAVE_ID" manifest_sha="${MANIFEST_SHA:-NULL}"
         enqueue_ok=$((enqueue_ok + 1))
     elif "$QUEUE" enqueue "$AGENT" "$payload" >/dev/null 2>/dev/null; then
         log WARN enqueue_flag_fallback agent="$AGENT" example_id="$example_id" \
-            msg="queue.sh does not support --wave-id/--example-id; wave_id embedded in payload"
+            msg="queue.sh does not support flags; wave_id/manifest_sha embedded in payload only"
         enqueue_ok=$((enqueue_ok + 1))
     else
         log ERROR enqueue_fail agent="$AGENT" example_id="$example_id"

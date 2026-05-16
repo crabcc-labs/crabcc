@@ -144,26 +144,55 @@ cmd_list_examples() {
     [[ $# -ge 1 ]] || die "usage: list-examples <dataset-id> [--limit N]"
     local dataset_id="$1"; shift
 
-    local limit=""
+    local user_limit=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --limit) limit="$2"; shift 2 ;;
+            --limit) user_limit="$2"; shift 2 ;;
             *) die "unknown flag: $1" ;;
         esac
     done
 
-    local query="dataset=${dataset_id}"
-    [[ -n "$limit" ]] && query="${query}&limit=${limit}"
+    # Paginate via offset/limit. LangSmith caps page size around 100; iterate
+    # until a page comes back smaller than the requested page size, then stop.
+    # Without this, datasets larger than one page were silently truncated and
+    # import-dataset.sh still reported success.
+    local page_size=100
+    local offset=0
+    local total=0
+    local accumulated="[]"
 
-    log INFO examples_fetch_start dataset_id="$dataset_id" limit="${limit:-all}"
-    local resp
-    resp="$(api_call GET /examples "" "$query")"
+    log INFO examples_fetch_start dataset_id="$dataset_id" \
+        limit="${user_limit:-all}" page_size="$page_size"
 
-    local count
-    count="$(printf '%s\n' "$resp" | jq 'length')"
-    log INFO examples_fetch_done dataset_id="$dataset_id" count="$count"
+    while :; do
+        # If the user passed --limit, cap remaining slots so we don't overshoot.
+        local this_size="$page_size"
+        if [[ -n "$user_limit" ]]; then
+            local remaining=$(( user_limit - total ))
+            (( remaining <= 0 )) && break
+            (( remaining < page_size )) && this_size="$remaining"
+        fi
 
-    printf '%s\n' "$resp"
+        local query="dataset=${dataset_id}&limit=${this_size}&offset=${offset}"
+        local page
+        page="$(api_call GET /examples "" "$query")"
+
+        local got
+        got="$(printf '%s\n' "$page" | jq 'length')"
+        (( got == 0 )) && break
+
+        accumulated="$(jq -nc --argjson a "$accumulated" --argjson b "$page" '$a + $b')"
+        total=$(( total + got ))
+        offset=$(( offset + got ))
+
+        log INFO examples_page dataset_id="$dataset_id" offset="$offset" got="$got" total="$total"
+
+        # Short page → server has no more rows.
+        (( got < this_size )) && break
+    done
+
+    log INFO examples_fetch_done dataset_id="$dataset_id" count="$total"
+    printf '%s\n' "$accumulated"
 }
 
 cmd_upload_experiment() {
