@@ -261,10 +261,16 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
                 .unwrap_or("callers");
             let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(2) as usize;
             let g = load_or_build_graph(&store, root)?;
-            let hits = if dir == "callees" {
-                g.outgoing(&name, depth)
-            } else {
-                g.incoming(&name, depth)
+            // v4: graph is symbol-id keyed; resolve user-typed name → SymbolId.
+            let hits = match store.symbol_id_by_name(&name)? {
+                Some(id) => {
+                    if dir == "callees" {
+                        g.outgoing(id, depth)
+                    } else {
+                        g.incoming(id, depth)
+                    }
+                }
+                None => Vec::new(),
             };
             Ok(serde_json::to_string(&hits)?)
         }

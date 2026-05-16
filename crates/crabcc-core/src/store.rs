@@ -208,6 +208,21 @@ impl Store {
         Ok(rows)
     }
 
+    /// Resolve a bare name to the first matching SymbolId across all files.
+    /// Coarse — multiple files may define the same name. Used by MCP/CLI
+    /// graph dispatch when the user typed just a name without file context.
+    pub fn symbol_id_by_name(&self, name: &str) -> Result<Option<i64>> {
+        let id = self
+            .conn
+            .query_row(
+                "SELECT id FROM symbols WHERE name = ?1 LIMIT 1",
+                params![name],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()?;
+        Ok(id)
+    }
+
     /// Resolve a bare name + file_id pair to a SymbolId. Returns the first
     /// match (callers handle ambiguity). Used by the CLI graph subcommand
     /// dispatch to turn user-typed symbol names into the IDs the query/*

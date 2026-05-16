@@ -1374,9 +1374,13 @@ fn main() -> Result<()> {
                     );
                     crabcc_core::graph::CallGraph::build(&store, &root)?
                 };
-                let hits = match direction.as_str() {
-                    "callees" => g.outgoing(&name, depth),
-                    _ => g.incoming(&name, depth),
+                // v4: graph is symbol-id keyed; resolve user-typed name first.
+                let hits = match store.symbol_id_by_name(&name)? {
+                    Some(id) => match direction.as_str() {
+                        "callees" => g.outgoing(id, depth),
+                        _ => g.incoming(id, depth),
+                    },
+                    None => Vec::new(),
                 };
                 let body = sonic_rs::to_string(&hits)?;
                 crabcc_core::track::record(
