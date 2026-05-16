@@ -46,8 +46,13 @@ enqueue_with_timestamps() {
     shift 4
     local task_id
     task_id="$("$ORCH_DIR/queue.sh" enqueue "$agent" "$payload" "$@")"
-    # Set claimed_at and completed_at directly for latency tests.
-    sqlite3 "$AGENTS_DB" "UPDATE agent_tasks SET claimed_at=$claimed, completed_at=$completed WHERE id='$task_id';"
+    # Set claimed_at and completed_at as ISO 8601 (matches production
+    # writers in queue.sh). The 'unixepoch' modifier converts epoch ints
+    # → ISO inside SQLite, so the test stays portable across GNU/BSD date.
+    sqlite3 "$AGENTS_DB" "UPDATE agent_tasks SET
+        claimed_at   = strftime('%Y-%m-%dT%H:%M:%SZ', $claimed,   'unixepoch'),
+        completed_at = strftime('%Y-%m-%dT%H:%M:%SZ', $completed, 'unixepoch')
+     WHERE id='$task_id';"
     echo "$task_id"
 }
 

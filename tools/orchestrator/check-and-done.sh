@@ -32,7 +32,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-DB="${AGENTS_DB:-$HOME/.orchestrator/agents.db}"
+DB="${AGENTS_DB:-$HOME/.crabcc/_agents.db}"
 
 # ── arg check ──────────────────────────────────────────────────────────────
 if [[ $# -lt 2 ]]; then
@@ -67,7 +67,15 @@ fi
 echo "validate_start task_id=$TASK_ID file=$RESULT_FILE" >&2
 
 # ── verify task exists ─────────────────────────────────────────────────────
-row="$(sqlite3 "$DB" "SELECT claimed_at, completed_at FROM agent_tasks WHERE id='$TASK_ID';" 2>/dev/null)"
+# claimed_at / completed_at are stored as ISO 8601 strings
+# (strftime('%Y-%m-%dT%H:%M:%SZ','now')). Convert to epoch seconds inside
+# SQLite via strftime('%s', …) so the bash side stays portable across
+# GNU/BSD `date` differences.
+row="$(sqlite3 "$DB" "
+    SELECT
+        COALESCE(strftime('%s', claimed_at),  '0')           AS claimed_epoch,
+        COALESCE(strftime('%s', completed_at), strftime('%s','now')) AS completed_epoch
+    FROM agent_tasks WHERE id='$TASK_ID';" 2>/dev/null)"
 if [[ -z "$row" ]]; then
     echo "check-and-done: task_id not found: $TASK_ID" >&2
     exit 1
@@ -75,15 +83,6 @@ fi
 
 claimed_at="$(printf '%s' "$row" | cut -d'|' -f1)"
 completed_at="$(printf '%s' "$row" | cut -d'|' -f2)"
-
-# Fallback: if either timestamp is missing, use now for completed and 0 for claimed
-# (which will trigger the latency floor check — safer than silently passing).
-if [[ -z "$claimed_at" || "$claimed_at" == "NULL" ]]; then
-    claimed_at=0
-fi
-if [[ -z "$completed_at" || "$completed_at" == "NULL" ]]; then
-    completed_at="$(date +%s)"
-fi
 
 # ── read result ────────────────────────────────────────────────────────────
 result="$(cat "$RESULT_FILE")"

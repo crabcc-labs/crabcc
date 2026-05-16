@@ -65,16 +65,23 @@ db_table() {
     printf '%s\n' "$1" | sqlite3 -column -header "$AGENTS_DB"
 }
 
-# Ensure the DB and schema exist (idempotent).
+# Ensure the DB, base table, AND v0.1 columns all exist (idempotent).
+# Checking only for the table would let a pre-v0.1 DB skip migration —
+# then INSERT into wave_id / langsmith_example_id would fail silently
+# because db() swallows errors with `|| true`.
 ensure_migrated() {
     if [[ ! -f "$AGENTS_DB" ]]; then
         "$SCRIPT_DIR/migrate-queue.sh" >/dev/null
         return
     fi
-    local count
-    count="$(printf 'SELECT COUNT(*) FROM sqlite_master WHERE type='"'"'table'"'"' AND name='"'"'agent_tasks'"'"';' \
-        | sqlite3 "$AGENTS_DB" 2>/dev/null)" || count=0
-    if [[ "${count:-0}" -lt 1 ]]; then
+    # Check both: base table exists AND wave_id column is present.
+    # wave_id is the marker of v0.1; if it's missing, run the migration
+    # which idempotently adds all three additive columns.
+    local has_wave
+    has_wave="$(sqlite3 "$AGENTS_DB" \
+        "SELECT COUNT(*) FROM pragma_table_info('agent_tasks') WHERE name='wave_id';" \
+        2>/dev/null)" || has_wave=0
+    if [[ "${has_wave:-0}" -lt 1 ]]; then
         "$SCRIPT_DIR/migrate-queue.sh" >/dev/null
     fi
 }
