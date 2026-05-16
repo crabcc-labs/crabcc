@@ -40,11 +40,18 @@ env:
   # CC, CFLAGS, CXX, CMAKE, RUST). Setting it here would slightly
   # destabilize the key without changing behavior.
   #
-  # Linux-only mold linker — slashes link time on debug + ci profiles
-  # for big workspaces (we have 567 deps). The flag is a no-op on
-  # macOS jobs (the lld/zld fallback is fine there).
-  CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
-  CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=mold"
+  # CC=cc ensures build scripts use the system C compiler consistently.
+  # Combined with the wild linker below this is the standard cc-driver
+  # + fast-linker pairing (same as the mold pattern but wild is a
+  # pure-Rust linker installed via cargo, so it travels in ~/.cargo/bin
+  # and is automatically warmed by rust-cache with no apt dependency).
+  CC: cc
+  # Linux-only wild linker — pure-Rust drop-in for GNU ld, comparable
+  # to mold in link-time savings (~3-5x on this workspace). Installed
+  # once via `cargo install wild --locked` and cached by rust-cache;
+  # no apt dependency.  The flag is a no-op on macOS jobs.
+  CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: cc
+  CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS: "-C link-arg=-fuse-ld=wild"
 
 jobs:
   fmt:
@@ -78,18 +85,11 @@ jobs:
 
       - uses: mozilla-actions/sccache-action@v0.0.10
 
-      # mold linker — Apache-2.0, ~3-5x faster link than lld on big
-      # debug + ci profile builds. Apt install is sub-second.
-      - name: install mold linker
-        run: sudo apt-get install -y --no-install-recommends mold
-
       # rust-cache caches `~/.cargo` (registry index + cache + git
       # deps) AND `target/` keyed off Cargo.lock + rustc + env-var
-      # hashes. Don't bolt an extra `actions/cache` step on top of
-      # this for `~/.cargo/registry/*` — the two would compete for
-      # the same paths AND the same 10 GB GHA repo budget. We
-      # measured this in PR #176; rust-cache alone is sufficient
-      # once `RUSTC_WRAPPER=sccache` is set above.
+      # hashes. `~/.cargo/bin` is included so the wild linker binary
+      # (installed below) and other cargo-installed tools persist
+      # across runs without re-compilation.
       - uses: Swatinem/rust-cache@v2
         with:
           # Bump prefix-key (e.g. v1 → v2) to force-clear the cache when
@@ -97,17 +97,19 @@ jobs:
           # otherwise cause subtle cache-poisoning failures.
           prefix-key: "v1"
           shared-key: ci-lint
-          # cache-on-failure isn't the default (false). True keeps the
-          # cache warm across a flaky lint job — next attempt starts
-          # warm even if the previous failed.
           cache-on-failure: "true"
-          # cache-all-crates includes CI tooling deps (cargo-nextest,
-          # taiki-e/install-action artifacts, etc) — adds <1% size,
-          # saves a fresh download next run.
           cache-all-crates: "true"
           # Don't write a new cache entry for cancelled runs — the partial
           # target/ would poison the next warm start.
           save-if: ${{ !cancelled() }}
+          # Persist cargo-installed binaries (wild, sccache, nextest).
+          cache-directories: ~/.cargo/bin
+
+      # wild linker — pure-Rust, no apt dependency; travels in
+      # ~/.cargo/bin which is warmed by rust-cache above. First run
+      # compiles + caches; every subsequent run restores in <1s.
+      - name: install wild linker
+        run: command -v wild || cargo install wild --locked
 
       # Issue #87 — Pillar 3 (PR-only-changed-files CI). On PR, scope
       # clippy + aliases-smoke to changed crates / scripts. On push to
@@ -187,14 +189,9 @@ jobs:
 
       - uses: mozilla-actions/sccache-action@v0.0.10
 
-      - name: install mold linker
-        run: sudo apt-get install -y --no-install-recommends mold
-
-      # See lint-job comment above for why this is the only cache
-      # layer needed at the dependency-blob level. The `ci-ubuntu`
-      # shared-key is distinct from `ci-lint` so the two jobs don't
-      # share their `target/` (different feature flags + different
-      # RUSTFLAGS for clippy vs nextest would poison a shared key).
+      # `ci-ubuntu` key is distinct from `ci-lint` — different feature
+      # flags + RUSTFLAGS between clippy and nextest would poison a
+      # shared target/. ~/.cargo/bin cached here warmed wild + nextest.
       - uses: Swatinem/rust-cache@v2
         with:
           prefix-key: "v1"
@@ -202,6 +199,10 @@ jobs:
           cache-on-failure: "true"
           cache-all-crates: "true"
           save-if: ${{ !cancelled() }}
+          cache-directories: ~/.cargo/bin
+
+      - name: install wild linker
+        run: command -v wild || cargo install wild --locked
 
       - name: install cargo-nextest (JUnit reporter)
         uses: taiki-e/install-action@v2

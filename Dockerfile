@@ -14,9 +14,8 @@
 FROM rust:1.86-slim
 
 # System deps:
-# - build-essential / pkg-config: stock native-build prerequisites
-# - libssl-dev / libsqlite3-dev: optional system links for crates that flip
-#   off the bundled feature; no harm having them present
+# - build-essential / pkg-config: cc + native-build prerequisites
+# - libssl-dev / libsqlite3-dev: optional system links
 # - git / ca-certificates / curl: cargo fetch (git deps) + HTTPS
 # - jq: the smoke step pipes tool output through jq
 RUN apt-get update \
@@ -25,15 +24,19 @@ RUN apt-get update \
       git ca-certificates curl jq \
  && rm -rf /var/lib/apt/lists/*
 
-# sccache — ~60-80% recompile-time reduction with a shared cache volume.
-# Mount `crabcc-sccache:/root/.cache/sccache` to persist across runs.
-RUN cargo install sccache --locked
-ENV RUSTC_WRAPPER=sccache
+# CC=cc: consistent C compiler for build scripts.
+# wild linker: pure-Rust, ~3-5x faster link than GNU ld.
+ENV CC=cc
+ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=cc
+ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="-C link-arg=-fuse-ld=wild"
 ENV CARGO_INCREMENTAL=0
 
-# cargo-nextest — CI uses it for the JUnit reporter; preinstall so the first
-# `cargo nextest run` inside the container is instant rather than a build wait.
-RUN cargo install cargo-nextest --locked
+# sccache — ~60-80% recompile-time reduction with a shared cache volume.
+# Mount `crabcc-sccache:/root/.cache/sccache` to persist across runs.
+# wild, sccache, and nextest are installed together so they share one
+# registry fetch and land in the same image layer.
+RUN cargo install sccache wild cargo-nextest --locked
+ENV RUSTC_WRAPPER=sccache
 
 WORKDIR /work
 
