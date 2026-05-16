@@ -181,6 +181,14 @@ impl Store {
     /// Refresh query-planner statistics. Call after a full reindex if you want
     /// the next batch of queries to hit optimal plans. Cheap (~tens of ms on
     /// a 13k-file index) — skipped automatically if data hasn't changed.
+    /// Borrow the underlying rusqlite Connection. Used by the query/* modules
+    /// that build complex ad-hoc SQL (graph traversals, aggregates). Treat as
+    /// internal — outside callers should use the typed Store::* methods.
+    pub fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
+
     pub fn analyze(&self) -> Result<()> {
         self.conn.execute_batch("ANALYZE;").context("ANALYZE")?;
         Ok(())
