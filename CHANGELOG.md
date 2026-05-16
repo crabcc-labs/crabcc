@@ -19,10 +19,12 @@ Bug fixes for `lookup refs` and `lookup callers` LSP/CLI commands.
   now matches correctly. A `bare_name()` helper strips path qualifiers before
   the edge lookup. `query_refs` falls back to `query_callers` for languages
   without dedicated ref-extraction support.
-- Indexes built before v3.2.0 are automatically detected on open via
-  `schema_version` (bumped from 2 to 3). A stale index is wiped and rebuilt
-  transparently before serving the first command, including an FTS sidecar
-  rebuild.
+- Indexes built before v3.2.0 are automatically detected on open via a
+  `meta('ref_edges_built')` marker that is only written after a successful
+  `full_index` completes. Stale indexes (marker absent) are wiped and
+  rebuilt transparently on the next CLI invocation, including an FTS
+  sidecar rebuild. MCP and LSP openers also see the flag and refuse to
+  serve stale data without clearing the marker themselves.
 
 ## [3.1.0] — 2026-05-16
 

@@ -74,7 +74,7 @@ caller's job (the CLI's `find_symbol` does an exact-name SELECT;
 | `files` | One row per indexed source file. `(path UNIQUE, sha256, mtime, lang, indexed_at)` |
 | `symbols` | One row per declaration: `(file_id, name, kind, signature, parent, line_start, line_end, visibility, signature_enc)` |
 | `edges` | One row per call site (or import / inherit / ref): `(src_file_id, src_symbol, dst_name, kind, line)`. `src_symbol` is the *name* of the enclosing fn (null if file-level). |
-| `meta` | Key-value scratchpad: `schema_version`, `edges_populated`, etc. |
+| `meta` | Key-value scratchpad: `schema_version` (forensic), `edges_populated`, `ref_edges_built` (gates auto-wipe — see below), etc. |
 
 Indexes on `symbols(name)`, `symbols(file_id)`, `symbols(name, kind)`,
 `edges(dst_name)`, `edges(dst_name, kind)`. The composite indexes are
@@ -259,6 +259,16 @@ TEXT) live in `store::open_with_compress` after the script runs.
   (FSST `signature_enc`, edges `src_symbol` retype) are the templates.
 - `meta('schema_version')` exists for forensics but we don't gate
   reads on it — the migration probes are the contract.
+- **Data-readiness gates are *separate* meta keys**, written only after
+  the corresponding rebuild completes. Today's example: `ref_edges_built`,
+  set by `Store::mark_ref_edges_built()` from `IndexOp::Build` and the
+  CLI's wipe-and-rebuild path after `full_index` returns. `Store::open`
+  reads this key into `needs_reindex`; callers that can't rebuild
+  (MCP, LSP) still see the flag and surface it to the user. Do **not**
+  conflate this with `schema_version` — bumping `schema_version` happens
+  on schema change, but a fresh schema with stale row contents (e.g. v2
+  edges missing `kind=ref` data) must remain flagged as stale until a
+  real rebuild marks it ready.
 
 **Pragmas set at open time:**
 
@@ -460,6 +470,14 @@ it. Process:
 
 Examples in tree: `signature_enc` (FSST flag) and the v1→v2
 `edges.src_symbol` retype both followed this pattern.
+
+**If the migration needs old row contents rebuilt** (not just a new
+column shape — e.g. the v3 ref-edge work needed every Rust file
+re-extracted), add a *separate* `meta` key written only after the
+rebuild completes, and read it into `Store::needs_reindex`. See
+`ref_edges_built` for the template. Bumping `schema_version` alone
+isn't enough — non-CLI openers (MCP, LSP) hit `Store::open` first and
+would otherwise leave the bumped version stamped on an unrebuilt DB.
 
 ---
 
