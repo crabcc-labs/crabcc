@@ -186,6 +186,21 @@ impl Store {
         Ok(())
     }
 
+    /// Look up the rowid for a previously-upserted file path. None when the
+    /// path hasn't been indexed yet. Used by the two-pass extractor to fetch
+    /// the file_id between pass 1 (insert symbols) and pass 2 (resolve edges).
+    pub fn get_file_id(&self, path: &str) -> Result<Option<i64>> {
+        let id = self
+            .conn
+            .query_row(
+                "SELECT id FROM files WHERE path = ?1",
+                params![path],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()?;
+        Ok(id)
+    }
+
     pub fn upsert_file(&self, path: &str, sha256: &str, mtime: i64, lang: &str) -> Result<i64> {
         self.conn.execute(
             "INSERT INTO files(path, sha256, mtime, lang, indexed_at)

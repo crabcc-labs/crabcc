@@ -138,7 +138,8 @@ pub fn extract_file_with_edges_with_resolver(
         // Pass 1: collect definitions, write to store, build local_defs + src_id map
         let mut symbols = Vec::new();
         let mut local_defs: HashMap<String, SymbolId> = HashMap::new();
-        let mut node_to_src_id: HashMap<NodeId, SymbolId> = HashMap::new();
+        // tree-sitter Node::id() returns usize and is stable for the Tree's lifetime.
+        let mut node_to_src_id: HashMap<(usize, usize), SymbolId> = HashMap::new();
         walk_with_store(
             root,
             bytes,
@@ -384,8 +385,8 @@ fn collect_imports_from_node(node: Node, src: &[u8], lang: &str, out: &mut Vec<I
                 if let Ok(module) = source.utf8_text(src) {
                     let module = module.trim_matches('"').trim_matches('\'').to_string();
                     out.push(ImportSpec {
-                        module,
-                        symbols: vec![], // simplified for now
+                        raw: module, alias: None, from_module: None,
+                        /* symbols list — not yet broken out per-spec */ // simplified for now
                     });
                 }
             }
@@ -394,8 +395,8 @@ fn collect_imports_from_node(node: Node, src: &[u8], lang: &str, out: &mut Vec<I
             // Simplified Python import collection
             if let Ok(text) = node.utf8_text(src) {
                 out.push(ImportSpec {
-                    module: text.to_string(),
-                    symbols: vec![],
+                    raw: text.to_string(), alias: None, from_module: None,
+                    /* symbols list — not yet broken out per-spec */
                 });
             }
         }
@@ -403,8 +404,8 @@ fn collect_imports_from_node(node: Node, src: &[u8], lang: &str, out: &mut Vec<I
             if let Ok(text) = node.utf8_text(src) {
                 let txt = text.replace("import ", "").replace(';', "").trim().to_string();
                 out.push(ImportSpec {
-                    module: txt,
-                    symbols: vec![],
+                    raw: txt, alias: None, from_module: None,
+                    /* symbols list — not yet broken out per-spec */
                 });
             }
         }
@@ -471,7 +472,7 @@ fn walk_with_store(
 
             // Get file_id from store (simplified: assume store has this method)
             let file_id = store
-                .get_file_id(file)
+                .get_file_id(file).ok().flatten()
                 .unwrap_or(0); // Fallback to 0 if not found; adjust as needed
 
             // Write to store
@@ -480,9 +481,9 @@ fn walk_with_store(
                 &n_owned,
                 None, // qualified: pass None for now
                 kind,
-                parent_id,
-                line_start,
-                line_end,
+                parent_id.map(|s| s.0),
+                line_start as i64,
+                line_end as i64,
                 signature.as_deref(),
                 visibility.as_deref(),
             ).unwrap_or(-1);
@@ -571,7 +572,7 @@ fn walk_edges_with_resolver(
         if let Some(src_symbol_id) = src_id {
             // Build ScopeCtx
             let scope = ScopeCtx {
-                file_id: store.get_file_id(file).unwrap_or(0),
+                file_id: store.get_file_id(file).ok().flatten().unwrap_or(0),
                 current_module: None, // Simplified; derive from AST if possible
                 imports,
                 local_defs,
@@ -590,7 +591,7 @@ fn walk_edges_with_resolver(
                 src_symbol_id.0,
                 dst_id.0,
                 "call",
-                line,
+                line as i64,
             );
             // Also add to output edges for backward compatibility
             out.push(Edge {
@@ -608,7 +609,7 @@ fn walk_edges_with_resolver(
         let src_id = next_enclosing;
         if let Some(src_symbol_id) = src_id {
             let scope = ScopeCtx {
-                file_id: store.get_file_id(file).unwrap_or(0),
+                file_id: store.get_file_id(file).ok().flatten().unwrap_or(0),
                 current_module: None,
                 imports,
                 local_defs,
@@ -624,7 +625,7 @@ fn walk_edges_with_resolver(
                 src_symbol_id.0,
                 dst_id.0,
                 "ref",
-                line,
+                line as i64,
             );
             out.push(Edge {
                 src_file: String::new(),
