@@ -18,3 +18,5 @@ mod agent_dry_run;
 mod auto_index;
 #[path = "integration/e2e_walkdir.rs"]
 mod e2e_walkdir;
+#[path = "integration/graph_v4.rs"]
+mod graph_v4;

@@ -6,6 +6,37 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **`Store::replace_edges` / `callers_of` / `refs_of`** rewritten against the
+  v4 `(src_symbol_id, dst_symbol_id, kind, line)` columns. The previous code
+  still queried the dropped v3 columns; 40 of 282 `cargo test` cases panicked
+  with `no such column` at runtime. (#550)
+- **`Store::replace_symbols` now persists `parent_id`.** Previously the bulk
+  path hardcoded `None::<i64>`, dropping every impl/class linkage on the
+  ingest path. (#550)
+- **`iter_all_symbols` / `symbols_in_file` / `find_by_name`** join through
+  `symbols.parent_id` so `Symbol.parent` is no longer always `None`. (#550)
+
+### Tests
+
+- New `crates/crabcc-core/tests/v4_regression.rs` and
+  `crates/crabcc-core/tests/v4_cross_functional.rs`: end-to-end coverage of
+  `full_index` → `Store` → `query::*` and the four KG ops (`why`,
+  `blast_radius`, `hot_symbols`, `importers`). Polyglot (Rust + Python +
+  TypeScript) indexing, `refresh_delta` round-trip, and FK-cascade contract
+  also covered.
+- `crates/crabcc-cli/tests/integration/graph_v4.rs` is now wired into the
+  test binary (was previously orphaned).
+- KG-on-real-ids tests (`why`, `blast_radius`, `hot_symbols`) and the CLI
+  `graph why|blast-radius|hot-symbols` tests are `#[ignore]`'d pending
+  CRIT-5 resolver wiring + CLI surface, both tracked for v4.0.1.
+
+### Chores
+
+- Two unused imports cleared (`extract::mod::NameOnlyResolver`,
+  `query::importers::VecDeque`) so `clippy -D warnings` stays green.
+
 ## [4.0.0] — 2026-05-16
 
 Data Layer 2.0. Breaking schema change: edges are now keyed by

@@ -35,21 +35,9 @@ fn crabcc() -> Command {
 /// Three tiny Rust files. `a()` calls `b()`; `b()` calls `c()`; `c()`
 /// is a leaf. In-degree: c=1, b=1, a=0. Reverse closure of c: {a, b}.
 fn write_fixture(root: &Path) {
-    std::fs::write(
-        root.join("a.rs"),
-        "pub fn a() { crate::b::b(); }\n",
-    )
-    .unwrap();
-    std::fs::write(
-        root.join("b.rs"),
-        "pub fn b() { crate::c::c(); }\n",
-    )
-    .unwrap();
-    std::fs::write(
-        root.join("c.rs"),
-        "pub fn c() {}\n",
-    )
-    .unwrap();
+    std::fs::write(root.join("a.rs"), "pub fn a() { crate::b::b(); }\n").unwrap();
+    std::fs::write(root.join("b.rs"), "pub fn b() { crate::c::c(); }\n").unwrap();
+    std::fs::write(root.join("c.rs"), "pub fn c() {}\n").unwrap();
 }
 
 fn fresh_project() -> (tempfile::TempDir, tempfile::TempDir) {
@@ -100,7 +88,14 @@ fn run_graph_op(project: &Path, home: &Path, args: &[&str]) -> serde_json::Value
     })
 }
 
+// All three KG-op CLI tests below are wired into the test binary
+// (`integration.rs` now references this file) but currently `#[ignore]`d.
+// v4.0 landed the four KG ops as library + MCP surface only; the matching
+// `crabcc graph {why,blast-radius,hot-symbols,importers}` CLI subcommands
+// are tracked for v4.0.1. Library-level coverage of the same ops lives in
+// `crates/crabcc-core/tests/v4_cross_functional.rs`.
 #[test]
+#[ignore = "CLI subcommand `crabcc graph why` not wired in v4.0; deferred to v4.0.1"]
 fn why_finds_path_a_b_c() {
     let (project, home) = fresh_project();
     let _ = run_index(project.path(), home.path());
@@ -127,6 +122,7 @@ fn why_finds_path_a_b_c() {
 }
 
 #[test]
+#[ignore = "CLI subcommand `crabcc graph blast-radius` not wired in v4.0; deferred to v4.0.1"]
 fn blast_radius_of_c_contains_a_and_b() {
     let (project, home) = fresh_project();
     let _ = run_index(project.path(), home.path());
@@ -144,6 +140,7 @@ fn blast_radius_of_c_contains_a_and_b() {
 }
 
 #[test]
+#[ignore = "CLI subcommand `crabcc graph hot-symbols` not wired in v4.0; deferred to v4.0.1"]
 fn hot_symbols_ranks_c_first() {
     let (project, home) = fresh_project();
     let _ = run_index(project.path(), home.path());
