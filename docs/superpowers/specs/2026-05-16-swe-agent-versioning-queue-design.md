@@ -131,12 +131,56 @@ Concurrency is controlled by the existing semaphore in `dispatch-rotated.sh` —
 
 ---
 
-## What is NOT in scope
+## What is NOT in scope (v1)
 
 - Kafka / Redis / NATS (replaced by SQLite queue)
 - Persistent background worker daemon (queue is pull-based, driven by orchestrator dispatch)
 - Agent output storage beyond the `result` column (GHA artifacts cover this)
-- UI / dashboard (out of scope for v1)
+- UI / dashboard
+
+---
+
+## v0.1: LangSmith Datasets + Experiments integration
+
+**Motivation.** A versioned manifest is only as useful as the regression suite you can run it against. LangSmith Datasets give us a curated input set; Experiments give us per-version comparison across the same inputs. The queue we just built is the natural runner.
+
+**References.**
+- Org workspace: <https://eu.smith.langchain.com/o/1421ca3c-df50-4e04-8af9-3f3116a2ba4a/datasets?view=new>
+- API surface: `POST /datasets/upload-experiment` (LangSmith docs, "Datasets + Experiments" topic)
+
+**Integration points.**
+
+1. **Dataset row → queue task.** A new helper `tools/orchestrator/import-dataset.sh <dataset-name> <agent>` pulls rows via the LangSmith SDK and `queue.sh enqueue`s one task per row. The dataset row's `id` is stored in `payload.langsmith_example_id` so we can correlate later.
+
+2. **Queue run → experiment row.** After a wave finishes (all tasks reach terminal status), `tools/orchestrator/upload-experiment.sh <wave-id>` collects every `agent_tasks` row tagged with that wave, builds the `/datasets/upload-experiment` POST body, and uploads. The experiment name is `<agent>@<manifest_sha_short>` (e.g. `swe-build@abc1234`) so version comparison in the LangSmith UI is the default view.
+
+3. **Validator → evaluation_scores.** The `check-and-done` validator step (proposed in the LangSmith feedback loop above) emits per-row scores: `empty_result` (0/1), `schema_shaped` (0/1), `latency_floor_violation` (0/1), `validator_pass` (0/1 aggregate). These flow into LangSmith as `evaluation_scores`, surfacing silent-failure patterns the way the agentfield-v2 audit identified.
+
+4. **Manifest SHA as experiment metadata.** Every uploaded experiment carries `metadata.manifest_sha` and `metadata.agent_name` — these become filter facets in the LangSmith UI, enabling queries like "show me every `swe-build` experiment from the last 7 days where `validator_pass` ratio dropped below 0.8."
+
+**New files.**
+
+| File | Purpose |
+|---|---|
+| `tools/orchestrator/import-dataset.sh` | LangSmith dataset → `queue.sh enqueue` fan-out |
+| `tools/orchestrator/upload-experiment.sh` | wave results → LangSmith POST `/datasets/upload-experiment` |
+| `tools/orchestrator/check-and-done.sh` | validator step between worker `done` and queue persist (closes the silent-failure gap) |
+
+**Schema additions to `agent_tasks` for v0.1.**
+
+```sql
+ALTER TABLE agent_tasks ADD COLUMN wave_id TEXT;                 -- groups tasks for a single experiment upload
+ALTER TABLE agent_tasks ADD COLUMN langsmith_example_id TEXT;    -- correlation to dataset row
+ALTER TABLE agent_tasks ADD COLUMN validator_scores TEXT;        -- JSON {key: score} written by check-and-done
+```
+
+Migrations stay additive (per repo convention — see `CLAUDE.md` → "When changing schema").
+
+**Out of scope for v0.1.**
+
+- Custom LangSmith evaluators (LLM-as-judge) — start with deterministic validator scores only
+- Auto-promotion / gating on experiment delta — humans review LangSmith UI for now
+- Backfill of historical queue rows into datasets — only new runs upload
 
 ---
 
