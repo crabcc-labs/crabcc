@@ -59,6 +59,7 @@
 //!   `signatures.signature_enc`. Default ON. Disable with
 //!   `--no-default-features` to drop the dep.
 
+pub mod agent_runtime;
 #[cfg(feature = "compress")]
 pub mod compress;
 pub mod config;
