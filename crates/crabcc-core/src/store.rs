@@ -125,9 +125,16 @@ impl Store {
         let _ = compress; // silence unused-arg warning when feature is off
 
         // `ref_edges_built` is written by Store::mark_ref_edges_built() after a
-        // successful full_index. Absent = never built with ref-edge extraction
-        // (pre-v3.2.0 or fresh DB). Checked by every caller; acted on by the CLI.
-        let needs_reindex = conn
+        // successful full_index. An index that was populated before v3.2.0 lacks
+        // this key and needs a wipe + rebuild to gain ref edges. Fresh empty
+        // stores are excluded: nothing to rebuild, and auto_index will handle
+        // the initial indexing through its own path.
+        let has_files = conn
+            .query_row("SELECT EXISTS(SELECT 1 FROM files LIMIT 1)", [], |r| {
+                r.get::<_, bool>(0)
+            })
+            .unwrap_or(false);
+        let ref_edges_built = conn
             .query_row(
                 "SELECT value FROM meta WHERE key = 'ref_edges_built'",
                 [],
@@ -136,15 +143,23 @@ impl Store {
             .optional()
             .unwrap_or(None)
             .as_deref()
-            != Some("1");
+            == Some("1");
+        let needs_reindex = has_files && !ref_edges_built;
 
         #[cfg(feature = "compress")]
         {
-            Ok(Self { conn, codec, needs_reindex })
+            Ok(Self {
+                conn,
+                codec,
+                needs_reindex,
+            })
         }
         #[cfg(not(feature = "compress"))]
         {
-            Ok(Self { conn, needs_reindex })
+            Ok(Self {
+                conn,
+                needs_reindex,
+            })
         }
     }
 
@@ -612,40 +627,47 @@ mod tests {
     }
 
     #[test]
-    fn fresh_store_needs_reindex_until_marked() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = dir.path().join("idx.db");
-
-        // No ref_edges_built key yet → needs rebuild.
-        let store = Store::open(&db).unwrap();
-        assert!(store.needs_reindex, "fresh DB must need reindex before mark");
-
-        // After marking, next open sees the key and clears the flag.
-        store.mark_ref_edges_built().unwrap();
-        drop(store);
-        let store2 = Store::open(&db).unwrap();
-        assert!(!store2.needs_reindex, "DB must not need reindex after mark");
+    fn fresh_empty_store_does_not_need_reindex() {
+        // A brand-new empty store has nothing to rebuild; auto_index handles
+        // the initial indexing through its own path.
+        let (_dir, store) = tmp_store();
+        assert!(!store.needs_reindex, "empty DB must not trigger reindex");
     }
 
     #[test]
-    fn legacy_index_without_ref_edges_built_needs_reindex() {
-        // Simulates a pre-v3.2.0 index: exists on disk but never had
-        // mark_ref_edges_built() called. Any open — including from MCP/LSP
-        // that doesn't act on the flag — must not silently clear needs_reindex.
+    fn populated_store_without_mark_needs_reindex() {
+        // Simulates a pre-v3.2.0 index: has indexed files but ref_edges_built
+        // was never written. Must trigger needs_reindex on every open so the
+        // CLI (and not MCP/LSP) rebuilds it.
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("idx.db");
 
-        // Create a store but deliberately do NOT call mark_ref_edges_built.
         {
-            let _store = Store::open(&db).unwrap();
+            let store = Store::open(&db).unwrap();
+            store.upsert_file("a.rs", "deadbeef", 0, "rust").unwrap();
+            // deliberately do NOT call mark_ref_edges_built
         }
 
-        // Reopen: ref_edges_built still absent → needs_reindex must be true.
         let store = Store::open(&db).unwrap();
         assert!(
             store.needs_reindex,
-            "index without ref_edges_built must set needs_reindex on every open"
+            "populated index without ref_edges_built must set needs_reindex"
         );
+    }
+
+    #[test]
+    fn mark_ref_edges_built_clears_needs_reindex() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("idx.db");
+
+        {
+            let store = Store::open(&db).unwrap();
+            store.upsert_file("a.rs", "deadbeef", 0, "rust").unwrap();
+            store.mark_ref_edges_built().unwrap();
+        }
+
+        let store = Store::open(&db).unwrap();
+        assert!(!store.needs_reindex, "DB must not need reindex after mark");
     }
 
     #[test]
