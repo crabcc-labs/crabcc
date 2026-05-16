@@ -164,13 +164,6 @@ pub fn apply_env_overrides(cfg: &mut Config) {
     }
 }
 
-/// Load with ENV overrides applied — the typical call site.
-pub fn load_with_env(explicit: Option<&Path>) -> Config {
-    let mut cfg = load_or_default(explicit);
-    apply_env_overrides(&mut cfg);
-    cfg
-}
-
 /// Resolve the config path in priority order. Pure — no I/O.
 pub fn resolve_path(explicit: Option<&Path>) -> Result<PathBuf> {
     if let Some(p) = explicit {

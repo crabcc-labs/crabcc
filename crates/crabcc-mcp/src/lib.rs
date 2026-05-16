@@ -34,18 +34,14 @@ pub const OPENAPI_YAML: &str = include_str!("../openapi.yaml");
 pub const DEV_ENV: &str = "CRABCC_MCP_DEV";
 
 /// True when the dev surface should be exposed — checked once per
-/// `serve_stdio` start so flipping the env mid-session has no effect.
+/// `serve_stdio_with` start so flipping the env mid-session has no effect.
 pub fn dev_mode_from_env() -> bool {
     std::env::var(DEV_ENV).ok().as_deref() == Some("1")
 }
 
-pub fn serve_stdio(root: &Path) -> Result<()> {
-    serve_stdio_with(root, dev_mode_from_env())
-}
-
-/// Same as [`serve_stdio`] but takes the dev flag explicitly. Used by
-/// the CLI's `--dev` plumbing and by tests that want to exercise both
-/// surfaces independently of process env.
+/// Serve the MCP stdio transport. Callers pass the dev-mode flag
+/// explicitly; resolve it from the env via [`dev_mode_from_env`] if
+/// you want the legacy `MCP_DEV=1` behaviour.
 pub fn serve_stdio_with(root: &Path, dev: bool) -> Result<()> {
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
@@ -128,7 +124,7 @@ where
 
 /// HTTP transport for the MCP server (#204 phase 1).
 ///
-/// Exposes the same JSON-RPC dispatch as [`serve_io`] / [`serve_stdio`]
+/// Exposes the same JSON-RPC dispatch as [`serve_io`] / [`serve_stdio_with`]
 /// behind two endpoints:
 ///   - `POST /mcp` — sync request → response. Body is a single JSON-RPC
 ///     2.0 request; response is the JSON-RPC reply (200) or
@@ -579,11 +575,21 @@ fn tools_def_symbol() -> Vec<Value> {
     ]
 }
 
-fn str_field(desc: &str) -> Value {
+// Shared MCP-tool schema-builder helpers. Lifted from per-fn nesting +
+// memory.rs duplicates so all 5 surfaces (sym/refs/callers/outline/memory.*)
+// share one copy. `pub(crate)` so memory.rs can import.
+
+pub(crate) fn arg_str<'a>(args: &'a Value, key: &str) -> Result<&'a str> {
+    args.get(key)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| anyhow::anyhow!("missing arg: {key}"))
+}
+
+pub(crate) fn str_field(desc: &str) -> Value {
     json!({"type": "string", "description": desc})
 }
 
-fn tool_schema(name: &str, desc: &str, props: Value, required: &[&str]) -> Value {
+pub(crate) fn tool_schema(name: &str, desc: &str, props: Value, required: &[&str]) -> Value {
     json!({
         "name": name,
         "description": desc,
@@ -676,12 +682,6 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
     let db = root.join(".crabcc").join("index.db");
     std::fs::create_dir_all(db.parent().unwrap())?;
     let store = Store::open(&db)?;
-
-    fn arg_str<'a>(args: &'a Value, key: &str) -> Result<&'a str> {
-        args.get(key)
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| anyhow::anyhow!("missing arg: {key}"))
-    }
 
     match tool {
         "sym" => {

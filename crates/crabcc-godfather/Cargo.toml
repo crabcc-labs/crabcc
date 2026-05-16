@@ -33,6 +33,12 @@ name = "crabcc-godfather"
 path = "src/main.rs"
 
 [dependencies]
+# Foundational dep only — used for `crabcc_core::time::unix_now_secs`
+# (the canonical impl that the per-file `now_secs`/`now_ts` shims
+# delegate to). Independence from cli/viz is intentional (so godfather
+# survives their crashes), but core is the foundation so adding it
+# doesn't violate that design.
+crabcc-core = { workspace = true }
 anyhow = { workspace = true }
 clap = { workspace = true }
 rusqlite = { workspace = true }

@@ -9,6 +9,7 @@
 //! Optional `session_id` arg propagates through to drawer rows for
 //! per-call grouping (terminal id from CLI, conversation id from MCP).
 
+use crate::{arg_str, str_field, tool_schema as tool};
 use anyhow::{anyhow, Result};
 use crabcc_memory::{
     find_git_root,
@@ -354,28 +355,6 @@ fn open_palace(args: &Value, server_root: &Path) -> Result<Palace> {
         .unwrap_or_else(|| server_root.to_path_buf());
     let resolved = find_git_root(&cwd).unwrap_or(cwd);
     Palace::open(&resolved)
-}
-
-fn arg_str<'a>(args: &'a Value, key: &str) -> Result<&'a str> {
-    args.get(key)
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow!("missing arg: {key}"))
-}
-
-fn str_field(desc: &str) -> Value {
-    json!({"type": "string", "description": desc})
-}
-
-fn tool(name: &str, desc: &str, props: Value, required: &[&str]) -> Value {
-    json!({
-        "name": name,
-        "description": desc,
-        "inputSchema": {
-            "type": "object",
-            "properties": props,
-            "required": required,
-        }
-    })
 }
 
 /// RFC3339 → epoch-seconds. Tiny parser, no chrono dep — handles

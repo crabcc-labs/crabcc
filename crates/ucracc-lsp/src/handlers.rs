@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use tower_lsp::lsp_types::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, DocumentSymbol, Hover,
     HoverContents, Location, MarkupContent, MarkupKind, Position, Range, SymbolInformation,
-    SymbolKind as LspKind, Url, WorkspaceSymbol,
+    SymbolKind as LspKind, Url,
 };
 
 pub fn to_url(root: &Path, rel: &str) -> Option<Url> {
@@ -222,27 +222,6 @@ pub fn outgoing_calls(root: &Path, callees: Vec<Symbol>) -> Vec<CallHierarchyOut
             Some(CallHierarchyOutgoingCall {
                 to: item,
                 from_ranges: Vec::new(),
-            })
-        })
-        .collect()
-}
-
-#[allow(dead_code)]
-pub fn workspace_symbol_new(root: &Path, symbols: Vec<Symbol>) -> Vec<WorkspaceSymbol> {
-    symbols
-        .into_iter()
-        .filter_map(|s| {
-            let uri = to_url(root, &s.file)?;
-            Some(WorkspaceSymbol {
-                name: s.name.clone(),
-                kind: lsp_kind(s.kind),
-                tags: None,
-                container_name: s.parent.clone(),
-                location: tower_lsp::lsp_types::OneOf::Left(Location {
-                    uri,
-                    range: symbol_range(&s),
-                }),
-                data: None,
             })
         })
         .collect()
