@@ -110,7 +110,7 @@ jobs:
       # rust-cache warms via cache-directories above. First run compiles
       # + caches; every subsequent run restores in <1s.
       - name: install wild linker
-        run: command -v wild || cargo install --git https://github.com/davidlattimore/wild
+        run: command -v wild || cargo install --git https://github.com/davidlattimore/wild wild-linker
 
       # Issue #87 — Pillar 3 (PR-only-changed-files CI). On PR, scope
       # clippy + aliases-smoke to changed crates / scripts. On push to
@@ -203,7 +203,7 @@ jobs:
           cache-directories: ~/.cargo/bin
 
       - name: install wild linker
-        run: command -v wild || cargo install --git https://github.com/davidlattimore/wild
+        run: command -v wild || cargo install --git https://github.com/davidlattimore/wild wild-linker
 
       - name: install cargo-nextest (JUnit reporter)
         uses: taiki-e/install-action@v2
