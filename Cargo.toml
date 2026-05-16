@@ -10,6 +10,7 @@ members = [
     "crates/crabcc-memory",
     "crates/crabcc-memory-bench",
     "crates/crabcc-viz",
+    "crates/ucracc-lsp",
     # apps/crabcc-telegram: excluded from workspace — uses teloxide which
     # triggers a nightly libc ICE under -Z polonius + -Z randomize-layout.
     # Build standalone: cd apps/crabcc-telegram && cargo build --release
@@ -59,6 +60,9 @@ tree-sitter-ruby = "0.23"
 tree-sitter-rust = "0.24"
 tree-sitter-go = "0.25"
 tree-sitter-python = "0.25"
+tree-sitter-swift = "0.7"
+tree-sitter-bash = "0.25"
+tree-sitter-java = "0.23"
 ast-grep-core = "0.42"
 ast-grep-language = "0.42"
 sha2 = "0.11"

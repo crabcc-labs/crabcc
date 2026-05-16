@@ -44,9 +44,16 @@ done
 chmod +x "$SOURCE_HOOK" 2>/dev/null || true
 
 # Resolve the actual hooks dir — honors core.hooksPath if the user set it.
+# `git rev-parse --git-dir` returns the per-worktree git dir
+# (`.git/worktrees/<name>/` for worktrees, plain `.git/` for the main
+# checkout) — this is what makes the script worktree-safe.
 HOOKS_PATH="$(git -C "$REPO_ROOT" config core.hooksPath 2>/dev/null || true)"
 if [ -z "$HOOKS_PATH" ]; then
-    HOOKS_PATH="$REPO_ROOT/.git/hooks"
+    GIT_DIR="$(git -C "$REPO_ROOT" rev-parse --git-dir)"
+    case "$GIT_DIR" in
+        /*) HOOKS_PATH="$GIT_DIR/hooks" ;;
+        *)  HOOKS_PATH="$REPO_ROOT/$GIT_DIR/hooks" ;;
+    esac
 elif [ "${HOOKS_PATH:0:1}" != "/" ]; then
     HOOKS_PATH="$REPO_ROOT/$HOOKS_PATH"
 fi
