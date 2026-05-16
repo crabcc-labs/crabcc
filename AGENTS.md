@@ -183,6 +183,14 @@ Bootstrap a fresh machine: `curl -fsSL …/scripts/bootstrap.sh | bash`.
   linter and `task fmt` keep things consistent — let them do their job.
 - **One feature, one PR.** Don't fold release prep, refactors, and a feature
   into a single commit.
+- **v4.0 schema change.** Opening a pre-v4 index on v4.0.0+ wipes and
+  rebuilds it on the first command (~60 s on this 13k-file repo). The
+  banner reads `crabcc: index built with schema v3; wiping and
+  re-indexing for symbol-ID edges...` — same shape as the v3.2 upgrade
+  banner. There is no migrator, no opt-out flag, and no user choice; the
+  rebuild is gated by a `schema_v4_built` meta key. Agents that script
+  against `crabcc` should expect the first call after upgrade to take
+  rebuild-time, not query-time.
 
 ## Memory layer routing
 

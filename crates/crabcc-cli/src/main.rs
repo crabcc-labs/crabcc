@@ -1122,6 +1122,7 @@ fn main() -> Result<()> {
             let _ = std::fs::remove_file(&db);
             let fresh = Store::open_with_compress(&db, cli.compress)?;
             crabcc_core::index::full_index(&root, &fresh)?;
+            fresh.mark_schema_v4_built()?;
             if let Ok(fts) = crabcc_core::fts::Fts::open(&fts_dir) {
                 let _ = fts.rebuild(&fresh);
             }
@@ -1150,6 +1151,7 @@ fn main() -> Result<()> {
         Cmd::Index { op } => match op.unwrap_or(IndexOp::Build) {
             IndexOp::Build => {
                 let stats = crabcc_core::index::full_index(&root, &store)?;
+                store.mark_schema_v4_built()?;
                 if let Ok(fts) = crabcc_core::fts::Fts::open(&fts_dir) {
                     let _ = fts.rebuild(&store);
                 }
@@ -1372,9 +1374,13 @@ fn main() -> Result<()> {
                     );
                     crabcc_core::graph::CallGraph::build(&store, &root)?
                 };
-                let hits = match direction.as_str() {
-                    "callees" => g.outgoing(&name, depth),
-                    _ => g.incoming(&name, depth),
+                // v4: graph is symbol-id keyed; resolve user-typed name first.
+                let hits = match store.symbol_id_by_name(&name)? {
+                    Some(id) => match direction.as_str() {
+                        "callees" => g.outgoing(id, depth),
+                        _ => g.incoming(id, depth),
+                    },
+                    None => Vec::new(),
                 };
                 let body = sonic_rs::to_string(&hits)?;
                 crabcc_core::track::record(

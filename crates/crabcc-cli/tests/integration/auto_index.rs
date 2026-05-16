@@ -77,7 +77,7 @@ fn outline_on_fresh_project_auto_indexes_and_warns() {
 
     let out = crabcc()
         .env("CRABCC_HOME", home.path())
-        .args(["outline", "--root"])
+        .args(["lookup", "outline", "--root"])
         .arg(project.path())
         .arg("lib.rs")
         .output()
@@ -115,7 +115,7 @@ fn second_invocation_is_silent_noop() {
     // Prime the index.
     let _ = crabcc()
         .env("CRABCC_HOME", home.path())
-        .args(["outline", "--root"])
+        .args(["lookup", "outline", "--root"])
         .arg(project.path())
         .arg("lib.rs")
         .output()
@@ -125,7 +125,7 @@ fn second_invocation_is_silent_noop() {
     // same output.
     let out = crabcc()
         .env("CRABCC_HOME", home.path())
-        .args(["outline", "--root"])
+        .args(["lookup", "outline", "--root"])
         .arg(project.path())
         .arg("lib.rs")
         .output()
@@ -147,7 +147,7 @@ fn no_auto_index_env_opts_out() {
     let out = crabcc()
         .env("CRABCC_HOME", home.path())
         .env("CRABCC_NO_AUTO_INDEX", "1")
-        .args(["outline", "--root"])
+        .args(["lookup", "outline", "--root"])
         .arg(project.path())
         .arg("lib.rs")
         .output()
@@ -174,7 +174,7 @@ fn sym_files_fuzzy_all_auto_index() {
         let (project, home) = fresh_project();
         let mut cmd = crabcc();
         cmd.env("CRABCC_HOME", home.path())
-            .arg(verb)
+            .args(["lookup", verb])
             .arg("--root")
             .arg(project.path());
         match verb {
@@ -235,7 +235,7 @@ fn in_repo_dotcrabcc_wins_when_present() {
 
     let _ = crabcc()
         .env("CRABCC_HOME", home.path())
-        .args(["outline", "--root"])
+        .args(["lookup", "outline", "--root"])
         .arg(project.path())
         .arg("lib.rs")
         .output()
@@ -264,7 +264,7 @@ fn centralised_layout_is_keyed_and_stable() {
     // First run populates crabcc_home/repos/<key>/.
     let _ = crabcc()
         .env("CRABCC_HOME", home.path())
-        .args(["outline", "--root"])
+        .args(["lookup", "outline", "--root"])
         .arg(project.path())
         .arg("lib.rs")
         .output()
@@ -298,7 +298,7 @@ fn centralised_layout_is_keyed_and_stable() {
     // Second run on the same project must reuse the same key dir.
     let _ = crabcc()
         .env("CRABCC_HOME", home.path())
-        .args(["outline", "--root"])
+        .args(["lookup", "outline", "--root"])
         .arg(project.path())
         .arg("lib.rs")
         .output()
@@ -367,7 +367,12 @@ fn url_root_clones_indexes_and_returns_outline() {
 #[test]
 fn invalid_local_path_errors_cleanly() {
     let out = crabcc()
-        .args(["outline", "--root", "/this/path/does/not/exist/anywhere"])
+        .args([
+            "lookup",
+            "outline",
+            "--root",
+            "/this/path/does/not/exist/anywhere",
+        ])
         .arg("foo.rs")
         .output()
         .unwrap();

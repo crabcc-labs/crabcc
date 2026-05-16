@@ -260,11 +260,12 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
                 .and_then(|v| v.as_str())
                 .unwrap_or("callers");
             let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(2) as usize;
+            let symbol_id = resolve_symbol_id(&store, &name)?;
             let g = load_or_build_graph(&store, root)?;
             let hits = if dir == "callees" {
-                g.outgoing(&name, depth)
+                g.outgoing(symbol_id, depth)
             } else {
-                g.incoming(&name, depth)
+                g.incoming(symbol_id, depth)
             };
             Ok(serde_json::to_string(&hits)?)
         }
@@ -275,6 +276,60 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
         "graph_orphans" => {
             let g = load_or_build_graph(&store, root)?;
             Ok(serde_json::to_string(&g.orphans())?)
+        }
+        "graph.blast_radius" => {
+            let symbol = arg_str(&args, "symbol")?.to_string();
+            let depth = args
+                .get("depth")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as usize)
+                .unwrap_or(5);
+            let kind = args.get("kind").and_then(|v| v.as_str()).map(String::from);
+            let symbol_id = resolve_symbol_id(&store, &symbol)?;
+            let kinds: &[&str] = match kind.as_deref() {
+                Some(k) => &[k][..],
+                None => &[][..],
+            };
+            let hits =
+                crabcc_core::query::blast_radius::blast_radius(&store, symbol_id, depth, kinds)?;
+            Ok(serde_json::to_string(&hits)?)
+        }
+        "graph.why" => {
+            let src = arg_str(&args, "src")?.to_string();
+            let dst = arg_str(&args, "dst")?.to_string();
+            let max_depth = args
+                .get("max_depth")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as usize)
+                .unwrap_or(8);
+            let src_id = resolve_symbol_id(&store, &src)?;
+            let dst_id = resolve_symbol_id(&store, &dst)?;
+            let path = crabcc_core::query::why::why(&store, src_id, dst_id, max_depth)?;
+            Ok(serde_json::to_string(&path)?)
+        }
+        "graph.hot_symbols" => {
+            let top = args
+                .get("top")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as usize)
+                .unwrap_or(10);
+            let kind = args.get("kind").and_then(|v| v.as_str()).map(String::from);
+            let kinds: &[&str] = match kind.as_deref() {
+                Some(k) => &[k][..],
+                None => &[][..],
+            };
+            let hits = crabcc_core::query::hot_symbols::hot_symbols(&store, top, kinds)?;
+            Ok(serde_json::to_string(&hits)?)
+        }
+        "graph.importers" => {
+            let path = arg_str(&args, "path")?.to_string();
+            let depth = args
+                .get("depth")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as usize)
+                .unwrap_or(3);
+            let hits = crabcc_core::query::importers::importers(&store, &path, depth)?;
+            Ok(serde_json::to_string(&hits)?)
         }
         "upgrade" => {
             let repo = args
@@ -293,4 +348,15 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
         }
         other => Err(anyhow::anyhow!("unknown tool: {other}")),
     }
+}
+
+/// Resolve a user-typed symbol name to a `symbols.id`. Mirrors the CLI
+/// helper of the same name in `crabcc-cli::main`. Uses
+/// `Store::find_by_name` (which already powers `lookup sym`); on multiple
+/// hits, returns the first one — MCP callers can disambiguate by passing
+/// a qualified name.
+fn resolve_symbol_id(store: &Store, name: &str) -> Result<i64> {
+    store
+        .symbol_id_by_name(name)?
+        .ok_or_else(|| anyhow::anyhow!("symbol not found: {name}"))
 }

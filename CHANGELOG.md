@@ -6,6 +6,91 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **`Store::replace_edges` / `callers_of` / `refs_of`** rewritten against the
+  v4 `(src_symbol_id, dst_symbol_id, kind, line)` columns. The previous code
+  still queried the dropped v3 columns; 40 of 282 `cargo test` cases panicked
+  with `no such column` at runtime. (#550)
+- **`Store::replace_symbols` now persists `parent_id`.** Previously the bulk
+  path hardcoded `None::<i64>`, dropping every impl/class linkage on the
+  ingest path. (#550)
+- **`iter_all_symbols` / `symbols_in_file` / `find_by_name`** join through
+  `symbols.parent_id` so `Symbol.parent` is no longer always `None`. (#550)
+
+### Tests
+
+- New `crates/crabcc-core/tests/v4_regression.rs` and
+  `crates/crabcc-core/tests/v4_cross_functional.rs`: end-to-end coverage of
+  `full_index` → `Store` → `query::*` and the four KG ops (`why`,
+  `blast_radius`, `hot_symbols`, `importers`). Polyglot (Rust + Python +
+  TypeScript) indexing, `refresh_delta` round-trip, and FK-cascade contract
+  also covered.
+- `crates/crabcc-cli/tests/integration/graph_v4.rs` is now wired into the
+  test binary (was previously orphaned).
+- KG-on-real-ids tests (`why`, `blast_radius`, `hot_symbols`) and the CLI
+  `graph why|blast-radius|hot-symbols` tests are `#[ignore]`'d pending
+  CRIT-5 resolver wiring + CLI surface, both tracked for v4.0.1.
+
+### Chores
+
+- Two unused imports cleared (`extract::mod::NameOnlyResolver`,
+  `query::importers::VecDeque`) so `clippy -D warnings` stays green.
+
+## [4.0.0] — 2026-05-16
+
+Data Layer 2.0. Breaking schema change: edges are now keyed by
+`symbol_id` foreign-keys instead of `dst_name TEXT`, restoring resolution
+for `Foo::open` vs `Bar::open` and enabling real knowledge-graph traversal.
+Three first-class symbol resolvers (Rust, JS/TS, Python). Four new graph
+ops (`blast-radius`, `why`, `hot-symbols`, `importers`). Pre-v4 indexes
+are auto-wiped and rebuilt on first open via the v3.2 `needs_reindex`
+plumbing — no flag, no migrator, no user choice.
+
+### Breaking
+- **Schema v4.** The `edges` table is rebuilt with `(src_symbol_id,
+  dst_symbol_id)` FK columns; the pre-v4 `(src_file_id, src_symbol TEXT,
+  dst_name TEXT)` shape is dropped. `symbols` gains `qualified TEXT` and
+  `parent_id INTEGER REFERENCES symbols(id)` (replacing the loose
+  `parent TEXT`). A new `unresolved_names` sentinel table backs name-only
+  recall for languages without a resolver yet (Ruby, Java, Swift).
+- **`CallGraph` public API.** `outgoing`, `incoming`, `cycles`, `orphans`
+  now take and return `i64` symbol-IDs instead of `String` symbol names.
+  Callers that need human-readable output resolve IDs back to qualified
+  names via `Store::find_by_name` at render time. The v1.0.0 `build_legacy`
+  walker is removed — v4 indexes always populate the `edges` table.
+
+### Added
+- **`crabcc graph blast-radius <symbol> [--depth N] [--kind …]`** —
+  reverse transitive closure: everything that transitively depends on the
+  given symbol.
+- **`crabcc graph why <src> <dst> [--max-depth N]`** — shortest
+  call-graph path between two symbols (bidirectional BFS).
+- **`crabcc graph hot-symbols [--top N] [--kind …]`** — symbols ranked
+  by in-degree (most-called first).
+- **`crabcc graph importers <path> [--depth N]`** — file-level edge
+  rollup: which files transitively reference the given path.
+- The same four ops are exposed as MCP tools: `graph.blast_radius`,
+  `graph.why`, `graph.hot_symbols`, `graph.importers`.
+- **Resolvers.** First-class scope walkers for Rust (use_, mod, impl),
+  TypeScript / JavaScript (ES imports, class scope), and Python (imports,
+  class scope) in `crabcc-core::extract::{resolve_rust, resolve_ts,
+  resolve_python}`. The extractor is now two-pass (pass-1 collects defs,
+  pass-2 routes uses through a `Resolver` trait).
+
+### Changed
+- **`crabcc graph walk/cycles/orphans`** keep their flag shape but their
+  output now references symbol-IDs (and qualified names) rather than raw
+  destination strings — collisions like `Foo::open` vs `Bar::open` are no
+  longer collapsed.
+- Indexes built before v4.0.0 are auto-wiped and rebuilt on first open.
+  Stale-index detection moves from the v3.2 `ref_edges_built` flag to a
+  new `schema_v4_built` flag. Users see a `crabcc: index built with
+  schema v3; wiping and re-indexing for symbol-ID edges...` message
+  identical in shape to the v3.2 message they already saw on first
+  upgrade. Full re-index of this 13k-file repo completes in <60 s on an
+  M-series Mac.
+
 ## [3.2.0] — 2026-05-16
 
 Bug fixes for `lookup refs` and `lookup callers` LSP/CLI commands.

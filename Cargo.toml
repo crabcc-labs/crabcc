@@ -1,5 +1,14 @@
 [workspace]
 resolver = "2"
+exclude = [
+    # See the inline comments in `members` for the rationale of each exclude.
+    # `exclude` is required (not just absence-from-members) because cargo
+    # otherwise auto-discovers nested Cargo.toml files when a path-dep
+    # references them. See https://github.com/rust-lang/cargo/issues/9853.
+    "crates/crabcc-viz",
+    "crates/crabcc-desktop",
+    "apps/crabcc-telegram",
+]
 members = [
     "crates/crabcc-chrome",
     "crates/crabcc-cli",
@@ -9,8 +18,15 @@ members = [
     "crates/crabcc-mcp",
     "crates/crabcc-memory",
     "crates/crabcc-memory-bench",
-    "crates/crabcc-viz",
     "crates/ucracc-lsp",
+    # crates/crabcc-viz: excluded from workspace — v4 CallGraph moved from
+    # `BTreeMap<String, …>` to `BTreeMap<i64, …>` and the viz HTML/HTMX
+    # renderer + GraphHit field-shape still expect the v3 name-keyed
+    # surface (~20 errors across graph.rs + lib.rs). `crabcc serve` is
+    # feature-gated behind `viz` in crabcc-cli, so the default build is
+    # unaffected; viz catches up in v4.0.1 / v4.1. Build standalone:
+    # cd crates/crabcc-viz && cargo build --release
+    #
     # apps/crabcc-telegram: excluded from workspace — uses teloxide which
     # triggers a nightly libc ICE under -Z polonius + -Z randomize-layout.
     # Build standalone: cd apps/crabcc-telegram && cargo build --release
@@ -28,7 +44,7 @@ members = [
 ]
 
 [workspace.package]
-version = "3.2.0"
+version = "4.0.0"
 edition = "2021"
 rust-version = "1.86"
 license = "MIT"

@@ -5,6 +5,13 @@ use std::path::Path;
 
 const SCHEMA: &str = include_str!("../../../schema/001_init.sql");
 
+/// Sentinel `files` row path used to anchor unresolved-name `symbols` rows.
+/// The v4 `symbols.file_id` column is `NOT NULL REFERENCES files(id)`, so
+/// sentinel symbols need a real (synthetic) file to live under. Created
+/// lazily by `upsert_unresolved_sentinel`. One row per index.
+const UNRESOLVED_FILE_PATH: &str = "<unresolved>";
+const UNRESOLVED_FILE_LANG: &str = "_unresolved";
+
 /// SQLite-backed symbol store. `Send` (move across threads safely);
 /// **not** `Sync` — wrap in `Mutex<Store>` for shared access. `crabcc watch`
 /// does exactly that. Single-writer is fine for our workload; WAL mode
@@ -69,17 +76,6 @@ impl Store {
         conn.pragma_update(None, "cache_size", -64_000_i64).ok();
         conn.busy_timeout(std::time::Duration::from_millis(2_000))?;
         conn.execute_batch(SCHEMA).context("apply schema")?;
-        // Capture schema_version *before* migrations so we can detect stale indexes.
-        // None = fresh DB (no meta row yet); Some(v) = previously-built index at version v.
-        let pre_version: Option<i64> = conn
-            .query_row(
-                "SELECT value FROM meta WHERE key = 'schema_version'",
-                [],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()
-            .unwrap_or(None)
-            .and_then(|s| s.parse().ok());
 
         // Idempotent migration: pre-FSST DBs lack `symbols.signature_enc`. The
         // schema above declares it for new DBs; for older indexes we ALTER
@@ -135,17 +131,44 @@ impl Store {
         #[cfg(not(feature = "compress"))]
         let _ = compress; // silence unused-arg warning when feature is off
 
-        // Index was built without ref-edge support if schema_version < 3.
-        // Fresh DBs have pre_version = None and need no rebuild.
-        let needs_reindex = pre_version.map_or(false, |v| v < 3);
+        // `schema_v4_built` is written by Store::mark_schema_v4_built() after a
+        // successful full_index under the v4 schema. Any pre-v4 index (which
+        // wrote either nothing or the v3.2 `ref_edges_built` flag instead)
+        // lacks this key and must be wiped + rebuilt so its `edges` rows use
+        // symbol-ID FKs instead of the dropped `dst_name TEXT` shape. Fresh
+        // empty stores are excluded: nothing to rebuild, and auto_index will
+        // handle the initial indexing through its own path.
+        let has_files = conn
+            .query_row("SELECT EXISTS(SELECT 1 FROM files LIMIT 1)", [], |r| {
+                r.get::<_, bool>(0)
+            })
+            .unwrap_or(false);
+        let schema_v4_built = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'schema_v4_built'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .unwrap_or(None)
+            .as_deref()
+            == Some("1");
+        let needs_reindex = has_files && !schema_v4_built;
 
         #[cfg(feature = "compress")]
         {
-            Ok(Self { conn, codec, needs_reindex })
+            Ok(Self {
+                conn,
+                codec,
+                needs_reindex,
+            })
         }
         #[cfg(not(feature = "compress"))]
         {
-            Ok(Self { conn, needs_reindex })
+            Ok(Self {
+                conn,
+                needs_reindex,
+            })
         }
     }
 
@@ -158,9 +181,93 @@ impl Store {
     /// Refresh query-planner statistics. Call after a full reindex if you want
     /// the next batch of queries to hit optimal plans. Cheap (~tens of ms on
     /// a 13k-file index) — skipped automatically if data hasn't changed.
+    /// Borrow the underlying rusqlite Connection. Used by the query/* modules
+    /// that build complex ad-hoc SQL (graph traversals, aggregates). Treat as
+    /// internal — outside callers should use the typed Store::* methods.
+    pub fn conn(&self) -> &Connection {
+        &self.conn
+    }
+
     pub fn analyze(&self) -> Result<()> {
         self.conn.execute_batch("ANALYZE;").context("ANALYZE")?;
         Ok(())
+    }
+
+    /// Iterate every call-kind edge (src_symbol_id, dst_symbol_id, line).
+    /// Used by graph.rs's `walk` / `cycles` / `orphans` upgrade in v4 where
+    /// we walk the symbol-ID-keyed call graph. Streams the full table — fine
+    /// at the workspace sizes we target (max ~20k call edges on this repo).
+    pub fn iter_call_edges_resolved(&self) -> Result<Vec<(i64, i64, i64)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT src_symbol_id, dst_symbol_id, line FROM edges WHERE kind = 'call'")?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Reverse of `symbol_id_by_name`: id → bare name. Used by consumers
+    /// (LSP, MCP) that walked the symbol-id graph and need to surface names
+    /// in user-facing output.
+    pub fn symbol_name_by_id(&self, id: i64) -> Result<Option<String>> {
+        let name = self
+            .conn
+            .query_row("SELECT name FROM symbols WHERE id = ?1", params![id], |r| {
+                r.get::<_, String>(0)
+            })
+            .optional()?;
+        Ok(name)
+    }
+
+    /// Resolve a bare name to the first matching SymbolId across all files.
+    /// Coarse — multiple files may define the same name. Used by MCP/CLI
+    /// graph dispatch when the user typed just a name without file context.
+    pub fn symbol_id_by_name(&self, name: &str) -> Result<Option<i64>> {
+        let id = self
+            .conn
+            .query_row(
+                "SELECT id FROM symbols WHERE name = ?1 LIMIT 1",
+                params![name],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()?;
+        Ok(id)
+    }
+
+    /// Resolve a bare name + file_id pair to a SymbolId. Returns the first
+    /// match (callers handle ambiguity). Used by the CLI graph subcommand
+    /// dispatch to turn user-typed symbol names into the IDs the query/*
+    /// modules expect.
+    pub fn symbol_id_by_name_file(&self, name: &str, file_id: i64) -> Result<Option<i64>> {
+        let id = self
+            .conn
+            .query_row(
+                "SELECT id FROM symbols WHERE name = ?1 AND file_id = ?2 LIMIT 1",
+                params![name, file_id],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()?;
+        Ok(id)
+    }
+
+    /// Look up the rowid for a previously-upserted file path. None when the
+    /// path hasn't been indexed yet. Used by the two-pass extractor to fetch
+    /// the file_id between pass 1 (insert symbols) and pass 2 (resolve edges).
+    pub fn get_file_id(&self, path: &str) -> Result<Option<i64>> {
+        let id = self
+            .conn
+            .query_row("SELECT id FROM files WHERE path = ?1", params![path], |r| {
+                r.get::<_, i64>(0)
+            })
+            .optional()?;
+        Ok(id)
     }
 
     pub fn upsert_file(&self, path: &str, sha256: &str, mtime: i64, lang: &str) -> Result<i64> {
@@ -189,9 +296,15 @@ impl Store {
         // We always bind `signature_enc` explicitly so the row reflects the
         // encoding actually used (no reliance on the schema DEFAULT).
         let mut stmt = self.conn.prepare(
-            "INSERT INTO symbols(file_id, name, kind, signature, parent, line_start, line_end, visibility, signature_enc)
+            "INSERT INTO symbols(file_id, name, kind, signature, parent_id, line_start, line_end, visibility, signature_enc)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         )?;
+        // CRIT-3: pass 1 inserts every row with parent_id=NULL so the within-batch
+        // `name → id` map is complete before we touch parent_id. Pass 2 UPDATEs
+        // parent_id from `Symbol.parent` (the parent's bare name) within the same
+        // file. Input order isn't required to be parent-before-child.
+        let mut name_to_id: std::collections::HashMap<String, i64> =
+            std::collections::HashMap::with_capacity(symbols.len());
         for s in symbols {
             // SQLite type-affinity: BLOB stored in a TEXT column. `signature_enc=1` is the source of truth on encoding.
             #[cfg(feature = "compress")]
@@ -203,12 +316,13 @@ impl Store {
                         s.name,
                         kind_str(s.kind),
                         encoded,
-                        s.parent,
+                        None::<i64>,
                         s.line_start,
                         s.line_end,
                         s.visibility,
                         1_i64,
                     ])?;
+                    name_to_id.insert(s.name.clone(), self.conn.last_insert_rowid());
                     continue;
                 }
             }
@@ -218,12 +332,32 @@ impl Store {
                 s.name,
                 kind_str(s.kind),
                 s.signature,
-                s.parent,
+                None::<i64>,
                 s.line_start,
                 s.line_end,
                 s.visibility,
                 0_i64,
             ])?;
+            name_to_id.insert(s.name.clone(), self.conn.last_insert_rowid());
+        }
+        // Pass 2: resolve parent_id within the same file. Symbols whose `parent`
+        // doesn't match any name we just inserted stay parent_id=NULL (e.g. an
+        // impl-block target that isn't itself defined in this file).
+        let mut update = self
+            .conn
+            .prepare("UPDATE symbols SET parent_id = ?1 WHERE id = ?2")?;
+        for s in symbols {
+            let parent_name = match s.parent.as_deref() {
+                Some(p) => p,
+                None => continue,
+            };
+            let child_id = match name_to_id.get(&s.name) {
+                Some(id) => *id,
+                None => continue,
+            };
+            if let Some(parent_id) = name_to_id.get(parent_name) {
+                update.execute(params![*parent_id, child_id])?;
+            }
         }
         Ok(())
     }
@@ -231,15 +365,50 @@ impl Store {
     /// Replace all edges originating from `file_id` with the supplied set.
     /// Mirror of `replace_symbols` — same all-or-nothing per-file shape so
     /// reindexing a file leaves the edges table consistent.
+    ///
+    /// v4 port: the legacy `Edge` struct still carries `src_symbol` /
+    /// `dst_name` as bare strings, but the on-disk schema is symbol-ID-keyed.
+    /// We resolve `src_symbol` against `(file_id, name)` and `dst_name`
+    /// against the global `symbols` table; unresolved dst names fall through
+    /// to `upsert_unresolved_sentinel`. Edges whose `src_symbol` is None
+    /// (file-level / top-level expression) cannot satisfy the NOT NULL
+    /// `src_symbol_id` FK and are skipped — same observable behavior as v3,
+    /// where the `src_symbol IS NULL` rows never matched a `callers_of`
+    /// lookup because that filter requires a non-null `e.src_symbol`.
     pub fn replace_edges(&self, file_id: i64, edges: &[Edge]) -> Result<()> {
-        self.conn
-            .execute("DELETE FROM edges WHERE src_file_id = ?1", params![file_id])?;
-        let mut stmt = self.conn.prepare(
-            "INSERT INTO edges(src_file_id, src_symbol, dst_name, kind, line)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+        // `replace_symbols` running before us already cascades the old edges
+        // away via FK ON DELETE CASCADE; this DELETE is defensive in case a
+        // future caller reverses the order, and is essentially free when the
+        // index is empty for this file.
+        self.conn.execute(
+            "DELETE FROM edges WHERE src_symbol_id IN (SELECT id FROM symbols WHERE file_id = ?1)",
+            params![file_id],
+        )?;
+        let mut insert = self.conn.prepare(
+            "INSERT INTO edges(src_symbol_id, dst_symbol_id, kind, line)
+             VALUES (?1, ?2, ?3, ?4)",
         )?;
         for e in edges {
-            stmt.execute(params![file_id, e.src_symbol, e.dst_name, e.kind, e.line])?;
+            let src_name = match e.src_symbol.as_deref() {
+                Some(n) => n,
+                // No enclosing symbol → schema can't represent it (NOT NULL FK).
+                // Drop silently; v3's `WHERE src_symbol IS NOT NULL` in the
+                // caller-graph queries already filtered these out.
+                None => continue,
+            };
+            let src_id = match self.symbol_id_by_name_file(src_name, file_id)? {
+                Some(id) => id,
+                // Unknown enclosing symbol for this file — shouldn't happen if
+                // replace_symbols ran first, but skip rather than write garbage.
+                None => continue,
+            };
+            // Resolve dst by bare name across the index; fall back to the
+            // unresolved-name sentinel when nothing matches.
+            let dst_id = match self.symbol_id_by_name(&e.dst_name)? {
+                Some(id) => id,
+                None => self.upsert_unresolved_sentinel(&e.dst_name)?,
+            };
+            insert.execute(params![src_id, dst_id, e.kind, e.line])?;
         }
         Ok(())
     }
@@ -253,14 +422,22 @@ impl Store {
         Ok(n)
     }
 
-    /// Pure-SQL caller lookup: find every edge whose `dst_name` is `name` and
-    /// `kind = 'call'`, returning {file, line, src_symbol} per hit. Cost is
-    /// dominated by the index seek on `idx_edges_dst_kind`.
+    /// Pure-SQL caller lookup: find every edge whose `dst` resolves to a
+    /// symbol named `name` and `kind = 'call'`, returning {file, line,
+    /// src_symbol} per hit. Cost is dominated by the index seek on
+    /// `idx_edges_dst_kind`.
+    ///
+    /// v4 port: the v3 column `dst_name` is gone — we resolve `name → ids`
+    /// against the `symbols` table (a single name can be ambiguous across
+    /// files), union the sentinel id when present, then JOIN through edges.
     pub fn callers_of(&self, name: &str) -> Result<Vec<EdgeHit>> {
         let mut stmt = self.conn.prepare(
-            "SELECT f.path, e.line, e.src_symbol
-             FROM edges e JOIN files f ON e.src_file_id = f.id
-             WHERE e.dst_name = ?1 AND e.kind = 'call'
+            "SELECT f.path, e.line, src.name
+             FROM edges e
+             JOIN symbols src   ON src.id = e.src_symbol_id
+             JOIN files   f     ON f.id   = src.file_id
+             WHERE e.kind = 'call'
+               AND e.dst_symbol_id IN (SELECT id FROM symbols WHERE name = ?1)
              ORDER BY f.path, e.line",
         )?;
         let rows = stmt.query_map(params![name], |row| {
@@ -273,15 +450,19 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Broader reference lookup: edges where `dst_name = name` and `kind` is
-    /// any reference-like kind we currently emit (`call`, `ref`). The schema
-    /// reserves `import`, `inherit`, `impl` for future extraction passes; add
-    /// them to this filter when the extractor starts emitting them.
+    /// Broader reference lookup: same shape as `callers_of` but the kind
+    /// filter widens to every reference-like kind we currently emit (`call`,
+    /// `ref`). The schema reserves `import`, `inherit`, `impl` for future
+    /// extraction passes; add them to this filter when the extractor starts
+    /// emitting them.
     pub fn refs_of(&self, name: &str) -> Result<Vec<EdgeHit>> {
         let mut stmt = self.conn.prepare(
-            "SELECT f.path, e.line, e.src_symbol
-             FROM edges e JOIN files f ON e.src_file_id = f.id
-             WHERE e.dst_name = ?1 AND e.kind IN ('call', 'ref')
+            "SELECT f.path, e.line, src.name
+             FROM edges e
+             JOIN symbols src   ON src.id = e.src_symbol_id
+             JOIN files   f     ON f.id   = src.file_id
+             WHERE e.kind IN ('call', 'ref')
+               AND e.dst_symbol_id IN (SELECT id FROM symbols WHERE name = ?1)
              ORDER BY f.path, e.line",
         )?;
         let rows = stmt.query_map(params![name], |row| {
@@ -290,26 +471,17 @@ impl Store {
                 line: row.get::<_, i64>(1)? as u32,
                 src_symbol: row.get(2)?,
             })
-        })?;
-        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-    }
-
-    /// Stream every (src_symbol, dst_name) pair where both ends are populated.
-    /// Used by `CallGraph::build` to fold the edges table into adjacency in
-    /// a single scan instead of N * find_callers.
-    pub fn iter_call_edges(&self) -> Result<Vec<(String, String)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT src_symbol, dst_name FROM edges
-             WHERE kind = 'call' AND src_symbol IS NOT NULL",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     pub fn list_files(&self) -> Result<Vec<(String, String)>> {
-        let mut stmt = self.conn.prepare("SELECT path, lang FROM files")?;
+        // Filter out the synthetic `<unresolved>` anchor (lang='_unresolved')
+        // so it doesn't leak into `crabcc lookup files` / `crabcc-mcp` /
+        // refresh diffs. Real source paths can't start with '<'.
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path, lang FROM files WHERE lang != '_unresolved'")?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
@@ -348,6 +520,15 @@ impl Store {
     }
 
     pub fn delete_file(&self, path: &str) -> Result<()> {
+        // Guard the synthetic anchor file. refresh_delta walks the real
+        // filesystem, never sees `<unresolved>`, and would classify it as
+        // removed — the ON DELETE CASCADE on symbols/edges/unresolved_names
+        // would then nuke every sentinel symbol + every edge pointing at
+        // them, corrupting the v4 graph on every refresh. Anchor paths are
+        // angle-bracketed by construction (see UNRESOLVED_FILE_PATH).
+        if path.starts_with('<') && path.ends_with('>') {
+            return Ok(());
+        }
         self.conn
             .execute("DELETE FROM files WHERE path = ?1", params![path])?;
         Ok(())
@@ -379,6 +560,131 @@ impl Store {
             params![key, value],
         )?;
         Ok(())
+    }
+
+    /// Record that this index was built under the v4 schema (symbol-ID-keyed
+    /// edges). Call after every successful `full_index` so subsequent opens —
+    /// including those from MCP and LSP that do not act on `needs_reindex` —
+    /// see the correct flag and do not clear work done by an earlier rebuild.
+    pub fn mark_schema_v4_built(&self) -> Result<()> {
+        self.meta_set("schema_v4_built", "1")
+    }
+
+    /// Insert one symbol row and return its `rowid`. Used by the two-pass
+    /// extractor (pass 1) to build a local-defs map keyed by the rowid the
+    /// resolver will later return. `qualified` is the fully-qualified name
+    /// (e.g. `"crate::module::Foo"`) when the extractor can compute it;
+    /// `None` is fine. `parent_id` is the enclosing `impl`/`class`/`module`
+    /// symbol's rowid, or `None` for top-level defs.
+    ///
+    /// `signature_enc` is always written as 0 here — FSST encoding is owned
+    /// by the bulk `replace_symbols` path, which has the codec in scope.
+    /// Per-row inserts stay plain-text; encoding can be added later without
+    /// breaking the API.
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_symbol(
+        &self,
+        file_id: i64,
+        name: &str,
+        qualified: Option<&str>,
+        kind: SymbolKind,
+        parent_id: Option<i64>,
+        line_start: i64,
+        line_end: i64,
+        signature: Option<&str>,
+        visibility: Option<&str>,
+    ) -> Result<i64> {
+        self.conn.execute(
+            "INSERT INTO symbols(file_id, name, qualified, kind, parent_id,
+                                  line_start, line_end, signature, signature_enc, visibility)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9)",
+            params![
+                file_id,
+                name,
+                qualified,
+                kind_str(kind),
+                parent_id,
+                line_start,
+                line_end,
+                signature,
+                visibility,
+            ],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    /// Insert one resolved edge. `kind` must be one of `'call' | 'ref' |
+    /// 'import' | 'inherit' | 'impl'` (the schema CHECK constraint enforces
+    /// this; we surface a SQL error if a caller passes anything else).
+    pub fn insert_edge_resolved(
+        &self,
+        src_symbol_id: i64,
+        dst_symbol_id: i64,
+        kind: &str,
+        line: i64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO edges(src_symbol_id, dst_symbol_id, kind, line)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![src_symbol_id, dst_symbol_id, kind, line],
+        )?;
+        Ok(())
+    }
+
+    /// Get-or-create a sentinel `symbols` row for an unresolved name. Returns
+    /// the sentinel symbol's id, suitable as `dst_symbol_id` in
+    /// `insert_edge_resolved`. Idempotent — the same `name` always maps to
+    /// the same rowid.
+    ///
+    /// Design note: schema v4 makes `symbols.file_id` `NOT NULL`, so sentinel
+    /// symbols can't be file-less. We park them all under a single synthetic
+    /// `files` row (path=`<unresolved>`, lang=`_unresolved`, sha256=`0`,
+    /// mtime=0), created lazily on first call. The `unresolved_names` table
+    /// holds the `(name, symbol_id)` mapping; `UNIQUE(name)` makes the
+    /// SELECT-then-INSERT race-safe under the single-writer model.
+    pub fn upsert_unresolved_sentinel(&self, name: &str) -> Result<i64> {
+        // Fast path: already mapped.
+        if let Some(id) = self
+            .conn
+            .query_row(
+                "SELECT symbol_id FROM unresolved_names WHERE name = ?1",
+                params![name],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+        {
+            return Ok(id);
+        }
+
+        // Ensure the synthetic anchor file exists. `upsert_file` is idempotent
+        // and gives us the rowid back regardless of whether it was new or
+        // already present, so it's safe to call on every miss.
+        let anchor_file_id =
+            self.upsert_file(UNRESOLVED_FILE_PATH, "0", 0, UNRESOLVED_FILE_LANG)?;
+
+        // Create the sentinel symbol. kind='sentinel' so callers can filter it
+        // out of normal symbol queries. line_start/end = 0 (no source).
+        self.conn.execute(
+            "INSERT INTO symbols(file_id, name, qualified, kind, parent_id,
+                                  line_start, line_end, signature, signature_enc, visibility)
+             VALUES (?1, ?2, NULL, 'sentinel', NULL, 0, 0, NULL, 0, NULL)",
+            params![anchor_file_id, name],
+        )?;
+        let sym_id = self.conn.last_insert_rowid();
+
+        // Record the mapping. `INSERT OR IGNORE` defends against a hypothetical
+        // race in case anyone ever wraps this in concurrent writers.
+        self.conn.execute(
+            "INSERT OR IGNORE INTO unresolved_names(symbol_id, name) VALUES (?1, ?2)",
+            params![sym_id, name],
+        )?;
+        // Re-read so we return the canonical id even if INSERT OR IGNORE no-op'd.
+        let final_id: i64 = self.conn.query_row(
+            "SELECT symbol_id FROM unresolved_names WHERE name = ?1",
+            params![name],
+            |row| row.get(0),
+        )?;
+        Ok(final_id)
     }
 
     /// Decode a row's `signature` column, honoring `signature_enc`. Centralized
@@ -429,8 +735,13 @@ impl Store {
 
     pub fn iter_all_symbols(&self) -> Result<Vec<Symbol>> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.name, s.kind, s.signature, s.parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
-             FROM symbols s JOIN files f ON s.file_id = f.id",
+            // Exclude sentinel rows — these anchor unresolved-name edges
+            // and are never user-meaningful symbols (CRIT-2, round-2 review).
+            "SELECT s.name, s.kind, s.signature, p.name AS parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
+             FROM symbols s
+             JOIN files f ON s.file_id = f.id
+             LEFT JOIN symbols p ON p.id = s.parent_id
+             WHERE s.kind != 'sentinel'",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(Symbol {
@@ -449,9 +760,11 @@ impl Store {
 
     pub fn symbols_in_file(&self, file: &str) -> Result<Vec<Symbol>> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.name, s.kind, s.signature, s.parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
-             FROM symbols s JOIN files f ON s.file_id = f.id
-             WHERE f.path = ?1
+            "SELECT s.name, s.kind, s.signature, p.name AS parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
+             FROM symbols s
+             JOIN files f ON s.file_id = f.id
+             LEFT JOIN symbols p ON p.id = s.parent_id
+             WHERE f.path = ?1 AND s.kind != 'sentinel'
              ORDER BY s.line_start",
         )?;
         let rows = stmt.query_map(params![file], |row| {
@@ -471,9 +784,11 @@ impl Store {
 
     pub fn find_by_name(&self, name: &str) -> Result<Vec<Symbol>> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.name, s.kind, s.signature, s.parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
-             FROM symbols s JOIN files f ON s.file_id = f.id
-             WHERE s.name = ?1",
+            "SELECT s.name, s.kind, s.signature, p.name AS parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
+             FROM symbols s
+             JOIN files f ON s.file_id = f.id
+             LEFT JOIN symbols p ON p.id = s.parent_id
+             WHERE s.name = ?1 AND s.kind != 'sentinel'",
         )?;
         let rows = stmt.query_map(params![name], |row| {
             Ok(Symbol {
@@ -502,48 +817,13 @@ pub struct EdgeHit {
     pub src_symbol: Option<String>,
 }
 
-/// In v1.0.0 the `edges.src_symbol` column was INTEGER (FK to symbols.id) but
-/// was never populated. v2.0 uses TEXT (the enclosing symbol name) to mirror
-/// `dst_name` and avoid a join on every caller query. The table is always
-/// empty for v1.0.0 users, so dropping and recreating is loss-free.
-fn migrate_edges_text(conn: &Connection) -> Result<()> {
-    let mut stmt = conn.prepare("PRAGMA table_info(edges)")?;
-    let mut rows = stmt.query([])?;
-    let mut needs_migrate = false;
-    while let Some(row) = rows.next()? {
-        let name: String = row.get(1)?;
-        let coltype: String = row.get(2)?;
-        if name == "src_symbol" && coltype.eq_ignore_ascii_case("INTEGER") {
-            needs_migrate = true;
-            break;
-        }
-    }
-    drop(rows);
-    drop(stmt);
-    if needs_migrate {
-        conn.execute_batch(
-            "DROP TABLE IF EXISTS edges;
-             CREATE TABLE edges (
-                id          INTEGER PRIMARY KEY,
-                src_file_id INTEGER NOT NULL REFERENCES files(id) ON DELETE CASCADE,
-                src_symbol  TEXT,
-                dst_name    TEXT    NOT NULL,
-                kind        TEXT    NOT NULL,
-                line        INTEGER NOT NULL
-             );
-             CREATE INDEX IF NOT EXISTS idx_edges_dst      ON edges(dst_name);
-             CREATE INDEX IF NOT EXISTS idx_edges_src      ON edges(src_file_id);
-             CREATE INDEX IF NOT EXISTS idx_edges_dst_kind ON edges(dst_name, kind);
-             INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '3');",
-        )?;
-    } else {
-        // Fresh DB or already migrated — make sure the kind-composite index
-        // exists for older v2 builds that predate it.
-        conn.execute_batch(
-            "CREATE INDEX IF NOT EXISTS idx_edges_dst_kind ON edges(dst_name, kind);
-             INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '3');",
-        )?;
-    }
+/// v4: dead. Pre-v4 indexes are wiped + rebuilt by the `needs_reindex`
+/// auto-wipe path in `main.rs` before any code reads them, so in-place
+/// schema migration is never invoked. Keeping the function as a no-op
+/// preserves the call site in `Store::open_with_compress` (one fewer
+/// edit during the hackathon) and lets future v4→v5 migrations slot
+/// in here.
+fn migrate_edges_text(_conn: &Connection) -> Result<()> {
     Ok(())
 }
 
@@ -575,6 +855,20 @@ fn kind_from_str(s: &str) -> SymbolKind {
         "var" => SymbolKind::Var,
         "type" => SymbolKind::Type,
         "macro" => SymbolKind::Macro,
+        // Sentinel rows back unresolved-name edges (see upsert_unresolved_sentinel).
+        // The public symbol-query helpers (find_by_name, iter_all_symbols,
+        // symbols_in_file) filter `kind != 'sentinel'` at the SQL layer — if
+        // one still reaches this function, that's a regression worth warning
+        // about. We map to Var as a neutral non-callable kind so downstream
+        // code that switches on Function/Method doesn't accidentally treat
+        // a sentinel as a real call target.
+        "sentinel" => {
+            tracing::warn!(
+                target: "crabcc_core::store",
+                "sentinel kind leaked past SQL filter — public Store API forgot WHERE kind != 'sentinel'"
+            );
+            SymbolKind::Var
+        }
         _ => SymbolKind::Function,
     }
 }
@@ -605,36 +899,47 @@ mod tests {
     }
 
     #[test]
-    fn fresh_store_does_not_need_reindex() {
+    fn fresh_empty_store_does_not_need_reindex() {
+        // A brand-new empty store has nothing to rebuild; auto_index handles
+        // the initial indexing through its own path.
         let (_dir, store) = tmp_store();
-        assert!(!store.needs_reindex, "fresh DB should not trigger reindex");
+        assert!(!store.needs_reindex, "empty DB must not trigger reindex");
     }
 
     #[test]
-    fn schema_v2_triggers_needs_reindex() {
-        use rusqlite::Connection;
-
+    fn populated_store_without_mark_needs_reindex() {
+        // Simulates a pre-v4 index: has indexed files but schema_v4_built was
+        // never written. Must trigger needs_reindex on every open so the CLI
+        // (and not MCP/LSP) rebuilds it under the new symbol-ID edge shape.
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("idx.db");
 
         {
-            let _store = Store::open(&db).unwrap();
-        }
-
-        {
-            let conn = Connection::open(&db).unwrap();
-            conn.execute(
-                "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '2')",
-                [],
-            )
-            .unwrap();
+            let store = Store::open(&db).unwrap();
+            store.upsert_file("a.rs", "deadbeef", 0, "rust").unwrap();
+            // deliberately do NOT call mark_schema_v4_built
         }
 
         let store = Store::open(&db).unwrap();
         assert!(
             store.needs_reindex,
-            "index with schema_version=2 must set needs_reindex"
+            "populated index without schema_v4_built must set needs_reindex"
         );
+    }
+
+    #[test]
+    fn mark_schema_v4_built_clears_needs_reindex() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("idx.db");
+
+        {
+            let store = Store::open(&db).unwrap();
+            store.upsert_file("a.rs", "deadbeef", 0, "rust").unwrap();
+            store.mark_schema_v4_built().unwrap();
+        }
+
+        let store = Store::open(&db).unwrap();
+        assert!(!store.needs_reindex, "DB must not need reindex after mark");
     }
 
     #[test]
@@ -682,10 +987,20 @@ mod tests {
 
     #[test]
     fn find_by_name_returns_method_with_parent() {
+        // v4: `parent` on the wire is a name string, but on disk it's a
+        // `parent_id` FK to a real `symbols` row. The bulk insert path resolves
+        // the link within the same `replace_symbols` batch — the parent must
+        // therefore be one of the symbols in the input slice.
         let (_dir, store) = tmp_store();
         let fid = store.upsert_file("a.ts", "h", 0, "typescript").unwrap();
         store
-            .replace_symbols(fid, &[sym("greet", SymbolKind::Method, Some("Greeter"))])
+            .replace_symbols(
+                fid,
+                &[
+                    sym("Greeter", SymbolKind::Class, None),
+                    sym("greet", SymbolKind::Method, Some("Greeter")),
+                ],
+            )
             .unwrap();
         let hits = store.find_by_name("greet").unwrap();
         assert_eq!(hits[0].parent.as_deref(), Some("Greeter"));
@@ -851,5 +1166,117 @@ mod tests {
         let _fid = store.upsert_file("a.rs", "h", 0, "rust").unwrap();
         let hits = store.find_by_name("does_not_exist").unwrap();
         assert!(hits.is_empty());
+    }
+
+    // ────────────────────────────────────────────────────────────────────────
+    // v4 regression tests — see docs/superpowers/reviews/v4-hackathon/.
+    // These exist to fail loudly until the v4 critical findings are fixed.
+    // ────────────────────────────────────────────────────────────────────────
+
+    /// CRIT-2: `replace_edges` and `iter_call_edges` must operate on the v4
+    /// `(src_symbol_id, dst_symbol_id)` schema. The previous body used the
+    /// dropped v3 columns (`src_file_id`, `src_symbol`, `dst_name`) and
+    /// every call panicked at runtime with `no such column`.
+    #[test]
+    fn replace_edges_writes_against_v4_columns() {
+        let (_dir, store) = tmp_store();
+        let fid = store.upsert_file("a.rs", "h", 0, "rust").unwrap();
+        let src_id = store
+            .insert_symbol(
+                fid,
+                "caller",
+                None,
+                SymbolKind::Function,
+                None,
+                1,
+                3,
+                None,
+                None,
+            )
+            .unwrap();
+        let dst_id = store
+            .insert_symbol(
+                fid,
+                "callee",
+                None,
+                SymbolKind::Function,
+                None,
+                5,
+                7,
+                None,
+                None,
+            )
+            .unwrap();
+
+        let edge = Edge {
+            src_file: "a.rs".into(),
+            src_symbol: Some("caller".into()),
+            dst_name: "callee".into(),
+            kind: "call".into(),
+            line: 2,
+        };
+
+        store
+            .replace_edges(fid, &[edge])
+            .expect("replace_edges must not error with `no such column` against v4 schema");
+
+        // Round-trip via the v4 resolved-edge accessor — the edge must land
+        // with both endpoints set to real symbol ids (no sentinel substitution
+        // through the bulk path).
+        let edges = store.iter_call_edges_resolved().unwrap();
+        assert!(
+            edges.iter().any(|(s, d, _)| *s == src_id && *d == dst_id),
+            "replace_edges did not persist a row resolvable via v4 columns; got {edges:?}"
+        );
+    }
+
+    /// CRIT-3: `replace_symbols` must persist `parent_id` when the input
+    /// `Symbol` has a `parent`. The previous body hardcoded `None::<i64>`,
+    /// silently dropping the impl/class link for every symbol on the bulk
+    /// path. We assert by reading the raw column — `find_by_name` independently
+    /// hardcodes `NULL AS parent` (HIGH issue), so a parent_id-aware test must
+    /// bypass it.
+    #[test]
+    fn replace_symbols_persists_parent_id_on_methods() {
+        let (_dir, store) = tmp_store();
+        let fid = store.upsert_file("a.rs", "h", 0, "rust").unwrap();
+
+        // Two symbols in one bulk call. The class is written first so the
+        // method's `parent` lookup-by-name has something to point at.
+        store
+            .replace_symbols(
+                fid,
+                &[
+                    sym("Greeter", SymbolKind::Class, None),
+                    sym("greet", SymbolKind::Method, Some("Greeter")),
+                ],
+            )
+            .unwrap();
+
+        // Raw read of the `parent_id` column for the method row.
+        let parent_id: Option<i64> = store
+            .conn()
+            .query_row(
+                "SELECT parent_id FROM symbols WHERE name = 'greet' AND file_id = ?1",
+                params![fid],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        // Look up the class's row id for the assertion message.
+        let greeter_id: i64 = store
+            .conn()
+            .query_row(
+                "SELECT id FROM symbols WHERE name = 'Greeter' AND file_id = ?1",
+                params![fid],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(
+            parent_id,
+            Some(greeter_id),
+            "replace_symbols dropped the parent link for `greet` (expected parent_id={greeter_id})"
+        );
     }
 }
