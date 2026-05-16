@@ -298,13 +298,11 @@ fn run(godfather: Godfather, config: WatchConfig, stop: Arc<AtomicBool>) {
     flush_buffer(&mut buffer);
 }
 
-/// Helper for the sample buffer: unix-secs `now`. Pulled out so the
-/// watcher's hot loop doesn't import std::time::SystemTime unnecessarily.
+/// Helper for the sample buffer: unix-secs `now`. Delegates to the
+/// canonical impl in `crabcc_core::time` so all 9 of these shims share
+/// one source of truth.
 fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+    crabcc_core::time::unix_now_secs()
 }
 
 /// `kill(pid, 0)` — POSIX existence probe. Returns true if the PID

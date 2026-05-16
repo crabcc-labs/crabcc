@@ -80,6 +80,7 @@ pub mod query;
 pub mod refs;
 pub mod service_discovery;
 pub mod store;
+pub mod time;
 pub mod track;
 pub mod types;
 pub mod upgrade;

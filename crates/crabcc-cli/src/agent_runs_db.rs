@@ -29,7 +29,6 @@
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Default DB location: `~/.crabcc/_internal.db`. Singleton across all
 /// repos for the current user — there is exactly one DB.
@@ -176,10 +175,7 @@ pub fn list_kill_events(conn: &Connection, limit: usize) -> Result<Vec<KillEvent
 }
 
 fn now_ts() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+    crabcc_core::time::unix_now_secs() as i64
 }
 
 /// Insert a new run row at lifecycle start. PID can be filled in later

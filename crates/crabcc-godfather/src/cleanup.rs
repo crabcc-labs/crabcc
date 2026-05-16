@@ -31,7 +31,6 @@
 
 use anyhow::Result;
 use rusqlite::{params, Connection};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Per-table retention windows in seconds. `from_secs` accepts
 /// human-readable arithmetic (`60 * 60 * 24 * 30`) at the call site.
@@ -173,10 +172,7 @@ fn write_metadata_i64(conn: &Connection, key: &str, value: i64) -> Result<()> {
 }
 
 fn now_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+    crabcc_core::time::unix_now_secs() as i64
 }
 
 #[cfg(test)]
