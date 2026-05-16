@@ -238,3 +238,42 @@ definitions, `crabcc outline <file>` before reading a large file,
 read `crates/crabcc-core/docs/HOW_IT_WORKS.md`. For memory-layer
 specifics read `crates/crabcc-memory/src/palace.rs` and the schema in
 `crates/crabcc-memory/schema/`.
+
+## Type-system discipline (post-v4 hackathon)
+
+These rules surfaced from the [Opus 4.7 audit on PR #550](https://github.com/peterlodri-sec/crabcc/pull/550) — each maps to a concrete bug class that bit us across the v4 hackathon waves.
+
+### G1 — Import shared types from `crabcc-contracts`; don't redeclare them
+
+✅ `use crabcc_contracts::ImportSpec;`
+❌ Inventing `struct ImportSpec { module, symbols }` in your task's file because "the test fixture needs it."
+
+If a contract type is missing a field, open a contracts PR first, then your code. Parallel coders re-invented `ImportSpec` *three different ways* during the v4 hackathon (`{module,symbols}` → `{raw,alias,from_module}` → final `{local,qualified}`). The contracts crate makes drift a compile error at the first field-init shorthand.
+
+### G2 — Don't use bare `i64` / `String` for keys; use the project's newtypes
+
+✅ `fn lookup(id: SymbolId) -> Option<Symbol>`
+❌ `fn lookup(id: i64) -> Option<Symbol>`
+
+The compiler is your migration tool. `BTreeMap<SymbolId, …>` vs `BTreeMap<FileId, …>` becomes a type error at every consumer the moment you change the key. The v4 `String → i64` migration of `CallGraph::callees` broke 6+ files because primitive types carry no semantics.
+
+### G3 — Don't return tuples of >2 fields across crate boundaries
+
+✅ `pub struct CallEdge { src: SymbolId, dst: SymbolId, line: u32 }`
+❌ `Vec<(i64, i64, i64)>`
+
+The next consumer will destructure `(src, dst)` from a 3-tuple and the compiler can't say "you forgot a field." This shipped to us as a compile error only at the workspace-build checkpoint.
+
+### G4 — Don't expose `&Connection` or other raw backend handles from a public API
+
+✅ `pub fn callers_of(&self, name: &str) -> Result<Vec<EdgeHit>>`
+❌ `pub fn conn(&self) -> &Connection`
+
+If you're tempted to add an escape hatch, add the typed method instead. Doc-comments saying "internal" are not a type system; the 4 v4 query modules all reach into `Store::conn()` because the typed surface was missing.
+
+### G5 — Don't encode out-of-band state as fake rows in the data tables
+
+✅ `enum EdgeDst { Resolved(SymbolId), Unresolved(NameId) }`
+❌ A `<unresolved>` file row + `kind='sentinel'` symbols filtered by every reader
+
+Every "remember to filter X" comment is a future bug. Make the type system filter for you. The v4 sentinel-anchor pattern leaked into 5+ public read paths and corrupted edges on every `refresh_delta` until guarded.
