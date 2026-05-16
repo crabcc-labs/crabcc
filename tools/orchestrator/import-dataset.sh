@@ -68,8 +68,10 @@ log INFO dataset_fetch_done dataset_name="$DATASET_NAME" example_count="$example
 # ── generate wave_id ──────────────────────────────────────────────────────────
 
 # Sanitize dataset name for use in the wave_id (alphanumeric + hyphens only).
+# Include the PID + a $RANDOM suffix so two concurrent imports of the same
+# dataset in the same second do not collide on wave_id.
 safe_name="$(printf '%s' "$DATASET_NAME" | tr -cs 'a-zA-Z0-9-' '-' | tr '[:upper:]' '[:lower:]' | sed 's/^-//;s/-$//')"
-WAVE_ID="import-${safe_name}-$(date +%s)"
+WAVE_ID="import-${safe_name}-$(date +%s)-$$-$RANDOM"
 
 log INFO wave_generated wave_id="$WAVE_ID"
 
