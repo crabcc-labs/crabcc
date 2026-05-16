@@ -327,6 +327,16 @@ fn walk_edges(node: Node, src: &[u8], lang: &str, enclosing: Option<&str>, out: 
         });
     }
 
+    if let Some((dst, line)) = ref_target(&node, src, lang) {
+        out.push(Edge {
+            src_file: String::new(),
+            src_symbol: next.map(String::from),
+            dst_name: dst,
+            kind: "ref".into(),
+            line,
+        });
+    }
+
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         walk_edges(child, src, lang, next, out);
@@ -529,6 +539,39 @@ fn rust_callee(func: &Node, src: &[u8]) -> Option<String> {
             .and_then(|f| rust_callee(&f, src)),
         _ => None,
     }
+}
+
+/// Returns `(dst_name, 1-based-line)` for nodes that reference a type (or
+/// other named symbol) outside of definition context — what `lookup refs`
+/// surfaces beyond what `call_target` already catches. Currently Rust-only:
+/// every `type_identifier` use that isn't the `name` field of a definition
+/// (struct / enum / union / type alias / trait / associated_type /
+/// type_parameter). Lossy on generic parameters — bare `T` uses emit refs
+/// to the parameter name; accepted as noise until lexical scoping lands.
+fn ref_target(node: &Node, src: &[u8], lang: &str) -> Option<(String, u32)> {
+    if lang != "rust" || node.kind() != "type_identifier" {
+        return None;
+    }
+    if let Some(parent) = node.parent() {
+        let parent_defines_name = matches!(
+            parent.kind(),
+            "struct_item"
+                | "enum_item"
+                | "union_item"
+                | "type_item"
+                | "trait_item"
+                | "associated_type"
+                | "type_parameter"
+        );
+        if parent_defines_name
+            && parent.child_by_field_name("name").map(|n| n.byte_range()) == Some(node.byte_range())
+        {
+            return None;
+        }
+    }
+    let name = node.utf8_text(src).ok()?.to_string();
+    let line = (node.start_position().row + 1) as u32;
+    Some((name, line))
 }
 
 fn symbol_kind_for(lang: &str, kind: &str) -> Option<SymbolKind> {
@@ -1003,6 +1046,54 @@ mod tests {
         assert_eq!(strip_generics("Foo<T>"), "Foo");
         assert_eq!(strip_generics("Container<T, U>"), "Container");
         assert_eq!(strip_generics("  Spaced  "), "Spaced");
+    }
+
+    #[test]
+    fn rust_struct_usage_emits_ref_edges() {
+        let src = "pub struct Store;\nimpl Store {}\nfn run() -> Store { panic!() }\n";
+        let (_, edges) = extract_file_with_edges("a.rs", src, "rust").unwrap();
+        let refs: Vec<_> = edges
+            .iter()
+            .filter(|e| e.kind == "ref" && e.dst_name == "Store")
+            .collect();
+        // `impl Store` (line 2) + return type `-> Store` (line 3).
+        assert!(
+            refs.len() >= 2,
+            "expected ≥2 ref edges for Store, got: {refs:?}"
+        );
+    }
+
+    #[test]
+    fn rust_struct_definition_does_not_self_ref() {
+        let src = "pub struct Store;\n";
+        let (_, edges) = extract_file_with_edges("a.rs", src, "rust").unwrap();
+        let refs: Vec<_> = edges
+            .iter()
+            .filter(|e| e.kind == "ref" && e.dst_name == "Store")
+            .collect();
+        assert!(
+            refs.is_empty(),
+            "definition name must not emit a self-ref, got: {refs:?}"
+        );
+    }
+
+    #[test]
+    fn rust_generic_type_param_definition_does_not_self_ref() {
+        // `<T>` declares T; the inner type_identifier on its `name` field
+        // is the declaration site, not a use.
+        let src = "fn id<T>(x: T) -> T { x }\n";
+        let (_, edges) = extract_file_with_edges("a.rs", src, "rust").unwrap();
+        let t_decls: Vec<_> = edges
+            .iter()
+            .filter(|e| e.kind == "ref" && e.dst_name == "T" && e.line == 1)
+            .collect();
+        // We accept use-site emissions for `x: T` and `-> T` — confirm at
+        // least one such use exists AND that the count matches the two use
+        // sites rather than including the `<T>` declaration.
+        assert!(
+            t_decls.len() == 2,
+            "expected exactly 2 T uses (param type + return type), got: {t_decls:?}"
+        );
     }
 
     // ---- Go ----

@@ -216,6 +216,8 @@ pub fn run(opts: InstallOptions) -> Result<()> {
     // bootstrap is the right place to check + prompt.
     if !dry {
         ensure_rtk(yes)?;
+        ensure_opencode(yes)?;
+        ensure_bash5(yes)?;
     }
 
     println!();
@@ -502,6 +504,144 @@ fn install_rtk_via_cargo() -> Result<()> {
         bail!("`cargo install rtk` exited non-zero — install manually and re-run");
     }
     println!("  rtk: installed");
+    Ok(())
+}
+
+/// Detect the user's login shell and return the appropriate rc/profile file.
+fn shell_profile() -> PathBuf {
+    let shell = std::env::var("SHELL").unwrap_or_default();
+    let home = home_dir().unwrap_or_else(|| PathBuf::from("."));
+    if shell.contains("zsh") {
+        home.join(".zshrc")
+    } else {
+        home.join(".bash_profile")
+    }
+}
+
+/// Append `line` to the user's shell profile (creates the file if absent).
+fn append_to_profile(line: &str) -> Result<()> {
+    use std::io::Write;
+    let profile = shell_profile();
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&profile)
+        .with_context(|| format!("open {}", profile.display()))?;
+    writeln!(f, "\n{line}")?;
+    println!("  written to {}: {}", profile.display(), line);
+    Ok(())
+}
+
+/// Check that `opencode` is reachable. If it lives at `~/.opencode/bin` but is
+/// not on PATH, offer to patch the shell profile.
+fn ensure_opencode(yes: bool) -> Result<()> {
+    if Command::new("opencode")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+    {
+        println!("opencode: ok (on PATH)");
+        return Ok(());
+    }
+
+    let home = home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let opencode_bin = home.join(".opencode/bin");
+    println!();
+    if opencode_bin.join("opencode").exists() {
+        println!(
+            "opencode: found at {} but not on PATH \
+             (needed for orchestrator subagents).",
+            opencode_bin.display()
+        );
+        if !yes && !confirm("  Add ~/.opencode/bin to PATH in shell profile? [y/N] ")? {
+            println!(
+                "  skipped — add manually: export PATH=\"$HOME/.opencode/bin:$PATH\""
+            );
+            return Ok(());
+        }
+        append_to_profile(
+            "export PATH=\"$HOME/.opencode/bin:$PATH\"  # crabcc install-claude",
+        )?;
+        println!("  restart your shell or run: export PATH=\"$HOME/.opencode/bin:$PATH\"");
+    } else {
+        println!("opencode: not installed — get it from https://opencode.ai");
+        println!("  (required to dispatch orchestrator subagents)");
+    }
+    Ok(())
+}
+
+/// Parse the major version from `bash --version` output.
+fn bash_major_version() -> u32 {
+    let out = Command::new("bash").arg("--version").output();
+    let s = match out {
+        Ok(o) => String::from_utf8(o.stdout).unwrap_or_default(),
+        Err(_) => return 0,
+    };
+    s.lines()
+        .next()
+        .and_then(|l| l.split("version ").nth(1))
+        .and_then(|v| v.split('.').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0)
+}
+
+/// Ensure bash 5+ is available. macOS ships bash 3.2 which lacks associative
+/// arrays (`declare -A`) used by `orch-dispatch-wave`. If homebrew bash is
+/// installed at `/opt/homebrew/bin/bash`, offer to prepend `/opt/homebrew/bin`
+/// to PATH so `env bash` resolves to bash 5. If not installed, offer to run
+/// `brew install bash`.
+fn ensure_bash5(yes: bool) -> Result<()> {
+    let ver = bash_major_version();
+    if ver >= 5 {
+        println!("bash: ok (v{ver}+, orchestrator dispatch supported)");
+        return Ok(());
+    }
+
+    let brew_bash = std::path::Path::new("/opt/homebrew/bin/bash");
+    println!();
+    if ver > 0 {
+        println!(
+            "bash: system version is {ver} (< 5) — \
+             `orch-dispatch-wave` needs bash 5+ for associative arrays"
+        );
+    }
+
+    if brew_bash.exists() {
+        println!("  homebrew bash 5 already installed at /opt/homebrew/bin/bash");
+        if !yes
+            && !confirm(
+                "  Prepend /opt/homebrew/bin to PATH in shell profile (makes env bash → bash5)? [y/N] ",
+            )?
+        {
+            println!(
+                "  skipped — call dispatch manually with: \
+                 /opt/homebrew/bin/bash $(which orch-dispatch-wave)"
+            );
+            return Ok(());
+        }
+        append_to_profile(
+            "export PATH=\"/opt/homebrew/bin:$PATH\"  # crabcc install-claude (bash5 for orchestrator)",
+        )?;
+        println!("  restart your shell or run: export PATH=\"/opt/homebrew/bin:$PATH\"");
+    } else {
+        println!("  bash 5 not found — installing via `brew install bash`");
+        if !yes && !confirm("  Run `brew install bash`? [y/N] ")? {
+            println!("  skipped — install later with: brew install bash");
+            return Ok(());
+        }
+        let status = Command::new("brew")
+            .args(["install", "bash"])
+            .status()
+            .context("`brew` not found — install Homebrew first: https://brew.sh")?;
+        if !status.success() {
+            bail!("`brew install bash` failed — install manually and re-run");
+        }
+        append_to_profile(
+            "export PATH=\"/opt/homebrew/bin:$PATH\"  # crabcc install-claude (bash5 for orchestrator)",
+        )?;
+        println!("  bash 5 installed — restart your shell or run: export PATH=\"/opt/homebrew/bin:$PATH\"");
+    }
     Ok(())
 }
 
