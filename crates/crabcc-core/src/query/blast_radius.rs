@@ -79,8 +79,7 @@ pub fn blast_radius(
         }
         let next_depth = depth + 1;
 
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> =
-            vec![Box::new(node)];
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(node)];
         for k in kinds {
             params.push(Box::new(k.to_string()));
         }
@@ -120,8 +119,10 @@ fn hydrate_symbols(store: &Store, ids: Vec<i64>) -> Result<Vec<Symbol>> {
         placeholders.join(",")
     );
     let mut stmt = conn.prepare(&sql)?;
-    let params: Vec<Box<dyn rusqlite::ToSql>> =
-        ids.into_iter().map(|i| Box::new(i) as Box<dyn rusqlite::ToSql>).collect();
+    let params: Vec<Box<dyn rusqlite::ToSql>> = ids
+        .into_iter()
+        .map(|i| Box::new(i) as Box<dyn rusqlite::ToSql>)
+        .collect();
     let rows = stmt.query_map(params_from_iter(params.iter().map(|b| b.as_ref())), |row| {
         Ok(Symbol {
             name: row.get(0)?,
@@ -158,7 +159,6 @@ fn kind_from_str(s: &str) -> SymbolKind {
 mod tests {
     use super::*;
     use crate::store::Store;
-    use rusqlite::params;
 
     /// Build a minimal v4 fixture by hand: 3 files, 4 symbols, edges
     /// shaped as `c -> b -> a` (a is the root; b is depth 1 from a; c
@@ -210,7 +210,11 @@ mod tests {
 
         // depth=2 also catches c via b.
         let r = blast_radius(&store, 1, 2, &[]).unwrap();
-        assert!(r.depth_map.contains_key(&3), "c should be depth 2: {:?}", r.depth_map);
+        assert!(
+            r.depth_map.contains_key(&3),
+            "c should be depth 2: {:?}",
+            r.depth_map
+        );
         assert_eq!(r.depth_map[&3], 2);
         assert_eq!(r.affected.len(), 3, "b, c, d expected: {:?}", r.affected);
     }
@@ -223,7 +227,10 @@ mod tests {
         let r = blast_radius(&store, 1, 5, &["call"]).unwrap();
         assert!(r.depth_map.contains_key(&2), "b reachable via call");
         assert!(r.depth_map.contains_key(&3), "c reachable via b's call");
-        assert!(!r.depth_map.contains_key(&4), "d only has ref edge — should be filtered");
+        assert!(
+            !r.depth_map.contains_key(&4),
+            "d only has ref edge — should be filtered"
+        );
         assert_eq!(r.kinds_used, vec!["call".to_string()]);
     }
 
@@ -242,5 +249,4 @@ mod tests {
         assert!(r.affected.is_empty());
         assert!(r.depth_map.is_empty());
     }
-
 }

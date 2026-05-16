@@ -1,4 +1,4 @@
-use crate::resolve::{ImportSpec, NameOnlyResolver, Resolver, ScopeCtx, SymbolId};
+use crate::resolve::{ImportSpec, Resolver, ScopeCtx, SymbolId};
 use crate::store::Store;
 use crate::types::{Edge, Symbol, SymbolKind};
 use anyhow::{anyhow, Result};
@@ -8,9 +8,9 @@ use std::collections::HashMap;
 use std::path::Path;
 use tree_sitter::{Node, Parser};
 
+pub mod resolve_python;
 pub mod resolve_rust;
 pub mod resolve_ts;
-pub mod resolve_python;
 
 // Per-thread parser pool. Constructing a `Parser` and calling
 // `set_language` is ~5–10 µs of pure overhead per call (LR table init).
@@ -372,7 +372,7 @@ fn walk(
 
 /// Collect imports from the file for ScopeCtx. Returns empty vec for languages
 /// without straightforward import syntax.
-fn collect_imports<'a>(root: Node, src: &'a [u8], lang: &str) -> Vec<ImportSpec> {
+fn collect_imports(root: Node, src: &[u8], lang: &str) -> Vec<ImportSpec> {
     let mut imports = Vec::new();
     let mut cursor = root.walk();
     for child in root.children(&mut cursor) {
@@ -389,7 +389,8 @@ fn collect_imports_from_node(node: Node, src: &[u8], lang: &str, out: &mut Vec<I
                 if let Ok(module) = source.utf8_text(src) {
                     let module = module.trim_matches('"').trim_matches('\'').to_string();
                     out.push(ImportSpec {
-                        local: module.clone(), qualified: module,
+                        local: module.clone(),
+                        qualified: module,
                         /* symbols list — not yet broken out per-spec */ // simplified for now
                     });
                 }
@@ -399,16 +400,22 @@ fn collect_imports_from_node(node: Node, src: &[u8], lang: &str, out: &mut Vec<I
             // Simplified Python import collection
             if let Ok(text) = node.utf8_text(src) {
                 out.push(ImportSpec {
-                    local: text.to_string(), qualified: text.to_string(),
+                    local: text.to_string(),
+                    qualified: text.to_string(),
                     /* symbols list — not yet broken out per-spec */
                 });
             }
         }
         ("java", "import_declaration") => {
             if let Ok(text) = node.utf8_text(src) {
-                let txt = text.replace("import ", "").replace(';', "").trim().to_string();
+                let txt = text
+                    .replace("import ", "")
+                    .replace(';', "")
+                    .trim()
+                    .to_string();
                 out.push(ImportSpec {
-                    local: txt.clone(), qualified: txt,
+                    local: txt.clone(),
+                    qualified: txt,
                     /* symbols list — not yet broken out per-spec */
                 });
             }
@@ -423,6 +430,7 @@ fn collect_imports_from_node(node: Node, src: &[u8], lang: &str, out: &mut Vec<I
 
 /// Pass 1 walk: collect definitions, write to Store, populate local_defs and
 /// node_to_src_id.
+#[allow(clippy::too_many_arguments)]
 fn walk_with_store(
     node: Node,
     src: &[u8],
@@ -475,22 +483,22 @@ fn walk_with_store(
             let visibility = visibility_for(lang, &node, src);
 
             // Get file_id from store (simplified: assume store has this method)
-            let file_id = store
-                .get_file_id(file).ok().flatten()
-                .unwrap_or(0); // Fallback to 0 if not found; adjust as needed
+            let file_id = store.get_file_id(file).ok().flatten().unwrap_or(0); // Fallback to 0 if not found; adjust as needed
 
             // Write to store
-            let rowid = store.insert_symbol(
-                file_id,
-                &n_owned,
-                None, // qualified: pass None for now
-                kind,
-                parent_id.map(|s| s.0),
-                line_start as i64,
-                line_end as i64,
-                signature.as_deref(),
-                visibility.as_deref(),
-            ).unwrap_or(-1);
+            let rowid = store
+                .insert_symbol(
+                    file_id,
+                    &n_owned,
+                    None, // qualified: pass None for now
+                    kind,
+                    parent_id.map(|s| s.0),
+                    line_start as i64,
+                    line_end as i64,
+                    signature.as_deref(),
+                    visibility.as_deref(),
+                )
+                .unwrap_or(-1);
 
             if rowid >= 0 {
                 let sym_id = SymbolId(rowid);
@@ -546,6 +554,7 @@ fn walk_with_store(
 }
 
 /// Pass 2 walk: resolve use/call sites via resolver and write edges.
+#[allow(clippy::too_many_arguments)]
 fn walk_edges_with_resolver(
     node: Node,
     src: &[u8],
@@ -591,12 +600,7 @@ fn walk_edges_with_resolver(
                 }
             };
             // Write edge
-            let _ = store.insert_edge_resolved(
-                src_symbol_id.0,
-                dst_id.0,
-                "call",
-                line as i64,
-            );
+            let _ = store.insert_edge_resolved(src_symbol_id.0, dst_id.0, "call", line as i64);
             // Also add to output edges for backward compatibility
             out.push(Edge {
                 src_file: String::new(),
@@ -621,16 +625,9 @@ fn walk_edges_with_resolver(
             let dst_id = resolver.resolve_ref(&scope, &dst_name);
             let dst_id = match dst_id {
                 Some(id) => id,
-                None => {
-                    SymbolId(store.upsert_unresolved_sentinel(&dst_name).unwrap_or(-1))
-                }
+                None => SymbolId(store.upsert_unresolved_sentinel(&dst_name).unwrap_or(-1)),
             };
-            let _ = store.insert_edge_resolved(
-                src_symbol_id.0,
-                dst_id.0,
-                "ref",
-                line as i64,
-            );
+            let _ = store.insert_edge_resolved(src_symbol_id.0, dst_id.0, "ref", line as i64);
             out.push(Edge {
                 src_file: String::new(),
                 src_symbol: None,

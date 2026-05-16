@@ -188,7 +188,6 @@ impl Store {
         &self.conn
     }
 
-
     pub fn analyze(&self) -> Result<()> {
         self.conn.execute_batch("ANALYZE;").context("ANALYZE")?;
         Ok(())
@@ -203,7 +202,13 @@ impl Store {
             .conn
             .prepare("SELECT src_symbol_id, dst_symbol_id, line FROM edges WHERE kind = 'call'")?;
         let rows = stmt
-            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))?
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -214,11 +219,9 @@ impl Store {
     pub fn symbol_name_by_id(&self, id: i64) -> Result<Option<String>> {
         let name = self
             .conn
-            .query_row(
-                "SELECT name FROM symbols WHERE id = ?1",
-                params![id],
-                |r| r.get::<_, String>(0),
-            )
+            .query_row("SELECT name FROM symbols WHERE id = ?1", params![id], |r| {
+                r.get::<_, String>(0)
+            })
             .optional()?;
         Ok(name)
     }
@@ -260,11 +263,9 @@ impl Store {
     pub fn get_file_id(&self, path: &str) -> Result<Option<i64>> {
         let id = self
             .conn
-            .query_row(
-                "SELECT id FROM files WHERE path = ?1",
-                params![path],
-                |r| r.get::<_, i64>(0),
-            )
+            .query_row("SELECT id FROM files WHERE path = ?1", params![path], |r| {
+                r.get::<_, i64>(0)
+            })
             .optional()?;
         Ok(id)
     }
@@ -292,6 +293,12 @@ impl Store {
     pub fn replace_symbols(&self, file_id: i64, symbols: &[Symbol]) -> Result<()> {
         self.conn
             .execute("DELETE FROM symbols WHERE file_id = ?1", params![file_id])?;
+        // v4: parent links are FK ids, not free-text. We resolve `Symbol.parent`
+        // (a name) against the symbols inserted earlier in this same batch —
+        // the extractor emits defs in document order so a class always lands
+        // before its methods. Cross-batch parents stay NULL (rare and benign).
+        let mut name_to_id: std::collections::HashMap<String, i64> =
+            std::collections::HashMap::with_capacity(symbols.len());
         // We always bind `signature_enc` explicitly so the row reflects the
         // encoding actually used (no reliance on the schema DEFAULT).
         let mut stmt = self.conn.prepare(
@@ -299,6 +306,8 @@ impl Store {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         )?;
         for s in symbols {
+            let parent_id: Option<i64> =
+                s.parent.as_deref().and_then(|p| name_to_id.get(p).copied());
             // SQLite type-affinity: BLOB stored in a TEXT column. `signature_enc=1` is the source of truth on encoding.
             #[cfg(feature = "compress")]
             {
@@ -309,12 +318,13 @@ impl Store {
                         s.name,
                         kind_str(s.kind),
                         encoded,
-                        None::<i64>,
+                        parent_id,
                         s.line_start,
                         s.line_end,
                         s.visibility,
                         1_i64,
                     ])?;
+                    name_to_id.insert(s.name.clone(), self.conn.last_insert_rowid());
                     continue;
                 }
             }
@@ -324,28 +334,78 @@ impl Store {
                 s.name,
                 kind_str(s.kind),
                 s.signature,
-                None::<i64>,
+                parent_id,
                 s.line_start,
                 s.line_end,
                 s.visibility,
                 0_i64,
             ])?;
+            name_to_id.insert(s.name.clone(), self.conn.last_insert_rowid());
         }
+        Ok(())
+    }
+
+    /// Drop every `symbols` row whose `file_id` matches. The FK
+    /// `edges.{src,dst}_symbol_id REFERENCES symbols(id) ON DELETE CASCADE`
+    /// removes the file's edges automatically. Used by `index::refresh*` to
+    /// keep per-file reindex all-or-nothing under the v4 schema.
+    pub fn delete_symbols_for_file(&self, file_id: i64) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM symbols WHERE file_id = ?1", params![file_id])?;
         Ok(())
     }
 
     /// Replace all edges originating from `file_id` with the supplied set.
     /// Mirror of `replace_symbols` — same all-or-nothing per-file shape so
     /// reindexing a file leaves the edges table consistent.
+    ///
+    /// v4: edges are `(src_symbol_id, dst_symbol_id, kind, line)` FK rows.
+    /// We resolve `src_symbol` (the enclosing fn name) against this file's
+    /// `symbols` rows. Edges with no enclosing symbol are skipped (v4
+    /// requires `src_symbol_id NOT NULL`). Destinations are resolved first
+    /// against the same file's symbols, then against the unresolved sentinel
+    /// table — matching the behavior of the store-backed extractor path so
+    /// CLI/MCP queries see the same edge set regardless of which path wrote
+    /// them.
     pub fn replace_edges(&self, file_id: i64, edges: &[Edge]) -> Result<()> {
-        self.conn
-            .execute("DELETE FROM edges WHERE src_file_id = ?1", params![file_id])?;
-        let mut stmt = self.conn.prepare(
-            "INSERT INTO edges(src_file_id, src_symbol, dst_name, kind, line)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+        // Delete this file's prior edges via the symbol→edge FK cascade.
+        // Direct `DELETE FROM edges WHERE src_symbol_id IN (...)` keeps the
+        // file's symbols intact (replace_symbols handles those separately).
+        self.conn.execute(
+            "DELETE FROM edges WHERE src_symbol_id IN
+                 (SELECT id FROM symbols WHERE file_id = ?1)",
+            params![file_id],
+        )?;
+        // Build a name → symbol_id map for this file once, so each edge
+        // resolution is a hashmap hit instead of a SQL roundtrip.
+        let mut local: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT id, name FROM symbols WHERE file_id = ?1")?;
+            let rows = stmt
+                .query_map(params![file_id], |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for (id, name) in rows {
+                local.entry(name).or_insert(id);
+            }
+        }
+        let mut insert = self.conn.prepare(
+            "INSERT INTO edges(src_symbol_id, dst_symbol_id, kind, line)
+             VALUES (?1, ?2, ?3, ?4)",
         )?;
         for e in edges {
-            stmt.execute(params![file_id, e.src_symbol, e.dst_name, e.kind, e.line])?;
+            let src_id = match e.src_symbol.as_deref().and_then(|n| local.get(n).copied()) {
+                Some(id) => id,
+                None => continue, // v4: file-level edges have no NOT NULL src; skip.
+            };
+            let dst_id = match local.get(&e.dst_name).copied() {
+                Some(id) => id,
+                None => self.upsert_unresolved_sentinel(&e.dst_name)?,
+            };
+            insert.execute(params![src_id, dst_id, e.kind, e.line])?;
         }
         Ok(())
     }
@@ -359,54 +419,67 @@ impl Store {
         Ok(n)
     }
 
-    /// Pure-SQL caller lookup: find every edge whose `dst_name` is `name` and
-    /// `kind = 'call'`, returning {file, line, src_symbol} per hit. Cost is
-    /// dominated by the index seek on `idx_edges_dst_kind`.
+    /// Pure-SQL caller lookup: find every edge whose destination symbol is
+    /// `name` and `kind = 'call'`, returning {file, line, src_symbol}.
+    /// v4: edges key by symbol-id; we join through `symbols(dst)`,
+    /// `symbols(src)`, and `files(src)` to recover the human-readable shape
+    /// the query layer expects. Sentinel destinations (kind='sentinel') are
+    /// matched by name too, so name-only recall still works for languages
+    /// without a resolver.
     pub fn callers_of(&self, name: &str) -> Result<Vec<EdgeHit>> {
         let mut stmt = self.conn.prepare(
-            "SELECT f.path, e.line, e.src_symbol
-             FROM edges e JOIN files f ON e.src_file_id = f.id
-             WHERE e.dst_name = ?1 AND e.kind = 'call'
+            "SELECT f.path, e.line, src.name
+             FROM edges e
+             JOIN symbols dst ON dst.id = e.dst_symbol_id
+             JOIN symbols src ON src.id = e.src_symbol_id
+             JOIN files   f   ON f.id   = src.file_id
+             WHERE dst.name = ?1 AND e.kind = 'call'
              ORDER BY f.path, e.line",
         )?;
         let rows = stmt.query_map(params![name], |row| {
             Ok(EdgeHit {
                 file: row.get(0)?,
                 line: row.get::<_, i64>(1)? as u32,
-                src_symbol: row.get(2)?,
+                src_symbol: Some(row.get::<_, String>(2)?),
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Broader reference lookup: edges where `dst_name = name` and `kind` is
-    /// any reference-like kind we currently emit (`call`, `ref`). The schema
-    /// reserves `import`, `inherit`, `impl` for future extraction passes; add
-    /// them to this filter when the extractor starts emitting them.
+    /// Broader reference lookup: edges where the destination symbol is
+    /// `name` and `kind` is any reference-like kind we currently emit
+    /// (`call`, `ref`). v4 join shape mirrors `callers_of`.
     pub fn refs_of(&self, name: &str) -> Result<Vec<EdgeHit>> {
         let mut stmt = self.conn.prepare(
-            "SELECT f.path, e.line, e.src_symbol
-             FROM edges e JOIN files f ON e.src_file_id = f.id
-             WHERE e.dst_name = ?1 AND e.kind IN ('call', 'ref')
+            "SELECT f.path, e.line, src.name
+             FROM edges e
+             JOIN symbols dst ON dst.id = e.dst_symbol_id
+             JOIN symbols src ON src.id = e.src_symbol_id
+             JOIN files   f   ON f.id   = src.file_id
+             WHERE dst.name = ?1 AND e.kind IN ('call', 'ref')
              ORDER BY f.path, e.line",
         )?;
         let rows = stmt.query_map(params![name], |row| {
             Ok(EdgeHit {
                 file: row.get(0)?,
                 line: row.get::<_, i64>(1)? as u32,
-                src_symbol: row.get(2)?,
+                src_symbol: Some(row.get::<_, String>(2)?),
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
-    /// Stream every (src_symbol, dst_name) pair where both ends are populated.
-    /// Used by `CallGraph::build` to fold the edges table into adjacency in
-    /// a single scan instead of N * find_callers.
+    /// Stream every (src_name, dst_name) pair for call-kind edges. v4 joins
+    /// both ends through `symbols` so the legacy `(String, String)` shape
+    /// (used by older `CallGraph` builds and external integrations) keeps
+    /// working against the new schema.
     pub fn iter_call_edges(&self) -> Result<Vec<(String, String)>> {
         let mut stmt = self.conn.prepare(
-            "SELECT src_symbol, dst_name FROM edges
-             WHERE kind = 'call' AND src_symbol IS NOT NULL",
+            "SELECT src.name, dst.name
+             FROM edges e
+             JOIN symbols src ON src.id = e.src_symbol_id
+             JOIN symbols dst ON dst.id = e.dst_symbol_id
+             WHERE e.kind = 'call'",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -679,9 +752,13 @@ impl Store {
     }
 
     pub fn symbols_in_file(&self, file: &str) -> Result<Vec<Symbol>> {
+        // v4: resolve parent name via self-join on `symbols.parent_id` so
+        // outline can group methods under their enclosing class/impl.
         let mut stmt = self.conn.prepare(
-            "SELECT s.name, s.kind, s.signature, NULL AS parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
-             FROM symbols s JOIN files f ON s.file_id = f.id
+            "SELECT s.name, s.kind, s.signature, p.name AS parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
+             FROM symbols s
+             JOIN files f ON s.file_id = f.id
+             LEFT JOIN symbols p ON s.parent_id = p.id
              WHERE f.path = ?1
              ORDER BY s.line_start",
         )?;
@@ -701,9 +778,15 @@ impl Store {
     }
 
     pub fn find_by_name(&self, name: &str) -> Result<Vec<Symbol>> {
+        // v4: parent is an FK on `symbols.parent_id` → join symbols to itself
+        // so the returned `Symbol.parent` field carries the enclosing
+        // class/impl/module name. LEFT JOIN keeps top-level (no-parent)
+        // symbols in the result set.
         let mut stmt = self.conn.prepare(
-            "SELECT s.name, s.kind, s.signature, NULL AS parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
-             FROM symbols s JOIN files f ON s.file_id = f.id
+            "SELECT s.name, s.kind, s.signature, p.name AS parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
+             FROM symbols s
+             JOIN files f ON s.file_id = f.id
+             LEFT JOIN symbols p ON s.parent_id = p.id
              WHERE s.name = ?1",
         )?;
         let rows = stmt.query_map(params![name], |row| {
@@ -891,8 +974,17 @@ mod tests {
     fn find_by_name_returns_method_with_parent() {
         let (_dir, store) = tmp_store();
         let fid = store.upsert_file("a.ts", "h", 0, "typescript").unwrap();
+        // v4: parent is an FK to another `symbols` row, so the parent class
+        // must be inserted in the same batch (extractor emits class before
+        // method via document order; we mirror that here).
         store
-            .replace_symbols(fid, &[sym("greet", SymbolKind::Method, Some("Greeter"))])
+            .replace_symbols(
+                fid,
+                &[
+                    sym("Greeter", SymbolKind::Class, None),
+                    sym("greet", SymbolKind::Method, Some("Greeter")),
+                ],
+            )
             .unwrap();
         let hits = store.find_by_name("greet").unwrap();
         assert_eq!(hits[0].parent.as_deref(), Some("Greeter"));

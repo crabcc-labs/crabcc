@@ -50,8 +50,7 @@ pub fn hot_symbols(store: &Store, top_n: usize, kinds: &[&str]) -> Result<Vec<Ho
             0,
         )
     } else {
-        let placeholders: Vec<String> =
-            (0..kinds.len()).map(|i| format!("?{}", i + 2)).collect();
+        let placeholders: Vec<String> = (0..kinds.len()).map(|i| format!("?{}", i + 2)).collect();
         (
             format!(
                 "SELECT s.name, s.kind, s.signature, f.path, s.line_start, s.line_end, \
@@ -94,24 +93,21 @@ pub fn hot_symbols(store: &Store, top_n: usize, kinds: &[&str]) -> Result<Vec<Ho
         for k in kinds {
             bound.push(Box::new(k.to_string()));
         }
-        stmt.query_map(
-            params_from_iter(bound.iter().map(|b| b.as_ref())),
-            |row| {
-                Ok(HotSymbol {
-                    symbol: Symbol {
-                        name: row.get(0)?,
-                        kind: kind_from_str(&row.get::<_, String>(1)?),
-                        signature: row.get(2)?,
-                        parent: None,
-                        file: row.get(3)?,
-                        line_start: row.get(4)?,
-                        line_end: row.get(5)?,
-                        visibility: row.get(6)?,
-                    },
-                    in_degree: row.get::<_, i64>(7)? as usize,
-                })
-            },
-        )?
+        stmt.query_map(params_from_iter(bound.iter().map(|b| b.as_ref())), |row| {
+            Ok(HotSymbol {
+                symbol: Symbol {
+                    name: row.get(0)?,
+                    kind: kind_from_str(&row.get::<_, String>(1)?),
+                    signature: row.get(2)?,
+                    parent: None,
+                    file: row.get(3)?,
+                    line_start: row.get(4)?,
+                    line_end: row.get(5)?,
+                    visibility: row.get(6)?,
+                },
+                in_degree: row.get::<_, i64>(7)? as usize,
+            })
+        })?
         .collect::<rusqlite::Result<Vec<_>>>()?
     };
     Ok(rows)

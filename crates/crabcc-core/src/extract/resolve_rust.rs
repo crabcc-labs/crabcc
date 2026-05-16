@@ -255,7 +255,7 @@ impl RustResolver {
         // method up by name. Multiple candidates collapse to the first.
         for block in &self.scope.impl_blocks {
             if block.target == type_name && block.methods.iter().any(|m| m == method) {
-                for cand in self.index.lookup_by_name(method) {
+                if let Some(cand) = self.index.lookup_by_name(method).into_iter().next() {
                     return Some(cand);
                 }
             }

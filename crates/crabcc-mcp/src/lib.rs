@@ -1343,11 +1343,15 @@ mod tests {
         let dir = fixture_root();
         let r = call_tool(dir.path(), "callers", json!({"name": "hello"}));
         let raw_text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
-        // Either the fingerprint envelope or a streamed shape — both
-        // count "hello" as a callable.
+        // Under v4, file-level callers (no enclosing fn) aren't recorded
+        // because `edges.src_symbol_id` is NOT NULL — see the comment in
+        // `handle_tools_call_graph_orphans_returns_array`. The fixture's
+        // only call to `hello` is from a top-level expression statement, so
+        // `[]` is a legitimate envelope shape. Assert the response is at
+        // least valid JSON instead of pattern-matching its contents.
         assert!(
-            raw_text.contains("\"") && !raw_text.is_empty(),
-            "callers payload must be JSON: {raw_text:.200}"
+            !raw_text.is_empty() && serde_json::from_str::<Value>(raw_text).is_ok(),
+            "callers payload must be valid JSON: {raw_text:.200}"
         );
     }
 

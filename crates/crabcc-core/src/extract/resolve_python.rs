@@ -327,7 +327,8 @@ mod tests {
 
     fn parse_py(src: &str) -> tree_sitter::Tree {
         let mut p = Parser::new();
-        p.set_language(&tree_sitter_python::LANGUAGE.into()).unwrap();
+        p.set_language(&tree_sitter_python::LANGUAGE.into())
+            .unwrap();
         p.parse(src, None).unwrap()
     }
 

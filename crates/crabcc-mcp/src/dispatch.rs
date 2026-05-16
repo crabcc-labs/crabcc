@@ -279,16 +279,19 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
         }
         "graph.blast_radius" => {
             let symbol = arg_str(&args, "symbol")?.to_string();
-            let depth = args.get("depth").and_then(|v| v.as_u64()).map(|n| n as usize).unwrap_or(5);
+            let depth = args
+                .get("depth")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as usize)
+                .unwrap_or(5);
             let kind = args.get("kind").and_then(|v| v.as_str()).map(String::from);
             let symbol_id = resolve_symbol_id(&store, &symbol)?;
             let kinds: &[&str] = match kind.as_deref() {
                 Some(k) => &[k][..],
                 None => &[][..],
             };
-            let hits = crabcc_core::query::blast_radius::blast_radius(
-                &store, symbol_id, depth, kinds,
-            )?;
+            let hits =
+                crabcc_core::query::blast_radius::blast_radius(&store, symbol_id, depth, kinds)?;
             Ok(serde_json::to_string(&hits)?)
         }
         "graph.why" => {
@@ -305,7 +308,11 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
             Ok(serde_json::to_string(&path)?)
         }
         "graph.hot_symbols" => {
-            let top = args.get("top").and_then(|v| v.as_u64()).map(|n| n as usize).unwrap_or(10);
+            let top = args
+                .get("top")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as usize)
+                .unwrap_or(10);
             let kind = args.get("kind").and_then(|v| v.as_str()).map(String::from);
             let kinds: &[&str] = match kind.as_deref() {
                 Some(k) => &[k][..],
@@ -316,7 +323,11 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
         }
         "graph.importers" => {
             let path = arg_str(&args, "path")?.to_string();
-            let depth = args.get("depth").and_then(|v| v.as_u64()).map(|n| n as usize).unwrap_or(3);
+            let depth = args
+                .get("depth")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as usize)
+                .unwrap_or(3);
             let hits = crabcc_core::query::importers::importers(&store, &path, depth)?;
             Ok(serde_json::to_string(&hits)?)
         }
