@@ -2,13 +2,14 @@
 # queue.sh — SQLite-backed agent task queue CLI.
 #
 # Usage:
-#   queue.sh enqueue  <agent> <payload-json>
+#   queue.sh enqueue  <agent> <payload-json> [manifest_sha] [--wave-id <id>] [--example-id <id>]
 #   queue.sh claim    <agent>
 #   queue.sh done     <task-id> <result-json>
 #   queue.sh fail     <task-id> <error-msg>
 #   queue.sh requeue  <task-id>
 #   queue.sh status   [task-id]
 #   queue.sh list     [--agent X] [--status Y] [--limit N]
+#   queue.sh list-by-wave <wave-id>
 #
 # Environment overrides:
 #   AGENTS_DB   path to the SQLite database (default: ~/.crabcc/_agents.db)
@@ -83,10 +84,29 @@ die() { echo "queue.sh: $*" >&2; exit 1; }
 # ── subcommands ───────────────────────────────────────────────────────────────
 
 cmd_enqueue() {
-    [[ $# -ge 2 ]] || die "usage: enqueue <agent> <payload-json>"
+    [[ $# -ge 2 ]] || die "usage: enqueue <agent> <payload-json> [manifest_sha] [--wave-id <id>] [--example-id <id>]"
     local agent="$1"
     local payload="$2"
-    local manifest_sha="${3:-}"
+    shift 2
+
+    local manifest_sha=""
+    local wave_id=""
+    local example_id=""
+
+    # 3rd positional arg (if not a flag) is manifest_sha — preserves the
+    # legacy `enqueue <agent> <payload> <manifest_sha>` calling convention.
+    if [[ $# -gt 0 && "$1" != --* ]]; then
+        manifest_sha="$1"; shift
+    fi
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --wave-id)       wave_id="$2";       shift 2 ;;
+            --example-id)    example_id="$2";    shift 2 ;;
+            --manifest-sha)  manifest_sha="$2";  shift 2 ;;
+            *) die "unknown flag: $1" ;;
+        esac
+    done
 
     ensure_migrated
 
@@ -94,23 +114,28 @@ cmd_enqueue() {
     printf '%s' "$payload" | jq -e . >/dev/null 2>&1 \
         || die "payload is not valid JSON"
 
-    local sha_expr
-    if [[ -n "$manifest_sha" ]]; then
-        sha_expr="'$(sq "$manifest_sha")'"
-    else
-        sha_expr="NULL"
-    fi
+    local sha_expr  wave_expr  example_expr
+    [[ -n "$manifest_sha" ]] && sha_expr="'$(sq "$manifest_sha")'"      || sha_expr=NULL
+    [[ -n "$wave_id"      ]] && wave_expr="'$(sq "$wave_id")'"          || wave_expr=NULL
+    [[ -n "$example_id"   ]] && example_expr="'$(sq "$example_id")'"    || example_expr=NULL
 
     local sql
     sql="BEGIN IMMEDIATE;
-INSERT INTO agent_tasks(agent, payload, manifest_sha)
-    VALUES('$(sq "$agent")', '$(sq "$payload")', $sha_expr);
+INSERT INTO agent_tasks(agent, payload, manifest_sha, wave_id, langsmith_example_id)
+    VALUES('$(sq "$agent")', '$(sq "$payload")', $sha_expr, $wave_expr, $example_expr);
 SELECT last_insert_rowid();
 COMMIT;"
 
     local id
     id="$(db "$sql" | tail -1)"
     echo "$id"
+}
+
+cmd_list_by_wave() {
+    [[ $# -ge 1 ]] || die "usage: list-by-wave <wave-id>"
+    local wave_id="$1"
+    ensure_migrated
+    db_json "SELECT * FROM agent_tasks WHERE wave_id = '$(sq "$wave_id")' ORDER BY id;"
 }
 
 cmd_claim() {
@@ -269,12 +294,13 @@ LIMIT  $limit;"
 SUBCMD="$1"; shift
 
 case "$SUBCMD" in
-    enqueue) cmd_enqueue "$@" ;;
-    claim)   cmd_claim   "$@" ;;
-    done)    cmd_done    "$@" ;;
-    fail)    cmd_fail    "$@" ;;
-    requeue) cmd_requeue "$@" ;;
-    status)  cmd_status  "${1:-}" ;;
-    list)    cmd_list    "$@" ;;
+    enqueue)      cmd_enqueue       "$@" ;;
+    claim)        cmd_claim         "$@" ;;
+    done)         cmd_done          "$@" ;;
+    fail)         cmd_fail          "$@" ;;
+    requeue)      cmd_requeue       "$@" ;;
+    status)       cmd_status        "${1:-}" ;;
+    list)         cmd_list          "$@" ;;
+    list-by-wave) cmd_list_by_wave  "$@" ;;
     *) die "unknown subcommand: $SUBCMD" ;;
 esac
