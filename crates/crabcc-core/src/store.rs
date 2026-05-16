@@ -194,6 +194,36 @@ impl Store {
         Ok(())
     }
 
+    /// Iterate every call-kind edge (src_symbol_id, dst_symbol_id, line).
+    /// Used by graph.rs's `walk` / `cycles` / `orphans` upgrade in v4 where
+    /// we walk the symbol-ID-keyed call graph. Streams the full table — fine
+    /// at the workspace sizes we target (max ~20k call edges on this repo).
+    pub fn iter_call_edges_resolved(&self) -> Result<Vec<(i64, i64, i64)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT src_symbol_id, dst_symbol_id, line FROM edges WHERE kind = 'call'")?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Resolve a bare name + file_id pair to a SymbolId. Returns the first
+    /// match (callers handle ambiguity). Used by the CLI graph subcommand
+    /// dispatch to turn user-typed symbol names into the IDs the query/*
+    /// modules expect.
+    pub fn symbol_id_by_name_file(&self, name: &str, file_id: i64) -> Result<Option<i64>> {
+        let id = self
+            .conn
+            .query_row(
+                "SELECT id FROM symbols WHERE name = ?1 AND file_id = ?2 LIMIT 1",
+                params![name, file_id],
+                |r| r.get::<_, i64>(0),
+            )
+            .optional()?;
+        Ok(id)
+    }
+
     /// Look up the rowid for a previously-upserted file path. None when the
     /// path hasn't been indexed yet. Used by the two-pass extractor to fetch
     /// the file_id between pass 1 (insert symbols) and pass 2 (resolve edges).
