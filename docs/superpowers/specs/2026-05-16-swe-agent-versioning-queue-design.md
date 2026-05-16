@@ -176,6 +176,24 @@ ALTER TABLE agent_tasks ADD COLUMN validator_scores TEXT;        -- JSON {key: s
 
 Migrations stay additive (per repo convention — see `CLAUDE.md` → "When changing schema").
 
+**Logging contract for the new helpers.**
+
+All three v0.1 helpers (`import-dataset.sh`, `upload-experiment.sh`, `check-and-done.sh`) MUST emit structured stderr logs so the orchestrator can pipe them into telemetry. Format:
+
+```
+[<helper>] <iso-timestamp> <level> <event> key1=val1 key2=val2
+```
+
+Levels: `INFO`, `WARN`, `ERROR`. Mandatory events per helper:
+
+| Helper | Events |
+|---|---|
+| `import-dataset.sh` | `dataset_fetch_start` (dataset, examples=N), `enqueue_ok` (task_id, example_id), `dataset_fetch_done` (enqueued=N, skipped=N), `dataset_fetch_error` |
+| `upload-experiment.sh` | `wave_collect_start` (wave_id, agent), `rows_collected` (count), `upload_start` (experiment_name), `upload_ok` (experiment_id, dataset_id), `upload_error` |
+| `check-and-done.sh` | `validate_start` (task_id), `validator_score` (key, score), `validator_pass` / `validator_fail` (task_id, reason), `persist_done` / `persist_fail` (task_id) |
+
+Logs go to stderr only — stdout reserved for machine-readable output (task ids, JSON payloads). Use `tools/orchestrator/run-task.sh` as the style reference; `set -x` is NOT a substitute for explicit event logging.
+
 **Out of scope for v0.1.**
 
 - Custom LangSmith evaluators (LLM-as-judge) — start with deterministic validator scores only
