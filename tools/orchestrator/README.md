@@ -43,7 +43,7 @@ for the full design (v1 + v0.1).
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `LANGSMITH_API_KEY` | yes (LangSmith helpers) | — | API key sent as `X-API-Key` header |
-| `LANGSMITH_ENDPOINT` | no | `https://eu.api.smith.langchain.com` | LangSmith API base URL |
+| `LANGSMITH_ENDPOINT` | no | `https://eu.api.smith.langchain.com/api/v1` | LangSmith API base URL (must include the `/api/v1` version suffix; override only if proxying through a path-rewriting layer) |
 | `LANGSMITH_PROJECT` | no | — | Project name tag (informational; passed through in payloads where used) |
 | `LANGSMITH_DATASET_DEFAULT` | no | — | Default dataset name for scripts that accept it optionally |
 | `AGENTS_DB` | no | `~/.crabcc/_agents.db` | SQLite database path for the agent task queue |

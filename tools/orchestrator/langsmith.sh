@@ -22,7 +22,10 @@ set -uo pipefail
 
 # ── environment ───────────────────────────────────────────────────────────────
 
-LANGSMITH_ENDPOINT="${LANGSMITH_ENDPOINT:-https://eu.api.smith.langchain.com}"
+# Default endpoint includes the /api/v1 version suffix per LangSmith REST
+# docs — without it every dataset/examples/upload-experiment call hits the
+# wrong path. Override only if pointing at a non-versioned proxy.
+LANGSMITH_ENDPOINT="${LANGSMITH_ENDPOINT:-https://eu.api.smith.langchain.com/api/v1}"
 
 if [[ -z "${LANGSMITH_API_KEY:-}" ]]; then
     echo "[langsmith] $(date -u +%Y-%m-%dT%H:%M:%SZ) ERROR missing_api_key msg=LANGSMITH_API_KEY is not set" >&2
@@ -212,12 +215,16 @@ cmd_upload_experiment() {
     local resp
     resp="$(api_call POST /datasets/upload-experiment "$body_file")"
 
+    # Response shape per LangSmith REST docs:
+    #   { "experiment": { "id": ..., "name": ..., "run_count": ... },
+    #     "dataset":    { "id": ..., "name": ..., "example_count": ... } }
+    # Fall back to top-level keys for forward-compat in case the shape flips.
     local exp_id dataset_id
-    exp_id="$(printf '%s\n' "$resp" | jq -r '.experiment_id // empty')"
-    dataset_id="$(printf '%s\n' "$resp" | jq -r '.dataset_id // empty')"
+    exp_id="$(printf '%s\n' "$resp" | jq -r '.experiment.id // .experiment_id // empty')"
+    dataset_id="$(printf '%s\n' "$resp" | jq -r '.dataset.id // .dataset_id // empty')"
 
     log INFO upload_ok experiment_id="$exp_id" dataset_id="$dataset_id"
-    printf '%s\n' "$resp" | jq -c '{experiment_id: .experiment_id, dataset_id: .dataset_id}'
+    printf '%s\n' "$resp" | jq -c '{experiment_id: (.experiment.id // .experiment_id), dataset_id: (.dataset.id // .dataset_id)}'
 }
 
 cmd_ping() {

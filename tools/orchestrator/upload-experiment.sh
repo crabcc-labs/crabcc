@@ -86,14 +86,18 @@ exp_start="$(printf '%s\n' "$rows_json" | jq -r '[.[].claimed_at   | select(. !=
 exp_end="$(  printf '%s\n' "$rows_json" | jq -r '[.[].completed_at | select(. != null)] | sort | .[-1] // "unknown"')"
 
 # Build results array: one entry per terminal row.
-# evaluation_scores comes from the agent_tasks.validator_scores column
-# (written by check-and-done.sh), NOT from inside the agent's own result —
-# only the validator writes the scores; the agent doesn't know about them.
+# - evaluation_scores comes from the agent_tasks.validator_scores column
+#   (written by check-and-done.sh), NOT from inside the agent's own result.
+# - start_time / end_time are required by the LangSmith upload schema and
+#   power their per-row latency calculations. Pulled from claimed_at /
+#   completed_at (ISO 8601 strings, which the API accepts as-is).
 results_json="$(printf '%s\n' "$rows_json" | jq -c '[.[] | {
     row_id:            (.payload | try fromjson | .langsmith_example_id // (.id | tostring)),
     inputs:            (.payload | try fromjson | .inputs // {}),
     actual_outputs:    (.result  | if . then try fromjson else {} end // {}),
-    evaluation_scores: (.validator_scores | if . then try fromjson else null end)
+    evaluation_scores: (.validator_scores | if . then try fromjson else null end),
+    start_time:        .claimed_at,
+    end_time:          .completed_at
 }]')"
 
 body_file="$(mktemp)"
