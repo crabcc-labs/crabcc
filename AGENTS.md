@@ -12,8 +12,9 @@ Tantivy sidecar for fuzzy/prefix search, optional FSST string compression on
 the signature column (default-on as of v2.0.0-alpha).
 
 Use it instead of `grep`/`find` for symbol-name queries: `crabcc sym Foo`,
-`crabcc refs Foo`, `crabcc callers handleAuth`. See `README.md` and
-`docs/ARCHITECTURE.md` for the full surface.
+`crabcc refs Foo`, `crabcc callers handleAuth`. See `README.md` for the
+user surface and `crates/crabcc-core/docs/HOW_IT_WORKS.md` for the
+indexing internals.
 
 The `crabcc-memory` crate (epic [#2](https://github.com/peterlodri-sec/crabcc/issues/2))
 adds a per-repo AI memory layer at `.crabcc/memory.db`, fronted by a `Backend`
@@ -103,8 +104,11 @@ key bindings, example use-cases).
 - Error handling via `anyhow::Result` at app boundaries; library code in
   `crabcc-core` returns concrete `Result<T, E>` only when the caller needs to
   branch on the error variant.
-- New language extractors land in `crates/crabcc-core/src/extract.rs`. There
-  are five entry points to update — see `docs/ARCHITECTURE.md` § Extending.
+- New language extractors land in `crates/crabcc-core/src/extract.rs`. Five
+  entry points to update: the language enum, the file-extension match, the
+  tree-sitter language binding, the per-language symbol-kind table, and the
+  fixture under `crates/crabcc-core/tests/fixtures/`. See
+  `crates/crabcc-core/docs/HOW_IT_WORKS.md` for the walkthrough.
 
 ## Workspace layout
 
@@ -124,10 +128,10 @@ crates/
                           # Palace facade, schema/001_init.sql.
 
 bench/                    # raw-bench.py (vs grep/find), compress-bench.py (FSST gate)
-docs/
-├── ARCHITECTURE.md       # Read this before touching cross-crate code.
-├── RESEARCH-fsst.md      # FSST integration design + release-gate criteria.
-└── RESEARCH-mempalace.md # Memory-layer port plan + roadmap (M0 → M7).
+docs/                     # In-tree docs (no longer a submodule). RUST-ANTHOLOGY.md,
+                          # PROCESS-SPAWNING.md, desktop/{ARCHITECTURE,DESIGN-BRIEF}.md,
+                          # RESEARCH-tts-voice-control-*.md. Per-crate deep-dives live
+                          # under crates/*/docs/ (e.g. crabcc-core/docs/HOW_IT_WORKS.md).
 
 schema/001_init.sql                      # Symbol-index schema. Additive only.
 crates/crabcc-memory/schema/001_init.sql # Memory schema (wings/rooms/drawers/…).
@@ -211,8 +215,8 @@ Memory roadmap status (issue #2): M0 (persistent backend) ✅ → M0.5
 (`sqlite-vec` ANN, `--features memory-vec`) ✅ → M1a (FTS5 BM25 + RRF
 hybrid) ✅ → M1b (`fastembed-rs`, `--features memory-embed`) ✅ → M2
 (miners) ✅ → bench gate (`task memory-bench`, ≥ 96.6% R@5 on synthetic
-fixture) ✅. Future M3-full (KG ops) tracked separately. See
-`docs/RESEARCH-mempalace.md` for the design.
+fixture) ✅. Future M3-full (KG ops) tracked separately. The Palace
+facade lives at `crates/crabcc-memory/src/palace.rs`.
 
 ## Where things live
 
@@ -227,8 +231,9 @@ fixture) ✅. Future M3-full (KG ops) tracked separately. See
 
 ## When unsure
 
-Read `docs/ARCHITECTURE.md` first; it covers the data model and the indexing
-pipeline at the level an editor agent needs. The `RESEARCH-*.md` documents
-explain *why* — useful when a change feels like it should be obvious but
-isn't. For memory-layer specifics, `docs/RESEARCH-mempalace.md` has the
-full port plan + reuse map.
+Use `crabcc` on this repo to find what you need: `crabcc sym <Name>` for
+definitions, `crabcc outline <file>` before reading a large file,
+`crabcc callers <Name>` for impact analysis. For symbol-index internals
+read `crates/crabcc-core/docs/HOW_IT_WORKS.md`. For memory-layer
+specifics read `crates/crabcc-memory/src/palace.rs` and the schema in
+`crates/crabcc-memory/schema/`.
