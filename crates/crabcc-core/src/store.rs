@@ -208,6 +208,21 @@ impl Store {
         Ok(rows)
     }
 
+    /// Reverse of `symbol_id_by_name`: id → bare name. Used by consumers
+    /// (LSP, MCP) that walked the symbol-id graph and need to surface names
+    /// in user-facing output.
+    pub fn symbol_name_by_id(&self, id: i64) -> Result<Option<String>> {
+        let name = self
+            .conn
+            .query_row(
+                "SELECT name FROM symbols WHERE id = ?1",
+                params![id],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?;
+        Ok(name)
+    }
+
     /// Resolve a bare name to the first matching SymbolId across all files.
     /// Coarse — multiple files may define the same name. Used by MCP/CLI
     /// graph dispatch when the user typed just a name without file context.

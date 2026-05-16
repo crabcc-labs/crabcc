@@ -542,29 +542,44 @@ impl LanguageServer for Backend {
             st.ensure_store();
             let store_guard = st.store.lock().unwrap();
             if let Some(store) = store_guard.as_ref() {
-                if let Ok(g) = CallGraph::build_from_edges(store) {
+                if let Ok(g) = CallGraph::build(store, &root) {
                     *st.graph.lock().unwrap() = Some(g);
                 }
             }
         }
-        let graph_guard = st.graph.lock().unwrap();
-        let graph = match graph_guard.as_ref() {
-            Some(g) => g,
-            None => return Ok(Some(Vec::new())),
-        };
-        let callees: Vec<String> = graph
-            .callees
-            .get(&name)
-            .map(|s| s.iter().cloned().collect())
-            .unwrap_or_default();
-        drop(graph_guard);
 
+        // v4: graph keys are symbol_ids (i64), not names. Resolve the
+        // requested name to a SymbolId, walk callees as ids, then resolve
+        // each callee id back to a name string for the existing
+        // find_symbol-by-name path below.
         st.ensure_store();
         let store_guard = st.store.lock().unwrap();
         let store = match store_guard.as_ref() {
             Some(s) => s,
             None => return Ok(Some(Vec::new())),
         };
+
+        let name_id = match store.symbol_id_by_name(&name).ok().flatten() {
+            Some(id) => id,
+            None => return Ok(Some(Vec::new())),
+        };
+
+        let graph_guard = st.graph.lock().unwrap();
+        let graph = match graph_guard.as_ref() {
+            Some(g) => g,
+            None => return Ok(Some(Vec::new())),
+        };
+        let callee_ids: Vec<i64> = graph
+            .callees
+            .get(&name_id)
+            .map(|s| s.iter().copied().collect())
+            .unwrap_or_default();
+        drop(graph_guard);
+
+        let callees: Vec<String> = callee_ids
+            .iter()
+            .filter_map(|id| store.symbol_name_by_id(*id).ok().flatten())
+            .collect();
         let mut targets = Vec::new();
         for callee in callees.iter().take(200) {
             if let Ok(syms) = find_symbol(store, callee) {
