@@ -85,17 +85,6 @@ struct Cli {
     cmd: Option<Cmd>,
 }
 
-/// Print a deprecation notice to stderr unless `CRABCC_NO_DEPRECATION_WARN=1`.
-fn deprecation_warn(old: &str, group: &str, new_sub: &str) {
-    if std::env::var_os("CRABCC_NO_DEPRECATION_WARN")
-        .map(|v| !v.is_empty())
-        .unwrap_or(false)
-    {
-        return;
-    }
-    eprintln!("note: `crabcc {old}` is deprecated; use `crabcc {group} {new_sub}`");
-}
-
 // ── New sub-enums for grouped commands ────────────────────────────────────────
 
 #[derive(Subcommand)]
@@ -458,32 +447,6 @@ enum Cmd {
         no_init: bool,
     },
 
-    // ── Hidden deprecated aliases (kept for one release cycle) ────────────────
-    #[command(hide = true)]
-    Refresh {
-        #[arg(long)]
-        delta: bool,
-    },
-    #[command(hide = true)]
-    Sym {
-        name: String,
-        #[arg(long, value_name = "GIT_REV")]
-        since: Option<String>,
-    },
-    #[command(hide = true)]
-    Refs {
-        name: String,
-        #[command(flatten)]
-        opts: ResultOpts,
-    },
-    #[command(hide = true)]
-    Callers {
-        name: String,
-        #[command(flatten)]
-        opts: ResultOpts,
-    },
-    #[command(hide = true)]
-    Outline { file: PathBuf },
     /// Outline-stub-aware file read. Caches per
     /// `(path, session_id)` in memory.db's `session_reads` table;
     /// serves the full file on cache miss / mtime change / hash
@@ -509,144 +472,6 @@ enum Cmd {
         /// only drops near-constant lines.
         #[arg(long, default_value_t = 2.5)]
         threshold: f64,
-    },
-    #[command(hide = true)]
-    Files {
-        #[arg(long)]
-        under: Option<String>,
-        #[arg(long)]
-        lang: Option<String>,
-        #[arg(long)]
-        ext: Option<String>,
-        #[arg(long, default_value_t = 0)]
-        limit: usize,
-    },
-    #[command(hide = true)]
-    Grep { pattern: String },
-    #[command(hide = true)]
-    Fuzzy {
-        query: String,
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
-    },
-    #[command(hide = true)]
-    Prefix {
-        query: String,
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
-    },
-    #[command(hide = true)]
-    FtsRebuild,
-    #[command(hide = true)]
-    Track {
-        #[arg(long)]
-        text: bool,
-    },
-    #[command(hide = true)]
-    Watch {
-        #[arg(long, default_value_t = 500)]
-        debounce: u64,
-    },
-    #[command(hide = true)]
-    Compress {
-        #[arg(long)]
-        rebuild: bool,
-        #[arg(long)]
-        stats: bool,
-        #[arg(long)]
-        json: bool,
-        #[arg(long)]
-        db: Option<PathBuf>,
-        #[arg(long, value_name = "N")]
-        decode_probe: Option<usize>,
-    },
-    #[command(hide = true, name = "install-claude")]
-    InstallClaude {
-        #[arg(long)]
-        yes: bool,
-        #[arg(long)]
-        print_hooks: bool,
-        #[arg(long)]
-        with_ollama_stack: bool,
-        #[arg(long)]
-        print_stack_instructions: bool,
-        #[arg(long)]
-        dry_run: bool,
-    },
-    #[command(hide = true)]
-    Upgrade {
-        #[arg(long)]
-        check: bool,
-        #[arg(long)]
-        text: bool,
-        #[arg(long)]
-        apply: bool,
-        #[arg(long)]
-        repo: Option<String>,
-        #[arg(long)]
-        with_stack: bool,
-    },
-    #[command(hide = true)]
-    Completions {
-        #[arg(value_enum)]
-        shell: clap_complete::Shell,
-    },
-    #[command(hide = true)]
-    Openapi,
-    #[command(hide = true, name = "agent-run")]
-    AgentRunAlias {
-        #[arg(long, value_name = "PROMPT")]
-        run: String,
-        #[arg(long)]
-        dry_run: bool,
-        #[arg(long, value_name = "ID")]
-        model: Option<String>,
-        #[arg(long)]
-        no_refresh: bool,
-        #[arg(long, value_name = "BACKEND", default_value = "ollama")]
-        backend: String,
-        #[arg(long, value_name = "NAME")]
-        profile: Option<String>,
-    },
-    #[command(hide = true, name = "agent-ls")]
-    AgentLs {
-        #[arg(long)]
-        active_only: bool,
-        #[arg(long, default_value_t = 50)]
-        limit: usize,
-        #[arg(long)]
-        json: bool,
-    },
-    #[command(hide = true, name = "agent-guard")]
-    AgentGuard {
-        #[arg(long, default_value_t = 1800u64)]
-        idle_secs: u64,
-        #[arg(long, default_value_t = 5000u64)]
-        term_grace_ms: u64,
-        #[arg(long)]
-        json: bool,
-    },
-    #[command(hide = true, name = "agent-kills")]
-    AgentKills {
-        #[arg(long, default_value_t = 50)]
-        limit: usize,
-        #[arg(long)]
-        json: bool,
-    },
-    #[command(hide = true, name = "model-info")]
-    ModelInfo {
-        #[command(subcommand)]
-        op: ModelInfoOp,
-    },
-    #[command(hide = true, name = "ollama-stack")]
-    OllamaStack {
-        #[command(subcommand)]
-        op: OllamaStackOp,
-    },
-    #[command(hide = true, name = "debug-service-discovery")]
-    DebugServiceDiscovery {
-        #[arg(long)]
-        json: bool,
     },
 }
 
@@ -849,34 +674,6 @@ enum DoctorOp {
     Jobs,
 }
 
-#[derive(Subcommand)]
-enum OllamaStackOp {
-    /// `docker compose up -d --wait` against the resolved stack. Blocks
-    /// until every healthcheck reports green or compose times out.
-    Up,
-    /// `docker compose down`. Pass `--volumes` to wipe the named
-    /// volumes (model cache, caddy data) — default keeps them so the
-    /// next `up` is warm.
-    Down {
-        #[arg(long)]
-        volumes: bool,
-    },
-    /// `docker compose ps --format json` + per-container `docker inspect`,
-    /// returned as a JSON array of `ContainerInfo` rows.
-    Status,
-    /// Tail of `docker compose logs`. Pass a service name to scope.
-    Logs {
-        /// Service to tail. Omit for all services.
-        service: Option<String>,
-        /// Number of lines from the tail.
-        #[arg(long, default_value_t = 100)]
-        tail: usize,
-    },
-    /// `docker compose pull` to refresh upstream images. Combine with
-    /// `up` afterward to recreate services whose image digest changed.
-    Pull,
-}
-
 /// Shaping flags for refs/callers. `--files-only`, `--summary`, and
 /// `--count` are mutually exclusive output shapes; `--limit` modifies
 /// whichever shape you picked (or the default hit-list shape).
@@ -1006,48 +803,27 @@ fn main() -> Result<()> {
         && atty_stderr()
     {
         let hint: Option<&str> = match &cli.cmd {
-            Some(
-                Cmd::Sym { .. }
-                | Cmd::Lookup {
-                    op: LookupOp::Sym { .. },
-                },
-            ) => Some("ccc find <NAME>"),
-            Some(
-                Cmd::Refs { .. }
-                | Cmd::Lookup {
-                    op: LookupOp::Refs { .. },
-                },
-            ) => Some("ccc find <NAME> --mode references"),
-            Some(
-                Cmd::Callers { .. }
-                | Cmd::Lookup {
-                    op: LookupOp::Callers { .. },
-                },
-            ) => Some("ccc find <NAME> --mode callers"),
-            Some(
-                Cmd::Fuzzy { .. }
-                | Cmd::Lookup {
-                    op: LookupOp::Fuzzy { .. },
-                },
-            ) => Some("ccc find <NAME> --mode fuzzy"),
-            Some(
-                Cmd::Prefix { .. }
-                | Cmd::Lookup {
-                    op: LookupOp::Prefix { .. },
-                },
-            ) => Some("ccc find <NAME> --mode prefix"),
-            Some(
-                Cmd::Grep { .. }
-                | Cmd::Lookup {
-                    op: LookupOp::Grep { .. },
-                },
-            ) => Some("ccc find <PATTERN> --mode grep"),
-            Some(
-                Cmd::Files { .. }
-                | Cmd::Lookup {
-                    op: LookupOp::Files { .. },
-                },
-            ) => Some("ccc list --files"),
+            Some(Cmd::Lookup {
+                op: LookupOp::Sym { .. },
+            }) => Some("ccc find <NAME>"),
+            Some(Cmd::Lookup {
+                op: LookupOp::Refs { .. },
+            }) => Some("ccc find <NAME> --mode references"),
+            Some(Cmd::Lookup {
+                op: LookupOp::Callers { .. },
+            }) => Some("ccc find <NAME> --mode callers"),
+            Some(Cmd::Lookup {
+                op: LookupOp::Fuzzy { .. },
+            }) => Some("ccc find <NAME> --mode fuzzy"),
+            Some(Cmd::Lookup {
+                op: LookupOp::Prefix { .. },
+            }) => Some("ccc find <NAME> --mode prefix"),
+            Some(Cmd::Lookup {
+                op: LookupOp::Grep { .. },
+            }) => Some("ccc find <PATTERN> --mode grep"),
+            Some(Cmd::Lookup {
+                op: LookupOp::Files { .. },
+            }) => Some("ccc list --files"),
             _ => None,
         };
         if let Some(h) = hint {
@@ -1126,47 +902,6 @@ fn main() -> Result<()> {
         }
     }
 
-    // Deprecated: install-claude / upgrade / completions / openapi aliases
-    if let Some(Cmd::InstallClaude {
-        yes,
-        print_hooks,
-        with_ollama_stack,
-        print_stack_instructions,
-        dry_run,
-    }) = &cli.cmd
-    {
-        deprecation_warn("install-claude", "setup", "install-claude");
-        return install::run(install::InstallOptions {
-            yes: *yes,
-            print_hooks_only: *print_hooks,
-            with_ollama_stack: *with_ollama_stack,
-            print_stack_instructions: *print_stack_instructions,
-            dry_run: *dry_run,
-        });
-    }
-    if let Some(Cmd::Upgrade {
-        check,
-        text,
-        apply,
-        repo,
-        with_stack,
-    }) = cli.cmd.as_ref()
-    {
-        deprecation_warn("upgrade", "setup", "upgrade");
-        return run_upgrade(*check, *text, *apply, *with_stack, repo.as_deref(), &root);
-    }
-    if let Some(Cmd::Completions { shell }) = cli.cmd.as_ref() {
-        deprecation_warn("completions", "setup", "completions");
-        let mut cmd = <Cli as clap::CommandFactory>::command();
-        clap_complete::generate(*shell, &mut cmd, "crabcc", &mut std::io::stdout());
-        return Ok(());
-    }
-    if let Some(Cmd::Openapi) = cli.cmd.as_ref() {
-        deprecation_warn("openapi", "setup", "openapi");
-        print!("{}", crabcc_mcp::OPENAPI_YAML);
-        return Ok(());
-    }
-
     // info group
     if let Some(Cmd::Info {
         op,
@@ -1227,24 +962,6 @@ fn main() -> Result<()> {
             }
             return run_info(*text);
         }
-    }
-
-    // Deprecated: debug-service-discovery alias
-    if let Some(Cmd::DebugServiceDiscovery { json }) = cli.cmd.as_ref() {
-        deprecation_warn("debug-service-discovery", "info", "services");
-        let report = crabcc_core::service_discovery::discover_all();
-        if *json {
-            println!("{}", serde_json::to_string_pretty(&report)?);
-        } else {
-            print_service_discovery_text(&report);
-        }
-        return Ok(());
-    }
-
-    // Deprecated: model-info alias
-    if let Some(Cmd::ModelInfo { op }) = cli.cmd.as_ref() {
-        deprecation_warn("model-info", "info", "model");
-        return run_model_info(op);
     }
 
     // `go` is a top-level orchestrator.
@@ -1323,53 +1040,9 @@ fn main() -> Result<()> {
         }
     }
 
-    // Deprecated agent aliases
-    if let Some(Cmd::AgentRunAlias {
-        run,
-        dry_run,
-        model,
-        no_refresh,
-        backend,
-        profile,
-    }) = cli.cmd.as_ref()
-    {
-        deprecation_warn("agent-run", "agent", "run");
-        return run_agent_run(run, *dry_run, model, *no_refresh, backend, profile, &root);
-    }
-    if let Some(Cmd::AgentLs {
-        active_only,
-        limit,
-        json,
-    }) = cli.cmd.as_ref()
-    {
-        deprecation_warn("agent-ls", "agent", "ls");
-        return run_agent_ls(*active_only, *limit, *json);
-    }
-    if let Some(Cmd::AgentGuard {
-        idle_secs,
-        term_grace_ms,
-        json,
-    }) = cli.cmd.as_ref()
-    {
-        deprecation_warn("agent-guard", "agent", "guard");
-        return agent_guard::run(agent_guard::GuardConfig {
-            idle_secs: *idle_secs,
-            term_grace_ms: *term_grace_ms,
-            json: *json,
-        });
-    }
-    if let Some(Cmd::AgentKills { limit, json }) = cli.cmd.as_ref() {
-        deprecation_warn("agent-kills", "agent", "kills");
-        return run_agent_kills(*limit, *json);
-    }
-
     // stack group
     if let Some(Cmd::Stack { op }) = cli.cmd.as_ref() {
         return run_stack_op(op);
-    }
-    if let Some(Cmd::OllamaStack { op }) = cli.cmd.as_ref() {
-        deprecation_warn("ollama-stack", "stack", "<subcommand>");
-        return run_ollama_stack(op);
     }
 
     // backup group
@@ -1408,27 +1081,6 @@ fn main() -> Result<()> {
             }),
     }) = cli.cmd.as_ref()
     {
-        let db_path = db_override.clone().unwrap_or_else(|| db.clone());
-        return compress_cmd::run(compress_cmd::Args {
-            root: root.clone(),
-            db: db_path,
-            rebuild: *rebuild,
-            stats: *stats || *json,
-            json: *json,
-            decode_probe: *decode_probe,
-        });
-    }
-
-    // Deprecated compress alias
-    if let Some(Cmd::Compress {
-        rebuild,
-        stats,
-        json,
-        db: db_override,
-        decode_probe,
-    }) = cli.cmd.as_ref()
-    {
-        deprecation_warn("compress", "index", "compress");
         let db_path = db_override.clone().unwrap_or_else(|| db.clone());
         return compress_cmd::run(compress_cmd::Args {
             root: root.clone(),
@@ -1745,86 +1397,6 @@ fn main() -> Result<()> {
             }
         },
 
-        // ── Deprecated flat aliases (store-dependent) ───────────────────────
-        Cmd::Refresh { delta } => {
-            deprecation_warn("refresh", "index", "refresh");
-            if delta {
-                let d = crabcc_core::index::refresh_delta(&root, &store)?;
-                println!("{}", sonic_rs::to_string(&d)?);
-            } else {
-                let stats = crabcc_core::index::refresh(&root, &store)?;
-                println!("{}", sonic_rs::to_string(&stats)?);
-            }
-            if std::env::var_os("CRABCC_BACKUP_DISABLE").is_none() {
-                backup::auto_snapshot_after_index(&root);
-            }
-        }
-        Cmd::Sym { name, since } => {
-            deprecation_warn("sym", "lookup", "sym");
-            let syms = match since.as_deref() {
-                Some(rev) => {
-                    let files = crabcc_core::gitdiff::changed_files_since(&root, rev)?;
-                    query::find_symbol_in_files(&store, &name, &files)?
-                }
-                None => query::find_symbol(&store, &name)?,
-            };
-            let body = sonic_rs::to_string(&syms)?;
-            crabcc_core::track::record("sym", &name, syms.len(), &repo_label(&root), body.len());
-            memory::auto_capture(&root, "sym", &name, syms.len());
-            println!("{body}");
-        }
-        Cmd::Refs { name, opts } => {
-            deprecation_warn("refs", "lookup", "refs");
-            let mode = opts.to_mode();
-            let files = match opts.since.as_deref() {
-                Some(rev) => Some(crabcc_core::gitdiff::changed_files_since(&root, rev)?),
-                None => None,
-            };
-            let out = query::query_refs(&store, &root, &name, mode, files.as_ref())?;
-            let body = sonic_rs::to_string(&out)?;
-            crabcc_core::track::record("refs", &name, out.count(), &repo_label(&root), body.len());
-            memory::auto_capture(&root, "refs", &name, out.count());
-            if opts.ndjson {
-                emit_hits_ndjson(&out)?;
-            } else {
-                let envelope =
-                    crabcc_core::hash::fingerprint_envelope(&body, opts.if_changed.as_deref());
-                println!("{envelope}");
-            }
-        }
-        Cmd::Callers { name, opts } => {
-            deprecation_warn("callers", "lookup", "callers");
-            let mode = opts.to_mode();
-            let files = match opts.since.as_deref() {
-                Some(rev) => Some(crabcc_core::gitdiff::changed_files_since(&root, rev)?),
-                None => None,
-            };
-            let out = query::query_callers(&store, &root, &name, mode, files.as_ref())?;
-            let body = sonic_rs::to_string(&out)?;
-            crabcc_core::track::record(
-                "callers",
-                &name,
-                out.count(),
-                &repo_label(&root),
-                body.len(),
-            );
-            memory::auto_capture(&root, "callers", &name, out.count());
-            if opts.ndjson {
-                emit_hits_ndjson(&out)?;
-            } else {
-                let envelope =
-                    crabcc_core::hash::fingerprint_envelope(&body, opts.if_changed.as_deref());
-                println!("{envelope}");
-            }
-        }
-        Cmd::Outline { file } => {
-            deprecation_warn("outline", "lookup", "outline");
-            let key = file.to_string_lossy();
-            let syms = crabcc_core::outline::outline(&store, &key)?;
-            let body = sonic_rs::to_string(&syms)?;
-            crabcc_core::track::record("outline", &key, syms.len(), &repo_label(&root), body.len());
-            println!("{body}");
-        }
         Cmd::Read {
             path,
             mode,
@@ -1840,79 +1412,6 @@ fn main() -> Result<()> {
                 threshold,
             )?;
         }
-        Cmd::Files {
-            under,
-            lang,
-            ext,
-            limit,
-        } => {
-            deprecation_warn("files", "lookup", "files");
-            let files = list_files(
-                &store,
-                under.as_deref(),
-                lang.as_deref(),
-                ext.as_deref(),
-                limit,
-            )?;
-            let body = sonic_rs::to_string(&files)?;
-            crabcc_core::track::record(
-                "files",
-                "list",
-                files.len(),
-                &repo_label(&root),
-                body.len(),
-            );
-            println!("{body}");
-        }
-        Cmd::Grep { pattern } => {
-            deprecation_warn("grep", "lookup", "grep");
-            println!("{{\"status\":\"todo\",\"op\":\"grep\",\"pattern\":\"{pattern}\"}}");
-        }
-        Cmd::Fuzzy { query, limit } => {
-            deprecation_warn("fuzzy", "lookup", "fuzzy");
-            let fts = crabcc_core::fts::Fts::open(&fts_dir)?;
-            let hits = fts.fuzzy(&query, limit)?;
-            let body = sonic_rs::to_string(&hits)?;
-            crabcc_core::track::record("fuzzy", &query, hits.len(), &repo_label(&root), body.len());
-            memory::auto_capture(&root, "fuzzy", &query, hits.len());
-            println!("{body}");
-        }
-        Cmd::Prefix { query, limit } => {
-            deprecation_warn("prefix", "lookup", "prefix");
-            let fts = crabcc_core::fts::Fts::open(&fts_dir)?;
-            let hits = fts.prefix(&query, limit)?;
-            let body = sonic_rs::to_string(&hits)?;
-            crabcc_core::track::record(
-                "prefix",
-                &query,
-                hits.len(),
-                &repo_label(&root),
-                body.len(),
-            );
-            memory::auto_capture(&root, "prefix", &query, hits.len());
-            println!("{body}");
-        }
-        Cmd::FtsRebuild => {
-            deprecation_warn("fts-rebuild", "index", "fts-rebuild");
-            let fts = crabcc_core::fts::Fts::open(&fts_dir)?;
-            let n = fts.rebuild(&store)?;
-            println!("{{\"indexed\":{n}}}");
-        }
-        Cmd::Track { text } => {
-            deprecation_warn("track", "info", "track");
-            let r = crabcc_core::track::report()?;
-            if text {
-                print_track_human(&r);
-            } else {
-                println!("{}", sonic_rs::to_string_pretty(&r)?);
-            }
-        }
-        Cmd::Watch { debounce } => {
-            deprecation_warn("watch", "index", "watch");
-            let store = std::sync::Arc::new(std::sync::Mutex::new(store));
-            crabcc_core::watch::watch(&root, store, std::time::Duration::from_millis(debounce))?;
-        }
-
         // All other variants were handled in the early-return block above.
         Cmd::Setup { .. } => unreachable!("setup handled before store init"),
         Cmd::Info { .. } => unreachable!("info handled before store init"),
@@ -1920,27 +1419,13 @@ fn main() -> Result<()> {
         Cmd::Fetch { .. } => unreachable!("fetch handled before store init"),
         Cmd::Serve { .. } => unreachable!("serve handled before store init"),
         Cmd::Agent { .. } => unreachable!("agent handled before store init"),
-        Cmd::AgentRunAlias { .. } => unreachable!("agent-run handled before store init"),
-        Cmd::AgentLs { .. } => unreachable!("agent-ls handled before store init"),
-        Cmd::AgentGuard { .. } => unreachable!("agent-guard handled before store init"),
-        Cmd::AgentKills { .. } => unreachable!("agent-kills handled before store init"),
-        Cmd::ModelInfo { .. } => unreachable!("model-info handled before store init"),
-        Cmd::OllamaStack { .. } => unreachable!("ollama-stack handled before store init"),
         Cmd::Stack { .. } => unreachable!("stack handled before store init"),
         Cmd::Backup { .. } => unreachable!("backup handled before store init"),
         Cmd::Doctor { .. } => unreachable!("doctor handled before store init"),
         Cmd::Jobs(_) => unreachable!("jobs handled before store init"),
-        Cmd::DebugServiceDiscovery { .. } => {
-            unreachable!("debug-service-discovery handled before store init")
-        }
-        Cmd::InstallClaude { .. } => unreachable!("install-claude handled before store init"),
-        Cmd::Upgrade { .. } => unreachable!("upgrade handled before store init"),
-        Cmd::Completions { .. } => unreachable!("completions handled before store init"),
-        Cmd::Openapi => unreachable!("openapi handled before store init"),
         Cmd::Memory { .. } => unreachable!("memory handled before store init"),
         Cmd::Shell { .. } => unreachable!("shell handled before store init"),
         Cmd::Loop { .. } => unreachable!("loop handled before store init"),
-        Cmd::Compress { .. } => unreachable!("compress handled before store init"),
     }
     Ok(())
 }
@@ -2324,19 +1809,7 @@ fn needs_auto_index(c: &Option<Cmd>) -> bool {
         // Implicit default = `index` — no auto-index needed (we're about
         // to index anyway).
         None => false,
-        Some(cmd) => matches!(
-            cmd,
-            Cmd::Lookup { .. }
-                | Cmd::Sym { .. }
-                | Cmd::Refs { .. }
-                | Cmd::Callers { .. }
-                | Cmd::Outline { .. }
-                | Cmd::Files { .. }
-                | Cmd::Fuzzy { .. }
-                | Cmd::Prefix { .. }
-                | Cmd::Grep { .. }
-                | Cmd::Graph { .. }
-        ),
+        Some(cmd) => matches!(cmd, Cmd::Lookup { .. } | Cmd::Graph { .. }),
     }
 }
 
@@ -2394,37 +1867,11 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::Go => "go",
         Cmd::Fetch { .. } => "fetch",
         Cmd::Serve { .. } => "serve",
-        // Deprecated aliases
-        Cmd::Refresh { .. } => "refresh",
-        Cmd::Watch { .. } => "watch",
-        Cmd::Sym { .. } => "sym",
-        Cmd::Refs { .. } => "refs",
-        Cmd::Callers { .. } => "callers",
-        Cmd::Outline { .. } => "outline",
         Cmd::Read { .. } => "read",
-        Cmd::Files { .. } => "files",
-        Cmd::Fuzzy { .. } => "fuzzy",
-        Cmd::Prefix { .. } => "prefix",
-        Cmd::Grep { .. } => "grep",
-        Cmd::FtsRebuild => "fts-rebuild",
-        Cmd::Track { .. } => "track",
-        Cmd::Upgrade { .. } => "upgrade",
-        Cmd::Compress { .. } => "compress",
-        Cmd::Completions { .. } => "completions",
-        Cmd::Openapi => "openapi",
-        Cmd::AgentRunAlias { .. } => "agent-run",
-        Cmd::AgentLs { .. } => "agent-ls",
-        Cmd::AgentGuard { .. } => "agent-guard",
-        Cmd::AgentKills { .. } => "agent-kills",
-        Cmd::ModelInfo { .. } => "model-info",
-        Cmd::OllamaStack { .. } => "ollama-stack",
-        Cmd::DebugServiceDiscovery { .. } => "debug-service-discovery",
-        Cmd::InstallClaude { .. } => "install-claude",
     }
 }
 
-/// Shared agent-run logic used by both `crabcc agent run` and the deprecated
-/// `crabcc agent-run` alias.
+/// Shared agent-run logic for `crabcc agent run`.
 fn run_agent_run(
     run: &str,
     dry_run: bool,
@@ -2495,45 +1942,6 @@ fn run_stack_op(op: &StackOp) -> Result<()> {
             print!("{body}");
         }
         StackOp::Pull => {
-            ols::pull(&opts)?;
-            println!(
-                "{}",
-                sonic_rs::to_string(&serde_json::json!({ "ok": true }))?
-            );
-        }
-    }
-    Ok(())
-}
-
-/// Dispatches `crabcc ollama-stack <op>` — pure operator surface.
-/// All output is JSON for machine consumers (issue #105 / #107). Errors
-/// from the driver bubble up via `?` and surface as anyhow chains.
-fn run_ollama_stack(op: &OllamaStackOp) -> Result<()> {
-    use crabcc_core::ollama_stack as ols;
-    let opts = ols::Options::new();
-    match op {
-        OllamaStackOp::Up => {
-            let r = ols::up(&opts)?;
-            println!("{}", sonic_rs::to_string(&r)?);
-        }
-        OllamaStackOp::Down { volumes } => {
-            let stopped = ols::down(&opts, *volumes)?;
-            println!(
-                "{}",
-                sonic_rs::to_string(&serde_json::json!({ "stopped": stopped }))?
-            );
-        }
-        OllamaStackOp::Status => {
-            let containers = ols::status(&opts)?;
-            println!("{}", sonic_rs::to_string(&containers)?);
-        }
-        OllamaStackOp::Logs { service, tail } => {
-            let body = ols::logs(&opts, service.as_deref(), *tail)?;
-            // logs are intentionally NOT JSON-wrapped — passthrough so
-            // tools like `less` and `grep` work as expected.
-            print!("{body}");
-        }
-        OllamaStackOp::Pull => {
             ols::pull(&opts)?;
             println!(
                 "{}",
