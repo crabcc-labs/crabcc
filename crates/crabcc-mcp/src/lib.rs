@@ -48,8 +48,10 @@ pub fn dev_mode_from_env() -> bool {
     std::env::var(DEV_ENV).ok().as_deref() == Some("1")
 }
 
-
-pub(crate) fn load_or_build_graph(store: &Store, root: &Path) -> Result<crabcc_core::graph::CallGraph> {
+pub(crate) fn load_or_build_graph(
+    store: &Store,
+    root: &Path,
+) -> Result<crabcc_core::graph::CallGraph> {
     let path = root.join(".crabcc").join("graph.json");
     if path.exists() {
         crabcc_core::graph::CallGraph::load(&path)
@@ -62,7 +64,10 @@ pub(crate) fn load_or_build_graph(store: &Store, root: &Path) -> Result<crabcc_c
 /// `gitdiff::changed_files_since`. Returns `Ok(None)` when the arg is
 /// absent so callers can use `Option::as_ref()` to drive the filter
 /// path. A bad git revision surfaces as a tool error per JSON-RPC.
-pub(crate) fn since_filter(args: &Value, root: &Path) -> Result<Option<std::collections::HashSet<String>>> {
+pub(crate) fn since_filter(
+    args: &Value,
+    root: &Path,
+) -> Result<Option<std::collections::HashSet<String>>> {
     match args.get("since").and_then(|v| v.as_str()) {
         Some(rev) => Ok(Some(crabcc_core::gitdiff::changed_files_since(root, rev)?)),
         None => Ok(None),
