@@ -305,7 +305,7 @@ mod tests {
             self.qualified
                 .lock()
                 .unwrap()
-                .insert(qualified.to_string(), SymbolId(id));
+                .insert(qualified.to_string(), SymbolId::from_raw_for_sql(id));
         }
     }
 
@@ -373,7 +373,7 @@ mod tests {
         let tree = parse_py(src);
         let scope = harvest_python_scope(tree.root_node(), src.as_bytes());
         let mut local_defs: HashMap<String, SymbolId> = HashMap::new();
-        local_defs.insert("Foo".into(), SymbolId(42));
+        local_defs.insert("Foo".into(), SymbolId::from_raw_for_sql(42));
         let index = Arc::new(StubIndex::default());
         index.insert("other::Foo", 999);
         let resolver = PythonResolver::new(index, scope);
@@ -383,7 +383,7 @@ mod tests {
             imports: &[],
             local_defs: &local_defs,
         };
-        assert_eq!(resolver.resolve_ref(&ctx, "Foo"), Some(SymbolId(42)));
+        assert_eq!(resolver.resolve_ref(&ctx, "Foo"), Some(SymbolId::from_raw_for_sql(42)));
     }
 
     #[test]
@@ -401,7 +401,7 @@ mod tests {
             imports: &[],
             local_defs: &local_defs,
         };
-        assert_eq!(resolver.resolve_ref(&ctx, "B"), Some(SymbolId(7)));
+        assert_eq!(resolver.resolve_ref(&ctx, "B"), Some(SymbolId::from_raw_for_sql(7)));
     }
 
     #[test]
@@ -419,7 +419,7 @@ mod tests {
             imports: &[],
             local_defs: &local_defs,
         };
-        assert_eq!(resolver.resolve_call(&ctx, "self.baz"), Some(SymbolId(11)));
+        assert_eq!(resolver.resolve_call(&ctx, "self.baz"), Some(SymbolId::from_raw_for_sql(11)));
     }
 
     #[test]
@@ -437,7 +437,7 @@ mod tests {
             imports: &[],
             local_defs: &local_defs,
         };
-        assert_eq!(resolver.resolve_call(&ctx, "Foo.go"), Some(SymbolId(13)));
+        assert_eq!(resolver.resolve_call(&ctx, "Foo.go"), Some(SymbolId::from_raw_for_sql(13)));
     }
 
     #[test]

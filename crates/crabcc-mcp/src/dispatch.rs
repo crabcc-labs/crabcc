@@ -355,7 +355,7 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
 /// `Store::find_by_name` (which already powers `lookup sym`); on multiple
 /// hits, returns the first one — MCP callers can disambiguate by passing
 /// a qualified name.
-fn resolve_symbol_id(store: &Store, name: &str) -> Result<i64> {
+fn resolve_symbol_id(store: &Store, name: &str) -> Result<crabcc_core::resolve::SymbolId> {
     store
         .symbol_id_by_name(name)?
         .ok_or_else(|| anyhow::anyhow!("symbol not found: {name}"))

@@ -330,7 +330,7 @@ mod tests {
             self.qualified
                 .lock()
                 .unwrap()
-                .insert(qualified.to_string(), SymbolId(id));
+                .insert(qualified.to_string(), SymbolId::from_raw_for_sql(id));
         }
     }
 
@@ -397,7 +397,7 @@ mod tests {
         let tree = parse(src);
         let scope = harvest_rust_scope(tree.root_node(), src.as_bytes());
         let mut local_defs: HashMap<String, SymbolId> = HashMap::new();
-        local_defs.insert("Foo".into(), SymbolId(42));
+        local_defs.insert("Foo".into(), SymbolId::from_raw_for_sql(42));
         let index = Arc::new(StubIndex::default());
         // Even with a different cross-file Foo at qualified "other::Foo",
         // local must win.
@@ -409,7 +409,7 @@ mod tests {
             imports: &[],
             local_defs: &local_defs,
         };
-        assert_eq!(resolver.resolve_ref(&ctx, "Foo"), Some(SymbolId(42)));
+        assert_eq!(resolver.resolve_ref(&ctx, "Foo"), Some(SymbolId::from_raw_for_sql(42)));
     }
 
     #[test]
@@ -427,7 +427,7 @@ mod tests {
             imports: &[],
             local_defs: &local_defs,
         };
-        assert_eq!(resolver.resolve_ref(&ctx, "F"), Some(SymbolId(7)));
+        assert_eq!(resolver.resolve_ref(&ctx, "F"), Some(SymbolId::from_raw_for_sql(7)));
     }
 
     #[test]
@@ -445,7 +445,7 @@ mod tests {
             imports: &[],
             local_defs: &local_defs,
         };
-        assert_eq!(resolver.resolve_call(&ctx, "Self::bar"), Some(SymbolId(11)));
+        assert_eq!(resolver.resolve_call(&ctx, "Self::bar"), Some(SymbolId::from_raw_for_sql(11)));
     }
 
     #[test]

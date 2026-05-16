@@ -486,22 +486,19 @@ fn walk_with_store(
             let file_id = store.get_file_id(file).ok().flatten().unwrap_or(0); // Fallback to 0 if not found; adjust as needed
 
             // Write to store
-            let rowid = store
-                .insert_symbol(
-                    file_id,
-                    &n_owned,
-                    None, // qualified: pass None for now
-                    kind,
-                    parent_id.map(|s| s.0),
-                    line_start as i64,
-                    line_end as i64,
-                    signature.as_deref(),
-                    visibility.as_deref(),
-                )
-                .unwrap_or(-1);
+            let insert_result = store.insert_symbol(
+                file_id,
+                &n_owned,
+                None, // qualified: pass None for now
+                kind,
+                parent_id,
+                line_start as i64,
+                line_end as i64,
+                signature.as_deref(),
+                visibility.as_deref(),
+            );
 
-            if rowid >= 0 {
-                let sym_id = SymbolId(rowid);
+            if let Ok(sym_id) = insert_result {
                 // Insert into local_defs (last write wins for duplicates)
                 local_defs.insert(n_owned.clone(), sym_id);
                 // Map node byte range to src_id
@@ -595,12 +592,15 @@ fn walk_edges_with_resolver(
             let dst_id = match dst_id {
                 Some(id) => id,
                 None => {
-                    // Fallback to unresolved sentinel
-                    SymbolId(store.upsert_unresolved_sentinel(&dst_name).unwrap_or(-1))
+                    // Fallback to unresolved sentinel; skip edge on failure.
+                    match store.upsert_unresolved_sentinel(&dst_name) {
+                        Ok(id) => id,
+                        Err(_) => return,
+                    }
                 }
             };
             // Write edge
-            let _ = store.insert_edge_resolved(src_symbol_id.0, dst_id.0, "call", line as i64);
+            let _ = store.insert_edge_resolved(src_symbol_id, dst_id, "call", line as i64);
             // Also add to output edges for backward compatibility
             out.push(Edge {
                 src_file: String::new(),
@@ -625,9 +625,12 @@ fn walk_edges_with_resolver(
             let dst_id = resolver.resolve_ref(&scope, &dst_name);
             let dst_id = match dst_id {
                 Some(id) => id,
-                None => SymbolId(store.upsert_unresolved_sentinel(&dst_name).unwrap_or(-1)),
+                None => match store.upsert_unresolved_sentinel(&dst_name) {
+                    Ok(id) => id,
+                    Err(_) => return,
+                },
             };
-            let _ = store.insert_edge_resolved(src_symbol_id.0, dst_id.0, "ref", line as i64);
+            let _ = store.insert_edge_resolved(src_symbol_id, dst_id, "ref", line as i64);
             out.push(Edge {
                 src_file: String::new(),
                 src_symbol: None,

@@ -569,7 +569,7 @@ impl LanguageServer for Backend {
             Some(g) => g,
             None => return Ok(Some(Vec::new())),
         };
-        let callee_ids: Vec<i64> = graph
+        let callee_ids: Vec<crabcc_core::resolve::SymbolId> = graph
             .callees
             .get(&name_id)
             .map(|s| s.iter().copied().collect())

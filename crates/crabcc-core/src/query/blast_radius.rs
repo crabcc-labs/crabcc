@@ -13,6 +13,7 @@
 //! responsible for the meaning, e.g. `&["call"]` for call-chain blast,
 //! `&[]` for everything.
 
+use crate::resolve::SymbolId;
 use crate::store::Store;
 use crate::types::{Symbol, SymbolKind};
 use anyhow::Result;
@@ -38,14 +39,15 @@ pub struct BlastRadiusResult {
 /// `kinds` empty means "no kind filter".
 pub fn blast_radius(
     store: &Store,
-    root_symbol_id: i64,
+    root_symbol_id: SymbolId,
     max_depth: usize,
     kinds: &[&str],
 ) -> Result<BlastRadiusResult> {
+    let root_raw = root_symbol_id.into_raw();
     let kinds_used: Vec<String> = kinds.iter().map(|s| s.to_string()).collect();
     let mut depth_map: HashMap<i64, usize> = HashMap::new();
     let mut seen: HashSet<i64> = HashSet::new();
-    seen.insert(root_symbol_id);
+    seen.insert(root_raw);
 
     if max_depth == 0 {
         return Ok(BlastRadiusResult {
@@ -71,7 +73,7 @@ pub fn blast_radius(
     let mut stmt = conn.prepare(&sql)?;
 
     let mut frontier: VecDeque<(i64, usize)> = VecDeque::new();
-    frontier.push_back((root_symbol_id, 0));
+    frontier.push_back((root_raw, 0));
 
     while let Some((node, depth)) = frontier.pop_front() {
         if depth >= max_depth {
@@ -201,7 +203,7 @@ mod tests {
     fn blast_radius_walks_reverse_chain_to_depth() {
         let (_dir, store) = fixture();
         // depth=1 from a → b and d (both have direct edges to a).
-        let r = blast_radius(&store, 1, 1, &[]).unwrap();
+        let r = blast_radius(&store, SymbolId::from_raw_for_sql(1), 1, &[]).unwrap();
         let ids: HashSet<i64> = r.depth_map.keys().copied().collect();
         assert!(ids.contains(&2), "b should be depth 1: {:?}", r.depth_map);
         assert!(ids.contains(&4), "d should be depth 1: {:?}", r.depth_map);
@@ -209,7 +211,7 @@ mod tests {
         assert_eq!(r.depth_map[&4], 1);
 
         // depth=2 also catches c via b.
-        let r = blast_radius(&store, 1, 2, &[]).unwrap();
+        let r = blast_radius(&store, SymbolId::from_raw_for_sql(1), 2, &[]).unwrap();
         assert!(
             r.depth_map.contains_key(&3),
             "c should be depth 2: {:?}",
@@ -224,7 +226,7 @@ mod tests {
         let (_dir, store) = fixture();
         // Only 'call' edges: b → a is a call, d → a is a ref. Filtering to
         // call drops d entirely, and c still shows up via b (call chain).
-        let r = blast_radius(&store, 1, 5, &["call"]).unwrap();
+        let r = blast_radius(&store, SymbolId::from_raw_for_sql(1), 5, &["call"]).unwrap();
         assert!(r.depth_map.contains_key(&2), "b reachable via call");
         assert!(r.depth_map.contains_key(&3), "c reachable via b's call");
         assert!(
@@ -237,7 +239,7 @@ mod tests {
     #[test]
     fn blast_radius_zero_depth_returns_empty() {
         let (_dir, store) = fixture();
-        let r = blast_radius(&store, 1, 0, &[]).unwrap();
+        let r = blast_radius(&store, SymbolId::from_raw_for_sql(1), 0, &[]).unwrap();
         assert!(r.affected.is_empty());
         assert!(r.depth_map.is_empty());
     }
@@ -245,7 +247,7 @@ mod tests {
     #[test]
     fn blast_radius_unknown_root_returns_empty() {
         let (_dir, store) = fixture();
-        let r = blast_radius(&store, 999, 5, &[]).unwrap();
+        let r = blast_radius(&store, SymbolId::from_raw_for_sql(999), 5, &[]).unwrap();
         assert!(r.affected.is_empty());
         assert!(r.depth_map.is_empty());
     }

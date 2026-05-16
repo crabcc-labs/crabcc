@@ -10,6 +10,7 @@
 //! total hops. `max_depth` is the cap on the sum of forward+reverse hops,
 //! so `max_depth=4` permits chains up to 4 edges long.
 
+use crate::resolve::SymbolId;
 use crate::store::Store;
 use crate::types::{Symbol, SymbolKind};
 use anyhow::Result;
@@ -33,7 +34,9 @@ pub struct Path {
 /// Bidirectional BFS for a path from `src` to `dst`. Returns `None` if
 /// `max_depth` is 0 (no hops allowed) and `src != dst`, or if the
 /// frontiers don't meet within the budget.
-pub fn why(store: &Store, src: i64, dst: i64, max_depth: usize) -> Result<Option<Path>> {
+pub fn why(store: &Store, src: SymbolId, dst: SymbolId, max_depth: usize) -> Result<Option<Path>> {
+    let src = src.into_raw();
+    let dst = dst.into_raw();
     if src == dst {
         let nodes = hydrate_symbols(store, vec![src])?;
         return Ok(Some(Path {
@@ -298,7 +301,7 @@ mod tests {
     fn why_finds_direct_chain() {
         let (_dir, store) = fixture();
         // a -> d via a -> b -> c -> d. Three edges, depth budget 5.
-        let p = why(&store, 1, 4, 5).unwrap().expect("path exists");
+        let p = why(&store, SymbolId::from_raw_for_sql(1), SymbolId::from_raw_for_sql(4), 5).unwrap().expect("path exists");
         let names: Vec<&str> = p.nodes.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["a", "b", "c", "d"], "got: {names:?}");
         assert_eq!(p.edges.len(), 3, "3 edges in chain: {:?}", p.edges);
@@ -310,7 +313,7 @@ mod tests {
     fn why_returns_none_for_disconnected_pair() {
         let (_dir, store) = fixture();
         // e is islanded — no path to or from a.
-        let p = why(&store, 1, 5, 10).unwrap();
+        let p = why(&store, SymbolId::from_raw_for_sql(1), SymbolId::from_raw_for_sql(5), 10).unwrap();
         assert!(p.is_none(), "expected no path, got: {p:?}");
     }
 
@@ -318,17 +321,17 @@ mod tests {
     fn why_respects_max_depth() {
         let (_dir, store) = fixture();
         // a -> d needs 3 hops; budget 2 is insufficient.
-        let p = why(&store, 1, 4, 2).unwrap();
+        let p = why(&store, SymbolId::from_raw_for_sql(1), SymbolId::from_raw_for_sql(4), 2).unwrap();
         assert!(p.is_none(), "depth 2 should not reach d: {p:?}");
         // Budget 3 succeeds.
-        let p = why(&store, 1, 4, 3).unwrap();
+        let p = why(&store, SymbolId::from_raw_for_sql(1), SymbolId::from_raw_for_sql(4), 3).unwrap();
         assert!(p.is_some(), "depth 3 should reach d");
     }
 
     #[test]
     fn why_same_src_dst_returns_singleton() {
         let (_dir, store) = fixture();
-        let p = why(&store, 2, 2, 5).unwrap().expect("self-path");
+        let p = why(&store, SymbolId::from_raw_for_sql(2), SymbolId::from_raw_for_sql(2), 5).unwrap().expect("self-path");
         assert_eq!(p.nodes.len(), 1);
         assert_eq!(p.nodes[0].name, "b");
         assert!(p.edges.is_empty());

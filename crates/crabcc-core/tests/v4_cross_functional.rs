@@ -108,7 +108,7 @@ fn polyglot_index_recognises_rust_python_typescript() {
 // KG ops on real `full_index` output
 // ────────────────────────────────────────────────────────────────────────
 
-fn id_of(store: &Store, name: &str) -> i64 {
+fn id_of(store: &Store, name: &str) -> crabcc_core::resolve::SymbolId {
     store
         .symbol_id_by_name(name)
         .unwrap()
@@ -295,10 +295,11 @@ fn delete_file_cascades_symbols_and_edges() {
         .conn()
         .query_row("SELECT id FROM files WHERE path = 'b.rs'", [], |r| r.get(0))
         .unwrap();
-    let b_id_before: i64 = store
+    let b_id_before = store
         .symbol_id_by_name_file("b", b_file_id)
         .unwrap()
         .expect("precondition: real `b` symbol should exist before delete");
+    let b_raw = b_id_before.into_raw();
 
     // Drop b.rs — `files.id` cascades through `symbols.file_id` and from
     // there through `edges.{src_symbol_id, dst_symbol_id}`.
@@ -310,13 +311,13 @@ fn delete_file_cascades_symbols_and_edges() {
         .conn()
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM symbols WHERE id = ?1)",
-            [b_id_before],
+            [b_raw],
             |r| r.get(0),
         )
         .unwrap();
     assert!(
         !still_present,
-        "real `b` symbol (id={b_id_before}) survived delete_file(b.rs); FK cascade is broken"
+        "real `b` symbol (id={b_raw}) survived delete_file(b.rs); FK cascade is broken"
     );
 
     // No edge in the store should still reference that specific deleted
@@ -324,10 +325,10 @@ fn delete_file_cascades_symbols_and_edges() {
     let edges = store.iter_call_edges_resolved().unwrap();
     let orphan = edges
         .iter()
-        .filter(|(s, d, _)| *s == b_id_before || *d == b_id_before)
+        .filter(|e| e.src == b_id_before || e.dst == b_id_before)
         .count();
     assert_eq!(
         orphan, 0,
-        "edges referencing deleted symbol id {b_id_before} remain: {edges:?}"
+        "edges referencing deleted symbol id {b_raw} remain: {edges:?}"
     );
 }
