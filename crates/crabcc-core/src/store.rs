@@ -254,6 +254,27 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Broader reference lookup: edges where `dst_name = name` and `kind` is
+    /// any reference-like kind we currently emit (`call`, `ref`). The schema
+    /// reserves `import`, `inherit`, `impl` for future extraction passes; add
+    /// them to this filter when the extractor starts emitting them.
+    pub fn refs_of(&self, name: &str) -> Result<Vec<EdgeHit>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT f.path, e.line, e.src_symbol
+             FROM edges e JOIN files f ON e.src_file_id = f.id
+             WHERE e.dst_name = ?1 AND e.kind IN ('call', 'ref')
+             ORDER BY f.path, e.line",
+        )?;
+        let rows = stmt.query_map(params![name], |row| {
+            Ok(EdgeHit {
+                file: row.get(0)?,
+                line: row.get::<_, i64>(1)? as u32,
+                src_symbol: row.get(2)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// Stream every (src_symbol, dst_name) pair where both ends are populated.
     /// Used by `CallGraph::build` to fold the edges table into adjacency in
     /// a single scan instead of N * find_callers.

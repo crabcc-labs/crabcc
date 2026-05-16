@@ -1,6 +1,6 @@
 use crate::pattern;
 use crate::refs;
-use crate::store::Store;
+use crate::store::{EdgeHit, Store};
 use crate::types::{Hit, Symbol, SymbolKind};
 use ahash::AHashMap;
 use anyhow::Result;
@@ -276,6 +276,39 @@ pub fn callers_via_edges(
         return Ok(empty_for(mode));
     }
     let edge_hits = store.callers_of(name)?;
+    edge_hits_to_output(store, root, mode, file_filter, edge_hits)
+}
+
+/// Edge-driven `lookup refs` fast path: same shape as `callers_via_edges`
+/// but pulls every reference-like kind (`call` ∪ `ref`). The CLI surface
+/// uses this when the SQL edge index is populated; mirrors the LSP
+/// `references` handler.
+pub fn refs_via_edges(
+    store: &Store,
+    root: &Path,
+    name: &str,
+    mode: Mode,
+    file_filter: Option<&HashSet<String>>,
+) -> Result<Output> {
+    let name = bare_name(name);
+    if !is_safe_identifier(name) {
+        return Ok(empty_for(mode));
+    }
+    let edge_hits = store.refs_of(name)?;
+    edge_hits_to_output(store, root, mode, file_filter, edge_hits)
+}
+
+/// Shared post-processing for `callers_via_edges` / `refs_via_edges` —
+/// applies the file filter then dispatches on `Mode`. Loads snippets from
+/// disk grouped per file for the `Hits` shape so each file is read at most
+/// once even when many edges land in it.
+fn edge_hits_to_output(
+    store: &Store,
+    root: &Path,
+    mode: Mode,
+    file_filter: Option<&HashSet<String>>,
+    edge_hits: Vec<EdgeHit>,
+) -> Result<Output> {
     let edge_hits: Vec<_> = match file_filter {
         Some(set) => edge_hits
             .into_iter()
@@ -309,8 +342,6 @@ pub fn callers_via_edges(
             build_summary(store, &pairs, limit)
         }
         Mode::Hits { limit } => {
-            // Group by file so the on-demand snippet read happens once per file
-            // regardless of how many callers landed in it.
             let mut grouped: BTreeMap<String, Vec<u32>> = BTreeMap::new();
             for h in edge_hits {
                 grouped.entry(h.file).or_default().push(h.line);
@@ -412,10 +443,16 @@ pub fn query_refs(
     )?;
     // refs::find_refs only covers JS/TS/Ruby. For everything else (Rust,
     // Python, Go, Swift, Bash, Java) it errors and `r` is empty. Fall back
-    // to the call-edge index so the CLI surface matches the LSP's
-    // `references` handler (server.rs unions find_refs ∪ find_callers).
+    // to the broader edge-based index (call ∪ ref) so type references
+    // surface alongside call sites — mirrors the LSP `references` handler.
+    // When edges aren't populated (legacy v1 indexes) drop to the walker
+    // path inside `query_callers` so the surface stays non-empty.
     let r = if r.count() == 0 {
-        query_callers(store, root, name, mode, file_filter)?
+        if edges_ready(store)? {
+            refs_via_edges(store, root, name, mode, file_filter)?
+        } else {
+            query_callers(store, root, name, mode, file_filter)?
+        }
     } else {
         r
     };
@@ -1066,6 +1103,19 @@ mod tests {
         assert!(
             !hits.is_empty(),
             "Store::open should resolve to bare 'open' call site, got: {hits:?}"
+        );
+    }
+
+    #[test]
+    fn refs_finds_rust_struct_usages() {
+        // End-to-end: extractor emits kind=ref edges for `type_identifier`
+        // uses, refs_via_edges queries both `call` and `ref` kinds, so
+        // structs (which are never *called*) now surface their usages.
+        let (dir, store) = fixture_rust();
+        let hits = find_refs(&store, dir.path(), "Store").unwrap();
+        assert!(
+            !hits.is_empty(),
+            "Store struct should have ref hits from impl/return-type, got: {hits:?}"
         );
     }
 }
