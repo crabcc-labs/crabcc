@@ -69,17 +69,6 @@ impl Store {
         conn.pragma_update(None, "cache_size", -64_000_i64).ok();
         conn.busy_timeout(std::time::Duration::from_millis(2_000))?;
         conn.execute_batch(SCHEMA).context("apply schema")?;
-        // Capture schema_version *before* migrations so we can detect stale indexes.
-        // None = fresh DB (no meta row yet); Some(v) = previously-built index at version v.
-        let pre_version: Option<i64> = conn
-            .query_row(
-                "SELECT value FROM meta WHERE key = 'schema_version'",
-                [],
-                |r| r.get::<_, String>(0),
-            )
-            .optional()
-            .unwrap_or(None)
-            .and_then(|s| s.parse().ok());
 
         // Idempotent migration: pre-FSST DBs lack `symbols.signature_enc`. The
         // schema above declares it for new DBs; for older indexes we ALTER
@@ -135,9 +124,19 @@ impl Store {
         #[cfg(not(feature = "compress"))]
         let _ = compress; // silence unused-arg warning when feature is off
 
-        // Index was built without ref-edge support if schema_version < 3.
-        // Fresh DBs have pre_version = None and need no rebuild.
-        let needs_reindex = pre_version.map_or(false, |v| v < 3);
+        // `ref_edges_built` is written by Store::mark_ref_edges_built() after a
+        // successful full_index. Absent = never built with ref-edge extraction
+        // (pre-v3.2.0 or fresh DB). Checked by every caller; acted on by the CLI.
+        let needs_reindex = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'ref_edges_built'",
+                [],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()
+            .unwrap_or(None)
+            .as_deref()
+            != Some("1");
 
         #[cfg(feature = "compress")]
         {
@@ -381,6 +380,14 @@ impl Store {
         Ok(())
     }
 
+    /// Record that this index was built with ref-edge extraction support.
+    /// Call after every successful `full_index` so subsequent opens — including
+    /// those from MCP and LSP that do not act on `needs_reindex` — see the
+    /// correct flag and do not clear work done by an earlier rebuild.
+    pub fn mark_ref_edges_built(&self) -> Result<()> {
+        self.meta_set("ref_edges_built", "1")
+    }
+
     /// Decode a row's `signature` column, honoring `signature_enc`. Centralized
     /// so all three read paths share identical semantics — the alternative was
     /// copy-pasting the same branch into every `query_map` callback.
@@ -605,35 +612,39 @@ mod tests {
     }
 
     #[test]
-    fn fresh_store_does_not_need_reindex() {
-        let (_dir, store) = tmp_store();
-        assert!(!store.needs_reindex, "fresh DB should not trigger reindex");
-    }
-
-    #[test]
-    fn schema_v2_triggers_needs_reindex() {
-        use rusqlite::Connection;
-
+    fn fresh_store_needs_reindex_until_marked() {
         let dir = tempfile::tempdir().unwrap();
         let db = dir.path().join("idx.db");
 
+        // No ref_edges_built key yet → needs rebuild.
+        let store = Store::open(&db).unwrap();
+        assert!(store.needs_reindex, "fresh DB must need reindex before mark");
+
+        // After marking, next open sees the key and clears the flag.
+        store.mark_ref_edges_built().unwrap();
+        drop(store);
+        let store2 = Store::open(&db).unwrap();
+        assert!(!store2.needs_reindex, "DB must not need reindex after mark");
+    }
+
+    #[test]
+    fn legacy_index_without_ref_edges_built_needs_reindex() {
+        // Simulates a pre-v3.2.0 index: exists on disk but never had
+        // mark_ref_edges_built() called. Any open — including from MCP/LSP
+        // that doesn't act on the flag — must not silently clear needs_reindex.
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("idx.db");
+
+        // Create a store but deliberately do NOT call mark_ref_edges_built.
         {
             let _store = Store::open(&db).unwrap();
         }
 
-        {
-            let conn = Connection::open(&db).unwrap();
-            conn.execute(
-                "INSERT OR REPLACE INTO meta(key, value) VALUES ('schema_version', '2')",
-                [],
-            )
-            .unwrap();
-        }
-
+        // Reopen: ref_edges_built still absent → needs_reindex must be true.
         let store = Store::open(&db).unwrap();
         assert!(
             store.needs_reindex,
-            "index with schema_version=2 must set needs_reindex"
+            "index without ref_edges_built must set needs_reindex on every open"
         );
     }
 
