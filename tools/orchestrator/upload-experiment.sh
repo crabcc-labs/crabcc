@@ -86,15 +86,14 @@ exp_start="$(printf '%s\n' "$rows_json" | jq -r '[.[].claimed_at   | select(. !=
 exp_end="$(  printf '%s\n' "$rows_json" | jq -r '[.[].completed_at | select(. != null)] | sort | .[-1] // "unknown"')"
 
 # Build results array: one entry per terminal row.
+# evaluation_scores comes from the agent_tasks.validator_scores column
+# (written by check-and-done.sh), NOT from inside the agent's own result —
+# only the validator writes the scores; the agent doesn't know about them.
 results_json="$(printf '%s\n' "$rows_json" | jq -c '[.[] | {
     row_id:            (.payload | try fromjson | .langsmith_example_id // (.id | tostring)),
     inputs:            (.payload | try fromjson | .inputs // {}),
     actual_outputs:    (.result  | if . then try fromjson else {} end // {}),
-    evaluation_scores: (
-        .result
-        | if . then try fromjson else null end
-        | if . then (.validator_scores // null) else null end
-    )
+    evaluation_scores: (.validator_scores | if . then try fromjson else null end)
 }]')"
 
 body_file="$(mktemp)"

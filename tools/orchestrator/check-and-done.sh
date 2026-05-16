@@ -164,8 +164,18 @@ sqlite3 "$DB" "BEGIN IMMEDIATE;
 # ── persist result based on validation outcome ─────────────────────────────
 if [[ "$score_pass" -eq 1 ]]; then
     echo "validator_pass task_id=$TASK_ID" >&2
-    "$SCRIPT_DIR/queue.sh" done "$TASK_ID" "$result"
-    echo "persist_done task_id=$TASK_ID" >&2
+    # queue.sh done validates that result is valid JSON; if the agent emitted
+    # plain text or truncated JSON the validator heuristics (which fall back
+    # to 0 on parse error) won't catch it, but `done` will. Capture its exit
+    # status and downgrade to fail so the row doesn't get stuck as 'claimed'.
+    if "$SCRIPT_DIR/queue.sh" done "$TASK_ID" "$result" 2>/tmp/queue_done_err; then
+        echo "persist_done task_id=$TASK_ID" >&2
+    else
+        err="$(cat /tmp/queue_done_err 2>/dev/null || true)"
+        echo "validator_fail task_id=$TASK_ID reasons=queue_done_rejected" >&2
+        "$SCRIPT_DIR/queue.sh" fail "$TASK_ID" "validator: queue.sh done rejected result ($err)"
+        echo "persist_fail task_id=$TASK_ID reasons=queue_done_rejected" >&2
+    fi
 else
     # Build reason string listing failed checks.
     reasons=""

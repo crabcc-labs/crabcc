@@ -185,6 +185,28 @@ print('ok' if required.issubset(d.keys()) else 'missing:' + str(required - d.key
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Assertion 5b: Malformed result JSON that slips past heuristics → row must
+# end as 'failed' (queue.sh done rejects non-JSON; check-and-done must
+# downgrade rather than leave the row stuck as 'claimed').
+# ─────────────────────────────────────────────────────────────────────────────
+{
+    now="$(date +%s)"
+    claimed=$((now - 10))
+    task_id="$(enqueue_with_timestamps "agent-a" '{"job":"test5b"}' "$claimed" "$now")"
+    # Plain text — not valid JSON. Won't trip empty/schema heuristics (they
+    # silently return 0 on parse failure) but queue.sh done WILL reject it.
+    printf 'plain text not json at all' > "$result_file"
+    "$ORCH_DIR/check-and-done.sh" "$task_id" "$result_file" >/dev/null 2>&1 || true
+    status="$(sqlite3 "$AGENTS_DB" "SELECT status FROM agent_tasks WHERE id='$task_id';")"
+    err="$(sqlite3 "$AGENTS_DB" "SELECT error FROM agent_tasks WHERE id='$task_id';")"
+    if [[ "$status" == "failed" && "$err" == *"queue.sh done rejected"* ]]; then
+        assert "5b: malformed JSON → row downgraded to failed, not stuck claimed" "ok"
+    else
+        assert "5b: malformed JSON → row downgraded to failed, not stuck claimed" "got status=$status err='$err'"
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Assertion 7b: Malformed (non-numeric) task_id → exit 1 with format error
 # ─────────────────────────────────────────────────────────────────────────────
 {
