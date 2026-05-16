@@ -123,9 +123,8 @@ mod tests {
         let mut defs = HashMap::new();
         defs.insert("foo".to_string(), SymbolId(42));
         let imports = vec![ImportSpec {
-            raw: "Bar".into(),
-            alias: None,
-            from_module: Some("baz".into()),
+            local: "Bar".into(),
+            qualified: "baz::Bar".into(),
         }];
         let scope = ScopeCtx {
             file_id: 7,

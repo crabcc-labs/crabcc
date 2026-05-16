@@ -243,10 +243,4 @@ mod tests {
         assert!(r.depth_map.is_empty());
     }
 
-    // Suppress the unused-import warning for `params` — the fixture uses
-    // raw string SQL with no parameter binding (small literal inserts).
-    #[allow(dead_code)]
-    fn _params_used() -> rusqlite::Params {
-        params![1].into()
-    }
 }

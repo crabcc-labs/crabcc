@@ -1122,7 +1122,7 @@ fn main() -> Result<()> {
             let _ = std::fs::remove_file(&db);
             let fresh = Store::open_with_compress(&db, cli.compress)?;
             crabcc_core::index::full_index(&root, &fresh)?;
-            fresh.mark_ref_edges_built()?;
+            fresh.mark_schema_v4_built()?;
             if let Ok(fts) = crabcc_core::fts::Fts::open(&fts_dir) {
                 let _ = fts.rebuild(&fresh);
             }
@@ -1151,7 +1151,7 @@ fn main() -> Result<()> {
         Cmd::Index { op } => match op.unwrap_or(IndexOp::Build) {
             IndexOp::Build => {
                 let stats = crabcc_core::index::full_index(&root, &store)?;
-                store.mark_ref_edges_built()?;
+                store.mark_schema_v4_built()?;
                 if let Ok(fts) = crabcc_core::fts::Fts::open(&fts_dir) {
                     let _ = fts.rebuild(&store);
                 }

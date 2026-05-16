@@ -265,7 +265,7 @@ impl Store {
         // We always bind `signature_enc` explicitly so the row reflects the
         // encoding actually used (no reliance on the schema DEFAULT).
         let mut stmt = self.conn.prepare(
-            "INSERT INTO symbols(file_id, name, kind, signature, parent, line_start, line_end, visibility, signature_enc)
+            "INSERT INTO symbols(file_id, name, kind, signature, parent_id, line_start, line_end, visibility, signature_enc)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         )?;
         for s in symbols {
@@ -279,7 +279,7 @@ impl Store {
                         s.name,
                         kind_str(s.kind),
                         encoded,
-                        s.parent,
+                        None::<i64>,
                         s.line_start,
                         s.line_end,
                         s.visibility,
@@ -294,7 +294,7 @@ impl Store {
                 s.name,
                 kind_str(s.kind),
                 s.signature,
-                s.parent,
+                None::<i64>,
                 s.line_start,
                 s.line_end,
                 s.visibility,
@@ -630,7 +630,7 @@ impl Store {
 
     pub fn iter_all_symbols(&self) -> Result<Vec<Symbol>> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.name, s.kind, s.signature, s.parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
+            "SELECT s.name, s.kind, s.signature, NULL AS parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
              FROM symbols s JOIN files f ON s.file_id = f.id",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -650,7 +650,7 @@ impl Store {
 
     pub fn symbols_in_file(&self, file: &str) -> Result<Vec<Symbol>> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.name, s.kind, s.signature, s.parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
+            "SELECT s.name, s.kind, s.signature, NULL AS parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
              FROM symbols s JOIN files f ON s.file_id = f.id
              WHERE f.path = ?1
              ORDER BY s.line_start",
@@ -672,7 +672,7 @@ impl Store {
 
     pub fn find_by_name(&self, name: &str) -> Result<Vec<Symbol>> {
         let mut stmt = self.conn.prepare(
-            "SELECT s.name, s.kind, s.signature, s.parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
+            "SELECT s.name, s.kind, s.signature, NULL AS parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
              FROM symbols s JOIN files f ON s.file_id = f.id
              WHERE s.name = ?1",
         )?;
