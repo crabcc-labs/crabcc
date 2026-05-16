@@ -476,7 +476,12 @@ impl Store {
     }
 
     pub fn list_files(&self) -> Result<Vec<(String, String)>> {
-        let mut stmt = self.conn.prepare("SELECT path, lang FROM files")?;
+        // Filter out the synthetic `<unresolved>` anchor (lang='_unresolved')
+        // so it doesn't leak into `crabcc lookup files` / `crabcc-mcp` /
+        // refresh diffs. Real source paths can't start with '<'.
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path, lang FROM files WHERE lang != '_unresolved'")?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
@@ -515,6 +520,15 @@ impl Store {
     }
 
     pub fn delete_file(&self, path: &str) -> Result<()> {
+        // Guard the synthetic anchor file. refresh_delta walks the real
+        // filesystem, never sees `<unresolved>`, and would classify it as
+        // removed — the ON DELETE CASCADE on symbols/edges/unresolved_names
+        // would then nuke every sentinel symbol + every edge pointing at
+        // them, corrupting the v4 graph on every refresh. Anchor paths are
+        // angle-bracketed by construction (see UNRESOLVED_FILE_PATH).
+        if path.starts_with('<') && path.ends_with('>') {
+            return Ok(());
+        }
         self.conn
             .execute("DELETE FROM files WHERE path = ?1", params![path])?;
         Ok(())
@@ -721,10 +735,13 @@ impl Store {
 
     pub fn iter_all_symbols(&self) -> Result<Vec<Symbol>> {
         let mut stmt = self.conn.prepare(
+            // Exclude sentinel rows — these anchor unresolved-name edges
+            // and are never user-meaningful symbols (CRIT-2, round-2 review).
             "SELECT s.name, s.kind, s.signature, p.name AS parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
              FROM symbols s
              JOIN files f ON s.file_id = f.id
-             LEFT JOIN symbols p ON p.id = s.parent_id",
+             LEFT JOIN symbols p ON p.id = s.parent_id
+             WHERE s.kind != 'sentinel'",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(Symbol {
@@ -747,7 +764,7 @@ impl Store {
              FROM symbols s
              JOIN files f ON s.file_id = f.id
              LEFT JOIN symbols p ON p.id = s.parent_id
-             WHERE f.path = ?1
+             WHERE f.path = ?1 AND s.kind != 'sentinel'
              ORDER BY s.line_start",
         )?;
         let rows = stmt.query_map(params![file], |row| {
@@ -771,7 +788,7 @@ impl Store {
              FROM symbols s
              JOIN files f ON s.file_id = f.id
              LEFT JOIN symbols p ON p.id = s.parent_id
-             WHERE s.name = ?1",
+             WHERE s.name = ?1 AND s.kind != 'sentinel'",
         )?;
         let rows = stmt.query_map(params![name], |row| {
             Ok(Symbol {
@@ -838,6 +855,20 @@ fn kind_from_str(s: &str) -> SymbolKind {
         "var" => SymbolKind::Var,
         "type" => SymbolKind::Type,
         "macro" => SymbolKind::Macro,
+        // Sentinel rows back unresolved-name edges (see upsert_unresolved_sentinel).
+        // The public symbol-query helpers (find_by_name, iter_all_symbols,
+        // symbols_in_file) filter `kind != 'sentinel'` at the SQL layer — if
+        // one still reaches this function, that's a regression worth warning
+        // about. We map to Var as a neutral non-callable kind so downstream
+        // code that switches on Function/Method doesn't accidentally treat
+        // a sentinel as a real call target.
+        "sentinel" => {
+            tracing::warn!(
+                target: "crabcc_core::store",
+                "sentinel kind leaked past SQL filter — public Store API forgot WHERE kind != 'sentinel'"
+            );
+            SymbolKind::Var
+        }
         _ => SymbolKind::Function,
     }
 }
