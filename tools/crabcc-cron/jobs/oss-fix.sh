@@ -29,6 +29,13 @@ source "${CRON_ROOT}/lib/pr.sh"
 : "${OSS_FIX_STATE_DIR:=/opt/crabcc-cron-state/oss-fix}"
 mkdir -p "$OSS_FIX_STATE_DIR"
 
+# Defensive init: ensures upstream_working_set never trips set -u
+# even if the config shim fails to emit either array.
+# shellcheck disable=SC2034  # consumed by lib/upstream.sh via sourcing
+TIER2_INCLUDE=()
+# shellcheck disable=SC2034  # consumed by lib/upstream.sh via sourcing
+TIER3_EXCLUDE=()
+
 # Load config into shell.
 eval "$("${CRON_ROOT}/bin/crabcc-cron-config-shim" "$OSS_FIX_CONFIG")"
 

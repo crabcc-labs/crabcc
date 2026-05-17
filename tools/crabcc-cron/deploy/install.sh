@@ -54,4 +54,15 @@ if command -v shellcheck >/dev/null 2>&1; then
   }
 fi
 
+# 6. Preflight: verify opencode is installed and gh is authenticated.
+if ! command -v opencode >/dev/null 2>&1; then
+  echo "WARNING: opencode not found on PATH. The OSS-fix dispatcher will fail every tick." >&2
+  echo "Install opencode per its docs before the next cron run." >&2
+fi
+
+if ! command -v gh >/dev/null 2>&1; then
+  echo "ERROR: gh CLI not found. Install with: apt-get install -y gh" >&2
+  exit 1
+fi
+
 echo "crabcc-cron installed. Next cron tick will run."

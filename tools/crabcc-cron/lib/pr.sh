@@ -39,7 +39,7 @@ upstream_cap_reached() {
 # Pushes the branch, opens a draft PR, returns PR URL on stdout, or empty on failure.
 open_draft_pr() {
   local dir="$1" repo="$2" issue="$3"
-  local n branch title log_tail body
+  local n branch title log_tail body base
   n="$(jq -r '.number' <<<"$issue")"
   branch="claude-cron/fix-${n}"
   title="$(jq -r '.title' <<<"$issue")"
@@ -48,10 +48,15 @@ open_draft_pr() {
   body="$(printf 'Closes #%s\n\n---\nThis PR was drafted by an automated agent (opencode + %s) running on cron. I will review and finalize before requesting merge.\n\n<details><summary>opencode.log (last 50 lines)</summary>\n\n```\n%s\n```\n\n</details>\n' \
     "$n" "${OPENCODE_MODEL:-deepseek-v4-pro}" "$log_tail")"
 
+  # Detect upstream default branch (handles repos that use 'master' or other).
+  base="$(git -C "$dir/clone" symbolic-ref refs/remotes/origin/HEAD 2>/dev/null \
+            | sed 's|refs/remotes/origin/||')"
+  base="${base:-main}"
+
   (cd "$dir/clone" && git push origin "$branch")
   gh pr create \
     --repo "$repo" \
-    --base main \
+    --base "$base" \
     --head "$branch" \
     --draft \
     --title "[draft] fix: $title" \

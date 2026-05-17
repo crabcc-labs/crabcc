@@ -14,13 +14,29 @@ agent_render_prompt() {
   n="$(jq -r '.number' <<<"$issue")"
   title="$(jq -r '.title' <<<"$issue")"
   body="$(jq -r '.body // ""' <<<"$issue")"
-  sed -e "s|{N}|$n|g" \
-      -e "s|{repo}|$repo|g" \
-      -e "s|{title}|${title//|/\\|}|g" \
-      -e "s|{test_cmd}|${test_cmd//|/\\|}|g" \
-      "$tpl" \
-    | awk -v body="$body" '/^Body:$/ {print; print body; next} {print}' \
-    > "$out"
+  python3 - "$tpl" "$out" "$n" "$repo" "$title" "$test_cmd" "$body" <<'PY'
+import sys
+tpl_path, out_path, n, repo, title, test_cmd, body = sys.argv[1:8]
+with open(tpl_path) as f:
+    tpl = f.read()
+rendered = (
+    tpl.replace("{N}", n)
+       .replace("{repo}", repo)
+       .replace("{title}", title)
+       .replace("{test_cmd}", test_cmd)
+)
+# Insert body after the "Body:" marker line.
+out_lines = []
+inserted = False
+for line in rendered.splitlines():
+    out_lines.append(line)
+    if line.strip() == "Body:" and not inserted:
+        out_lines.append(body)
+        inserted = True
+with open(out_path, "w") as f:
+    f.write("\n".join(out_lines))
+    f.write("\n")
+PY
 }
 
 # Args: sandbox_dir, prompt_path

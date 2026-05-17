@@ -11,3 +11,7 @@ include = [
 [tier3_deny]
 # Override: never touch these.
 exclude = []
+
+# Note: rate-limit caps (OSS_FIX_GLOBAL_CAP, OSS_FIX_UPSTREAM_COOLDOWN_DAYS)
+# are configured via /etc/crabcc-cron/env, not in this TOML.
+# Setting them here has no effect — the config shim only reads tier2/tier3.
