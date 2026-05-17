@@ -12,6 +12,10 @@
 #
 # Required env (non-dry-run): CHROMA_HOST, CHROMA_TENANT, CHROMA_DATABASE,
 # CHROMA_API_KEY.
+#
+# --dry-run, if used, MUST be the first argument ($1). The cron pipeline
+# that invokes this script has a fixed argv shape; flag-anywhere parsing
+# is intentionally out of scope.
 
 set -uo pipefail
 
@@ -49,7 +53,7 @@ process_finding() {
   for f in "${REQUIRED_FIELDS[@]}"; do
     if [[ "$(jq -r ".${f} // empty" <<<"$line")" == "" ]]; then
       emit_err "missing required field: $f"
-      [[ $DRY_RUN -eq 1 ]] && exit 2
+      [[ $DRY_RUN -eq 1 ]] && exit 2  # dry-run only; live mode falls through to return 0
       return 0
     fi
   done
@@ -60,7 +64,7 @@ process_finding() {
   for s in "${VALID_SEVERITIES[@]}"; do [[ "$s" == "$sev" ]] && ok=1; done
   if [[ $ok -eq 0 ]]; then
     emit_err "invalid severity: $sev"
-    [[ $DRY_RUN -eq 1 ]] && exit 2
+    [[ $DRY_RUN -eq 1 ]] && exit 2  # dry-run only; live mode falls through to return 0
     return 0
   fi
 

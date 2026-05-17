@@ -22,12 +22,14 @@ run_script() {
   local script="$1"; shift
   # Disable errexit so a non-zero exit code from the script under test
   # doesn't abort the surrounding bats test (bats enables `set -e` in
-  # @test blocks). We re-enable it afterwards.
+  # @test blocks). Save the prior flag state so we restore errexit only
+  # if it was active to begin with.
+  local _saved="$-"
   set +e
   STDOUT="$("${CRON_ROOT}/${script}" "$@" 2>"${TMPD:?}/stderr")"
   STATUS=$?
-  set -e
   STDERR="$(cat "${TMPD}/stderr")"
+  case "$_saved" in *e*) set -e ;; esac
   export STDOUT STDERR STATUS
 }
 
