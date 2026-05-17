@@ -20,6 +20,7 @@ pub enum Key {
     WorkspaceSymbol { query: String, limit: u32 },
     OutgoingCalls(String),
     IncomingCalls(String),
+    References(String),
 }
 
 pub type Value = Arc<serde_json::Value>;
