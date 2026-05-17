@@ -301,6 +301,99 @@ fn bench_workspace_symbol(c: &mut Criterion) {
     });
 }
 
+fn bench_references(c: &mut Criterion) {
+    let bed = setup();
+    let pos = find_pos(RUST, "fn say_hello").unwrap();
+
+    c.bench_function("references_baseline", |b| {
+        b.iter(|| {
+            let v = crabcc_core::query::find_references(&bed.store, black_box("say_hello")).unwrap();
+            black_box(v);
+        });
+    });
+
+    c.bench_function("references_lsp", |b| {
+        b.iter(|| {
+            bed.rt.block_on(async {
+                let resp = bed
+                    .service
+                    .inner()
+                    .references(ReferenceParams {
+                        text_document_position_params: TextDocumentPositionParams {
+                            text_document: TextDocumentIdentifier {
+                                uri: bed.rust_uri.clone(),
+                            },
+                            position: Position {
+                                line: pos.0,
+                                character: pos.1,
+                            },
+                        },
+                        context: ReferenceContext {
+                            include_declaration: true,
+                        },
+                        work_done_progress_params: WorkDoneProgressParams::default(),
+                        partial_result_params: PartialResultParams::default(),
+                    })
+                    .await
+                    .unwrap();
+                black_box(resp);
+            });
+        });
+    });
+}
+
+fn bench_outgoing_calls(c: &mut Criterion) {
+    let bed = setup();
+    let pos = find_pos(RUST, "fn say_hello").unwrap();
+
+    let item = bed.rt.block_on(async {
+        let items = bed
+            .service
+            .inner()
+            .prepare_call_hierarchy(CallHierarchyPrepareParams {
+                text_document_position_params: TextDocumentPositionParams {
+                    text_document: TextDocumentIdentifier {
+                        uri: bed.rust_uri.clone(),
+                    },
+                    position: Position {
+                        line: pos.0,
+                        character: pos.1,
+                    },
+                },
+                work_done_progress_params: WorkDoneProgressParams::default(),
+                partial_result_params: PartialResultParams::default(),
+            })
+            .await
+            .unwrap();
+        items.into_iter().next().unwrap()
+    });
+
+    c.bench_function("outgoing_calls_baseline", |b| {
+        b.iter(|| {
+            let v = crabcc_core::query::find_outgoing_calls(&bed.store, black_box("say_hello")).unwrap();
+            black_box(v);
+        });
+    });
+
+    c.bench_function("outgoing_calls_lsp", |b| {
+        b.iter(|| {
+            bed.rt.block_on(async {
+                let resp = bed
+                    .service
+                    .inner()
+                    .outgoing_calls(OutgoingCallsParams {
+                        item: item.clone(),
+                        work_done_progress_params: WorkDoneProgressParams::default(),
+                        partial_result_params: PartialResultParams::default(),
+                    })
+                    .await
+                    .unwrap();
+                black_box(resp);
+            });
+        });
+    });
+}
+
 fn find_pos(src: &str, needle: &str) -> Option<(u32, u32)> {
     for (i, l) in src.lines().enumerate() {
         if let Some(c) = l.find(needle) {
@@ -404,6 +497,6 @@ fn bench_cache_hit(c: &mut Criterion) {
 criterion_group!(
     name = benches;
     config = Criterion::default().sample_size(50).warm_up_time(std::time::Duration::from_millis(500));
-    targets = bench_cold_open, bench_document_symbol, bench_definition, bench_hover, bench_workspace_symbol, bench_cache_hit
+    targets = bench_cold_open, bench_document_symbol, bench_definition, bench_hover, bench_workspace_symbol, bench_cache_hit, bench_references, bench_outgoing_calls
 );
 criterion_main!(benches);
