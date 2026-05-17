@@ -31,8 +31,9 @@ task cron-lint
 # Run unit tests
 task cron-test
 
-# Run e2e smoke (requires gh + opencode in PATH)
+# Run e2e smokes (require gh + opencode + cargo + crabcc in PATH)
 OSS_FIX_DRY_RUN=1 bash tools/crabcc-cron/tests/e2e/oss_fix_dryrun.sh
+bash tools/crabcc-cron/tests/e2e/security_smoke.sh
 ```
 
 ## Deployment

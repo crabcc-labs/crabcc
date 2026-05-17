@@ -57,6 +57,11 @@ cat >"$TMPD/bin/cargo" <<'EOF'
 #!/usr/bin/env bash
 repo_basename="$(basename "$PWD")"
 case "$1" in
+  install)
+    case "$2" in
+      --list) echo 'cargo-audit v0.21.1:' ; exit 0 ;;
+    esac
+    ;;
   audit)
     if [[ "$repo_basename" == "repo-with-advisory" ]]; then
       cat <<'JSON'

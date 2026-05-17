@@ -20,6 +20,21 @@ source "${CRON_ROOT}/lib/audit_advisory.sh"
 : "${SECURITY_ROOT:=/srv/cron-agents/security}"
 mkdir -p "$SECURITY_ROOT"
 
+# Preflight: require cargo-audit on PATH. Without it WL-3 is useless.
+if ! command -v cargo >/dev/null 2>&1; then
+  log_error "cargo not found on PATH; WL-3 cannot run"
+  emit_finding error security "" "preflight failed" \
+    "cargo not found on PATH on the Hetzner box. Install Rust via rustup." '{}'
+  exit 0
+fi
+
+if ! cargo install --list 2>/dev/null | grep -q '^cargo-audit '; then
+  log_error "cargo-audit not installed; WL-3 cannot run"
+  emit_finding error security "" "preflight failed" \
+    "cargo-audit not installed on the Hetzner box. Install with: cargo install cargo-audit" '{}'
+  exit 0
+fi
+
 # Defensive init: ensures audit_repos never trips set -u
 # even if the config shim fails to emit the SECURITY_DENY array.
 # shellcheck disable=SC2034  # consumed by sourced lib/audit_repos.sh
@@ -99,8 +114,15 @@ while IFS= read -r repo; do
 
     # Usage count via crabcc fuzzy.
     if (( index_available == 1 )); then
-      usage_count="$(cd "$dir" && crabcc fuzzy "$crate" 2>/dev/null | wc -l | tr -d ' ' || echo 'null')"
-      [[ -z "$usage_count" ]] && usage_count="null"
+      # Capture crabcc exit code separately from the pipeline so a crabcc
+      # failure produces null, not a misleading 0.
+      fuzzy_out="$(cd "$dir" && crabcc fuzzy "$crate" 2>/dev/null)"
+      fuzzy_ec=$?
+      if (( fuzzy_ec == 0 )); then
+        usage_count="$(printf '%s\n' "$fuzzy_out" | grep -cE '^.+' || echo 0)"
+      else
+        usage_count="null"
+      fi
     else
       usage_count="null"
     fi
