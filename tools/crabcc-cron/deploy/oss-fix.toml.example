@@ -1,0 +1,13 @@
+# /etc/crabcc-cron/oss-fix.toml — WL-2 dispatcher config.
+
+[tier2_curated]
+include = [
+  "rust-lang/cargo",
+  "tokio-rs/tokio",
+  "tree-sitter/tree-sitter",
+  "rusqlite/rusqlite",
+]
+
+[tier3_deny]
+# Override: never touch these.
+exclude = []
