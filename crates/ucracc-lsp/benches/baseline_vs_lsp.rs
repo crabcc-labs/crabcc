@@ -17,8 +17,9 @@ use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::runtime::Runtime;
 use tower_lsp::lsp_types::{
-    DidOpenTextDocumentParams, DocumentSymbolParams, GotoDefinitionParams, HoverParams,
-    InitializeParams, InitializedParams, PartialResultParams, Position, TextDocumentIdentifier,
+    CallHierarchyOutgoingCallsParams, CallHierarchyPrepareParams, DidOpenTextDocumentParams,
+    DocumentSymbolParams, GotoDefinitionParams, HoverParams, InitializeParams, InitializedParams,
+    PartialResultParams, Position, ReferenceContext, ReferenceParams, TextDocumentIdentifier,
     TextDocumentItem, TextDocumentPositionParams, Url, WorkDoneProgressParams,
     WorkspaceSymbolParams,
 };
@@ -307,7 +308,8 @@ fn bench_references(c: &mut Criterion) {
 
     c.bench_function("references_baseline", |b| {
         b.iter(|| {
-            let v = crabcc_core::query::find_references(&bed.store, black_box("say_hello")).unwrap();
+            let v = crabcc_core::query::find_refs(&bed.store, &bed.root, black_box("say_hello"))
+                .unwrap();
             black_box(v);
         });
     });
@@ -319,7 +321,7 @@ fn bench_references(c: &mut Criterion) {
                     .service
                     .inner()
                     .references(ReferenceParams {
-                        text_document_position_params: TextDocumentPositionParams {
+                        text_document_position: TextDocumentPositionParams {
                             text_document: TextDocumentIdentifier {
                                 uri: bed.rust_uri.clone(),
                             },
@@ -344,7 +346,9 @@ fn bench_references(c: &mut Criterion) {
 
 fn bench_outgoing_calls(c: &mut Criterion) {
     let bed = setup();
-    let pos = find_pos(RUST, "fn say_hello").unwrap();
+    // Position on the `greet` identifier (the caller). outgoing_calls returns
+    // what `greet` calls (say_hello).
+    let pos = find_pos(RUST, "greet(&self)").unwrap();
 
     let item = bed.rt.block_on(async {
         let items = bed
@@ -361,19 +365,15 @@ fn bench_outgoing_calls(c: &mut Criterion) {
                     },
                 },
                 work_done_progress_params: WorkDoneProgressParams::default(),
-                partial_result_params: PartialResultParams::default(),
             })
             .await
             .unwrap();
-        items.into_iter().next().unwrap()
+        items.unwrap().into_iter().next().unwrap()
     });
 
-    c.bench_function("outgoing_calls_baseline", |b| {
-        b.iter(|| {
-            let v = crabcc_core::query::find_outgoing_calls(&bed.store, black_box("say_hello")).unwrap();
-            black_box(v);
-        });
-    });
+    // No direct baseline — outgoing_calls is built from the LSP's call-graph
+    // sidecar, not via a single crabcc_core::query::* function. The LSP wrapper
+    // cost is what we measure here.
 
     c.bench_function("outgoing_calls_lsp", |b| {
         b.iter(|| {
@@ -381,7 +381,7 @@ fn bench_outgoing_calls(c: &mut Criterion) {
                 let resp = bed
                     .service
                     .inner()
-                    .outgoing_calls(OutgoingCallsParams {
+                    .outgoing_calls(CallHierarchyOutgoingCallsParams {
                         item: item.clone(),
                         work_done_progress_params: WorkDoneProgressParams::default(),
                         partial_result_params: PartialResultParams::default(),
