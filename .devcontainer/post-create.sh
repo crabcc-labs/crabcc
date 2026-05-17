@@ -12,4 +12,12 @@ if command -v crabcc >/dev/null 2>&1; then
   crabcc index || true
 fi
 
+# Start happy in daemon mode. Backgrounded so post-create doesn't block.
+# Logs to /tmp/happy.log; survives container start. post-start.sh re-checks
+# on every resume in case the process was reaped during sleep.
+if command -v happy >/dev/null 2>&1; then
+  echo "[post-create] starting happy --daemon (log: /tmp/happy.log)"
+  nohup happy --daemon >/tmp/happy.log 2>&1 &
+fi
+
 echo "[post-create] done — try: task --list"
