@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # tools/crabcc-cron/tests/helpers.bash — shared bats helpers.
 
-# Always called from the repo root.
-CRON_ROOT="${BATS_TEST_DIRNAME}/.."
+# CRON_ROOT is the tool root (where bin/ lives). Anchor on this helpers
+# file's location so tests can be nested arbitrarily under tests/.
+CRON_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export CRON_ROOT
 
 # A scratch tempdir per test, auto-cleaned.
@@ -19,8 +20,13 @@ teardown_tempdir() {
 # Usage: run_script bin/crabcc-cron-emit --dry-run <<<'{"kind":"finding"...}'
 run_script() {
   local script="$1"; shift
+  # Disable errexit so a non-zero exit code from the script under test
+  # doesn't abort the surrounding bats test (bats enables `set -e` in
+  # @test blocks). We re-enable it afterwards.
+  set +e
   STDOUT="$("${CRON_ROOT}/${script}" "$@" 2>"${TMPD:?}/stderr")"
   STATUS=$?
+  set -e
   STDERR="$(cat "${TMPD}/stderr")"
   export STDOUT STDERR STATUS
 }
