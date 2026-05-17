@@ -114,6 +114,10 @@ chroma_post() {
   local doc id meta payload
   doc="$(jq -r '.body' <<<"$body")"
   id="$(jq -r '.id' <<<"$body")"
+  if [[ -z "$id" || "$id" == "null" ]]; then
+    emit_err "chroma POST refused: empty/null id"
+    return 0
+  fi
   meta="$(jq '. | del(.body) | del(.id)' <<<"$body")"
 
   payload="$(jq -nc \
@@ -125,7 +129,7 @@ chroma_post() {
   # Chroma cloud v2 upsert endpoint.
   local url="${CHROMA_HOST}/api/v2/tenants/${CHROMA_TENANT}/databases/${CHROMA_DATABASE}/collections/cron-findings/upsert"
 
-  local response status
+  local response curl_exit status
   response="$(printf '%s' "$payload" | curl -sS -o - \
     -w '%{http_code}' \
     -X POST \
@@ -133,9 +137,15 @@ chroma_post() {
     -H "X-Chroma-Token: ${CHROMA_API_KEY}" \
     --data-binary @- \
     "$url")"
+  curl_exit=$?
+  if [[ $curl_exit -ne 0 ]]; then
+    emit_err "chroma POST failed (curl exit=$curl_exit)"
+    return 0
+  fi
   status="${response: -3}"
   if [[ ! "$status" =~ ^2[0-9][0-9]$ ]]; then
-    emit_err "chroma POST failed (status=$status, response=${response%"$status"})"
+    local resp_body="${response%"$status"}"
+    emit_err "chroma POST failed (status=$status, response=${resp_body:0:200})"
   fi
 }
 

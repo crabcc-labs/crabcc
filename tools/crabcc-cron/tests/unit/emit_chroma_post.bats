@@ -24,6 +24,7 @@ EOF
   export CHROMA_TENANT="t"
   export CHROMA_DATABASE="d"
   export CHROMA_API_KEY="secret"
+  export FAKE_CURL_OUT='200'
 }
 teardown() { teardown_tempdir; }
 
@@ -47,12 +48,18 @@ teardown() { teardown_tempdir; }
 }
 
 @test "emit: non-2xx response is logged but does not abort" {
-  export FAKE_CURL_OUT='{"error":"internal"}'
-  export FAKE_CURL_STATUS=500
   # We use --write-out in the real script to capture status; the fake
   # curl echoes whatever we tell it, and the script appends -w '%{http_code}'
   # → tests inject status via FAKE_CURL_OUT prefix.
   export FAKE_CURL_OUT='{"error":"internal"}500'
+  payload='{"kind":"finding","workload":"x","severity":"info","title":"t","body":"b"}'
+  run_script bin/crabcc-cron-emit <<<"$payload"
+  assert_status_eq 0
+  assert_stderr_contains "chroma POST failed"
+}
+
+@test "emit: curl transport failure is logged but does not abort" {
+  export FAKE_CURL_EXIT=6  # CURLE_COULDNT_RESOLVE_HOST
   payload='{"kind":"finding","workload":"x","severity":"info","title":"t","body":"b"}'
   run_script bin/crabcc-cron-emit <<<"$payload"
   assert_status_eq 0
