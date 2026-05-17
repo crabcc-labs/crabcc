@@ -119,6 +119,9 @@ includes:
   hitl:
     taskfile: taskfiles/hitl.yml
     flatten: true
+  cron:
+    taskfile: taskfiles/cron.yml
+    flatten: true
 
 tasks:
   default:
@@ -127,12 +130,3 @@ tasks:
       - task: build
       - task: test
 
-  cron-lint:
-    desc: shellcheck all crabcc-cron scripts
-    cmds:
-      - shellcheck -x tools/crabcc-cron/bin/* tools/crabcc-cron/jobs/* tools/crabcc-cron/lib/* tools/crabcc-cron/deploy/install.sh
-
-  cron-test:
-    desc: bats unit tests for crabcc-cron
-    cmds:
-      - bats tools/crabcc-cron/tests/unit

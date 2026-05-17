@@ -15,6 +15,10 @@ for the design.
 
 ## Local development
 
+The commands below land incrementally — the lint/test targets exit cleanly today
+but only do real work once tasks A2–B7 in
+`docs/superpowers/plans/2026-05-17-crabcc-cron-shared-and-oss-fix.md` are merged.
+
 ```bash
 # Lint
 task cron-lint
