@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+# tools/crabcc-cron/bin/crabcc-cron-emit
+#
+# Reads JSONL on stdin. For lines with kind=="finding", validates the
+# schema, fills in id if missing (sha256 of canonical key), and either
+# prints the would-be POST body (--dry-run) or POSTs to Chroma.
+#
+# All other lines (logs, malformed JSON, unknown kinds) are dropped with
+# a warning to stderr. Always exits 0 on per-line errors so cron pipes
+# don't abort upstream workloads. Exits 2 only on hard schema errors
+# in --dry-run mode (so unit tests can assert them).
+#
+# Required env (non-dry-run): CHROMA_HOST, CHROMA_TENANT, CHROMA_DATABASE,
+# CHROMA_API_KEY.
+#
+# --dry-run, if used, MUST be the first argument ($1). The cron pipeline
+# that invokes this script has a fixed argv shape; flag-anywhere parsing
+# is intentionally out of scope.
+
+set -uo pipefail
+
+DRY_RUN=0
+case "${1-}" in
+  --dry-run) DRY_RUN=1; shift ;;
+esac
+
+REQUIRED_FIELDS=(workload severity title body)
+VALID_SEVERITIES=(info warn error)
+
+emit_err() { echo "crabcc-cron-emit: $*" >&2; }
+
+# sha256 hex of stdin. Uses sha256sum on Linux, shasum on macOS.
+sha256_hex() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | awk '{print $1}'
+  else
+    shasum -a 256 | awk '{print $1}'
+  fi
+}
+
+process_finding() {
+  local line="$1"
+  # Validate JSON
+  if ! jq -e '.' >/dev/null 2>&1 <<<"$line"; then
+    emit_err "skipped non-JSON line"
+    return 0
+  fi
+  local kind; kind="$(jq -r '.kind // empty' <<<"$line")"
+  [[ "$kind" == "finding" ]] || return 0
+
+  # Required fields
+  local f
+  for f in "${REQUIRED_FIELDS[@]}"; do
+    if [[ "$(jq -r ".${f} // empty" <<<"$line")" == "" ]]; then
+      emit_err "missing required field: $f"
+      [[ $DRY_RUN -eq 1 ]] && exit 2  # dry-run only; live mode falls through to return 0
+      return 0
+    fi
+  done
+
+  # Severity check
+  local sev; sev="$(jq -r '.severity' <<<"$line")"
+  local ok=0
+  for s in "${VALID_SEVERITIES[@]}"; do [[ "$s" == "$sev" ]] && ok=1; done
+  if [[ $ok -eq 0 ]]; then
+    emit_err "invalid severity: $sev"
+    [[ $DRY_RUN -eq 1 ]] && exit 2  # dry-run only; live mode falls through to return 0
+    return 0
+  fi
+
+  # Compute id if missing
+  local id; id="$(jq -r '.id // empty' <<<"$line")"
+  if [[ -z "$id" ]]; then
+    local key
+    key="$(jq -r '"\(.workload):\(.repo // ""):\(.title)"' <<<"$line")"
+    id="$(printf '%s' "$key" | sha256_hex)"
+  fi
+
+  # Truncate body if > 8 KiB
+  local b; b="$(jq -r '.body' <<<"$line")"
+  local b_bytes; b_bytes=$(printf '%s' "$b" | wc -c)
+  if (( b_bytes > 8192 )); then
+    b="$(printf '%s' "$b" | head -c 8000)... [truncated]"
+  fi
+
+  # Timestamp (ISO 8601 with timezone)
+  local ts; ts="$(date -Iseconds 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S%z')"
+
+  # Flatten metadata with meta. prefix
+  # TODO(A4): nested-object metadata values produce non-scalar meta.* fields
+  # that Chroma's metadata API rejects. Either flatten recursively, drop non-
+  # scalar entries with a warning, or document as a contract: workloads MUST
+  # only emit scalar metadata values.
+  local body
+  body="$(jq --arg id "$id" --arg ts "$ts" --arg body "$b" '
+    . as $orig
+    | (.metadata // {}) as $m
+    | (reduce ($m | to_entries[]) as $kv ({}; .["meta." + $kv.key] = $kv.value)) as $flat
+    | $orig + $flat + {id: $id, ts: $ts, body: $body} | del(.metadata) | del(.kind)
+  ' <<<"$line")"
+
+  if [[ $DRY_RUN -eq 1 ]]; then
+    echo "$body"
+  else
+    # POST to Chroma (implemented in A4)
+    chroma_post "$body"
+  fi
+}
+
+chroma_post() {
+  local body="$1"
+
+  # Build Chroma payload: one document at a time.
+  local doc id meta payload
+  doc="$(jq -r '.body' <<<"$body")"
+  id="$(jq -r '.id' <<<"$body")"
+  if [[ -z "$id" || "$id" == "null" ]]; then
+    emit_err "chroma POST refused: empty/null id"
+    return 0
+  fi
+  meta="$(jq '. | del(.body) | del(.id)' <<<"$body")"
+
+  payload="$(jq -nc \
+    --arg id "$id" \
+    --arg doc "$doc" \
+    --argjson meta "$meta" \
+    '{ids: [$id], documents: [$doc], metadatas: [$meta]}')"
+
+  # Chroma cloud v2 upsert endpoint.
+  local url="${CHROMA_HOST}/api/v2/tenants/${CHROMA_TENANT}/databases/${CHROMA_DATABASE}/collections/cron-findings/upsert"
+
+  local response curl_exit status
+  response="$(printf '%s' "$payload" | curl -sS -o - \
+    -w '%{http_code}' \
+    -X POST \
+    -H "Content-Type: application/json" \
+    -H "X-Chroma-Token: ${CHROMA_API_KEY}" \
+    --data-binary @- \
+    "$url")"
+  curl_exit=$?
+  if [[ $curl_exit -ne 0 ]]; then
+    emit_err "chroma POST failed (curl exit=$curl_exit)"
+    return 0
+  fi
+  status="${response: -3}"
+  if [[ ! "$status" =~ ^2[0-9][0-9]$ ]]; then
+    local resp_body="${response%"$status"}"
+    emit_err "chroma POST failed (status=$status, response=${resp_body:0:200})"
+  fi
+}
+
+main() {
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" ]] && continue
+    process_finding "$line"
+  done
+}
+
+main "$@"

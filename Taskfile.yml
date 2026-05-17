@@ -119,6 +119,9 @@ includes:
   hitl:
     taskfile: taskfiles/hitl.yml
     flatten: true
+  cron:
+    taskfile: taskfiles/cron.yml
+    flatten: true
 
 tasks:
   default:
@@ -126,3 +129,4 @@ tasks:
     cmds:
       - task: build
       - task: test
+

@@ -1,0 +1,10 @@
+# Installed to /etc/cron.d/crabcc-cron — do not edit in place.
+# Edit tools/crabcc-cron/deploy/crabcc-cron.cron in the repo and re-run
+# tools/crabcc-cron/deploy/install.sh.
+
+SHELL=/bin/bash
+BASH_ENV=/etc/crabcc-cron/env
+MAILTO=""
+
+# WL-2 OSS-fix dispatcher — every 4h.
+0 */4 * * * deploy  /opt/crabcc-cron/jobs/oss-fix.sh 2>&1 | tee >(systemd-cat -t crabcc-cron-oss-fix) | /opt/crabcc-cron/bin/crabcc-cron-emit

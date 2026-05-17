@@ -1,0 +1,29 @@
+# crabcc-cron lint + test targets. Robust to missing directories so they
+# exit 0 cleanly before later tasks (A2+) populate bin/, jobs/, lib/, and
+# tests/unit/. See docs/superpowers/plans/2026-05-17-crabcc-cron-shared-and-oss-fix.md.
+version: '3'
+
+tasks:
+  cron-lint:
+    desc: shellcheck all crabcc-cron scripts (no-op when none exist yet)
+    cmds:
+      - |
+        find tools/crabcc-cron \
+          -type f \
+          \( -path 'tools/crabcc-cron/bin/*' \
+             -o -path 'tools/crabcc-cron/jobs/*' \
+             -o -path 'tools/crabcc-cron/lib/*' \
+             -o -path 'tools/crabcc-cron/deploy/install.sh' \
+             -o -name '*.sh' \) \
+          -print0 \
+          | xargs -0 -r shellcheck -x
+
+  cron-test:
+    desc: bats unit tests for crabcc-cron (skipped when tests/unit/ absent)
+    cmds:
+      - |
+        if [ -d tools/crabcc-cron/tests/unit ]; then
+          bats tools/crabcc-cron/tests/unit
+        else
+          echo 'cron-test: no unit tests yet (skipping)'
+        fi
