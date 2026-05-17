@@ -1,4 +1,4 @@
-use crate::cache::{Key as CacheKey, LruCache};
+use crate::cache::{Key as CacheKey, LruCache, Value as CacheValue};
 use crate::commands;
 use crate::handlers;
 use crate::lang::{Lang, SUPPORTED_LANGUAGE_IDS};
@@ -310,10 +310,8 @@ impl LanguageServer for Backend {
         };
 
         let key = CacheKey::DocumentSymbols(rel.clone());
-        if let Some(v) = st.cache.get(&key) {
-            if let Ok(parsed) = serde_json::from_value::<Vec<DocumentSymbol>>((*v).clone()) {
-                return Ok(Some(DocumentSymbolResponse::Nested(parsed)));
-            }
+        if let Some(CacheValue::DocumentSymbols(dsyms)) = st.cache.get(&key) {
+            return Ok(Some(DocumentSymbolResponse::Nested((*dsyms).clone())));
         }
 
         st.ensure_store();
@@ -324,9 +322,10 @@ impl LanguageServer for Backend {
         };
         let syms = store.symbols_in_file(&rel).unwrap_or_default();
         let dsyms = handlers::document_symbols(syms);
-        if let Ok(v) = serde_json::to_value(&dsyms) {
-            st.cache.put(key, StdArc::new(v));
-        }
+        st.cache.put(
+            key,
+            CacheValue::DocumentSymbols(StdArc::new(dsyms.clone())),
+        );
         Ok(Some(DocumentSymbolResponse::Nested(dsyms)))
     }
 
@@ -343,14 +342,12 @@ impl LanguageServer for Backend {
         };
 
         let key = CacheKey::Definition(word.clone());
-        if let Some(v) = st.cache.get(&key) {
-            if let Ok(parsed) = serde_json::from_value::<Vec<Location>>((*v).clone()) {
-                return Ok(if parsed.is_empty() {
-                    None
-                } else {
-                    Some(GotoDefinitionResponse::Array(parsed))
-                });
-            }
+        if let Some(CacheValue::Definition(locs)) = st.cache.get(&key) {
+            return Ok(if locs.is_empty() {
+                None
+            } else {
+                Some(GotoDefinitionResponse::Array((*locs).clone()))
+            });
         }
 
         st.ensure_store();
@@ -361,9 +358,8 @@ impl LanguageServer for Backend {
         };
         let hits = find_symbol(store, &word).unwrap_or_default();
         let locs = handlers::definition_locations(&st.repo_root, hits);
-        if let Ok(v) = serde_json::to_value(&locs) {
-            st.cache.put(key, StdArc::new(v));
-        }
+        st.cache
+            .put(key, CacheValue::Definition(StdArc::new(locs.clone())));
         if locs.is_empty() {
             return Ok(None);
         }
@@ -381,10 +377,8 @@ impl LanguageServer for Backend {
 
         // Check cache first
         let cache_key = CacheKey::References(word.clone());
-        if let Some(v) = st.cache.get(&cache_key) {
-            if let Ok(parsed) = serde_json::from_value::<Vec<Location>>((*v).clone()) {
-                return Ok(Some(parsed));
-            }
+        if let Some(CacheValue::References(locs)) = st.cache.get(&cache_key) {
+            return Ok(Some((*locs).clone()));
         }
 
         let root = st.repo_root.clone();
@@ -423,10 +417,8 @@ impl LanguageServer for Backend {
         });
         hits.dedup_by(|a, b| a.file == b.file && a.line == b.line && a.col == b.col);
         let locs = handlers::reference_locations(&root, hits);
-        // Cache the result
-        if let Ok(v) = serde_json::to_value(&locs) {
-            st.cache.put(cache_key, StdArc::new(v));
-        }
+        st.cache
+            .put(cache_key, CacheValue::References(StdArc::new(locs.clone())));
         Ok(Some(locs))
     }
 
@@ -440,10 +432,8 @@ impl LanguageServer for Backend {
         };
 
         let key = CacheKey::Hover(word.clone());
-        if let Some(v) = st.cache.get(&key) {
-            if let Ok(parsed) = serde_json::from_value::<Option<Hover>>((*v).clone()) {
-                return Ok(parsed);
-            }
+        if let Some(CacheValue::Hover(h)) = st.cache.get(&key) {
+            return Ok((*h).clone());
         }
 
         st.ensure_store();
@@ -454,9 +444,8 @@ impl LanguageServer for Backend {
         };
         let hits = find_symbol(store, &word).unwrap_or_default();
         let h = handlers::hover_for(&hits);
-        if let Ok(v) = serde_json::to_value(&h) {
-            st.cache.put(key, StdArc::new(v));
-        }
+        st.cache
+            .put(key, CacheValue::Hover(StdArc::new(h.clone())));
         Ok(h)
     }
 
@@ -470,10 +459,8 @@ impl LanguageServer for Backend {
             query: q.clone(),
             limit: 200,
         };
-        if let Some(v) = st.cache.get(&key) {
-            if let Ok(parsed) = serde_json::from_value::<Vec<SymbolInformation>>((*v).clone()) {
-                return Ok(Some(parsed));
-            }
+        if let Some(CacheValue::WorkspaceSymbol(out)) = st.cache.get(&key) {
+            return Ok(Some((*out).clone()));
         }
         let root = st.repo_root.clone();
         st.ensure_fts();
@@ -506,9 +493,10 @@ impl LanguageServer for Backend {
         syms.dedup_by(|a, b| a.name == b.name && a.file == b.file && a.line_start == b.line_start);
         syms.truncate(200);
         let out = handlers::workspace_symbol_legacy(&root, syms);
-        if let Ok(v) = serde_json::to_value(&out) {
-            st.cache.put(key, StdArc::new(v));
-        }
+        st.cache.put(
+            key,
+            CacheValue::WorkspaceSymbol(StdArc::new(out.clone())),
+        );
         Ok(Some(out))
     }
 
