@@ -378,7 +378,27 @@ impl LanguageServer for Backend {
             Some(w) => w,
             None => return Ok(None),
         };
+
+        // Check cache first
+        let cache_key = CacheKey::References(word.clone());
+        if let Some(v) = st.cache.get(&cache_key) {
+            if let Ok(parsed) = serde_json::from_value::<Vec<Location>>((*v).clone()) {
+                return Ok(Some(parsed));
+            }
+        }
+
         let root = st.repo_root.clone();
+        // Get relative path to detect language
+        let rel = match handlers::rel_from_url(&root, uri) {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+        // Gate find_refs to languages that support edge-based refs
+        let lang = crabcc_core::extract::detect_lang(std::path::Path::new(&rel));
+        let do_find_refs = lang.is_some_and(|l| {
+            matches!(l, "typescript" | "tsx" | "javascript" | "ruby")
+        });
+
         st.ensure_store();
         let store_guard = st.store.lock().unwrap();
         let store = match store_guard.as_ref() {
@@ -386,14 +406,15 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
 
-        // crabcc-core's `find_refs` only covers JS/TS/Ruby. For everything
-        // else (Rust, Python, Swift) the call-edge index from
-        // `find_callers` is the authoritative source. We union both so
-        // language coverage is the same set as our indexer.
-        let mut hits = query::find_refs(store, &root, &word).unwrap_or_default();
+        // Only call find_refs for supported languages
+        let mut hits = if do_find_refs {
+            query::find_refs(store, &root, &word).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         let mut callers = query::find_callers(store, &root, &word).unwrap_or_default();
         hits.append(&mut callers);
-        // Dedup by (file, line, col). The two sources can overlap on JS/TS.
+        // Dedup by (file, line, col)
         hits.sort_by(|a, b| {
             a.file
                 .cmp(&b.file)
@@ -401,7 +422,12 @@ impl LanguageServer for Backend {
                 .then(a.col.cmp(&b.col))
         });
         hits.dedup_by(|a, b| a.file == b.file && a.line == b.line && a.col == b.col);
-        Ok(Some(handlers::reference_locations(&root, hits)))
+        let locs = handlers::reference_locations(&root, hits);
+        // Cache the result
+        if let Ok(v) = serde_json::to_value(&locs) {
+            st.cache.put(cache_key, StdArc::new(v));
+        }
+        Ok(Some(locs))
     }
 
     async fn hover(&self, p: HoverParams) -> RpcResult<Option<Hover>> {
