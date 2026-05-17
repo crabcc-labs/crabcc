@@ -107,8 +107,37 @@ process_finding() {
   fi
 }
 
-# Stub; real impl in Task A4.
-chroma_post() { :; }
+chroma_post() {
+  local body="$1"
+
+  # Build Chroma payload: one document at a time.
+  local doc id meta payload
+  doc="$(jq -r '.body' <<<"$body")"
+  id="$(jq -r '.id' <<<"$body")"
+  meta="$(jq '. | del(.body) | del(.id)' <<<"$body")"
+
+  payload="$(jq -nc \
+    --arg id "$id" \
+    --arg doc "$doc" \
+    --argjson meta "$meta" \
+    '{ids: [$id], documents: [$doc], metadatas: [$meta]}')"
+
+  # Chroma cloud v2 upsert endpoint.
+  local url="${CHROMA_HOST}/api/v2/tenants/${CHROMA_TENANT}/databases/${CHROMA_DATABASE}/collections/cron-findings/upsert"
+
+  local response status
+  response="$(printf '%s' "$payload" | curl -sS -o - \
+    -w '%{http_code}' \
+    -X POST \
+    -H "Content-Type: application/json" \
+    -H "X-Chroma-Token: ${CHROMA_API_KEY}" \
+    --data-binary @- \
+    "$url")"
+  status="${response: -3}"
+  if [[ ! "$status" =~ ^2[0-9][0-9]$ ]]; then
+    emit_err "chroma POST failed (status=$status, response=${response%"$status"})"
+  fi
+}
 
 main() {
   while IFS= read -r line || [[ -n "$line" ]]; do
