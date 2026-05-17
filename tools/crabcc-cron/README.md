@@ -13,6 +13,11 @@ for the design.
 - `deploy/` — installer + cron + env templates for the target box
 - `tests/` — bats unit tests + e2e smoke
 
+## Workloads
+
+- **WL-2 OSS-fix** (`jobs/oss-fix.sh`, every 4h) — picks one eligible upstream "good first issue" and attempts a fix via opencode.
+- **WL-3 security** (`jobs/security.sh`, daily 02:00 UTC) — runs `cargo audit` across every `peterlodri-sec` Rust repo and emits per-advisory findings with reverse-dep chain and crabcc usage counts.
+
 ## Local development
 
 The commands below land incrementally — the lint/test targets exit cleanly today

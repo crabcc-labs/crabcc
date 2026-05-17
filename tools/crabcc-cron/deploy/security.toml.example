@@ -1,0 +1,6 @@
+# /etc/crabcc-cron/security.toml — WL-3 dispatcher config.
+
+[security_deny]
+# Repos to skip. Match against the bare repo name (no owner prefix).
+# Useful for sandbox/template/archive repos that shouldn't be audited.
+exclude = []

@@ -8,3 +8,6 @@ MAILTO=""
 
 # WL-2 OSS-fix dispatcher — every 4h.
 0 */4 * * * deploy  /opt/crabcc-cron/jobs/oss-fix.sh 2>&1 | tee >(systemd-cat -t crabcc-cron-oss-fix) | /opt/crabcc-cron/bin/crabcc-cron-emit
+
+# WL-3 security audit — daily 02:00 UTC.
+0 2 * * * deploy  /opt/crabcc-cron/jobs/security.sh 2>&1 | tee >(systemd-cat -t crabcc-cron-security) | /opt/crabcc-cron/bin/crabcc-cron-emit

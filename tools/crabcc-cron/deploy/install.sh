@@ -65,4 +65,14 @@ if ! command -v gh >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v cargo >/dev/null 2>&1; then
+  echo "ERROR: cargo not found. Install Rust via rustup before continuing." >&2
+  exit 1
+fi
+
+if ! cargo install --list 2>/dev/null | grep -q '^cargo-audit '; then
+  echo "WARNING: cargo-audit not installed. WL-3 (security) will fail every tick." >&2
+  echo "Install with: cargo install cargo-audit" >&2
+fi
+
 echo "crabcc-cron installed. Next cron tick will run."
