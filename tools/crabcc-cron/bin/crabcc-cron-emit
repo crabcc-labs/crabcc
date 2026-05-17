@@ -76,9 +76,23 @@ process_finding() {
     id="$(printf '%s' "$key" | sha256_hex)"
   fi
 
-  # Build POST body (metadata flatten happens in A3)
-  local body
-  body="$(jq --arg id "$id" '. + {id: $id}' <<<"$line")"
+  # Truncate body if > 8 KiB
+  local b; b="$(jq -r '.body' <<<"$line")"
+  local b_bytes; b_bytes=$(printf '%s' "$b" | wc -c)
+  if (( b_bytes > 8192 )); then
+    b="$(printf '%s' "$b" | head -c 8000)... [truncated]"
+  fi
+
+  # Timestamp (ISO 8601 with timezone)
+  local ts; ts="$(date -Iseconds 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S%z')"
+
+  # Flatten metadata with meta. prefix
+  body="$(jq --arg id "$id" --arg ts "$ts" --arg body "$b" '
+    . as $orig
+    | (.metadata // {}) as $m
+    | (reduce ($m | to_entries[]) as $kv ({}; .["meta." + $kv.key] = $kv.value)) as $flat
+    | $orig + $flat + {id: $id, ts: $ts, body: $body} | del(.metadata) | del(.kind)
+  ' <<<"$line")"
 
   if [[ $DRY_RUN -eq 1 ]]; then
     echo "$body"
