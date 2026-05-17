@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+# tools/crabcc-cron/bin/crabcc-cron-emit
+#
+# Reads JSONL on stdin. For lines with kind=="finding", validates the
+# schema, fills in id if missing (sha256 of canonical key), and either
+# prints the would-be POST body (--dry-run) or POSTs to Chroma.
+#
+# All other lines (logs, malformed JSON, unknown kinds) are dropped with
+# a warning to stderr. Always exits 0 on per-line errors so cron pipes
+# don't abort upstream workloads. Exits 2 only on hard schema errors
+# in --dry-run mode (so unit tests can assert them).
+#
+# Required env (non-dry-run): CHROMA_HOST, CHROMA_TENANT, CHROMA_DATABASE,
+# CHROMA_API_KEY.
+
+set -uo pipefail
+
+DRY_RUN=0
+case "${1-}" in
+  --dry-run) DRY_RUN=1; shift ;;
+esac
+
+REQUIRED_FIELDS=(workload severity title body)
+VALID_SEVERITIES=(info warn error)
+
+emit_err() { echo "crabcc-cron-emit: $*" >&2; }
+
+# sha256 hex of stdin. Uses sha256sum on Linux, shasum on macOS.
+sha256_hex() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | awk '{print $1}'
+  else
+    shasum -a 256 | awk '{print $1}'
+  fi
+}
+
+process_finding() {
+  local line="$1"
+  # Validate JSON
+  if ! jq -e '.' >/dev/null 2>&1 <<<"$line"; then
+    emit_err "skipped non-JSON line"
+    return 0
+  fi
+  local kind; kind="$(jq -r '.kind // empty' <<<"$line")"
+  [[ "$kind" == "finding" ]] || return 0
+
+  # Required fields
+  local f
+  for f in "${REQUIRED_FIELDS[@]}"; do
+    if [[ "$(jq -r ".${f} // empty" <<<"$line")" == "" ]]; then
+      emit_err "missing required field: $f"
+      [[ $DRY_RUN -eq 1 ]] && exit 2
+      return 0
+    fi
+  done
+
+  # Severity check
+  local sev; sev="$(jq -r '.severity' <<<"$line")"
+  local ok=0
+  for s in "${VALID_SEVERITIES[@]}"; do [[ "$s" == "$sev" ]] && ok=1; done
+  if [[ $ok -eq 0 ]]; then
+    emit_err "invalid severity: $sev"
+    [[ $DRY_RUN -eq 1 ]] && exit 2
+    return 0
+  fi
+
+  # Compute id if missing
+  local id; id="$(jq -r '.id // empty' <<<"$line")"
+  if [[ -z "$id" ]]; then
+    local key
+    key="$(jq -r '"\(.workload):\(.repo // ""):\(.title)"' <<<"$line")"
+    id="$(printf '%s' "$key" | sha256_hex)"
+  fi
+
+  # Build POST body (metadata flatten happens in A3)
+  local body
+  body="$(jq --arg id "$id" '. + {id: $id}' <<<"$line")"
+
+  if [[ $DRY_RUN -eq 1 ]]; then
+    echo "$body"
+  else
+    # POST to Chroma (implemented in A4)
+    chroma_post "$body"
+  fi
+}
+
+# Stub; real impl in Task A4.
+chroma_post() { :; }
+
+main() {
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" ]] && continue
+    process_finding "$line"
+  done
+}
+
+main "$@"
