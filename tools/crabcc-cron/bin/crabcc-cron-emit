@@ -87,6 +87,11 @@ process_finding() {
   local ts; ts="$(date -Iseconds 2>/dev/null || date '+%Y-%m-%dT%H:%M:%S%z')"
 
   # Flatten metadata with meta. prefix
+  # TODO(A4): nested-object metadata values produce non-scalar meta.* fields
+  # that Chroma's metadata API rejects. Either flatten recursively, drop non-
+  # scalar entries with a warning, or document as a contract: workloads MUST
+  # only emit scalar metadata values.
+  local body
   body="$(jq --arg id "$id" --arg ts "$ts" --arg body "$b" '
     . as $orig
     | (.metadata // {}) as $m
