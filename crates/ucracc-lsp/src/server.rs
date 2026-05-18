@@ -30,6 +30,10 @@ pub struct RootConfig {
 pub struct Backend {
     pub client: Client,
     pub root_config: Mutex<Arc<RootConfig>>,
+    /// Read-through LRU for repeated identical queries. Lock-free
+    /// (moka::sync) — hoisted out of `State` so cache hits don't pay
+    /// the `state.read().await` cost. Flushed on every write event.
+    pub cache: Arc<LruCache>,
     pub state: Arc<RwLock<State>>,
 }
 
@@ -47,9 +51,6 @@ pub struct State {
     /// hand the old tree to `parse(src, Some(&old))` on `didChange` and
     /// let tree-sitter reuse unchanged subtrees.
     pub trees: std::sync::Mutex<HashMap<Url, tree_sitter::Tree>>,
-    /// Read-through LRU for repeated identical queries. Flushed on every
-    /// write event.
-    pub cache: LruCache,
 }
 
 impl State {
@@ -106,13 +107,13 @@ impl Backend {
                 db_path: PathBuf::new(),
                 fts_dir: PathBuf::new(),
             })),
+            cache: Arc::new(LruCache::new()),
             state: Arc::new(RwLock::new(State {
                 store: std::sync::Mutex::new(None),
                 fts: std::sync::Mutex::new(None),
                 graph: std::sync::Mutex::new(None),
                 open_docs: HashMap::new(),
                 trees: std::sync::Mutex::new(HashMap::new()),
-                cache: LruCache::new(),
             })),
         }
     }
@@ -227,7 +228,7 @@ impl LanguageServer for Backend {
         let mut st = self.state.write().await;
         st.open_docs
             .insert(p.text_document.uri.clone(), p.text_document.text.clone());
-        st.cache.invalidate_all();
+        self.cache.invalidate_all();
         drop(st);
         self.index_uri(&p.text_document.uri, &p.text_document.text, &cfg.repo_root)
             .await;
@@ -262,7 +263,7 @@ impl LanguageServer for Backend {
         let final_text = text.clone();
         let mut st = self.state.write().await;
         st.open_docs.insert(uri.clone(), final_text.clone());
-        st.cache.invalidate_all();
+        self.cache.invalidate_all();
 
         if had_full_replace {
             st.trees.lock().unwrap().remove(&uri);
@@ -282,7 +283,7 @@ impl LanguageServer for Backend {
 
     async fn did_save(&self, p: DidSaveTextDocumentParams) {
         let cfg = self.root_config.lock().await.clone();
-        self.state.read().await.cache.invalidate_all();
+        self.cache.invalidate_all();
         // Run a refresh_delta in the background to pick up sibling files
         // a user might have changed outside the editor (git pull, etc.).
         let state = self.state.clone();
@@ -318,7 +319,7 @@ impl LanguageServer for Backend {
         };
 
         let key = CacheKey::DocumentSymbols(rel.clone());
-        if let Some(CacheValue::DocumentSymbols(dsyms)) = st.cache.get(&key) {
+        if let Some(CacheValue::DocumentSymbols(dsyms)) = self.cache.get(&key) {
             return Ok(Some(DocumentSymbolResponse::Nested((*dsyms).clone())));
         }
 
@@ -330,7 +331,7 @@ impl LanguageServer for Backend {
         };
         let syms = store.symbols_in_file(&rel).unwrap_or_default();
         let dsyms = handlers::document_symbols(syms);
-        st.cache.put(
+        self.cache.put(
             key,
             CacheValue::DocumentSymbols(StdArc::new(dsyms.clone())),
         );
@@ -351,7 +352,7 @@ impl LanguageServer for Backend {
         };
 
         let key = CacheKey::Definition(word.clone());
-        if let Some(CacheValue::Definition(locs)) = st.cache.get(&key) {
+        if let Some(CacheValue::Definition(locs)) = self.cache.get(&key) {
             return Ok(if locs.is_empty() {
                 None
             } else {
@@ -367,7 +368,7 @@ impl LanguageServer for Backend {
         };
         let hits = find_symbol(store, &word).unwrap_or_default();
         let locs = handlers::definition_locations(&cfg.repo_root, hits);
-        st.cache
+        self.cache
             .put(key, CacheValue::Definition(StdArc::new(locs.clone())));
         if locs.is_empty() {
             return Ok(None);
@@ -387,7 +388,7 @@ impl LanguageServer for Backend {
 
         // Check cache first
         let cache_key = CacheKey::References(word.clone());
-        if let Some(CacheValue::References(locs)) = st.cache.get(&cache_key) {
+        if let Some(CacheValue::References(locs)) = self.cache.get(&cache_key) {
             return Ok(Some((*locs).clone()));
         }
 
@@ -427,7 +428,7 @@ impl LanguageServer for Backend {
         });
         hits.dedup_by(|a, b| a.file == b.file && a.line == b.line && a.col == b.col);
         let locs = handlers::reference_locations(&root, hits);
-        st.cache
+        self.cache
             .put(cache_key, CacheValue::References(StdArc::new(locs.clone())));
         Ok(Some(locs))
     }
@@ -443,7 +444,7 @@ impl LanguageServer for Backend {
         };
 
         let key = CacheKey::Hover(word.clone());
-        if let Some(CacheValue::Hover(h)) = st.cache.get(&key) {
+        if let Some(CacheValue::Hover(h)) = self.cache.get(&key) {
             return Ok((*h).clone());
         }
 
@@ -455,7 +456,7 @@ impl LanguageServer for Backend {
         };
         let hits = find_symbol(store, &word).unwrap_or_default();
         let h = handlers::hover_for(&hits);
-        st.cache
+        self.cache
             .put(key, CacheValue::Hover(StdArc::new(h.clone())));
         Ok(h)
     }
@@ -471,7 +472,7 @@ impl LanguageServer for Backend {
             query: q.clone(),
             limit: 200,
         };
-        if let Some(CacheValue::WorkspaceSymbol(out)) = st.cache.get(&key) {
+        if let Some(CacheValue::WorkspaceSymbol(out)) = self.cache.get(&key) {
             return Ok(Some((*out).clone()));
         }
         st.ensure_fts(&cfg.fts_dir);
@@ -504,7 +505,7 @@ impl LanguageServer for Backend {
         syms.dedup_by(|a, b| a.name == b.name && a.file == b.file && a.line_start == b.line_start);
         syms.truncate(200);
         let out = handlers::workspace_symbol_legacy(&cfg.repo_root, syms);
-        st.cache.put(
+        self.cache.put(
             key,
             CacheValue::WorkspaceSymbol(StdArc::new(out.clone())),
         );
