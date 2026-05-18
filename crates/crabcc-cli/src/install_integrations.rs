@@ -326,7 +326,16 @@ fn merge_mcp_json(existing_path: &Path, fragment: &str) -> Result<String> {
 
     let mut base = if existing_path.exists() {
         let s = std::fs::read_to_string(existing_path)?;
-        serde_json::from_str(&s).unwrap_or_else(|_| serde_json::json!({ "mcpServers": {} }))
+        match serde_json::from_str(&s) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!(
+                    "warning: corrupt {} ({e}); starting fresh",
+                    existing_path.display()
+                );
+                serde_json::json!({ "mcpServers": {} })
+            }
+        }
     } else {
         serde_json::json!({ "mcpServers": {} })
     };
@@ -389,7 +398,11 @@ fn git_repo_root() -> Result<PathBuf> {
         .output()
         .context("failed to invoke git")?;
     if !out.status.success() {
-        bail!("not inside a git repository");
+        let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        if msg.is_empty() {
+            bail!("not inside a git repository");
+        }
+        bail!("not inside a git repository: {msg}");
     }
     let s = String::from_utf8(out.stdout)?.trim().to_string();
     if s.is_empty() {
@@ -400,6 +413,7 @@ fn git_repo_root() -> Result<PathBuf> {
 
 fn write_atomic(path: &Path, content: &str, force: bool) -> Result<()> {
     if path.exists() && !force {
+        println!("  skipped (exists): {}", path.display());
         return Ok(());
     }
     if let Some(parent) = path.parent() {
@@ -488,5 +502,55 @@ mod tests {
     fn expand_all_targets() {
         let t = expand_targets(&["all".to_string()]).unwrap();
         assert_eq!(t.len(), Target::all().len());
+    }
+
+    #[test]
+    fn write_atomic_skips_without_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("skill.md");
+        std::fs::write(&path, "old").unwrap();
+        write_atomic(&path, "new", false).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "old");
+    }
+
+    #[test]
+    fn write_atomic_force_overwrites() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("skill.md");
+        std::fs::write(&path, "old").unwrap();
+        write_atomic(&path, "new", true).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "new");
+    }
+
+    #[test]
+    fn write_atomic_creates_nested_parent() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a/b/c/skill.md");
+        write_atomic(&path, SKILL_MD, true).unwrap();
+        assert!(path.exists());
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("crabcc")
+        );
+    }
+
+    #[test]
+    fn merge_mcp_json_recovers_from_corrupt_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp.json");
+        std::fs::write(&path, "{not json").unwrap();
+        let out = merge_mcp_json(&path, MCP_CRABCC).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert!(v["mcpServers"]["crabcc"].is_object());
+    }
+
+    #[test]
+    fn write_atomic_embedded_skill_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".cursor/skills/crabcc/SKILL.md");
+        write_atomic(&path, SKILL_MD, true).unwrap();
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("symbol index"));
     }
 }

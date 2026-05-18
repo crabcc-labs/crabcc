@@ -17,9 +17,12 @@ def _run(args: list[str]) -> Any:
     cmd = [CRABCC_BIN, *args, "--root", CRABCC_ROOT]
     proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
     if proc.returncode != 0:
-        raise RuntimeError(
-            f"crabcc exited {proc.returncode}: {proc.stderr.strip() or proc.stdout.strip()}"
+        detail = (
+            proc.stderr.strip()
+            or proc.stdout.strip()
+            or "(no output from crabcc)"
         )
+        raise RuntimeError(f"crabcc exited {proc.returncode}: {detail}")
     return json.loads(proc.stdout)
 
 
