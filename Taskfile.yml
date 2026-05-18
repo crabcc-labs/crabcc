@@ -122,6 +122,9 @@ includes:
   cron:
     taskfile: taskfiles/cron.yml
     flatten: true
+  index-publish:
+    taskfile: taskfiles/index-publish.yml
+    flatten: true
 
 tasks:
   default:
