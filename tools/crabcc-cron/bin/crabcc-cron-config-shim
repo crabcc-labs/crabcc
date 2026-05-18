@@ -33,4 +33,5 @@ def emit_array(name, items):
 
 emit_array("TIER2_INCLUDE", cfg.get("tier2_curated", {}).get("include", []))
 emit_array("TIER3_EXCLUDE", cfg.get("tier3_deny", {}).get("exclude", []))
+emit_array("SECURITY_DENY", cfg.get("security_deny", {}).get("exclude", []))
 PY

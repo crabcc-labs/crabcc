@@ -13,6 +13,11 @@ for the design.
 - `deploy/` — installer + cron + env templates for the target box
 - `tests/` — bats unit tests + e2e smoke
 
+## Workloads
+
+- **WL-2 OSS-fix** (`jobs/oss-fix.sh`, every 4h) — picks one eligible upstream "good first issue" and attempts a fix via opencode.
+- **WL-3 security** (`jobs/security.sh`, daily 02:00 UTC) — runs `cargo audit` across every `peterlodri-sec` Rust repo and emits per-advisory findings with reverse-dep chain and crabcc usage counts.
+
 ## Local development
 
 The commands below land incrementally — the lint/test targets exit cleanly today
@@ -26,8 +31,9 @@ task cron-lint
 # Run unit tests
 task cron-test
 
-# Run e2e smoke (requires gh + opencode in PATH)
+# Run e2e smokes (require gh + opencode + cargo + crabcc in PATH)
 OSS_FIX_DRY_RUN=1 bash tools/crabcc-cron/tests/e2e/oss_fix_dryrun.sh
+bash tools/crabcc-cron/tests/e2e/security_smoke.sh
 ```
 
 ## Deployment
