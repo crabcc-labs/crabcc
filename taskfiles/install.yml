@@ -26,6 +26,23 @@ tasks:
       - "{{.CRABCC}} --version"
       - 'if [ -z "{{.NO_ALIASES}}" ]; then bash scripts/install-aliases.sh; else echo "NO_ALIASES=1 — skipping alias bootstrap"; fi'
 
+  install-integrations:
+    desc: Wire crabcc into Cursor, Gemini, OpenCode, LangChain, OS-native, kernel
+    summary: |
+      Runs `crabcc setup install-integrations`. Pass TARGET=cursor,gemini,... or
+      TARGET=all. PROJECT=1 merges project .mcp.json + .cursor hooks. YES=1 skips prompts.
+    vars:
+      TARGET: '{{.TARGET | default "all"}}'
+      PROJECT: '{{.PROJECT | default ""}}'
+      YES: '{{.YES | default ""}}'
+    deps: [build]
+    cmds:
+      - >-
+        {{.CRABCC}} setup install-integrations
+        --target {{.TARGET}}
+        {{if .PROJECT}}--project{{end}}
+        {{if .YES}}--yes{{end}}
+
   install-skill:
     desc: Symlink the skill + slash command into ~/.claude/
     cmds:

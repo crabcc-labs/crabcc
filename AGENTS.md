@@ -40,6 +40,23 @@ trait, `Palace` facade, and `crabcc memory` CLI / `memory.*` MCP tools.
 | Bootstrap full dev env | `task setup` (uv + Ollama + model pull + stack up) |
 | Run a crabcc agent | `crabcc agent --run "<task>" --backend ollama` |
 | Launch Ollama stack | `task ollama-stack-up` (LiteLLM :4000 → Ollama) |
+| Wire all agent integrations | `crabcc setup install-integrations --target all --project --yes` |
+
+## Integrations (Cursor, Claude, Gemini, OpenCode, LangChain, OS, kernel)
+
+`crabcc setup install-integrations` installs MCP/skill/hooks fragments for coding
+agents, materializes LangChain/LangGraph examples under `~/.crabcc/integrations/langchain/`,
+OS templates (launchd/systemd), and prints kernel build recipes. Full guide:
+[`install/integrations.md`](install/integrations.md).
+
+| Target | Command |
+|--------|---------|
+| All | `crabcc setup install-integrations --target all --yes` |
+| Cursor + project MCP | `--target cursor --project` |
+| Claude Code | `--target claude` (alias: `crabcc install-claude`) |
+| LangChain + LangSmith | `--target langchain` then `pip install -e ~/.crabcc/integrations/langchain` |
+| OS-native MCP daemon | `--target os` |
+| Bleeding-edge kernel | `--target kernel` |
 
 ## Ollama agent backend
 

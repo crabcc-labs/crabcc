@@ -1,0 +1,23 @@
+# Bleeding-edge overlay — merge on top of config.fragment
+# Target: Linux 6.12+ ARM64, lab / developer hosts only
+
+# ── I/O ───────────────────────────────────────────────────────────────────────
+CONFIG_IO_URING=y
+CONFIG_IO_WQ=y
+
+# ── eBPF / tracing (agent latency experiments) ───────────────────────────────
+CONFIG_BPF=y
+CONFIG_BPF_SYSCALL=y
+CONFIG_BPF_JIT=y
+CONFIG_BPF_EVENTS=y
+CONFIG_FTRACE=y
+CONFIG_FUNCTION_TRACER=y
+CONFIG_KPROBES=y
+CONFIG_KPROBE_EVENTS=y
+
+# ── Filesystems ─────────────────────────────────────────────────────────────
+CONFIG_BTRFS_FS=y
+CONFIG_BTRFS_FS_POSIX_ACL=y
+
+# ── Performance counters ──────────────────────────────────────────────────────
+CONFIG_PERF_EVENTS=y
