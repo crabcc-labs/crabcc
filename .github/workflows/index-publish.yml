@@ -1,0 +1,114 @@
+name: index-publish
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        type: boolean
+        default: false
+        description: 'Build everything but skip the gh release upload step.'
+
+permissions:
+  contents: write  # required for gh release create / upload
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install sqlite3 + zstd
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sqlite3 zstd
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build crabcc binary
+        run: cargo build --release -p crabcc-cli
+
+      - name: Build crabcc index against this repo
+        run: ./target/release/crabcc index
+
+      - name: Build manifest + compress index
+        run: |
+          mkdir -p artifacts
+          tools/index-publish/build-manifest.sh \
+            --db .crabcc/index.db \
+            --crabcc-binary ./target/release/crabcc \
+            --source-repo "$GITHUB_REPOSITORY" \
+            --source-sha "$GITHUB_SHA" \
+            --output-dir artifacts
+
+      - name: Size guard (max 100 MB compressed)
+        run: |
+          zst_file=$(ls artifacts/crabcc-index-*.db.zst)
+          size=$(stat -c %s "$zst_file")
+          if (( size > 100000000 )); then
+            echo "::error::compressed index size $size bytes exceeds 100 MB cap"
+            exit 1
+          fi
+          echo "compressed size: $size bytes (under 100 MB cap)"
+
+      - name: Determine release tag
+        id: tag
+        run: |
+          version=$(grep -E '^version\s*=' Cargo.toml | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            tag="${version}-index"
+          elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            tag="${version}-index-manual-${GITHUB_RUN_ID}"
+          else
+            tag="${version}-index-latest"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Step summary
+        run: |
+          manifest_path=$(ls artifacts/crabcc-index-*.manifest.json)
+          {
+            echo "## crabcc-index publish"
+            echo ""
+            echo "- **Release tag:** \`${{ steps.tag.outputs.tag }}\`"
+            echo "- **Source SHA:** \`$GITHUB_SHA\`"
+            echo "- **Event:** \`$GITHUB_EVENT_NAME\`"
+            echo "- **Dry run:** \`${{ inputs.dry_run }}\`"
+            echo ""
+            echo '### Manifest'
+            echo ''
+            echo '```json'
+            cat "$manifest_path"
+            echo ''
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload release (skipped on dry-run)
+        if: ${{ inputs.dry_run != true }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ steps.tag.outputs.tag }}"
+          # Create the release if it doesn't exist. Tolerate "already exists".
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" \
+              --target "$GITHUB_SHA" \
+              --title "crabcc index $tag" \
+              --notes "crabcc-index built from commit $GITHUB_SHA. See attached manifest for details."
+          fi
+          gh release upload "$tag" \
+            artifacts/crabcc-index-*.db.zst \
+            artifacts/crabcc-index-*.manifest.json \
+            --clobber
+
+      - name: Dry-run notice
+        if: ${{ inputs.dry_run == true }}
+        run: |
+          echo "DRY-RUN: would publish to ${{ steps.tag.outputs.tag }} but skipped gh release upload."

@@ -300,3 +300,13 @@ jobs:
       - name: sccache stats
         if: always()
         run: sccache --show-stats || true
+
+  actionlint:
+    name: actionlint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint
+        uses: raven-actions/actionlint@v2
+        with:
+          matcher: true
