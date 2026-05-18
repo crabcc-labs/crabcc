@@ -155,6 +155,25 @@ fn tools_def_symbol() -> Vec<Value> {
             &["file"],
         ),
         tool_schema(
+            "test_context",
+            "Bundle every piece of context an LLM needs to generate a unit \
+             test for a symbol. Single round-trip replacement for the LSPRAG \
+             fan-out: definition + signature + body excerpt, all call sites \
+             (callers), all references, the file's outline, and the symbol's \
+             dependency blast radius (transitive callees from the edge graph). \
+             Pass `name` (required) and optionally `file` to disambiguate when \
+             a name resolves in multiple files. Returns a JSON object with \
+             keys: symbol, callers, refs, outline, blast_radius.",
+            json!({
+                "name": str_field("symbol name (required)"),
+                "file": str_field("repo-relative file path to disambiguate (optional)"),
+                "max_callers":  { "type": "integer", "description": "cap on callers returned (default 50)" },
+                "max_refs":     { "type": "integer", "description": "cap on refs returned (default 50)" },
+                "blast_depth":  { "type": "integer", "description": "BFS depth for transitive callees (default 2)" },
+            }),
+            &["name"],
+        ),
+        tool_schema(
             "files",
             "List indexed files. Token-cheap replacement for `ls -R` / `find -name`.",
             json!({

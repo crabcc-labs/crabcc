@@ -187,6 +187,68 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
             let r = outline::outline(&store, arg_str(&args, "file")?)?;
             Ok(serde_json::to_string(&r)?)
         }
+        "test_context" => {
+            let name = arg_str(&args, "name")?;
+            let file_arg = args.get("file").and_then(|v| v.as_str());
+            let max_callers = args.get("max_callers").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+            let max_refs    = args.get("max_refs").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+            let blast_depth = args.get("blast_depth").and_then(|v| v.as_u64()).unwrap_or(2) as usize;
+
+            // Resolve the symbol — prefer file-scoped lookup when provided.
+            let symbols = query::find_symbol(&store, name)?;
+            let symbol = match file_arg {
+                Some(f) => symbols.into_iter().find(|s| s.file == f),
+                None => symbols.into_iter().next(),
+            };
+            let symbol = symbol.ok_or_else(|| {
+                anyhow::anyhow!("test_context: symbol {name:?} not found")
+            })?;
+
+            // Outline of the symbol's file
+            let outline_items = outline::outline(&store, &symbol.file)?;
+
+            // All callers (capped)
+            let callers_output = query::query_callers(
+                &store, root, name, query::Mode::Hits { limit: None }, None,
+            )?;
+            let callers: Vec<_> = match callers_output {
+                query::Output::Hits(h) => h.into_iter().take(max_callers).collect(),
+                _ => Vec::new(),
+            };
+
+            // All refs (capped)
+            let refs_output = query::query_refs(
+                &store, root, name, query::Mode::Hits { limit: None }, None,
+            )?;
+            let refs: Vec<_> = match refs_output {
+                query::Output::Hits(h) => h.into_iter().take(max_refs).collect(),
+                _ => Vec::new(),
+            };
+
+            // Blast radius — transitive callees via the edge graph.
+            // Use blast_radius if available; fall back to empty array on
+            // any error so the tool stays useful when the call-graph
+            // sidecar hasn't been built yet.
+            let blast = match resolve_symbol_id(&store, &symbol.name) {
+                Ok(id) => match query::blast_radius::blast_radius(
+                    &store, id, blast_depth, &[],
+                ) {
+                    Ok(v) => serde_json::to_value(v).unwrap_or(json!([])),
+                    Err(_) => json!([]),
+                },
+                Err(_) => json!([]),
+            };
+
+            let envelope = json!({
+                "symbol":        symbol,
+                "outline":       outline_items,
+                "callers":       callers,
+                "refs":          refs,
+                "blast_radius":  blast,
+            });
+            memory::auto_capture(root, "test_context", name, 1, &args);
+            Ok(serde_json::to_string(&envelope)?)
+        }
         "read" => {
             let path = std::path::PathBuf::from(arg_str(&args, "path")?);
             let mode_raw = args.get("mode").and_then(|v| v.as_str()).unwrap_or("auto");
