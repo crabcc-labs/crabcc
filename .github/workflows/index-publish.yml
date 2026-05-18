@@ -14,12 +14,16 @@ on:
 permissions:
   contents: write  # required for gh release create / upload
 
+concurrency:
+  group: index-publish-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   publish:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -49,6 +53,7 @@ jobs:
 
       - name: Size guard (max 100 MB compressed)
         run: |
+          # NOTE: glob keyed to build-manifest.sh's `crabcc-index-${crabcc_version}.db.zst` naming.
           zst_file=$(ls artifacts/crabcc-index-*.db.zst)
           size=$(stat -c %s "$zst_file")
           if (( size > 100000000 )); then
@@ -66,6 +71,9 @@ jobs:
           elif [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
             tag="${version}-index-manual-${GITHUB_RUN_ID}"
           else
+            # Rolling release: this tag is force-updated on every push to main.
+            # Old <version>-index-latest tags orphan as Cargo.toml version bumps;
+            # GC is manual (spec §8) and intentional.
             tag="${version}-index-latest"
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -91,7 +99,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload release (skipped on dry-run)
-        if: ${{ inputs.dry_run != true }}
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.dry_run != true }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -103,12 +111,13 @@ jobs:
               --title "crabcc index $tag" \
               --notes "crabcc-index built from commit $GITHUB_SHA. See attached manifest for details."
           fi
+          # NOTE: globs keyed to build-manifest.sh's naming convention.
           gh release upload "$tag" \
             artifacts/crabcc-index-*.db.zst \
             artifacts/crabcc-index-*.manifest.json \
             --clobber
 
       - name: Dry-run notice
-        if: ${{ inputs.dry_run == true }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run == true }}
         run: |
           echo "DRY-RUN: would publish to ${{ steps.tag.outputs.tag }} but skipped gh release upload."
