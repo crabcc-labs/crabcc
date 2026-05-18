@@ -37,6 +37,7 @@ mod doctor;
 mod fetch_cmd;
 mod go;
 mod install;
+mod install_integrations;
 mod jobs_cmd;
 mod memory;
 mod model_info;
@@ -273,6 +274,19 @@ enum SetupOp {
     },
     /// Print the embedded OpenAPI 3.1 description of the MCP tool surface.
     Openapi,
+    /// Install crabcc into Cursor, Gemini, OpenCode, LangChain, OS-native, kernel.
+    InstallIntegrations {
+        /// Targets: cursor, claude, gemini, opencode, langchain, os, kernel, all
+        #[arg(long, value_delimiter = ',')]
+        target: Vec<String>,
+        #[arg(long)]
+        yes: bool,
+        /// Also merge project-level configs (.mcp.json, .cursor/hooks, skills).
+        #[arg(long)]
+        project: bool,
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -386,7 +400,7 @@ enum Cmd {
     /// BullMQ job queue — submit / inspect / cancel jobs.
     #[command(subcommand)]
     Jobs(JobsCmd),
-    /// Setup operations: install-claude, upgrade, completions, openapi.
+    /// Setup operations: install-claude, install-integrations, upgrade, completions, openapi.
     Setup {
         #[command(subcommand)]
         op: SetupOp,
@@ -898,6 +912,23 @@ fn main() -> Result<()> {
             SetupOp::Openapi => {
                 print!("{}", crabcc_mcp::OPENAPI_YAML);
                 return Ok(());
+            }
+            SetupOp::InstallIntegrations {
+                target,
+                yes,
+                project,
+                dry_run,
+            } => {
+                let targets = install_integrations::expand_targets(target)?;
+                return install_integrations::run(
+                    &targets,
+                    install_integrations::Options {
+                        yes: *yes,
+                        project: *project,
+                        dry_run: *dry_run,
+                    },
+                    &root,
+                );
             }
         }
     }
@@ -1871,6 +1902,7 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
             SetupOp::Upgrade { .. } => "setup/upgrade",
             SetupOp::Completions { .. } => "setup/completions",
             SetupOp::Openapi => "setup/openapi",
+            SetupOp::InstallIntegrations { .. } => "setup/install-integrations",
         },
         Cmd::Info { op, .. } => match op {
             None => "info",

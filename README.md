@@ -97,6 +97,16 @@ curl -fsSL https://raw.githubusercontent.com/peterlodri-sec/crabcc/main/scripts/
 cargo install --path crates/crabcc-cli
 ```
 
+### Agent integrations (Cursor, Claude, Gemini, OpenCode, LangChain, OS, kernel)
+
+```bash
+crabcc setup install-integrations --target all --project --yes
+# or: task install-integrations TARGET=cursor,langchain PROJECT=1
+```
+
+See [`install/integrations.md`](./install/integrations.md) for per-target MCP fragments,
+LangGraph tools, launchd/systemd units, and optional bleeding-edge kernel builds.
+
 ### Claude Code integration
 
 ```bash

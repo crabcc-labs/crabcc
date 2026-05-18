@@ -534,7 +534,7 @@ fn append_to_profile(line: &str) -> Result<()> {
 
 /// Check that `opencode` is reachable. If it lives at `~/.opencode/bin` but is
 /// not on PATH, offer to patch the shell profile.
-fn ensure_opencode(yes: bool) -> Result<()> {
+pub fn ensure_opencode(yes: bool) -> Result<()> {
     if Command::new("opencode")
         .arg("--version")
         .output()

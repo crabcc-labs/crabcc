@@ -16,6 +16,8 @@ LINUX_VERSION="${LINUX_VERSION:-6.6.90}"
 LINUX_SRC="${LINUX_SRC:-/tmp/linux-${LINUX_VERSION}}"
 OUT="$SCRIPT_DIR/vmlinuz"
 JOBS="${JOBS:-$(sysctl -n hw.physicalcpu 2>/dev/null || nproc)}"
+# Optional second arg: config fragment path (default: config.fragment)
+CONFIG_FRAGMENT="${2-$SCRIPT_DIR/config.fragment}"
 
 # ── 1. Ensure cross-compile toolchain (aarch64-linux-gnu) ────────────────────
 if ! command -v aarch64-linux-gnu-gcc &>/dev/null; then
@@ -45,7 +47,7 @@ cd "$LINUX_SRC"
 # ── 3. Merge config ────────────────────────────────────────────────────────────
 echo "▶ Configuring kernel..."
 make defconfig
-scripts/kconfig/merge_config.sh -m .config "$SCRIPT_DIR/config.fragment"
+scripts/kconfig/merge_config.sh -m .config "$CONFIG_FRAGMENT"
 make olddefconfig
 
 # ── 4. Build ──────────────────────────────────────────────────────────────────

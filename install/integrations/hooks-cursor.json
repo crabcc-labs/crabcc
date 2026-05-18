@@ -1,0 +1,13 @@
+{
+  "hooks": [
+    {
+      "event": "beforeShellExecution",
+      "script": ".cursor/hooks/crabcc-hint.sh"
+    },
+    {
+      "event": "afterFileEdit",
+      "script": ".cursor/hooks/fast-validate.sh",
+      "pattern": "**/*.{rs,toml}"
+    }
+  ]
+}

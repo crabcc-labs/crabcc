@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "crabcc": {
+      "command": "crabcc",
+      "args": ["--mcp"],
+      "timeout": 60000,
+      "trust": true
+    }
+  }
+}
