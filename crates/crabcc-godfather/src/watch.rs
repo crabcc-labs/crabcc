@@ -179,7 +179,10 @@ fn run(godfather: Godfather, config: WatchConfig, stop: Arc<AtomicBool>) {
             sys = System::new();
             sys.refresh_processes_specifics(
                 ProcessesToUpdate::Some(&[target]),
-                ProcessRefreshKind::new().with_memory().with_cpu(),
+                // remove_dead_processes: true — supervisor only cares about
+                // the live target; pruning the cache keeps memory bounded.
+                true,
+                ProcessRefreshKind::nothing().with_memory().with_cpu(),
             );
         }
         // Refresh just the one PID — cheaper than a full system
@@ -187,7 +190,8 @@ fn run(godfather: Godfather, config: WatchConfig, stop: Arc<AtomicBool>) {
         // peer processes.
         sys.refresh_processes_specifics(
             ProcessesToUpdate::Some(&[target]),
-            ProcessRefreshKind::new().with_memory().with_cpu(),
+            true,
+            ProcessRefreshKind::nothing().with_memory().with_cpu(),
         );
 
         // Trust the kernel over sysinfo's cache. If the PID is gone
