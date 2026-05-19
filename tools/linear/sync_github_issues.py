@@ -271,7 +271,65 @@ def linear_issues_index(team_id: str) -> dict[int, dict]:
     return index
 
 
-def map_labels(gh_labels: list[dict]) -> tuple[list[str], int]:
+# Linear delegate labels (AgentField internal agents + Claude subagents).
+# Pass through when the same name appears on a GitHub issue, or when a
+# GitHub label uses the `agent:<name>` prefix (e.g. `agent:swe-docs`).
+DELEGATE_LABELS: frozenset[str] = frozenset(
+    {
+        "swe-docs-pr-review",
+        "agent-swe-docs",
+        "agent-pr-review",
+        "agent-claude",
+        "agent-claude-reviewer",
+        "agent-claude-docs",
+        "agent-claude-refactor",
+        "agent-claude-debugger",
+        "agent-claude-security",
+        "agent-claude-test",
+        "agent-cursor",
+        "agent-codex",
+        "agent-copilot",
+        "agent-opencode",
+        "agent-openclaude",
+        "agent-agentfield",
+    }
+)
+
+
+def _delegate_labels_from_github(names: list[str]) -> list[str]:
+    out: list[str] = []
+    for name in names:
+        if name in DELEGATE_LABELS:
+            out.append(name)
+            continue
+        if name.startswith("agent:"):
+            candidate = name.removeprefix("agent:")
+            if candidate in DELEGATE_LABELS:
+                out.append(candidate)
+            elif f"agent-{candidate}" in DELEGATE_LABELS:
+                out.append(f"agent-{candidate}")
+    return out
+
+
+def _delegate_labels_from_title(title: str) -> list[str]:
+    """Conservative title heuristics when GitHub has no delegate label yet."""
+    t = title.lower()
+    if any(k in t for k in ("doc", "readme", "agents.md", "openapi")):
+        return ["agent-swe-docs"]
+    if any(k in t for k in ("review", "audit", "regression")):
+        return ["agent-pr-review"]
+    if "security" in t or "ssrf" in t or "owasp" in t:
+        return ["agent-claude-security"]
+    if "test" in t and ("coverage" in t or "fixture" in t or "pytest" in t):
+        return ["agent-claude-test"]
+    if "refactor" in t or "tech-debt" in t:
+        return ["agent-claude-refactor"]
+    if "debug" in t or "flaky" in t:
+        return ["agent-claude-debugger"]
+    return []
+
+
+def map_labels(gh_labels: list[dict], title: str = "") -> tuple[list[str], int]:
     names = [l["name"] for l in gh_labels]
     linear = ["github-sync"]
     if "bug" in names:
@@ -280,6 +338,13 @@ def map_labels(gh_labels: list[dict]) -> tuple[list[str], int]:
         linear.append("Feature")
     if "epic" in names:
         linear.append("epic")
+    linear.extend(_delegate_labels_from_github(names))
+    if not any(l in DELEGATE_LABELS for l in linear):
+        linear.extend(_delegate_labels_from_title(title))
+    # Default backlog coding work: internal docs+PR agent unless epic/triage only.
+    if not any(l in DELEGATE_LABELS for l in linear) and "epic" not in linear:
+        linear.append("swe-docs-pr-review")
+    linear = list(dict.fromkeys(linear))
     pri = 0
     if "priority:high" in names:
         pri = 2
@@ -389,7 +454,7 @@ def sync_issue(
     dry_run: bool,
 ) -> str | None:
     num = issue["number"]
-    label_names, pri = map_labels(issue["labels"])
+    label_names, pri = map_labels(issue["labels"], issue.get("title", ""))
     title = gh_title(issue)
 
     if num not in index:
