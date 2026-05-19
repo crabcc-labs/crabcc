@@ -25,11 +25,13 @@ tasks:
     cmds:
       - |
         set -euo pipefail
+        printf '[hitl] %s env-init: checking {{.STACK_DIR}}/.env\n' "$(date '+%H:%M:%S')"
         env_file="{{.STACK_DIR}}/.env"
         if [ -f "$env_file" ]; then
           echo "✓ {{.STACK_DIR}}/.env already exists — leaving in place"
           exit 0
         fi
+        printf '[hitl] %s env-init: generating secrets...\n' "$(date '+%H:%M:%S')"
         ollama_key=$(openssl rand -hex 32)
         litellm_key="sk-$(openssl rand -hex 24)"
         hitl_token=$(openssl rand -hex 32)
@@ -50,9 +52,11 @@ tasks:
     desc: Bring up the full HITL stack (ollama + caddy + litellm + hitl) for local testing.
     summary: |
       Idempotent — runs `hitl:env-init` first, then `docker compose up
-      --wait`. Prints the dev-console URL on success. Pass
-      ``WAIT=false`` to skip the readiness gate (faster but the URL may
-      404 briefly while litellm warms up).
+      --wait`. When MCP is configured (compose default), use
+      ``task hitl:up-with-mcp`` or start ``task mcp-serve`` first so the
+      hitl startup probe can reach host MCP. Pass ``WAIT=false`` to skip
+      the readiness gate (faster but the URL may 404 briefly). Prints
+      timestamped progress every 5s while waiting.
     deps: [hitl:env-init]
     vars:
       WAIT: '{{.WAIT | default "true"}}'
@@ -60,10 +64,39 @@ tasks:
       - |
         set -euo pipefail
         cd {{.STACK_DIR}}
+
+        _log() { printf '[hitl] %s %s\n' "$(date '+%H:%M:%S')" "$*"; }
+
+        _log "bringing up ollama-stack (ollama → caddy → litellm → hitl)..."
+        if [ -f .env ] && grep -q '^CRABCC_HITL_MCP_BASE_URL=' .env 2>/dev/null; then
+          _log "MCP URL set in .env — hitl needs host MCP (use task hitl:up-with-mcp or task mcp-serve-bg)"
+        fi
+
+        _watcher_stop() {
+          if [ -n "${_watcher_pid:-}" ]; then
+            kill "${_watcher_pid}" 2>/dev/null || true
+            wait "${_watcher_pid}" 2>/dev/null || true
+          fi
+        }
+
         if [ "{{.WAIT}}" = "true" ]; then
-          docker compose up -d --wait
+          (
+            trap 'exit 0' TERM INT
+            while sleep 5; do
+              _log "compose status:"
+              docker compose ps --format '  {{.Service}}: {{.Status}} (health={{.Health}})' 2>/dev/null \
+                || docker compose ps
+            done
+          ) &
+          _watcher_pid=$!
+          trap '_watcher_stop' EXIT
+          _log "docker compose up -d --wait (plain progress; first boot can take several minutes)..."
+          docker compose --progress plain up -d --wait
+          _watcher_stop
+          trap - EXIT
         else
-          docker compose up -d
+          _log "docker compose up -d (WAIT=false — no health wait)..."
+          docker compose --progress plain up -d
         fi
         echo
         echo "✓ stack up — open the dev console at:"
@@ -72,7 +105,19 @@ tasks:
         echo "  Bearer token: \$(grep ^CRABCC_HITL_API_TOKEN= .env | cut -d= -f2)"
         echo
         echo "  For crabcc tools (sym/refs/…), run in another terminal:"
-        echo "    set -a && source .env && set +a && task mcp-serve"
+        echo "    task mcp-serve-bg   # or: task mcp-serve"
+
+  hitl:up-with-mcp:
+    desc: Start host MCP in background, then bring up the HITL stack.
+    cmds:
+      - |
+        set -euo pipefail
+        printf '[hitl] %s [1/2] starting host MCP (task mcp-serve-bg)...\n' "$(date '+%H:%M:%S')"
+      - task: mcp-serve-bg
+      - |
+        set -euo pipefail
+        printf '[hitl] %s [2/2] bringing up docker stack (task hitl:up)...\n' "$(date '+%H:%M:%S')"
+      - task: hitl:up
 
   hitl:down:
     desc: Tear down the HITL stack containers (volumes preserved).
