@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use std::sync::Arc as StdArc;
 use std::sync::Arc;
 use std::time::SystemTime;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::Mutex;
 use tower_lsp::jsonrpc::Result as RpcResult;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{async_trait, Client, LanguageServer};
@@ -31,66 +31,55 @@ pub struct Backend {
     pub client: Client,
     pub root_config: Mutex<Arc<RootConfig>>,
     /// Read-through LRU for repeated identical queries. Lock-free
-    /// (moka::sync) — hoisted out of `State` so cache hits don't pay
-    /// the `state.read().await` cost. Flushed on every write event.
+    /// (moka::sync) — cache hits never touch store/fts locks.
     pub cache: Arc<LruCache>,
     pub open_docs: Arc<DashMap<Url, Arc<String>>>,
     /// Per-document parsed `Tree`. Per-key DashMap locking so reparse
     /// in `did_change` doesn't block concurrent readers.
     pub trees: Arc<DashMap<Url, tree_sitter::Tree>>,
-    pub state: Arc<RwLock<State>>,
+    /// SQLite store. `Arc<Mutex<…>>` so `spawn_blocking` can clone a
+    /// handle without the old `RwLock<State>` read guard.
+    pub store: Arc<std::sync::Mutex<Option<Store>>>,
+    pub fts: Arc<std::sync::Mutex<Option<Fts>>>,
+    pub graph: Arc<std::sync::Mutex<Option<CallGraph>>>,
 }
 
-pub struct State {
-    /// SQLite store. Behind a sync Mutex because rusqlite::Connection is
-    /// !Sync; we never hold it across `.await`. `None` until the first
-    /// handler that needs it triggers `ensure_store`.
-    pub store: std::sync::Mutex<Option<Store>>,
-    pub fts: std::sync::Mutex<Option<Fts>>,
-    pub graph: std::sync::Mutex<Option<CallGraph>>,
-}
-
-impl State {
-    /// Open the SQLite store on first call; cheap no-op on subsequent
-    /// calls. Returns `true` if the store is now available.
-    pub fn ensure_store(&self, db_path: &std::path::Path) -> bool {
-        let mut g = self.store.lock().unwrap();
-        if g.is_some() {
-            return true;
+fn ensure_store(store: &std::sync::Mutex<Option<Store>>, db_path: &std::path::Path) -> bool {
+    let mut g = store.lock().unwrap();
+    if g.is_some() {
+        return true;
+    }
+    if !db_path.exists() {
+        return false;
+    }
+    match Store::open(db_path) {
+        Ok(s) => {
+            *g = Some(s);
+            true
         }
-        if !db_path.exists() {
-            return false;
-        }
-        match Store::open(db_path) {
-            Ok(s) => {
-                *g = Some(s);
-                true
-            }
-            Err(e) => {
-                tracing::warn!(target: "ucracc_lsp", error = %e, "ensure_store failed");
-                false
-            }
+        Err(e) => {
+            tracing::warn!(target: "ucracc_lsp", error = %e, "ensure_store failed");
+            false
         }
     }
+}
 
-    /// Same idempotent lazy-open contract for the tantivy sidecar.
-    pub fn ensure_fts(&self, fts_dir: &std::path::Path) -> bool {
-        let mut g = self.fts.lock().unwrap();
-        if g.is_some() {
-            return true;
+fn ensure_fts(fts: &std::sync::Mutex<Option<Fts>>, fts_dir: &std::path::Path) -> bool {
+    let mut g = fts.lock().unwrap();
+    if g.is_some() {
+        return true;
+    }
+    if !fts_dir.exists() {
+        return false;
+    }
+    match Fts::open(fts_dir) {
+        Ok(f) => {
+            *g = Some(f);
+            true
         }
-        if !fts_dir.exists() {
-            return false;
-        }
-        match Fts::open(fts_dir) {
-            Ok(f) => {
-                *g = Some(f);
-                true
-            }
-            Err(e) => {
-                tracing::warn!(target: "ucracc_lsp", error = %e, "ensure_fts failed");
-                false
-            }
+        Err(e) => {
+            tracing::warn!(target: "ucracc_lsp", error = %e, "ensure_fts failed");
+            false
         }
     }
 }
@@ -107,11 +96,9 @@ impl Backend {
             cache: Arc::new(LruCache::new()),
             open_docs: Arc::new(DashMap::new()),
             trees: Arc::new(DashMap::new()),
-            state: Arc::new(RwLock::new(State {
-                store: std::sync::Mutex::new(None),
-                fts: std::sync::Mutex::new(None),
-                graph: std::sync::Mutex::new(None),
-            })),
+            store: Arc::new(std::sync::Mutex::new(None)),
+            fts: Arc::new(std::sync::Mutex::new(None)),
+            graph: Arc::new(std::sync::Mutex::new(None)),
         }
     }
 
@@ -190,12 +177,12 @@ impl LanguageServer for Backend {
         // Prefetch the store + fts in the background so the first hover
         // / definition request doesn't pay the cold-open cost. If the
         // user never sends one, no I/O ever happens.
-        let state = self.state.clone();
+        let store = self.store.clone();
+        let fts = self.fts.clone();
         let cfg = self.root_config.lock().await.clone();
         let prefetch = tokio::task::spawn_blocking(move || {
-            let st = state.blocking_read();
-            let store_ok = st.ensure_store(&cfg.db_path);
-            let _ = st.ensure_fts(&cfg.fts_dir);
+            let store_ok = ensure_store(&store, &cfg.db_path);
+            let _ = ensure_fts(&fts, &cfg.fts_dir);
             (store_ok, cfg.repo_root.clone())
         })
         .await;
@@ -281,16 +268,15 @@ impl LanguageServer for Backend {
         self.cache.invalidate_all();
         // Run a refresh_delta in the background to pick up sibling files
         // a user might have changed outside the editor (git pull, etc.).
-        let state = self.state.clone();
+        let store = self.store.clone();
+        let graph = self.graph.clone();
         tokio::task::spawn_blocking(move || {
-            let st = state.blocking_read();
-            st.ensure_store(&cfg.db_path);
-            let store_guard = st.store.lock().unwrap();
+            ensure_store(&store, &cfg.db_path);
+            let store_guard = store.lock().unwrap();
             if let Some(store) = store_guard.as_ref() {
                 let _ = index::refresh(&cfg.repo_root, store);
-                // Graph is now potentially stale.
                 drop(store_guard);
-                *st.graph.lock().unwrap() = None;
+                *graph.lock().unwrap() = None;
             }
         });
         let _ = p; // saved file was already re-indexed by did_change/did_open.
@@ -306,7 +292,6 @@ impl LanguageServer for Backend {
         p: DocumentSymbolParams,
     ) -> RpcResult<Option<DocumentSymbolResponse>> {
         let cfg = self.root_config.lock().await.clone();
-        let st = self.state.read().await;
         let rel = match handlers::rel_from_url(&cfg.repo_root, &p.text_document.uri) {
             Some(r) => r,
             None => return Ok(None),
@@ -317,8 +302,8 @@ impl LanguageServer for Backend {
             return Ok(Some(DocumentSymbolResponse::Nested((*dsyms).clone())));
         }
 
-        st.ensure_store(&cfg.db_path);
-        let store_guard = st.store.lock().unwrap();
+        ensure_store(&self.store, &cfg.db_path);
+        let store_guard = self.store.lock().unwrap();
         let store = match store_guard.as_ref() {
             Some(s) => s,
             None => return Ok(None),
@@ -337,7 +322,6 @@ impl LanguageServer for Backend {
         p: GotoDefinitionParams,
     ) -> RpcResult<Option<GotoDefinitionResponse>> {
         let cfg = self.root_config.lock().await.clone();
-        let st = self.state.read().await;
         let uri = &p.text_document_position_params.text_document.uri;
         let pos = p.text_document_position_params.position;
         let word = match word_at(&self.open_docs, uri, pos) {
@@ -354,8 +338,8 @@ impl LanguageServer for Backend {
             });
         }
 
-        st.ensure_store(&cfg.db_path);
-        let store_guard = st.store.lock().unwrap();
+        ensure_store(&self.store, &cfg.db_path);
+        let store_guard = self.store.lock().unwrap();
         let store = match store_guard.as_ref() {
             Some(s) => s,
             None => return Ok(None),
@@ -372,7 +356,6 @@ impl LanguageServer for Backend {
 
     async fn references(&self, p: ReferenceParams) -> RpcResult<Option<Vec<Location>>> {
         let cfg = self.root_config.lock().await.clone();
-        let st = self.state.read().await;
         let uri = &p.text_document_position.text_document.uri;
         let pos = p.text_document_position.position;
         let word = match word_at(&self.open_docs, uri, pos) {
@@ -398,8 +381,8 @@ impl LanguageServer for Backend {
             matches!(l, "typescript" | "tsx" | "javascript" | "ruby")
         });
 
-        st.ensure_store(&cfg.db_path);
-        let store_guard = st.store.lock().unwrap();
+        ensure_store(&self.store, &cfg.db_path);
+        let store_guard = self.store.lock().unwrap();
         let store = match store_guard.as_ref() {
             Some(s) => s,
             None => return Ok(None),
@@ -429,7 +412,6 @@ impl LanguageServer for Backend {
 
     async fn hover(&self, p: HoverParams) -> RpcResult<Option<Hover>> {
         let cfg = self.root_config.lock().await.clone();
-        let st = self.state.read().await;
         let uri = &p.text_document_position_params.text_document.uri;
         let pos = p.text_document_position_params.position;
         let word = match word_at(&self.open_docs, uri, pos) {
@@ -442,8 +424,8 @@ impl LanguageServer for Backend {
             return Ok((*h).clone());
         }
 
-        st.ensure_store(&cfg.db_path);
-        let store_guard = st.store.lock().unwrap();
+        ensure_store(&self.store, &cfg.db_path);
+        let store_guard = self.store.lock().unwrap();
         let store = match store_guard.as_ref() {
             Some(s) => s,
             None => return Ok(None),
@@ -461,7 +443,6 @@ impl LanguageServer for Backend {
             return Ok(Some(Vec::new()));
         }
         let cfg = self.root_config.lock().await.clone();
-        let st = self.state.read().await;
         let key = CacheKey::WorkspaceSymbol {
             query: q.clone(),
             limit: 200,
@@ -469,10 +450,10 @@ impl LanguageServer for Backend {
         if let Some(CacheValue::WorkspaceSymbol(out)) = self.cache.get(&key) {
             return Ok(Some((*out).clone()));
         }
-        st.ensure_fts(&cfg.fts_dir);
-        st.ensure_store(&cfg.db_path);
-        let fts_guard = st.fts.lock().unwrap();
-        let store_guard = st.store.lock().unwrap();
+        ensure_fts(&self.fts, &cfg.fts_dir);
+        ensure_store(&self.store, &cfg.db_path);
+        let fts_guard = self.fts.lock().unwrap();
+        let store_guard = self.store.lock().unwrap();
         let store = match store_guard.as_ref() {
             Some(s) => s,
             None => return Ok(None),
@@ -511,15 +492,14 @@ impl LanguageServer for Backend {
         p: CallHierarchyPrepareParams,
     ) -> RpcResult<Option<Vec<CallHierarchyItem>>> {
         let cfg = self.root_config.lock().await.clone();
-        let st = self.state.read().await;
         let uri = &p.text_document_position_params.text_document.uri;
         let pos = p.text_document_position_params.position;
         let word = match word_at(&self.open_docs, uri, pos) {
             Some(w) => w,
             None => return Ok(None),
         };
-        st.ensure_store(&cfg.db_path);
-        let store_guard = st.store.lock().unwrap();
+        ensure_store(&self.store, &cfg.db_path);
+        let store_guard = self.store.lock().unwrap();
         let store = match store_guard.as_ref() {
             Some(s) => s,
             None => return Ok(None),
@@ -537,10 +517,9 @@ impl LanguageServer for Backend {
         p: CallHierarchyIncomingCallsParams,
     ) -> RpcResult<Option<Vec<CallHierarchyIncomingCall>>> {
         let cfg = self.root_config.lock().await.clone();
-        let st = self.state.read().await;
         let name = p.item.name.clone();
-        st.ensure_store(&cfg.db_path);
-        let store_guard = st.store.lock().unwrap();
+        ensure_store(&self.store, &cfg.db_path);
+        let store_guard = self.store.lock().unwrap();
         let store = match store_guard.as_ref() {
             Some(s) => s,
             None => return Ok(None),
@@ -554,17 +533,16 @@ impl LanguageServer for Backend {
         p: CallHierarchyOutgoingCallsParams,
     ) -> RpcResult<Option<Vec<CallHierarchyOutgoingCall>>> {
         let cfg = self.root_config.lock().await.clone();
-        let st = self.state.read().await;
         let name = p.item.name.clone();
 
         // Ensure the call graph is built.
-        let need_build = st.graph.lock().unwrap().is_none();
+        let need_build = self.graph.lock().unwrap().is_none();
         if need_build {
-            st.ensure_store(&cfg.db_path);
-            let store_guard = st.store.lock().unwrap();
+            ensure_store(&self.store, &cfg.db_path);
+            let store_guard = self.store.lock().unwrap();
             if let Some(store) = store_guard.as_ref() {
                 if let Ok(g) = CallGraph::build(store, &cfg.repo_root) {
-                    *st.graph.lock().unwrap() = Some(g);
+                    *self.graph.lock().unwrap() = Some(g);
                 }
             }
         }
@@ -573,8 +551,8 @@ impl LanguageServer for Backend {
         // requested name to a SymbolId, walk callees as ids, then resolve
         // each callee id back to a name string for the existing
         // find_symbol-by-name path below.
-        st.ensure_store(&cfg.db_path);
-        let store_guard = st.store.lock().unwrap();
+        ensure_store(&self.store, &cfg.db_path);
+        let store_guard = self.store.lock().unwrap();
         let store = match store_guard.as_ref() {
             Some(s) => s,
             None => return Ok(Some(Vec::new())),
@@ -585,7 +563,7 @@ impl LanguageServer for Backend {
             None => return Ok(Some(Vec::new())),
         };
 
-        let graph_guard = st.graph.lock().unwrap();
+        let graph_guard = self.graph.lock().unwrap();
         let graph = match graph_guard.as_ref() {
             Some(g) => g,
             None => return Ok(Some(Vec::new())),
@@ -649,13 +627,12 @@ impl Backend {
         let result: AResult<()> = tokio::task::spawn_blocking({
             let rel = rel.clone();
             let src = src.to_string();
-            let state = self.state.clone();
+            let store = self.store.clone();
             let trees = self.trees.clone();
             let uri = uri_owned;
             move || -> AResult<()> {
-                let st = state.blocking_read();
-                st.ensure_store(&cfg.db_path);
-                let store_guard = st.store.lock().unwrap();
+                ensure_store(&store, &cfg.db_path);
+                let store_guard = store.lock().unwrap();
                 let store = match store_guard.as_ref() {
                     Some(s) => s,
                     None => return Ok(()),
