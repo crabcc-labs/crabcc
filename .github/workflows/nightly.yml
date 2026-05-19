@@ -47,7 +47,7 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: [self-hosted, linux, hetzner]
             rustflags: '-C target-cpu=x86-64-v3'
             upx: true
             # Wild (https://github.com/davidlattimore/wild) is a
@@ -226,7 +226,7 @@ jobs:
     name: nightly summary
     needs: build
     if: always()
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, hetzner]
     steps:
       - name: assert all matrix legs succeeded
         run: |
