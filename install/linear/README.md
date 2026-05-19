@@ -55,6 +55,24 @@ Idempotent: creates missing `GH-<n>:` issues; updates title/description/state wh
 | `Bug` / `Feature` | Mapped from GitHub `bug` / `enhancement` / `feature` |
 | `epic` | GitHub `epic` label |
 
+### Internal agent delegates (auto-tagged on sync)
+
+`tools/linear/sync_github_issues.py` copies matching GitHub labels and applies title heuristics, then defaults to `swe-docs-pr-review` for ordinary backlog items (not epics).
+
+| Linear label | Delegate |
+|--------------|----------|
+| `swe-docs-pr-review` | Internal AgentField: docs + PR + merge loop |
+| `agent-swe-docs` | Doc regeneration / README / AGENTS.md |
+| `agent-pr-review` | Post-merge review / regression scan |
+| `agent-claude-reviewer` | Claude code-reviewer subagent |
+| `agent-claude-docs` | Claude docs-architect |
+| `agent-claude-refactor` | Claude refactoring-expert |
+| `agent-claude-debugger` | Claude debugger |
+| `agent-claude-security` | Claude security-auditor |
+| `agent-claude-test` | Claude test-automator |
+
+On GitHub, add a label named exactly as above, or `agent:<suffix>` (e.g. `agent:swe-docs` → `agent-swe-docs`).
+
 ## PR workflow
 
 Reference GitHub issues in PRs with `Fixes #123`. Linear issues stay linked via the `GH-<n>:` title and GitHub URL in the description; no bidirectional PR sync required.
