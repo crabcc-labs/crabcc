@@ -326,7 +326,7 @@ Highlights below.
    provisioned for App Groups? Without it, C.3+ stalls.
 2. **Distribution surface** — do notifications come from the host
    `crabcc serve` process, the desktop app (Track A), or the
-   `crabcc-telegram` bot? Probably **the desktop app**: it has the
+   `crabcc-hitl-agent`? Probably **the desktop app**: it has the
    long-lived process and the user's attention; the bot relays a
    summary out-of-band.
 3. **Build pipeline** — `cargo bundle` doesn't co-bundle `.appex`

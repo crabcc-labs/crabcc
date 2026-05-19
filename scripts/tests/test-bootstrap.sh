@@ -121,15 +121,14 @@ assert    "read_env_var: missing file rc=1" \
 
 MOCK_HOME=$(mktempdir)
 MOCK_CC="$MOCK_HOME/workspace/bin/crabcc"
-mkdir -p "$MOCK_CC/apps/crabcc-telegram" \
-         "$MOCK_CC/install/ollama-stack"  \
+mkdir -p "$MOCK_CC/install/ollama-stack" \
          "$MOCK_HOME/.claude"
 
 # All 4 sources present:
 echo "ollama-secret-key-aaaa1234"        > "$MOCK_HOME/.crabcc.local.api-key"
 chmod 0400 "$MOCK_HOME/.crabcc.local.api-key"
-echo "TELEGRAM_BOT_TOKEN=12345:abcdef-ghijkl-mnop" > "$MOCK_CC/apps/crabcc-telegram/.env"
-echo "LITELLM_MASTER_KEY=sk-master-aaaa-1234"      > "$MOCK_CC/install/ollama-stack/.env"
+echo "TELEGRAM_BOT_TOKEN=12345:abcdef-ghijkl-mnop" > "$MOCK_CC/install/ollama-stack/.env"
+echo "LITELLM_MASTER_KEY=sk-master-aaaa-1234"      >> "$MOCK_CC/install/ollama-stack/.env"
 cat > "$MOCK_HOME/.claude/settings.local.json" <<'EOF'
 {"env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "gho_aaaaaaaaaaaa7sQp"}}
 EOF
@@ -138,7 +137,7 @@ OUT=$(BS_TEST_HOME="$MOCK_HOME" CRABCC_HOME="$MOCK_CC" do_show_keys 2>&1)
 
 assert_contains "show-keys: ollama key path"       ".crabcc.local.api-key"             "$OUT"
 assert_contains "show-keys: ollama key masked"     "olla…1234"                         "$OUT"
-assert_contains "show-keys: telegram path"         "apps/crabcc-telegram/.env"         "$OUT"
+assert_contains "show-keys: telegram path"         "install/ollama-stack/.env"         "$OUT"
 assert_contains "show-keys: telegram masked"       "1234…mnop"                         "$OUT"
 assert_contains "show-keys: litellm path"          "install/ollama-stack/.env"         "$OUT"
 assert_contains "show-keys: litellm masked"        "sk-m…1234"                         "$OUT"

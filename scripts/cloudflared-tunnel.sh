@@ -64,7 +64,7 @@ cmd_start() {
 ✓ tunnel up: $url
 
   log:           $LOG_FILE
-  apps/crabcc-telegram/.env:
+  install/ollama-stack/.env (optional):
                  CRABCC_PUBLIC_URL=$url
   BotFather Mini App URL:
                  $url/?role=mini

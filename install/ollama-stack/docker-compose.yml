@@ -270,9 +270,8 @@ services:
       # SDK no-ops cleanly when this is unset.
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       OTEL_DEPLOYMENT_ENVIRONMENT: ${OTEL_DEPLOYMENT_ENVIRONMENT:-dev}
-      # Phase 2 — approval flow + Mini App. The bot token is shared
-      # with the Rust crabcc-telegram bot (one BotFather token, two
-      # processes; we only emit messages, the bot owns getUpdates).
+      # Phase 2 — approval flow + Mini App. TELEGRAM_BOT_TOKEN is read
+      # from install/ollama-stack/.env (set via BotFather).
       # ``CRABCC_HITL_TELEGRAM_OWNER_CHAT_ID`` is the fallback chat for
       # approvals when /chat didn't carry one. Empty values disable
       # the relevant surface — required tools then fail closed.

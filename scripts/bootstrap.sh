@@ -235,22 +235,22 @@ step_macos_app() {
 }
 
 step_telegram() {
-    log "Telegram bot setup"
-    local env_file="$CRABCC_HOME/apps/crabcc-telegram/.env"
-    local example="${env_file}.example"
+    log "Telegram / HITL stack setup"
+    local env_file="$CRABCC_HOME/install/ollama-stack/.env"
+    local example="$CRABCC_HOME/install/ollama-stack/.env.example"
     if [[ ! -f "$env_file" ]]; then
         if [[ -f "$example" ]]; then
             cp "$example" "$env_file"
             chmod 600 "$env_file"
-            warn "created $env_file from .example — edit it with your bot token (BotFather)"
+            warn "created $env_file from .example — add TELEGRAM_BOT_TOKEN (BotFather)"
         else
-            warn "no $env_file or .example template found"
+            warn "no $env_file or .env.example found"
         fi
     else
         ok ".env already exists at $env_file"
     fi
-    log "build:  cargo build -p crabcc-telegram"
-    log "run:    task telegram-bot   (or: cargo run -p crabcc-telegram)"
+    log "run:    task hitl:up        (ollama + litellm + crabcc-hitl-agent)"
+    log "dev UI: task hitl:open     (http://127.0.0.1:9100/devapp/)"
 }
 
 step_ollama_stack() {
@@ -390,8 +390,8 @@ do_show_keys() {
         printf "  %b○ Ollama-stack key  not present (run with --ollama-only)%b\n" "$c_dim" "$c_off"
     fi
 
-    # 2. Telegram bot token (apps/crabcc-telegram/.env preferred, root .env fallback)
-    local tg_env="$crabcc_home/apps/crabcc-telegram/.env"
+    # 2. Telegram bot token (install/ollama-stack/.env preferred, root .env fallback)
+    local tg_env="$crabcc_home/install/ollama-stack/.env"
     local tg_root="$crabcc_home/.env"
     local tg_tok=""
     local tg_src=""

@@ -102,7 +102,7 @@ fi
 
 log "swiftc *.swift -> Crabcc"
 # `-parse-as-library` is required once the source set crosses one file
-# (sticky.swift was added in #189 phase 0; telegram.swift in #156).
+# (sticky.swift was added in #189 phase 0).
 # Top-level expressions live inside `@main CrabccMenubarApp` in menubar.swift.
 # Globbing the source set means future additions need no build-script churn.
 shopt -s nullglob

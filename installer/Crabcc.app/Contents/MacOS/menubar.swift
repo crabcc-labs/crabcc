@@ -351,27 +351,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         runItem.submenu = runMenu
         menu.addItem(runItem)
 
-        // Telegram Bot top-level section (issue #156). Hidden entirely
-        // when the LaunchAgent plist is missing — don't pollute the menu
-        // pre-install. Sits above Scheduled Tasks because the bot is the
-        // most-checked surface for a phone-bound user ("is it up?"). The
-        // generic Scheduled-Tasks walker still lists com.crabcc.telegram-bot
-        // as a fallback; this section just lifts it to top-level prominence.
-        if let bot = telegramBotState() {
-            let botMenu = NSMenu()
-            botMenu.addItem(item("Open Mini App",          #selector(openTelegramMiniApp),   key: "m"))
-            botMenu.addItem(item("Restart bot",            #selector(restartTelegramBot),    key: "r"))
-            botMenu.addItem(item("View bot log",           #selector(openTelegramBotLog)))
-            botMenu.addItem(item("Reveal plist in Finder", #selector(revealTelegramPlist)))
-            botMenu.addItem(.separator())
-            botMenu.addItem(item("Uninstall service…",     #selector(uninstallTelegramBot)))
-
-            let topItem = NSMenuItem(title: telegramHeaderTitle(bot), action: nil, keyEquivalent: "")
-            topItem.submenu = botMenu
-            if let img = telegramHealthImage(bot) { topItem.image = img }
-            menu.addItem(topItem)
-        }
-
         // Scheduled tasks (LaunchAgents) — what's wired to fire on a
         // cadence and the live state of each.
         let schedMenu = NSMenu()
@@ -493,78 +472,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func newStickyFromClipboard() {
         emitEvent("sticky.new_from_clipboard")
         StickyManager.shared.openFromClipboard()
-    }
-
-    // MARK: - telegram bot actions (issue #156)
-
-    @objc func openTelegramMiniApp() {
-        emitEvent("telegram_bot.open_mini_app")
-        // Default viz port is 8090 (CRABCC_SERVE_URL convention). The menubar
-        // app doesn't load .env files; if the user runs viz on a custom port
-        // they can edit this string. Tracked as out-of-scope in #156.
-        if let url = URL(string: "http://localhost:8090/?role=mini") {
-            NSWorkspace.shared.open(url)
-        }
-    }
-
-    @objc func restartTelegramBot() {
-        emitEvent("telegram_bot.restart")
-        let uid = String(getuid())
-        runDetached(["/bin/launchctl", "kickstart", "-k", "gui/\(uid)/com.crabcc.telegram-bot"])
-    }
-
-    @objc func openTelegramBotLog() {
-        emitEvent("telegram_bot.view_log")
-        let outLog = (NSString("~/Library/Logs/Crabcc/telegram-bot.out.log") as NSString).expandingTildeInPath
-        let errLog = (NSString("~/Library/Logs/Crabcc/telegram-bot.err.log") as NSString).expandingTildeInPath
-        var paths: [String] = []
-        if FileManager.default.fileExists(atPath: outLog) { paths.append(outLog) }
-        if FileManager.default.fileExists(atPath: errLog) { paths.append(errLog) }
-        if paths.isEmpty {
-            // No logs yet — open the logs dir so the user sees the layout.
-            try? FileManager.default.createDirectory(atPath: kLogsDir, withIntermediateDirectories: true)
-            runDetached(["/usr/bin/open", kLogsDir])
-            return
-        }
-        // Console.app is the canonical macOS log viewer. `open -a Console`
-        // tells it which file(s) to load. Falls back to the default opener
-        // (likely Console anyway via UTI binding) if Console.app is missing.
-        runDetached(["/usr/bin/open", "-a", "Console"] + paths)
-    }
-
-    @objc func revealTelegramPlist() {
-        emitEvent("telegram_bot.reveal_plist")
-        let p = NSString(string: "~/Library/LaunchAgents/com.crabcc.telegram-bot.plist").expandingTildeInPath
-        runDetached(["/usr/bin/open", "-R", p])
-    }
-
-    @objc func uninstallTelegramBot() {
-        let alert = NSAlert()
-        alert.messageText = "Uninstall Telegram Bot service?"
-        alert.informativeText = """
-        Removes the LaunchAgent and stops the bot.
-        Your .env and config remain. Reinstall any time with:
-            crabcc-telegram install-service
-        """
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Uninstall")
-        alert.addButton(withTitle: "Cancel")
-        NSApp.activate(ignoringOtherApps: true)
-        alert.window.level = .floating
-        let resp = alert.runModal()
-        guard resp == .alertFirstButtonReturn else { return }
-
-        emitEvent("telegram_bot.uninstall_invoked")
-        // Prefer the dedicated `crabcc-telegram uninstall-service` subcommand
-        // (clean cleanup). Fall back to a raw `launchctl bootout` if the
-        // binary isn't on PATH — at least stops the service.
-        let bin = NSString(string: "~/.cargo/bin/crabcc-telegram").expandingTildeInPath
-        if FileManager.default.fileExists(atPath: bin) {
-            runDetached([bin, "uninstall-service"])
-        } else {
-            let uid = String(getuid())
-            runDetached(["/bin/launchctl", "bootout", "gui/\(uid)/com.crabcc.telegram-bot"])
-        }
     }
 
     @objc func showAbout() {
