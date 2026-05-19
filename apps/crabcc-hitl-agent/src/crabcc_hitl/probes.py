@@ -104,6 +104,9 @@ async def probe_crabcc_mcp(
             detail="CRABCC_HITL_MCP_BASE_URL not set",
             required=False,
         )
+    # Phase 1: when MCP is configured, startup must not succeed until the
+    # host-side `task mcp-serve` listener is reachable (compose default).
+    required = True
     started = time.perf_counter()
     try:
         resp = await client.get(f"{base_url.rstrip('/')}/health", timeout=timeout_s)
@@ -114,7 +117,7 @@ async def probe_crabcc_mcp(
             status="fail",
             latency_ms=elapsed_ms,
             detail=f"connect failed: {e.__class__.__name__}: {e}",
-            required=False,  # Phase 0: not required; flip to True in Phase 1.
+            required=required,
         )
     elapsed_ms = int((time.perf_counter() - started) * 1000)
     if 200 <= resp.status_code < 300:
@@ -122,14 +125,14 @@ async def probe_crabcc_mcp(
             name="crabcc_mcp",
             status="ok",
             latency_ms=elapsed_ms,
-            required=False,  # Phase 0: not required; flip to True in Phase 1.
+            required=required,
         )
     return ProbeResult(
         name="crabcc_mcp",
         status="fail",
         latency_ms=elapsed_ms,
         detail=f"http {resp.status_code}",
-        required=False,
+        required=required,
     )
 
 

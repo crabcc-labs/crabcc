@@ -50,9 +50,10 @@ tasks:
     desc: Bring up the full HITL stack (ollama + caddy + litellm + hitl) for local testing.
     summary: |
       Idempotent — runs `hitl:env-init` first, then `docker compose up
-      --wait`. Prints the dev-console URL on success. Pass
-      ``WAIT=false`` to skip the readiness gate (faster but the URL may
-      404 briefly while litellm warms up).
+      --wait`. When MCP is configured (compose default), use
+      ``task hitl:up-with-mcp`` or start ``task mcp-serve`` first so the
+      hitl startup probe can reach host MCP. Pass ``WAIT=false`` to skip
+      the readiness gate (faster but the URL may 404 briefly).
     deps: [hitl:env-init]
     vars:
       WAIT: '{{.WAIT | default "true"}}'
@@ -72,7 +73,13 @@ tasks:
         echo "  Bearer token: \$(grep ^CRABCC_HITL_API_TOKEN= .env | cut -d= -f2)"
         echo
         echo "  For crabcc tools (sym/refs/…), run in another terminal:"
-        echo "    set -a && source .env && set +a && task mcp-serve"
+        echo "    task mcp-serve-bg   # or: task mcp-serve"
+
+  hitl:up-with-mcp:
+    desc: Start host MCP in background, then bring up the HITL stack.
+    cmds:
+      - task: mcp-serve-bg
+      - task: hitl:up
 
   hitl:down:
     desc: Tear down the HITL stack containers (volumes preserved).

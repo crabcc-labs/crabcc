@@ -28,6 +28,8 @@ The workflow uses repository secrets (already configured):
 
 Triggers: `issues` events (opened, edited, closed, reopened, labeled), `workflow_dispatch`, and a 6-hour catch-up schedule.
 
+The workflow needs `permissions.contents: read` (in addition to `issues: read`) so `actions/checkout` can clone this private repo.
+
 ## Local / manual sync
 
 ```bash

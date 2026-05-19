@@ -55,7 +55,43 @@ tasks:
   mcp-serve:
     desc: Run the crabcc MCP server over HTTP on 127.0.0.1:8091 (#204)
     summary: |
-      Foreground server. Loopback-only by default. Auth via MCP_AUTH_TOKEN
-      when set. Add `--dev` (or CRABCC_MCP_DEV=1) for the dev tool surface.
+      Foreground server. Loopback-only by default. Sources
+      ``install/ollama-stack/.env`` when present so ``MCP_AUTH_TOKEN`` matches
+      the hitl container. Add ``CRABCC_MCP_DEV=1`` for the dev tool surface.
     cmds:
-      - "{{.CRABCC}} --mcp-http 127.0.0.1:8091"
+      - task: mcp-serve:run
+
+  mcp-serve-bg:
+    desc: Start MCP in the background if not already listening (#204)
+    summary: |
+      Idempotent — no-op when ``GET http://127.0.0.1:8091/health`` succeeds.
+      Logs to ``/tmp/crabcc-mcp.log``; PID in ``/tmp/crabcc-mcp.pid``.
+    cmds:
+      - |
+        set -euo pipefail
+        if curl -fsS --max-time 2 http://127.0.0.1:8091/health >/dev/null 2>&1; then
+          echo "✓ MCP already listening on 127.0.0.1:8091"
+          exit 0
+        fi
+        env_file="{{.STACK_DIR}}/.env"
+        if [ -f "$env_file" ]; then set -a && . "$env_file" && set +a; fi
+        nohup {{.CRABCC}} --mcp-http 127.0.0.1:8091 > /tmp/crabcc-mcp.log 2>&1 &
+        echo $! > /tmp/crabcc-mcp.pid
+        for _ in $(seq 1 30); do
+          if curl -fsS --max-time 1 http://127.0.0.1:8091/health >/dev/null 2>&1; then
+            echo "✓ MCP started (pid $(cat /tmp/crabcc-mcp.pid), log /tmp/crabcc-mcp.log)"
+            exit 0
+          fi
+          sleep 0.2
+        done
+        echo "✗ MCP did not become healthy within 6s — see /tmp/crabcc-mcp.log" >&2
+        exit 1
+
+  mcp-serve:run:
+    internal: true
+    cmds:
+      - |
+        set -euo pipefail
+        env_file="{{.STACK_DIR}}/.env"
+        if [ -f "$env_file" ]; then set -a && . "$env_file" && set +a; fi
+        exec {{.CRABCC}} --mcp-http 127.0.0.1:8091
