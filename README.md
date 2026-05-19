@@ -14,6 +14,9 @@
   <a href="https://github.com/peterlodri-sec/crabcc/actions/workflows/ci.yml">
     <img src="https://img.shields.io/github/actions/workflow/status/peterlodri-sec/crabcc/ci.yml?branch=main&label=CI&style=flat-square" alt="CI status"/>
   </a>
+  <a href="https://github.com/peterlodri-sec/crabcc/actions/workflows/index-publish.yml">
+    <img src="https://github.com/peterlodri-sec/crabcc/actions/workflows/index-publish.yml/badge.svg" alt="index-publish"/>
+  </a>
   <a href="https://github.com/peterlodri-sec/crabcc/releases/latest">
     <img src="https://img.shields.io/github/v/release/peterlodri-sec/crabcc?label=release&style=flat-square&include_prereleases" alt="latest release"/>
   </a>

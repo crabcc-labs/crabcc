@@ -1,0 +1,12 @@
+version: '3'
+
+tasks:
+  index-publish-test:
+    desc: bats unit tests for tools/index-publish/build-manifest.sh
+    cmds:
+      - bats tools/index-publish/tests
+
+  index-publish-lint:
+    desc: shellcheck tools/index-publish/build-manifest.sh
+    cmds:
+      - shellcheck -x tools/index-publish/build-manifest.sh
