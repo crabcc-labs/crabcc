@@ -164,8 +164,13 @@ def linear_graphql(query: str, variables: dict | None = None) -> dict:
         headers={"Authorization": key, "Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=60) as resp:
-        data = json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            raw = resp.read()
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")
+        raise RuntimeError(f"Linear HTTP {e.code}: {body}") from e
+    data = json.loads(raw)
     if data.get("errors"):
         raise RuntimeError(json.dumps(data["errors"], indent=2))
     return data["data"]
@@ -197,15 +202,18 @@ def find_project_id() -> str:
 def label_ids_by_name(team_id: str) -> dict[str, str]:
     data = linear_graphql(
         """
-        query($teamId: String!) {
-          issueLabels(filter: { team: { id: { eq: $teamId } } }, first: 100) {
-            nodes { id name }
+        query($teamId: ID!) {
+          team(id: $teamId) {
+            labels(first: 100) {
+              nodes { id name }
+            }
           }
         }
         """,
         {"teamId": team_id},
     )
-    return {n["name"]: n["id"] for n in data["issueLabels"]["nodes"]}
+    nodes = data["team"]["labels"]["nodes"]
+    return {n["name"]: n["id"] for n in nodes}
 
 
 def workflow_states(team_id: str) -> dict[str, str]:
