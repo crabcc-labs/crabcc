@@ -1,0 +1,25 @@
+# One-way GitHub Issues → Linear (project: crabcc, team: VIB).
+version: '3'
+
+tasks:
+  linear-sync:
+    desc: Sync open GitHub issues into Linear (GitHub → Linear only)
+    summary: |
+      Requires LINEAR_API_KEY and GH_PERSONAL_TOKEN (or `gh` CLI).
+      Creates/updates Linear issues titled GH-<n>: from GitHub state.
+      Pass DRY_RUN=1 to preview. Does not sync Linear → GitHub.
+    vars:
+      DRY_RUN: '{{.DRY_RUN | default ""}}'
+      ISSUE: '{{.ISSUE | default ""}}'
+    cmds:
+      - >-
+        python3 tools/linear/sync_github_issues.py
+        {{if .DRY_RUN}}--dry-run{{end}}
+        {{if .ISSUE}}--issue-number {{.ISSUE}}{{end}}
+
+  linear-sync-dry-run:
+    desc: Preview GitHub → Linear sync without writing
+    cmds:
+      - task: linear-sync
+        vars:
+          DRY_RUN: '1'
