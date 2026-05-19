@@ -68,6 +68,17 @@ cd ~/.crabcc/integrations/langchain && pip install -e .
 
 Set `LANGSMITH_API_KEY` and `LANGCHAIN_TRACING_V2=true` for trace export.
 
+## macOS — centralised index (worktrees)
+
+If you use Cursor worktrees or multiple checkouts, keep **one index on disk**:
+
+```bash
+source install/mac/crabcc-env.zsh   # add to ~/.zshrc
+crabcc index                        # once, from any checkout
+```
+
+See `install/mac/README.md`.
+
 ## OS-native
 
 ```bash
