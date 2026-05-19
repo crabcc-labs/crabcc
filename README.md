@@ -27,6 +27,11 @@
   <img src="https://img.shields.io/badge/MCP-server-7057ff?style=flat-square" alt="MCP server"/>
 </p>
 
+<p align="center">
+  <strong>📊 <a href="./docs/OVERVIEW.md">Visual overview</a></strong> — colorful architecture diagrams (Mermaid)<br/>
+  <sub>Regenerate in Claude Code: <code>/crabcc-generate-overview</code></sub>
+</p>
+
 ---
 
 ## Install
@@ -237,6 +242,7 @@ $ crabcc refs Assessment --files-only --limit 10
 
 ## Table of contents
 
+- [**Visual overview** (diagrams)](./docs/OVERVIEW.md)
 - [Why](#why)
 - [Install](#install)
   - [Claude Code integration](#claude-code-integration)
@@ -249,7 +255,7 @@ $ crabcc refs Assessment --files-only --limit 10
 - [Status & roadmap](#status)
 - [Contributing](#contributing)
 
-Deep dives: [`crates/crabcc-core/docs/HOW_IT_WORKS.md`](./crates/crabcc-core/docs/HOW_IT_WORKS.md) · [`docs/RUST-ANTHOLOGY.md`](./docs/RUST-ANTHOLOGY.md) · [`examples/`](./examples/) · [`man/crabcc.1`](./man/crabcc.1)
+Deep dives: [**`docs/OVERVIEW.md`**](./docs/OVERVIEW.md) (diagrams) · [`crates/crabcc-core/docs/HOW_IT_WORKS.md`](./crates/crabcc-core/docs/HOW_IT_WORKS.md) · [`docs/RUST-ANTHOLOGY.md`](./docs/RUST-ANTHOLOGY.md) · [`examples/`](./examples/) · [`man/crabcc.1`](./man/crabcc.1)
 
 ---
 
@@ -544,6 +550,8 @@ container image inspect crabcc-internal-agents:dev | jq
 ```
 
 ## Architecture
+
+> **Prefer diagrams?** See [`docs/OVERVIEW.md`](./docs/OVERVIEW.md) for the full Mermaid map (indexing, query router, memory RRF, integrations). This section keeps ASCII traces for copy-paste debugging.
 
 ```
 crates/crabcc-core/   ← extraction, indexing, queries, FTS, tracking

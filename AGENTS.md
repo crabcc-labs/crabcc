@@ -12,13 +12,27 @@ Tantivy sidecar for fuzzy/prefix search, optional FSST string compression on
 the signature column (default-on as of v2.0.0-alpha).
 
 Use it instead of `grep`/`find` for symbol-name queries: `crabcc sym Foo`,
-`crabcc refs Foo`, `crabcc callers handleAuth`. See `README.md` for the
-user surface and `crates/crabcc-core/docs/HOW_IT_WORKS.md` for the
-indexing internals.
+`crabcc refs Foo`, `crabcc callers handleAuth`.
+
+| Doc | Use when |
+|-----|----------|
+| [`docs/OVERVIEW.md`](docs/OVERVIEW.md) | **Start here** — Mermaid architecture, query router, disk layout |
+| [`README.md`](README.md) | Install, usage, bench numbers, ASCII command traces |
+| [`crates/crabcc-core/docs/HOW_IT_WORKS.md`](crates/crabcc-core/docs/HOW_IT_WORKS.md) | Schema, extract pipeline, extending languages |
 
 The `crabcc-memory` crate (epic [#2](https://github.com/peterlodri-sec/crabcc/issues/2))
-adds a per-repo AI memory layer at `.crabcc/memory.db`, fronted by a `Backend`
-trait, `Palace` facade, and `crabcc memory` CLI / `memory.*` MCP tools.
+adds a per-repo AI memory layer at `$CRABCC_HOME/repos/<slug>-<hash6>/memory.db`,
+fronted by a `Backend` trait, `Palace` facade, and `crabcc memory` CLI / `memory.*` MCP tools.
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor':'#e85d04','secondaryColor':'#4cc9f0'}}}%%
+flowchart LR
+  A[Agent] --> CLI[crabcc CLI / MCP]
+  CLI --> C[crabcc-core]
+  CLI --> M[crabcc-memory]
+  C --> I[(.crabcc/index.db)]
+  M --> D[($CRABCC_HOME memory.db)]
+```
 
 ## Quick orientation
 

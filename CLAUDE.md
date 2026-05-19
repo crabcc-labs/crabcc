@@ -2,8 +2,9 @@
 
 > Claude Code-specific notes for `crabcc`. Tool-agnostic agent guidance —
 > rules, conventions, workspace layout — lives in [`AGENTS.md`](./AGENTS.md);
-> read that first. This file only adds what's specific to running inside
-> Claude Code.
+> read that first. **Architecture diagrams:** [`docs/OVERVIEW.md`](./docs/OVERVIEW.md)
+> (regenerate with `/crabcc-generate-overview`). This file only adds what's
+> specific to running inside Claude Code.
 
 ## Use crabcc, not grep
 
