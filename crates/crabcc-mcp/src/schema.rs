@@ -174,6 +174,20 @@ fn tools_def_symbol() -> Vec<Value> {
             &["name"],
         ),
         tool_schema(
+            "write_file",
+            "Write a repo-relative file in full, then return a validation \
+             envelope: parse_ok, symbol_diff (added/removed/signature_changed/\
+             body_moved vs the pre-write snapshot), and broken_caller_files \
+             (deduped list of files containing call edges to any removed \
+             symbol). Faster than a compiler round-trip and language-agnostic. \
+             Compiler / lint diagnostics are not part of this envelope.",
+            json!({
+                "path":    str_field("repo-relative file path"),
+                "content": str_field("full new file contents (UTF-8)"),
+            }),
+            &["path", "content"],
+        ),
+        tool_schema(
             "files",
             "List indexed files. Token-cheap replacement for `ls -R` / `find -name`.",
             json!({
