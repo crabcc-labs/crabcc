@@ -89,7 +89,7 @@ async def probe_crabcc_mcp(
     base_url: str | None,
     timeout_s: float,
 ) -> ProbeResult:
-    """Hit the crabcc MCP-HTTP `/healthz` endpoint when configured.
+    """Hit the crabcc MCP-HTTP ``GET /health`` endpoint when configured.
 
     Phase 0 doesn't call crabcc tools yet — but Phase 1 will. By
     probing here we surface "tools will be unavailable" *before* a
@@ -106,7 +106,7 @@ async def probe_crabcc_mcp(
         )
     started = time.perf_counter()
     try:
-        resp = await client.get(f"{base_url.rstrip('/')}/healthz", timeout=timeout_s)
+        resp = await client.get(f"{base_url.rstrip('/')}/health", timeout=timeout_s)
     except httpx.HTTPError as e:
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         return ProbeResult(

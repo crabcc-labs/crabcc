@@ -263,6 +263,10 @@ services:
       CRABCC_HITL_MAX_TASK_CHARS: ${CRABCC_HITL_MAX_TASK_CHARS:-4000}
       CRABCC_HITL_LOG_LEVEL: ${CRABCC_HITL_LOG_LEVEL:-info}
       CRABCC_HITL_MCP_ENABLED: ${CRABCC_HITL_MCP_ENABLED:-true}
+      # Host-side crabcc MCP (`task mcp-serve` on 127.0.0.1:8091). The hitl
+      # container reaches the host via host.docker.internal (see extra_hosts).
+      CRABCC_HITL_MCP_BASE_URL: ${CRABCC_HITL_MCP_BASE_URL:-http://host.docker.internal:8091}
+      CRABCC_HITL_MCP_API_TOKEN: ${MCP_AUTH_TOKEN:-}
       # Mark we're inside compose so service_discovery uses service-DNS
       # hostnames in the announce log.
       CRABCC_COMPOSE: "1"
@@ -308,6 +312,8 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - stack
       - crabcc-shared
