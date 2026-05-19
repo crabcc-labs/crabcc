@@ -7,9 +7,11 @@
 //!   the user passes a local path AND `<path>/.crabcc/` already exists.
 //!   Keeps existing repos working unchanged.
 //! * `Layout::Centralised` — `$CRABCC_HOME/repos/<key>/...`. Default for
-//!   URL inputs and any local path that has not been initialised yet.
-//!   `$CRABCC_HOME` defaults to `~/.crabcc`; `<key>` is the first 16 hex
-//!   chars of `sha256(canonical_input)`.
+//!   URL inputs and any local path without in-repo `.crabcc/`. `<key>` is
+//!   `slug-<hash6>` from `remote.origin.url` when in a git repo (so git
+//!   worktrees share one index), else 16 hex of the canonical path.
+//!   Force with `CRABCC_LAYOUT=centralised` (Mac dev: see `install/mac/`).
+//!   `$CRABCC_HOME` defaults to `~/.crabcc`.
 //!
 //! URL inputs are git-cloned (shallow, blob-filtered) into
 //! `<base>/source/` on first use. Subsequent invocations reuse the
@@ -17,9 +19,11 @@
 //! `git -C <source> pull` or pass `--root <local-path>`).
 
 use anyhow::{anyhow, bail, Context, Result};
+use crabcc_core::hash::sha256_hex;
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 /// Resolved location for a `--root` input. All artifact paths are
 /// derived from `data_dir`, so swapping InRepo ↔ Centralised flips
@@ -115,8 +119,8 @@ pub(crate) fn resolve_with_home(input: &str, home_override: Option<&Path>) -> Re
         let abs = raw
             .canonicalize()
             .with_context(|| format!("`--root` path does not exist: {input}"))?;
-        let in_repo = abs.join(".crabcc");
-        if in_repo.exists() && in_repo.is_dir() {
+        if use_in_repo_layout(&abs) {
+            let in_repo = abs.join(".crabcc");
             return Ok(ResolvedRoot {
                 source_dir: abs.clone(),
                 data_dir: in_repo,
@@ -125,8 +129,7 @@ pub(crate) fn resolve_with_home(input: &str, home_override: Option<&Path>) -> Re
                 origin: Origin::LocalPath(abs),
             });
         }
-        let canon = abs.to_string_lossy().to_string();
-        let key = cache_key(&canon);
+        let key = repo_storage_key(&abs);
         let base = repos_dir(home_override)?.join(&key);
         std::fs::create_dir_all(&base)?;
         Ok(ResolvedRoot {
@@ -172,6 +175,115 @@ fn cache_key(input: &str) -> String {
         let _ = write!(s, "{:02x}", b);
     }
     s
+}
+
+/// When true, index artifacts live under `<repo>/.crabcc/` (legacy).
+/// Opt out on Mac / worktrees with `CRABCC_LAYOUT=centralised`.
+fn use_in_repo_layout(abs: &Path) -> bool {
+    if layout_forced_centralised() {
+        return false;
+    }
+    let in_repo = abs.join(".crabcc");
+    in_repo.exists() && in_repo.is_dir()
+}
+
+fn layout_forced_centralised() -> bool {
+    match std::env::var("CRABCC_LAYOUT")
+        .ok()
+        .as_deref()
+        .map(str::trim)
+    {
+        Some("centralised" | "centralized") => true,
+        Some("in-repo" | "in_repo") => false,
+        _ => std::env::var("CRABCC_IN_REPO_INDEX").ok().as_deref() == Some("0"),
+    }
+}
+
+/// Stable per-repo key under `$CRABCC_HOME/repos/`. Matches
+/// `crabcc-memory` layout so index + memory share one directory.
+fn repo_storage_key(repo_root: &Path) -> String {
+    let slug = sanitize_slug(
+        repo_root
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "unknown-repo".into())
+            .as_str(),
+    );
+    if let Some(url) = git_origin_url(repo_root) {
+        let hash6: String = sha256_hex(url.as_bytes()).chars().take(6).collect();
+        return format!("{slug}-{hash6}");
+    }
+    if let Some(common) = git_common_dir(repo_root) {
+        let hash6: String = sha256_hex(common.as_bytes()).chars().take(6).collect();
+        return format!("{slug}-{hash6}");
+    }
+    let canon = repo_root
+        .canonicalize()
+        .unwrap_or_else(|_| repo_root.to_path_buf());
+    cache_key(&canon.to_string_lossy())
+}
+
+fn sanitize_slug(raw: &str) -> String {
+    let s: String = raw
+        .chars()
+        .map(|c| {
+            let lower = c.to_ascii_lowercase();
+            if lower.is_ascii_alphanumeric() || lower == '-' || lower == '_' {
+                lower
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let trimmed = s.trim_matches('-');
+    if trimmed.is_empty() {
+        "unknown-repo".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn git_origin_url(repo_root: &Path) -> Option<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["config", "--get", "remote.origin.url"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
+fn git_common_dir(repo_root: &Path) -> Option<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo_root)
+        .args(["rev-parse", "--git-common-dir"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8(out.stdout).ok()?.trim().to_string();
+    if raw.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(&raw);
+    let abs = if path.is_absolute() {
+        path
+    } else {
+        repo_root.join(path)
+    };
+    abs.canonicalize()
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
 }
 
 fn repos_dir(override_: Option<&Path>) -> Result<PathBuf> {
@@ -363,5 +475,47 @@ mod tests {
         let s = r.display_origin();
         assert!(s.starts_with("local: "), "got `{s}`");
         assert!(s.contains("[in-repo]"), "got `{s}`");
+    }
+
+    #[test]
+    fn layout_centralised_env_ignores_dotcrabcc() {
+        let tmp = tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".crabcc")).unwrap();
+        let home = tempdir().unwrap();
+        std::env::set_var("CRABCC_LAYOUT", "centralised");
+        let r = resolve_with_home(&tmp.path().to_string_lossy(), Some(home.path())).unwrap();
+        std::env::remove_var("CRABCC_LAYOUT");
+        assert_eq!(r.layout, Layout::Centralised);
+        assert!(r.db().starts_with(home.path()));
+    }
+
+    #[test]
+    fn repo_storage_key_uses_origin_hash_for_git_repos() {
+        let tmp = tempdir().unwrap();
+        let status = Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        Command::new("git")
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/example/crabcc-test.git",
+            ])
+            .current_dir(tmp.path())
+            .status()
+            .unwrap();
+        let url = "https://github.com/example/crabcc-test.git";
+        let hash6: String = sha256_hex(url.as_bytes()).chars().take(6).collect();
+        let a = repo_storage_key(tmp.path());
+        let b = repo_storage_key(tmp.path());
+        assert_eq!(a, b);
+        assert!(
+            a.ends_with(&hash6),
+            "expected slug-hash6 from origin; got {a}, want *-{hash6}"
+        );
     }
 }
