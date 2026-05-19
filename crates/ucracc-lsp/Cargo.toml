@@ -31,6 +31,7 @@ rerank = ["dep:fastembed"]
 crabcc-core = { workspace = true }
 crabcc-memory = { workspace = true, optional = true }
 crabcc-fetch = { path = "../crabcc-fetch", optional = true }
+dashmap = "6"
 
 anyhow = { workspace = true }
 serde = { workspace = true }

@@ -10,6 +10,7 @@ use crabcc_core::{
     query::{self, find_callers, find_symbol},
     store::Store,
 };
+use dashmap::DashMap;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc as StdArc;
@@ -34,6 +35,7 @@ pub struct Backend {
     /// (moka::sync) — hoisted out of `State` so cache hits don't pay
     /// the `state.read().await` cost. Flushed on every write event.
     pub cache: Arc<LruCache>,
+    pub open_docs: Arc<DashMap<Url, Arc<String>>>,
     pub state: Arc<RwLock<State>>,
 }
 
@@ -44,9 +46,6 @@ pub struct State {
     pub store: std::sync::Mutex<Option<Store>>,
     pub fts: std::sync::Mutex<Option<Fts>>,
     pub graph: std::sync::Mutex<Option<CallGraph>>,
-    /// In-memory mirror of open documents; LSP gives us deltas but the
-    /// indexer needs the full source.
-    pub open_docs: HashMap<Url, String>,
     /// Per-document parsed `Tree`, kept alongside the source so we can
     /// hand the old tree to `parse(src, Some(&old))` on `didChange` and
     /// let tree-sitter reuse unchanged subtrees.
@@ -108,11 +107,11 @@ impl Backend {
                 fts_dir: PathBuf::new(),
             })),
             cache: Arc::new(LruCache::new()),
+            open_docs: Arc::new(DashMap::new()),
             state: Arc::new(RwLock::new(State {
                 store: std::sync::Mutex::new(None),
                 fts: std::sync::Mutex::new(None),
                 graph: std::sync::Mutex::new(None),
-                open_docs: HashMap::new(),
                 trees: std::sync::Mutex::new(HashMap::new()),
             })),
         }
@@ -225,11 +224,9 @@ impl LanguageServer for Backend {
 
     async fn did_open(&self, p: DidOpenTextDocumentParams) {
         let cfg = self.root_config.lock().await.clone();
-        let mut st = self.state.write().await;
-        st.open_docs
-            .insert(p.text_document.uri.clone(), p.text_document.text.clone());
+        self.open_docs
+            .insert(p.text_document.uri.clone(), Arc::new(p.text_document.text.clone()));
         self.cache.invalidate_all();
-        drop(st);
         self.index_uri(&p.text_document.uri, &p.text_document.text, &cfg.repo_root)
             .await;
     }
@@ -240,10 +237,11 @@ impl LanguageServer for Backend {
         // next parse can reuse subtrees outside the touched region.
         let cfg = self.root_config.lock().await.clone();
         let uri = p.text_document.uri.clone();
-        let mut text = {
-            let st = self.state.read().await;
-            st.open_docs.get(&uri).cloned().unwrap_or_default()
-        };
+        let mut text = self
+            .open_docs
+            .get(&uri)
+            .map(|e| e.value().clone())
+            .unwrap_or_default();
 
         // Apply each change to the in-memory text and accumulate edits
         // to apply to the cached tree.
@@ -252,19 +250,21 @@ impl LanguageServer for Backend {
         for change in p.content_changes {
             if change.range.is_none() {
                 // Full replace event — drop the tree, replace the text.
-                text = change.text;
+                text = Arc::new(change.text);
                 had_full_replace = true;
                 tree_edits.clear();
-            } else if let Some(edit) = crate::incremental::apply_change(&mut text, &change) {
+            } else if let Some(edit) =
+                crate::incremental::apply_change(Arc::make_mut(&mut text), &change)
+            {
                 tree_edits.push(edit);
             }
         }
 
         let final_text = text.clone();
-        let mut st = self.state.write().await;
-        st.open_docs.insert(uri.clone(), final_text.clone());
+        self.open_docs.insert(uri.clone(), final_text.clone());
         self.cache.invalidate_all();
 
+        let mut st = self.state.write().await;
         if had_full_replace {
             st.trees.lock().unwrap().remove(&uri);
         } else if !tree_edits.is_empty() {
@@ -302,8 +302,8 @@ impl LanguageServer for Backend {
     }
 
     async fn did_close(&self, p: DidCloseTextDocumentParams) {
+        self.open_docs.remove(&p.text_document.uri);
         let mut st = self.state.write().await;
-        st.open_docs.remove(&p.text_document.uri);
         st.trees.lock().unwrap().remove(&p.text_document.uri);
     }
 
@@ -346,7 +346,7 @@ impl LanguageServer for Backend {
         let st = self.state.read().await;
         let uri = &p.text_document_position_params.text_document.uri;
         let pos = p.text_document_position_params.position;
-        let word = match word_at(&st, uri, pos) {
+        let word = match word_at(&self.open_docs, uri, pos) {
             Some(w) => w,
             None => return Ok(None),
         };
@@ -381,7 +381,7 @@ impl LanguageServer for Backend {
         let st = self.state.read().await;
         let uri = &p.text_document_position.text_document.uri;
         let pos = p.text_document_position.position;
-        let word = match word_at(&st, uri, pos) {
+        let word = match word_at(&self.open_docs, uri, pos) {
             Some(w) => w,
             None => return Ok(None),
         };
@@ -438,7 +438,7 @@ impl LanguageServer for Backend {
         let st = self.state.read().await;
         let uri = &p.text_document_position_params.text_document.uri;
         let pos = p.text_document_position_params.position;
-        let word = match word_at(&st, uri, pos) {
+        let word = match word_at(&self.open_docs, uri, pos) {
             Some(w) => w,
             None => return Ok(None),
         };
@@ -520,7 +520,7 @@ impl LanguageServer for Backend {
         let st = self.state.read().await;
         let uri = &p.text_document_position_params.text_document.uri;
         let pos = p.text_document_position_params.position;
-        let word = match word_at(&st, uri, pos) {
+        let word = match word_at(&self.open_docs, uri, pos) {
             Some(w) => w,
             None => return Ok(None),
         };
@@ -741,8 +741,8 @@ impl Backend {
     }
 }
 
-fn word_at(state: &State, uri: &Url, pos: Position) -> Option<String> {
-    let text = state.open_docs.get(uri)?;
+fn word_at(open_docs: &DashMap<Url, Arc<String>>, uri: &Url, pos: Position) -> Option<String> {
+    let text = open_docs.get(uri).map(|e| e.value().clone())?;
     let line = text.lines().nth(pos.line as usize)?;
     let col = pos.character as usize;
     let bytes = line.as_bytes();
