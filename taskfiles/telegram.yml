@@ -66,25 +66,52 @@ tasks:
     summary: |
       Idempotent — no-op when ``GET http://127.0.0.1:8091/health`` succeeds.
       Logs to ``/tmp/crabcc-mcp.log``; PID in ``/tmp/crabcc-mcp.pid``.
+      Prints progress while waiting for ``/health``.
     cmds:
       - |
         set -euo pipefail
+        _log() { printf '[mcp] %s %s\n' "$(date '+%H:%M:%S')" "$*"; }
+
+        _log "checking http://127.0.0.1:8091/health ..."
         if curl -fsS --max-time 2 http://127.0.0.1:8091/health >/dev/null 2>&1; then
           echo "✓ MCP already listening on 127.0.0.1:8091"
           exit 0
         fi
+
+        if [ ! -x "{{.CRABCC}}" ]; then
+          echo "✗ {{.CRABCC}} not found or not executable — run: cargo build -p crabcc-cli" >&2
+          exit 1
+        fi
+
         env_file="{{.STACK_DIR}}/.env"
-        if [ -f "$env_file" ]; then set -a && . "$env_file" && set +a; fi
+        if [ -f "$env_file" ]; then
+          _log "sourcing $env_file (MCP_AUTH_TOKEN)"
+          set -a && . "$env_file" && set +a
+        else
+          _log "no $env_file — MCP_AUTH_TOKEN unset (dev/loopback only)"
+        fi
+
+        _log "starting {{.CRABCC}} --mcp-http 127.0.0.1:8091 (log: /tmp/crabcc-mcp.log) ..."
         nohup {{.CRABCC}} --mcp-http 127.0.0.1:8091 > /tmp/crabcc-mcp.log 2>&1 &
         echo $! > /tmp/crabcc-mcp.pid
-        for _ in $(seq 1 30); do
+        _log "pid $(cat /tmp/crabcc-mcp.pid) — waiting for /health (up to 30s) ..."
+
+        attempt=0
+        max=150
+        while [ "$attempt" -lt "$max" ]; do
+          attempt=$((attempt + 1))
           if curl -fsS --max-time 1 http://127.0.0.1:8091/health >/dev/null 2>&1; then
             echo "✓ MCP started (pid $(cat /tmp/crabcc-mcp.pid), log /tmp/crabcc-mcp.log)"
             exit 0
           fi
+          if [ $((attempt % 10)) -eq 0 ]; then
+            _log "still waiting for /health (${attempt}/${max}) — tail: tail -3 /tmp/crabcc-mcp.log"
+            tail -3 /tmp/crabcc-mcp.log 2>/dev/null || true
+          fi
           sleep 0.2
         done
-        echo "✗ MCP did not become healthy within 6s — see /tmp/crabcc-mcp.log" >&2
+        echo "✗ MCP did not become healthy within ~30s — see /tmp/crabcc-mcp.log:" >&2
+        tail -20 /tmp/crabcc-mcp.log 2>/dev/null || true
         exit 1
 
   mcp-serve:run:
@@ -92,6 +119,14 @@ tasks:
     cmds:
       - |
         set -euo pipefail
+        printf '[mcp] %s foreground serve on 127.0.0.1:8091 (Ctrl+C to stop)\n' "$(date '+%H:%M:%S')"
+        if [ ! -x "{{.CRABCC}}" ]; then
+          echo "✗ {{.CRABCC}} not found — run: cargo build -p crabcc-cli" >&2
+          exit 1
+        fi
         env_file="{{.STACK_DIR}}/.env"
-        if [ -f "$env_file" ]; then set -a && . "$env_file" && set +a; fi
+        if [ -f "$env_file" ]; then
+          printf '[mcp] %s sourcing %s\n' "$(date '+%H:%M:%S')" "$env_file"
+          set -a && . "$env_file" && set +a
+        fi
         exec {{.CRABCC}} --mcp-http 127.0.0.1:8091
