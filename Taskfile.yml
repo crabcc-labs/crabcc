@@ -35,6 +35,7 @@
 #   taskfiles/jobs.yml       jobs-up/down/board/e2e/submit
 #   taskfiles/profile.yml    profile-build/index, flamegraph-index
 #   taskfiles/e2e.yml        e2e, e2e:dashboard, e2e:graph, e2e:cli, …
+#   taskfiles/linear.yml     linear-sync (GitHub → Linear backfill)
 
 version: '3'
 
@@ -124,6 +125,9 @@ includes:
     flatten: true
   index-publish:
     taskfile: taskfiles/index-publish.yml
+    flatten: true
+  linear:
+    taskfile: taskfiles/linear.yml
     flatten: true
 
 tasks:
