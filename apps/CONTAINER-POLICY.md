@@ -138,7 +138,7 @@ Pattern: `ghcr.io/peterlodri-sec/<image>:<tag>`
 | Image | Source | Base | Status |
 |---|---|---|---|
 | `ghcr.io/peterlodri-sec/crabcc` | `crates/crabcc-cli/Dockerfile` | `gcr.io/distroless/cc-debian12:nonroot` | **Phase 1 (this doc)** |
-| `ghcr.io/peterlodri-sec/crabcc-telegram` | `apps/crabcc-telegram/Dockerfile` | `gcr.io/distroless/cc-debian12:nonroot` | **Phase 2 (this PR)** |
+| `crabcc-hitl` (compose) | `apps/crabcc-hitl-agent/Dockerfile` | `python:3.12-slim` → hardened runtime | **Active** (`install/ollama-stack`) |
 | `ghcr.io/peterlodri-sec/crabcc-viz` | `crates/crabcc-viz/Dockerfile` | `gcr.io/distroless/cc-debian12:nonroot` | Phase 2 (planned) |
 | `ghcr.io/peterlodri-sec/jobs-worker` | `apps/jobs-worker/Dockerfile` | `gcr.io/distroless/nodejs20-debian12:nonroot` | Phase 3 (depends on #170) |
 | `ghcr.io/peterlodri-sec/crabcc-docs-api` | `crates/crabcc-docs/Dockerfile` (TBD) | `gcr.io/distroless/cc-debian12:nonroot` | Phase 5 (depends on #172) |

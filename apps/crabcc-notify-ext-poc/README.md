@@ -58,5 +58,5 @@ signed with a Developer ID Application certificate and notarized.
 Cargo crates can't produce `.appex` outputs. The Swift sources need
 their own `Info.plist`, their own entitlements, and their own
 `Sources/` tree. Co-locating them under `apps/` matches the existing
-pattern (`apps/crabcc-telegram` is also a workspace-external Rust
+pattern (`apps/crabcc-hitl-agent` is a workspace-external Python
 binary with its own Cargo.toml + Dockerfile + Taskfile).

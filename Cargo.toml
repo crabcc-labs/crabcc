@@ -7,7 +7,6 @@ exclude = [
     # references them. See https://github.com/rust-lang/cargo/issues/9853.
     "crates/crabcc-viz",
     "crates/crabcc-desktop",
-    "apps/crabcc-telegram",
 ]
 members = [
     "crates/crabcc-chrome",
@@ -26,11 +25,6 @@ members = [
     # feature-gated behind `viz` in crabcc-cli, so the default build is
     # unaffected; viz catches up in v4.0.1 / v4.1. Build standalone:
     # cd crates/crabcc-viz && cargo build --release
-    #
-    # apps/crabcc-telegram: excluded from workspace — uses teloxide which
-    # triggers a nightly libc ICE under -Z polonius + -Z randomize-layout.
-    # Build standalone: cd apps/crabcc-telegram && cargo build --release
-    # Track: https://github.com/rust-lang/rust/issues (libc ICE on nightly)
     #
     # crates/crabcc-desktop: also excluded — gpui-component pulls a hard
     # dep on `tree-sitter = "0.25"` (links = "tree-sitter", so cargo

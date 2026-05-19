@@ -3,7 +3,7 @@
 # Run with `task -d apps/crabcc-agents <task>` from the repo root, or
 # `task <task>` from inside this directory.
 #
-# Conventions follow crabcc-telegram's per-crate Taskfile pattern.
+# Conventions follow per-app Taskfile pattern (see taskfiles/hitl.yml).
 
 version: "3"
 

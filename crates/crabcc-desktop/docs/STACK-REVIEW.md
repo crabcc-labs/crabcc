@@ -565,7 +565,7 @@ that:
    actually fire LiteLLM, the Ollama stack must be up too — there's
    no orchestrator that brings up both.
 
-10. **`apps/crabcc-telegram` is workspace-excluded** (`Cargo.toml:13`)
+10. **Telegram surface is `apps/crabcc-hitl-agent`** (ollama-stack compose; Rust `crabcc-telegram` removed)
     and has its own Dockerfile / `crabcc-shared` network attachment.
     None of the audit above touches it — flagged for completeness
     because it's a fourth agent surface (Telegram bot → HITL agent →
@@ -614,8 +614,8 @@ that:
 
 `Cargo.toml:13` lists two crates excluded from `cargo build --workspace`:
 
-- `apps/crabcc-telegram` — teloxide hits a nightly libc ICE under
-  `-Z polonius`. Standalone build only.
+- `apps/crabcc-hitl-agent` — Python HITL service (Telegram + LiteLLM); built via
+  `install/ollama-stack` compose, not `cargo build --workspace`.
 - `crates/crabcc-desktop` — gpui-component pulls `tree-sitter = "0.25"`,
   conflicts with `crabcc-core` on 0.22. Standalone build only. **All
   desktop MCP work lives here**, so none of §4 row 6 / §7.2 is reachable

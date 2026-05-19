@@ -1,7 +1,7 @@
 """Minimal Telegram Bot API client + Mini App initData validator.
 
 This service does NOT consume ``getUpdates`` — that's the Rust
-``crabcc-telegram`` bot's job. We only emit messages (sendMessage,
+We only emit messages (sendMessage,
 editMessageText, answerCallbackQuery) and validate Mini App ``initData``
 HMAC signatures coming from the WebApp.
 

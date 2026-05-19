@@ -53,7 +53,7 @@ __pycache__/
 # Claude Code per-project agent state lands in `.claude/`. Local-only.
 .claude/
 **/.claude/
-# Per-run setup logs from interactive scripts (e.g. apps/crabcc-telegram/setup.sh).
+# Per-run setup logs from interactive scripts.
 *_setup.log
 # esbuild metafile is internal to the build (used for analysis, regenerated
 # every build). Bundle output lives next to it; only the `.html`/`.js`/`.css`

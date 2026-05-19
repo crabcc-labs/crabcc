@@ -134,10 +134,10 @@ pub fn known_services() -> Vec<Service> {
             &format!("http://{}:8091/mcp", h!("crabcc-mcp", "127.0.0.1")),
         ),
         resolve_service(
-            "telegram-bot-web",
+            "crabcc-hitl",
             ServiceKind::HttpJsonApi,
-            "TELEGRAM_BOT_WEB_URL",
-            &format!("http://{}:8092", h!("crabcc-telegram", "127.0.0.1")),
+            "CRABCC_HITL_URL",
+            &format!("http://{}:9100", h!("crabcc-hitl", "127.0.0.1")),
         ),
     ]
 }

@@ -1,6 +1,0 @@
-# Standalone build config for crabcc-telegram.
-# This crate is excluded from the workspace to avoid a nightly libc ICE
-# under -Z polonius + -Z randomize-layout (rustc 1.97.0-nightly).
-# Override the workspace toolchain to stable for this crate:
-[toolchain]
-channel = "stable"

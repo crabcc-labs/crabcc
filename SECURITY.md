@@ -15,7 +15,7 @@ What to include:
 
 | Status | Component |
 |---|---|
-| In scope | the `crabcc` binary and all crates in this workspace, the MCP server (`crabcc --mcp`), the BullMQ worker (`apps/jobs-worker`), the Telegram bot (`apps/crabcc-telegram`), the viz dashboard (`crates/crabcc-viz/web`). |
+| In scope | the `crabcc` binary and all crates in this workspace, the MCP server (`crabcc --mcp`), the BullMQ worker (`apps/jobs-worker`), the HITL/Telegram agent (`apps/crabcc-hitl-agent`), the viz dashboard (`crates/crabcc-viz/web`). |
 | In scope | the `.devcontainer/` and CI workflows in `.github/workflows/`. |
 | Out of scope | bugs in dependencies (please report upstream — but flag us so we can pin around them). |
 | Out of scope | self-inflicted misuse (running `crabcc` against an untrusted repo with `--effort max` and complaining about RCE in evaluated code). |
@@ -28,6 +28,6 @@ What to include:
 
 ## Known posture
 
-- Network: by default, crabcc binds to `127.0.0.1` only. The relay components (`crabcc-telegram`, the MCP HTTP transport when enabled) require explicit configuration to expose ports.
+- Network: by default, crabcc binds to `127.0.0.1` only. The relay components (`crabcc-hitl-agent`, the MCP HTTP transport when enabled) require explicit configuration to expose ports.
 - Secrets: the bootstrap script reads from `~/.config/crabcc/secrets.env` (chmod 600). No secrets are committed; `.env` files in apps/ are git-ignored.
 - Dependencies: weekly Dependabot scans (see [`.github/dependabot.yml`](.github/dependabot.yml)) plus periodic `cargo audit` and `cargo deny` runs in CI.

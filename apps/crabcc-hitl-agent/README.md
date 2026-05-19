@@ -6,9 +6,7 @@ Human-in-the-loop agent service. Sits between the Rust Telegram bot and the Lite
 
 ```
 Telegram User
-    ↕ long-poll
-crabcc-telegram (Rust)               ← apps/crabcc-telegram
-    ↕ HTTP, "crabcc-shared" docker net, bearer auth
+    ↕ Bot API (approvals + Mini App; optional direct /chat)
 crabcc-hitl-agent (Python, this)     ← apps/crabcc-hitl-agent
     ↕ OpenAI-compatible API
 LiteLLM proxy :4000                  ← install/ollama-stack
