@@ -85,6 +85,7 @@ pub mod time;
 pub mod track;
 pub mod types;
 pub mod upgrade;
+pub mod validate;
 pub mod walker;
 pub mod watch;
 

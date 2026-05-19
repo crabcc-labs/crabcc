@@ -2,15 +2,19 @@
 //! every document write (didOpen / didChange / didSave) flushes the
 //! cache, so we never return stale results.
 //!
-//! Sized small on purpose: the values are Arc-wrapped serde JSON,
-//! shareable across handler calls without cloning the underlying Vec.
-//! The point isn't bulk storage, it's collapsing the 6–10 µs SQLite hop
-//! on the *same* request being issued repeatedly (cursor hover loops,
-//! workspace/symbol auto-completion while typing, etc.).
+//! Values are Arc-wrapped typed payloads (`Vec<Location>`,
+//! `Vec<DocumentSymbol>`, …), shareable across handler calls without
+//! cloning the underlying Vec. The point isn't bulk storage, it's
+//! collapsing the 6–10 µs SQLite hop on the *same* request being issued
+//! repeatedly (cursor hover loops, workspace/symbol auto-completion
+//! while typing, etc.). Typed values skip the `serde_json::from_value`
+//! parse (~500 ns) on every cache hit vs the prior
+//! `Arc<serde_json::Value>` design.
 
 use moka::sync::Cache;
 use std::sync::Arc;
 use std::time::Duration;
+use tower_lsp::lsp_types::{DocumentSymbol, Hover, Location, SymbolInformation};
 
 #[derive(Clone, Hash, PartialEq, Eq)]
 pub enum Key {
@@ -20,9 +24,19 @@ pub enum Key {
     WorkspaceSymbol { query: String, limit: u32 },
     OutgoingCalls(String),
     IncomingCalls(String),
+    References(String),
 }
 
-pub type Value = Arc<serde_json::Value>;
+/// Typed cache payload — one variant per LSP method's response shape.
+/// Cloning a `Value` is cheap (it's an enum of `Arc`s).
+#[derive(Clone)]
+pub enum Value {
+    Definition(Arc<Vec<Location>>),
+    Hover(Arc<Option<Hover>>),
+    DocumentSymbols(Arc<Vec<DocumentSymbol>>),
+    WorkspaceSymbol(Arc<Vec<SymbolInformation>>),
+    References(Arc<Vec<Location>>),
+}
 
 pub struct LruCache {
     inner: Cache<Key, Value>,
