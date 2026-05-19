@@ -11,7 +11,6 @@ use crabcc_core::{
     store::Store,
 };
 use dashmap::DashMap;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc as StdArc;
 use std::sync::Arc;
@@ -36,6 +35,9 @@ pub struct Backend {
     /// the `state.read().await` cost. Flushed on every write event.
     pub cache: Arc<LruCache>,
     pub open_docs: Arc<DashMap<Url, Arc<String>>>,
+    /// Per-document parsed `Tree`. Per-key DashMap locking so reparse
+    /// in `did_change` doesn't block concurrent readers.
+    pub trees: Arc<DashMap<Url, tree_sitter::Tree>>,
     pub state: Arc<RwLock<State>>,
 }
 
@@ -46,10 +48,6 @@ pub struct State {
     pub store: std::sync::Mutex<Option<Store>>,
     pub fts: std::sync::Mutex<Option<Fts>>,
     pub graph: std::sync::Mutex<Option<CallGraph>>,
-    /// Per-document parsed `Tree`, kept alongside the source so we can
-    /// hand the old tree to `parse(src, Some(&old))` on `didChange` and
-    /// let tree-sitter reuse unchanged subtrees.
-    pub trees: std::sync::Mutex<HashMap<Url, tree_sitter::Tree>>,
 }
 
 impl State {
@@ -108,11 +106,11 @@ impl Backend {
             })),
             cache: Arc::new(LruCache::new()),
             open_docs: Arc::new(DashMap::new()),
+            trees: Arc::new(DashMap::new()),
             state: Arc::new(RwLock::new(State {
                 store: std::sync::Mutex::new(None),
                 fts: std::sync::Mutex::new(None),
                 graph: std::sync::Mutex::new(None),
-                trees: std::sync::Mutex::new(HashMap::new()),
             })),
         }
     }
@@ -264,20 +262,17 @@ impl LanguageServer for Backend {
         self.open_docs.insert(uri.clone(), final_text.clone());
         self.cache.invalidate_all();
 
-        let mut st = self.state.write().await;
         if had_full_replace {
-            st.trees.lock().unwrap().remove(&uri);
+            self.trees.remove(&uri);
         } else if !tree_edits.is_empty() {
             // Apply the edits to the cached tree so the next reparse
             // can pick up subtrees outside the changed range.
-            let mut trees = st.trees.lock().unwrap();
-            if let Some(t) = trees.get_mut(&uri) {
+            if let Some(mut t) = self.trees.get_mut(&uri) {
                 for edit in &tree_edits {
                     t.edit(edit);
                 }
             }
         }
-        drop(st);
         self.index_uri(&uri, &final_text, &cfg.repo_root).await;
     }
 
@@ -303,8 +298,7 @@ impl LanguageServer for Backend {
 
     async fn did_close(&self, p: DidCloseTextDocumentParams) {
         self.open_docs.remove(&p.text_document.uri);
-        let mut st = self.state.write().await;
-        st.trees.lock().unwrap().remove(&p.text_document.uri);
+        self.trees.remove(&p.text_document.uri);
     }
 
     async fn document_symbol(
@@ -656,6 +650,7 @@ impl Backend {
             let rel = rel.clone();
             let src = src.to_string();
             let state = self.state.clone();
+            let trees = self.trees.clone();
             let uri = uri_owned;
             move || -> AResult<()> {
                 let st = state.blocking_read();
@@ -712,7 +707,7 @@ impl Backend {
                         .set_language(&ts_lang)
                         .map_err(|e| anyhow::anyhow!("set_language({detected}): {e}"))?;
 
-                    let old_tree = st.trees.lock().unwrap().remove(&uri);
+                    let old_tree = trees.remove(&uri).map(|(_, t)| t);
                     let new_tree = parser
                         .parse(&src, old_tree.as_ref())
                         .ok_or_else(|| anyhow::anyhow!("parse failed for {rel}"))?;
@@ -727,7 +722,7 @@ impl Backend {
                     store.replace_symbols(fid, &syms)?;
                     store.replace_edges(fid, &edges)?;
                     // Re-cache the freshly-parsed tree.
-                    st.trees.lock().unwrap().insert(uri.clone(), new_tree);
+                    trees.insert(uri.clone(), new_tree);
                 }
                 Ok(())
             }
