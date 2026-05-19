@@ -6,45 +6,53 @@
 **Team:** Vibe.peter (`VIB`)  
 **Repo:** https://github.com/peterlodri-sec/crabcc
 
-Backfilled issues use the title prefix `GH-<number>:` and a GitHub link attachment.
+Synced issues use the title prefix `GH-<number>:` and link back to GitHub.
 
-## GitHub ↔ Linear sync (enabled)
+## Direction: GitHub → Linear only
 
-Bidirectional sync is on for `peterlodri-sec/crabcc` → **Vibe.peter** / project **crabcc**.
+**GitHub is the source of truth.** Status, title, and description flow from GitHub into Linear. Changes made only in Linear are **not** written back to GitHub.
 
-- New GitHub issues appear in Linear automatically.
-- Closing or reopening in either system updates the other.
-- PR links work when GitHub integration includes pull requests.
+To avoid conflicts:
 
-Docs: https://linear.app/docs/github-integration
+1. In **Linear → Settings → Integrations → GitHub**, do **not** enable bidirectional issue sync for `crabcc` (or disable it if already on).
+2. Rely on this repo’s workflow (`.github/workflows/linear-sync.yml`) and script instead.
 
-## Bulk backfill (script)
+## CI / automation (repo secrets)
 
-Use only for **initial import** or re-label passes — not for day-to-day tracking (sync handles that).
+The workflow uses repository secrets (already configured):
+
+| Secret | Used for |
+|--------|----------|
+| `LINEAR_API_KEY` | Linear GraphQL API |
+| `GH_PERSONAL_TOKEN` | GitHub REST API (`issues` read) |
+
+Triggers: `issues` events (opened, edited, closed, reopened, labeled), `workflow_dispatch`, and a 6-hour catch-up schedule.
+
+## Local / manual sync
 
 ```bash
-export LINEAR_API_KEY=lin_api_...   # Linear → Settings → API → Personal API keys
-task linear-sync-dry-run            # preview
-task linear-sync                    # import missing GH-<n>: issues
+export LINEAR_API_KEY=lin_api_...
+export GH_PERSONAL_TOKEN=ghp_...   # or use `gh auth login`
+task linear-sync-dry-run
+task linear-sync
 ```
 
-Or directly:
+Single issue (same as CI on an event):
 
 ```bash
-python3 tools/linear/sync_github_issues.py --dry-run
-python3 tools/linear/sync_github_issues.py
+python3 tools/linear/sync_github_issues.py --issue-number 551
 ```
 
-Idempotent: skips Linear issues whose title already starts with `GH-<n>:`.
+Idempotent: creates missing `GH-<n>:` issues; updates title/description/state when GitHub changes.
 
 ## Labels
 
 | Linear label | Meaning |
 |--------------|---------|
-| `github-sync` | Mirrored / backfilled from GitHub |
+| `github-sync` | Mirrored from GitHub |
 | `Bug` / `Feature` | Mapped from GitHub `bug` / `enhancement` / `feature` |
 | `epic` | GitHub `epic` label |
 
 ## PR workflow
 
-Link PRs in Linear via `Fixes #123` / `Closes VIB-42` in PR bodies, or branch names containing `vib-` / `gh-` — Linear picks up linked PRs when GitHub integration includes pull requests.
+Reference GitHub issues in PRs with `Fixes #123`. Linear issues stay linked via the `GH-<n>:` title and GitHub URL in the description; no bidirectional PR sync required.
