@@ -22,20 +22,22 @@ jobs:
   export:
     runs-on: ubuntu-latest
     environment: copilot
-    env:
-      CRABCC_AUTH_TOKEN: ${{ secrets.CRABCC_AUTH_TOKEN }}
-      CRABCC_MCP_URL: ${{ secrets.CRABCC_MCP_URL }}
-      CURSOR_ADMIN_KEY: ${{ secrets.CURSOR_ADMIN_KEY }}
-      DOCKER_PAT: ${{ secrets.DOCKER_PAT }}
-      DOCKER_USER: ${{ secrets.DOCKER_USER }}
-      GH_PERSONAL_TOKEN: ${{ secrets.GH_PERSONAL_TOKEN }}
-      LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
-      OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
-      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
     steps:
+      - uses: actions/checkout@v4
+
       - name: Write copilot.env
+        env:
+          CRABCC_AUTH_TOKEN: ${{ secrets.CRABCC_AUTH_TOKEN }}
+          CRABCC_MCP_URL: ${{ secrets.CRABCC_MCP_URL }}
+          CURSOR_ADMIN_KEY: ${{ secrets.CURSOR_ADMIN_KEY }}
+          DOCKER_PAT: ${{ secrets.DOCKER_PAT }}
+          DOCKER_USER: ${{ secrets.DOCKER_USER }}
+          GH_PERSONAL_TOKEN: ${{ secrets.GH_PERSONAL_TOKEN }}
+          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           umask 077
           mkdir -p out
