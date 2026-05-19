@@ -202,7 +202,7 @@ def find_project_id() -> str:
 def label_ids_by_name(team_id: str) -> dict[str, str]:
     data = linear_graphql(
         """
-        query($teamId: ID!) {
+        query($teamId: String!) {
           team(id: $teamId) {
             labels(first: 100) {
               nodes { id name }
@@ -220,7 +220,7 @@ def workflow_states(team_id: str) -> dict[str, str]:
     """Map 'open' / 'closed' → Linear state id (first match by type)."""
     data = linear_graphql(
         """
-        query($teamId: ID!) {
+        query($teamId: String!) {
           team(id: $teamId) {
             states { nodes { id name type } }
           }
@@ -242,7 +242,7 @@ def linear_issues_index(team_id: str) -> dict[int, dict]:
     """GH number → {id, identifier, stateType, title}."""
     data = linear_graphql(
         """
-        query($teamId: ID!) {
+        query($teamId: String!) {
           team(id: $teamId) {
             issues(filter: { title: { contains: "GH-" } }, first: 250) {
               nodes {
