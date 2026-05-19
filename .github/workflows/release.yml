@@ -19,10 +19,10 @@ jobs:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: [self-hosted, linux, hetzner]
             archive: tar.gz
           - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
+            os: [self-hosted, linux, hetzner]
             archive: tar.gz
             cross: true
           # x86_64-apple-darwin (macos-13 runner) was dropped in v1.0.1: the
@@ -94,7 +94,7 @@ jobs:
   release:
     name: release
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, hetzner]
     steps:
       - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4

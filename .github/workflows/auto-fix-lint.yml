@@ -46,7 +46,7 @@ jobs:
       github.event.workflow_run.conclusion == 'failure'
       && github.event.workflow_run.event == 'pull_request'
       && github.event.workflow_run.head_repository.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, hetzner]
     outputs:
       should_fix: ${{ steps.classify.outputs.should_fix }}
       pr_number: ${{ steps.classify.outputs.pr_number }}
@@ -102,7 +102,7 @@ jobs:
     name: Run cargo fmt + clippy --fix
     needs: triage
     if: needs.triage.outputs.should_fix == 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, hetzner]
     steps:
       - name: Checkout PR head
         uses: actions/checkout@v6

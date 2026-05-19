@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, hetzner]
     steps:
       - name: Checkout
         uses: actions/checkout@v6

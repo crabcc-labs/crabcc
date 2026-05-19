@@ -1,5 +1,8 @@
 name: CI
 
+# Linux jobs run on the Hetzner self-hosted pool — see install/github-runner/.
+# macOS release legs (release.yml / nightly.yml) still use GitHub-hosted runners.
+
 # PR CI is intentionally narrow: lint, plus tests for the crates the PR
 # actually touches, plus a 3-command smoke E2E. The full matrix
 # (Ubuntu + macOS, all workspace tests) runs on push to main and on tag
@@ -49,7 +52,7 @@ env:
 jobs:
   fmt:
     name: fmt
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, hetzner]
     env:
       RUSTC_WRAPPER: ""  # override global; cargo fmt never invokes rustc
     steps:
@@ -64,7 +67,7 @@ jobs:
 
   lint:
     name: lint (clippy)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, hetzner]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -175,7 +178,7 @@ jobs:
 
   test:
     name: test (ubuntu, scoped)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, hetzner]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -303,7 +306,7 @@ jobs:
 
   actionlint:
     name: actionlint
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, hetzner]
     steps:
       - uses: actions/checkout@v6
       - name: actionlint
