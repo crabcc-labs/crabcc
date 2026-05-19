@@ -249,6 +249,52 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
             memory::auto_capture(root, "test_context", name, 1, &args);
             Ok(serde_json::to_string(&envelope)?)
         }
+        "write_file" => {
+            let path = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("write_file: missing arg `path`"))?;
+            let content = args
+                .get("content")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("write_file: missing arg `content`"))?;
+            if std::path::Path::new(path).is_absolute() {
+                return Err(anyhow::anyhow!("write_file: path must be repo-relative"));
+            }
+            if path.split('/').any(|c| c == "..") {
+                return Err(anyhow::anyhow!("write_file: `..` in path is rejected"));
+            }
+            let abs = root.join(path);
+            if let Some(parent) = abs.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let before = store.symbols_in_file(path).unwrap_or_default();
+            std::fs::write(&abs, content.as_bytes())?;
+            let (after, parse_err) =
+                crabcc_core::validate::reindex_file(&store, path, content)?;
+            let diff = crabcc_core::validate::diff_symbols(path, &before, &after);
+            let removed = diff.removed_names();
+            let mut broken: std::collections::BTreeSet<String> =
+                std::collections::BTreeSet::new();
+            for name in &removed {
+                if let Ok(hits) = query::find_callers(&store, root, name) {
+                    for h in hits {
+                        broken.insert(h.file);
+                    }
+                }
+            }
+            memory::auto_capture(root, "write_file", path, 1, &args);
+            let env = serde_json::json!({
+                "wrote": { "path": path, "bytes": content.len() },
+                "validation": {
+                    "parse_ok": parse_err.is_none(),
+                    "parse_error": parse_err,
+                    "symbol_diff": diff,
+                    "broken_caller_files": broken.into_iter().collect::<Vec<String>>(),
+                },
+            });
+            Ok(serde_json::to_string(&env)?)
+        }
         "read" => {
             let path = std::path::PathBuf::from(arg_str(&args, "path")?);
             let mode_raw = args.get("mode").and_then(|v| v.as_str()).unwrap_or("auto");
