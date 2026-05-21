@@ -28,14 +28,16 @@ type Props = {
 export function PrDetail({ prNumber }: Props) {
   const [tab, setTab] = useState<Tab>("diff");
 
-  const { data, loading } = usePolling(
+  // usePolling returns { data, error, refetch } — no `loading` field.
+  // Derive loading state: data and error both undefined means fetch in flight.
+  const { data, error: prError } = usePolling(
     () => api.forgePr(prNumber),
     0, // no polling — PR detail is static
     [prNumber],
     { source: "/api/forge/prs/{number}" },
   );
 
-  const { data: impactData, loading: impactLoading } = usePolling(
+  const { data: impactData } = usePolling(
     () => api.forgePrImpact(prNumber),
     0,
     [prNumber, tab],
@@ -44,6 +46,8 @@ export function PrDetail({ prNumber }: Props) {
 
   const pr = data?.pr;
   const files: PrFile[] = data?.files ?? [];
+
+  const loading = data === undefined && prError === undefined;
 
   if (loading && !pr) {
     return (

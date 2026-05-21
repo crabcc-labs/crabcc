@@ -19,7 +19,7 @@ export function PrsView() {
   const [stateFilter, setStateFilter] = useState<StateFilter>("open");
   const [page, setPage] = useState(1);
 
-  const { data, loading, error } = usePolling(
+  const { data, error } = usePolling(
     () => api.forgePrs(stateFilter, page),
     30_000,
     [stateFilter, page],
@@ -28,6 +28,8 @@ export function PrsView() {
 
   const prs = data?.prs ?? [];
   const repo = data?.repo ?? "";
+  // usePolling has no `loading` field; derive it.
+  const loading = data === undefined && error === undefined;
 
   return (
     <div className="flex flex-col gap-4 p-4 max-w-5xl mx-auto">
