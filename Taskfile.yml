@@ -5,6 +5,8 @@
 #   task                    # build + test (the default)
 #   task install            # `cargo install` to ~/.cargo/bin/crabcc
 #   task ci                 # full local CI (fmt + clippy + test + smoke)
+#   task act                # run CI via act/Docker — full workspace (push-mode)
+#   task act-pr             # run CI via act/Docker — scoped to diff (PR-mode)
 #   task local-ci           # snapshot fmt+clippy+test to .summary/local-ci.txt
 #                           # (used in PR descriptions when GH CI is offline)
 #   task coverage           # generate code-coverage report (cargo-llvm-cov)

@@ -1,0 +1,38 @@
+# act configuration — https://github.com/nektos/act
+# Install: brew install act  |  go install github.com/nektos/act/v2/cmd/act@latest
+#          OR: curl -s https://raw.githubusercontent.com/nektos/act/master/install.sh | sudo bash
+#
+# Usage: task act          (full workspace, mirrors push-to-main)
+#        task act-pr       (scoped to diff from main, mirrors PR CI)
+#        act --list        (show all jobs without running)
+
+# Map [self-hosted, linux, hetzner] → catthehacker/ubuntu:act-22.04 (~500 MB).
+# The act-22.04 image has git, curl, docker-cli, jq, and standard build tools
+# but NOT Rust or mold — the workflow steps install them via dtolnay/rust-toolchain
+# and apt-get. Use catthehacker/ubuntu:full-22.04 (~18 GB) for a pre-warmed
+# Rust toolchain at the cost of a large one-time image pull.
+-P self-hosted+linux+hetzner=catthehacker/ubuntu:act-22.04
+
+# Reuse containers across runs — skips container-create overhead on subsequent
+# calls and keeps the target/ + ~/.cargo directories warm between runs (free
+# incremental compilation without needing the GHA cache backend).
+# Run `act --rm` to force a clean container start.
+--reuse
+
+# Don't re-pull the image on every run once it's cached locally.
+# Run `act --pull=always` to force a refresh.
+--pull=false
+
+# Share the host network so cargo can reach crates.io and apt can reach
+# Ubuntu mirrors without Docker bridge NAT overhead.
+--network host
+
+# sccache: the GHA cache backend requires ACTIONS_CACHE_URL / ACTIONS_RUNTIME_TOKEN
+# which aren't set in local act runs. false → sccache falls back to a local
+# filesystem cache (SCCACHE_DIR defaults to ~/.cache/sccache) and still
+# speeds up repeat compilations without needing a GHA token.
+-e SCCACHE_GHA_ENABLED=false
+
+# rust-cache (Swatinem/rust-cache) silently no-ops its save/restore when
+# ACTIONS_CACHE_URL is absent — that's fine since --reuse keeps the container
+# filesystem warm anyway.

@@ -60,3 +60,7 @@ __pycache__/
 # every build). Bundle output lives next to it; only the `.html`/`.js`/`.css`
 # chunks the Rust crate `include_str!`s should be tracked.
 crates/crabcc-viz/web/dist/metafile.json
+
+# act (nektos/act) local secrets file — copy from .secrets.example and fill in.
+# Never commit real tokens.
+.secrets
