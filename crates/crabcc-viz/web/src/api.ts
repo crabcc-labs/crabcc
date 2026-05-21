@@ -13,6 +13,100 @@ import type { components } from "./api.gen";
 
 type Schemas = components["schemas"];
 
+// Forge and analytics types are not yet in the codegen'd api.gen.ts,
+// so we declare them inline until the next `bun run codegen` pass.
+export interface PrAuthor {
+  login: string;
+  avatar_url: string;
+}
+export interface PrLabel {
+  name: string;
+  color: string;
+}
+export interface PrSummary {
+  number: number;
+  title: string;
+  state: string;
+  draft: boolean;
+  merged: boolean;
+  author: PrAuthor;
+  head_ref: string;
+  base_ref: string;
+  created_at: string;
+  updated_at: string;
+  labels: PrLabel[];
+  additions: number;
+  deletions: number;
+  changed_files: number;
+  html_url: string;
+  body?: string;
+}
+export interface PrFile {
+  filename: string;
+  status: string;
+  additions: number;
+  deletions: number;
+  patch?: string;
+  previous_filename?: string;
+}
+export interface PrDetail {
+  pr: PrSummary;
+  files: PrFile[];
+}
+export interface PrListResponse {
+  prs: PrSummary[];
+  repo: string;
+  total: number;
+  page: number;
+}
+export interface ImpactNode {
+  id: string;
+  label: string;
+  file: string;
+  kind: string;
+  changed: boolean;
+  depth: number;
+  line?: number;
+}
+export interface ImpactEdge {
+  src: string;
+  dst: string;
+}
+export interface PrImpactGraph {
+  pr_number: number;
+  changed_files: string[];
+  nodes: ImpactNode[];
+  edges: ImpactEdge[];
+  direct_symbols: number;
+  impacted_symbols: number;
+}
+export interface HotspotFile {
+  file: string;
+  commits: number;
+  churn: number;
+  authors: number;
+  first_seen: string;
+  last_seen: string;
+}
+export interface HotspotsResponse {
+  hotspots: HotspotFile[];
+  head_sha: string;
+  computed_at: number;
+  total_commits_scanned: number;
+  total_files_seen: number;
+}
+export interface DeadSymbol {
+  name: string;
+  kind: string;
+  file: string;
+  line: number;
+}
+export interface DeadcodeResponse {
+  dead_code: DeadSymbol[];
+  head_sha: string;
+  computed_at: number;
+}
+
 export type Bootstrap = Schemas["Bootstrap"];
 export type ActivityHit = Schemas["ActivityHit"];
 export type AgentSummary = Schemas["AgentSummary"];
@@ -75,6 +169,18 @@ export const api = {
     ),
   // Issue #86 — OTLP health probe. Returns green/red pill data for /live.
   otlpHealth: () => getJson<OtlpHealth>("/api/telemetry/otlp-health"),
+  // Forge (GitHub/Gitea)
+  forgePrs: (state = "open", page = 1) =>
+    getJson<PrListResponse>(`/api/forge/prs?state=${state}&page=${page}`),
+  forgePr: (number: number) =>
+    getJson<PrDetail>(`/api/forge/prs/${number}`),
+  forgePrImpact: (number: number) =>
+    getJson<PrImpactGraph>(`/api/forge/prs/${number}/impact`),
+  // Analytics
+  analyticsHotspots: (limit = 50) =>
+    getJson<HotspotsResponse>(`/api/analytics/hotspots?limit=${limit}`),
+  analyticsDeadcode: (limit = 100) =>
+    getJson<DeadcodeResponse>(`/api/analytics/deadcode?limit=${limit}`),
 };
 
 // Issue #112 follow-up — expose the api surface on window for

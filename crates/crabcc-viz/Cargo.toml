@@ -30,6 +30,9 @@ tiny_http   = "0.12"
 # Single-thread runtime spun up per ingest request — tiny_http itself
 # is sync, but the fetch path (`crabcc-fetch::fetch_and_clean`) is async.
 tokio       = { version = "1", features = ["rt", "macros"] }
+# Blocking HTTP client for GitHub/Gitea API calls (forge routes). Uses
+# native-tls so no extra OpenSSL setup is needed on the user's machine.
+ureq        = { version = "2", features = ["native-tls", "json"] }
 
 [dev-dependencies]
 tempfile   = "3"

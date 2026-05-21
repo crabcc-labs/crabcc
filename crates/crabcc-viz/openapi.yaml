@@ -37,6 +37,10 @@ tags:
     description: Write actions (reindex, random-query, agent launch).
   - name: stream
     description: Server-Sent Events.
+  - name: forge
+    description: GitHub / Gitea PR and codebase views.
+  - name: analytics
+    description: Git-derived code health metrics (hotspots, dead code).
 
 paths:
 
@@ -418,6 +422,109 @@ paths:
               schema:
                 type: string
 
+  /api/forge/config:
+    get:
+      tags: [forge]
+      summary: GitHub/Gitea forge configuration — repo slug, token presence.
+      operationId: getForgeConfig
+      responses:
+        "200":
+          description: Forge configuration snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ForgeConfig"
+
+  /api/forge/prs:
+    get:
+      tags: [forge]
+      summary: List pull requests from the configured GitHub/Gitea repo.
+      operationId: listForgePrs
+      parameters:
+        - in: query
+          name: state
+          schema: { type: string, enum: [open, closed, all], default: open }
+        - in: query
+          name: page
+          schema: { type: integer, minimum: 1, default: 1 }
+      responses:
+        "200":
+          description: PR list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrListResponse"
+
+  /api/forge/prs/{number}:
+    get:
+      tags: [forge]
+      summary: Get a single PR with its changed-files diff.
+      operationId: getForgePr
+      parameters:
+        - in: path
+          name: number
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: PR detail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrDetail"
+
+  /api/forge/prs/{number}/impact:
+    get:
+      tags: [forge]
+      summary: "Blast-radius graph for a PR: changed symbols + their callers/callees."
+      operationId: getForgePrImpact
+      parameters:
+        - in: path
+          name: number
+          required: true
+          schema: { type: integer }
+      responses:
+        "200":
+          description: PR impact graph.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PrImpactGraph"
+
+  /api/analytics/hotspots:
+    get:
+      tags: [analytics]
+      summary: High-churn files ranked by commit count (fast single git-log pass).
+      operationId: getAnalyticsHotspots
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+      responses:
+        "200":
+          description: Hotspot list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HotspotsResponse"
+
+  /api/analytics/deadcode:
+    get:
+      tags: [analytics]
+      summary: Functions with zero callers in the symbol index.
+      operationId: getAnalyticsDeadcode
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 500, default: 100 }
+      responses:
+        "200":
+          description: Dead code list.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeadcodeResponse"
+
 components:
 
   parameters:
@@ -787,3 +894,158 @@ components:
           type: array
           description: Subset of node ids that were chosen as seeds (depth 0).
           items: { type: string }
+
+    ForgeConfig:
+      type: object
+      required: [repo, configured, token_present, forge_kind]
+      properties:
+        repo: { type: string }
+        configured: { type: boolean }
+        token_present: { type: boolean }
+        forge_kind: { type: string }
+
+    PrAuthor:
+      type: object
+      required: [login, avatar_url]
+      properties:
+        login: { type: string }
+        avatar_url: { type: string }
+
+    PrLabel:
+      type: object
+      required: [name, color]
+      properties:
+        name: { type: string }
+        color: { type: string }
+
+    PrSummary:
+      type: object
+      required: [number, title, state, draft, merged, author, head_ref, base_ref, created_at, updated_at, labels, additions, deletions, changed_files, html_url]
+      properties:
+        number: { type: integer }
+        title: { type: string }
+        state: { type: string }
+        draft: { type: boolean }
+        merged: { type: boolean }
+        author: { $ref: "#/components/schemas/PrAuthor" }
+        head_ref: { type: string }
+        base_ref: { type: string }
+        created_at: { type: string }
+        updated_at: { type: string }
+        labels:
+          type: array
+          items: { $ref: "#/components/schemas/PrLabel" }
+        additions: { type: integer }
+        deletions: { type: integer }
+        changed_files: { type: integer }
+        html_url: { type: string }
+        body: { type: string }
+
+    PrFile:
+      type: object
+      required: [filename, status, additions, deletions]
+      properties:
+        filename: { type: string }
+        status: { type: string }
+        additions: { type: integer }
+        deletions: { type: integer }
+        patch: { type: string }
+        previous_filename: { type: string }
+
+    PrDetail:
+      type: object
+      required: [pr, files]
+      properties:
+        pr: { $ref: "#/components/schemas/PrSummary" }
+        files:
+          type: array
+          items: { $ref: "#/components/schemas/PrFile" }
+
+    PrListResponse:
+      type: object
+      required: [prs, repo, total, page]
+      properties:
+        prs:
+          type: array
+          items: { $ref: "#/components/schemas/PrSummary" }
+        repo: { type: string }
+        total: { type: integer }
+        page: { type: integer }
+
+    ImpactNode:
+      type: object
+      required: [id, label, file, kind, changed, depth]
+      properties:
+        id: { type: string }
+        label: { type: string }
+        file: { type: string }
+        kind: { type: string }
+        changed: { type: boolean }
+        depth: { type: integer }
+        line: { type: integer }
+
+    ImpactEdge:
+      type: object
+      required: [src, dst]
+      properties:
+        src: { type: string }
+        dst: { type: string }
+
+    PrImpactGraph:
+      type: object
+      required: [pr_number, changed_files, nodes, edges, direct_symbols, impacted_symbols]
+      properties:
+        pr_number: { type: integer }
+        changed_files:
+          type: array
+          items: { type: string }
+        nodes:
+          type: array
+          items: { $ref: "#/components/schemas/ImpactNode" }
+        edges:
+          type: array
+          items: { $ref: "#/components/schemas/ImpactEdge" }
+        direct_symbols: { type: integer }
+        impacted_symbols: { type: integer }
+
+    HotspotFile:
+      type: object
+      required: [file, commits, churn, authors, first_seen, last_seen]
+      properties:
+        file: { type: string }
+        commits: { type: integer }
+        churn: { type: integer }
+        authors: { type: integer }
+        first_seen: { type: string }
+        last_seen: { type: string }
+
+    HotspotsResponse:
+      type: object
+      required: [hotspots, head_sha, computed_at, total_commits_scanned, total_files_seen]
+      properties:
+        hotspots:
+          type: array
+          items: { $ref: "#/components/schemas/HotspotFile" }
+        head_sha: { type: string }
+        computed_at: { type: integer }
+        total_commits_scanned: { type: integer }
+        total_files_seen: { type: integer }
+
+    DeadSymbol:
+      type: object
+      required: [name, kind, file, line]
+      properties:
+        name: { type: string }
+        kind: { type: string }
+        file: { type: string }
+        line: { type: integer }
+
+    DeadcodeResponse:
+      type: object
+      required: [dead_code, head_sha, computed_at]
+      properties:
+        dead_code:
+          type: array
+          items: { $ref: "#/components/schemas/DeadSymbol" }
+        head_sha: { type: string }
+        computed_at: { type: integer }

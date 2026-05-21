@@ -1,0 +1,579 @@
+// GitHub (and, later, Gitea) API client for PR data.
+//
+// Configuration via env vars:
+//   CRABCC_FORGE_TOKEN  — personal access token (optional; raises rate limit)
+//   CRABCC_FORGE_REPO   — "owner/repo" (overrides auto-detect from git remote)
+//
+// Uses ureq (blocking) to fit tiny_http's sync dispatch model.
+// Responses are fresh-fetched per request; call-site caching is in lib.rs.
+
+use anyhow::{bail, Context, Result};
+use serde::{Deserialize, Serialize};
+use std::path::Path;
+
+// ── Types surfaced to the API layer ────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PrAuthor {
+    pub login: String,
+    pub avatar_url: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PrLabel {
+    pub name: String,
+    pub color: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PrSummary {
+    pub number: u64,
+    pub title: String,
+    /// "open" | "closed"
+    pub state: String,
+    pub draft: bool,
+    pub merged: bool,
+    pub author: PrAuthor,
+    pub head_ref: String,
+    pub base_ref: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub labels: Vec<PrLabel>,
+    pub additions: u64,
+    pub deletions: u64,
+    pub changed_files: u64,
+    pub html_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct PrFile {
+    pub filename: String,
+    /// "added" | "modified" | "removed" | "renamed"
+    pub status: String,
+    pub additions: u64,
+    pub deletions: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub patch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_filename: Option<String>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct PrDetail {
+    pub pr: PrSummary,
+    pub files: Vec<PrFile>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct PrListResponse {
+    pub prs: Vec<PrSummary>,
+    pub repo: String,
+    pub total: usize,
+    pub page: u32,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct ForgeConfig {
+    pub repo: String,
+    pub configured: bool,
+    pub token_present: bool,
+    pub forge_kind: &'static str,
+}
+
+/// A node in the PR impact (blast-radius) graph.
+#[derive(Serialize, Clone, Debug)]
+pub struct ImpactNode {
+    /// Symbol qualified name ("MyStruct::method" or file path for file-only nodes).
+    pub id: String,
+    pub label: String,
+    pub file: String,
+    pub kind: String,
+    /// true = the symbol lives in a file changed by this PR.
+    pub changed: bool,
+    /// 0 = changed, 1 = direct dep, 2 = transitive dep.
+    pub depth: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct ImpactEdge {
+    pub src: String,
+    pub dst: String,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct PrImpactGraph {
+    pub pr_number: u64,
+    pub changed_files: Vec<String>,
+    pub nodes: Vec<ImpactNode>,
+    pub edges: Vec<ImpactEdge>,
+    pub direct_symbols: usize,
+    pub impacted_symbols: usize,
+}
+
+// ── Config detection ───────────────────────────────────────────────────────
+
+/// Detect "owner/repo" from `git remote get-url origin` in `root`.
+pub fn detect_repo(root: &Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["remote", "get-url", "origin"])
+        .current_dir(root)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    parse_github_repo(&url)
+}
+
+fn parse_github_repo(url: &str) -> Option<String> {
+    // SSH: git@github.com:owner/repo.git
+    if let Some(rest) = url.strip_prefix("git@github.com:") {
+        let slug = rest.trim_end_matches(".git");
+        if slug.contains('/') {
+            return Some(slug.to_string());
+        }
+    }
+    // HTTPS: https://github.com/owner/repo[.git]
+    for prefix in &["https://github.com/", "http://github.com/"] {
+        if let Some(rest) = url.strip_prefix(prefix) {
+            let slug = rest.trim_end_matches(".git");
+            if slug.contains('/') {
+                return Some(slug.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn token() -> Option<String> {
+    std::env::var("CRABCC_FORGE_TOKEN")
+        .or_else(|_| std::env::var("GITHUB_TOKEN"))
+        .ok()
+        .filter(|s| !s.is_empty())
+}
+
+pub fn forge_config(root: &Path) -> ForgeConfig {
+    let repo = std::env::var("CRABCC_FORGE_REPO")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| detect_repo(root))
+        .unwrap_or_default();
+    let token_present = token().is_some();
+    let configured = !repo.is_empty();
+    ForgeConfig {
+        repo,
+        configured,
+        token_present,
+        forge_kind: "github",
+    }
+}
+
+// ── HTTP helper ───────────────────────────────────────────────────────────
+
+fn github_get(url: &str) -> Result<ureq::Response> {
+    let mut req = ureq::get(url)
+        .set("Accept", "application/vnd.github+json")
+        .set("X-GitHub-Api-Version", "2022-11-28")
+        .set("User-Agent", "crabcc-viz/4");
+    if let Some(tok) = token() {
+        req = req.set("Authorization", &format!("Bearer {tok}"));
+    }
+    req.call().context("GitHub API request failed")
+}
+
+// ── API methods ────────────────────────────────────────────────────────────
+
+pub fn list_prs(root: &Path, state: &str, page: u32) -> Result<PrListResponse> {
+    let cfg = forge_config(root);
+    if !cfg.configured {
+        bail!("no GitHub repo detected — set CRABCC_FORGE_REPO=owner/repo or push to a GitHub remote");
+    }
+    let repo = &cfg.repo;
+    let state = match state {
+        "open" | "closed" | "all" => state,
+        _ => "open",
+    };
+    let url = format!(
+        "https://api.github.com/repos/{repo}/pulls?state={state}&per_page=30&page={page}"
+    );
+    let resp = github_get(&url)?;
+    #[derive(Deserialize)]
+    struct GhPr {
+        number: u64,
+        title: String,
+        state: String,
+        draft: bool,
+        merged_at: Option<String>,
+        user: GhUser,
+        head: GhRef,
+        base: GhRef,
+        created_at: String,
+        updated_at: String,
+        labels: Vec<GhLabel>,
+        additions: Option<u64>,
+        deletions: Option<u64>,
+        changed_files: Option<u64>,
+        html_url: String,
+        body: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct GhUser {
+        login: String,
+        avatar_url: String,
+    }
+    #[derive(Deserialize)]
+    struct GhRef {
+        #[serde(rename = "ref")]
+        ref_: String,
+    }
+    #[derive(Deserialize)]
+    struct GhLabel {
+        name: String,
+        color: String,
+    }
+    let raw: Vec<GhPr> = resp.into_json()?;
+    let total = raw.len();
+    let prs = raw
+        .into_iter()
+        .map(|p| PrSummary {
+            number: p.number,
+            title: p.title,
+            state: p.state,
+            draft: p.draft,
+            merged: p.merged_at.is_some(),
+            author: PrAuthor {
+                login: p.user.login,
+                avatar_url: p.user.avatar_url,
+            },
+            head_ref: p.head.ref_,
+            base_ref: p.base.ref_,
+            created_at: p.created_at,
+            updated_at: p.updated_at,
+            labels: p
+                .labels
+                .into_iter()
+                .map(|l| PrLabel {
+                    name: l.name,
+                    color: l.color,
+                })
+                .collect(),
+            additions: p.additions.unwrap_or(0),
+            deletions: p.deletions.unwrap_or(0),
+            changed_files: p.changed_files.unwrap_or(0),
+            html_url: p.html_url,
+            body: p.body,
+        })
+        .collect();
+    Ok(PrListResponse {
+        prs,
+        repo: repo.clone(),
+        total,
+        page,
+    })
+}
+
+pub fn get_pr(root: &Path, number: u64) -> Result<PrSummary> {
+    let cfg = forge_config(root);
+    if !cfg.configured {
+        bail!("no GitHub repo detected");
+    }
+    let repo = &cfg.repo;
+    let url = format!("https://api.github.com/repos/{repo}/pulls/{number}");
+    let resp = github_get(&url)?;
+    #[derive(Deserialize)]
+    struct GhPr {
+        number: u64,
+        title: String,
+        state: String,
+        draft: bool,
+        merged_at: Option<String>,
+        user: GhUser,
+        head: GhRef,
+        base: GhRef,
+        created_at: String,
+        updated_at: String,
+        labels: Vec<GhLabel>,
+        additions: u64,
+        deletions: u64,
+        changed_files: u64,
+        html_url: String,
+        body: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct GhUser {
+        login: String,
+        avatar_url: String,
+    }
+    #[derive(Deserialize)]
+    struct GhRef {
+        #[serde(rename = "ref")]
+        ref_: String,
+    }
+    #[derive(Deserialize)]
+    struct GhLabel {
+        name: String,
+        color: String,
+    }
+    let p: GhPr = resp.into_json()?;
+    Ok(PrSummary {
+        number: p.number,
+        title: p.title,
+        state: p.state,
+        draft: p.draft,
+        merged: p.merged_at.is_some(),
+        author: PrAuthor {
+            login: p.user.login,
+            avatar_url: p.user.avatar_url,
+        },
+        head_ref: p.head.ref_,
+        base_ref: p.base.ref_,
+        created_at: p.created_at,
+        updated_at: p.updated_at,
+        labels: p
+            .labels
+            .into_iter()
+            .map(|l| PrLabel {
+                name: l.name,
+                color: l.color,
+            })
+            .collect(),
+        additions: p.additions,
+        deletions: p.deletions,
+        changed_files: p.changed_files,
+        html_url: p.html_url,
+        body: p.body,
+    })
+}
+
+pub fn get_pr_files(root: &Path, number: u64) -> Result<Vec<PrFile>> {
+    let cfg = forge_config(root);
+    if !cfg.configured {
+        bail!("no GitHub repo detected");
+    }
+    let repo = &cfg.repo;
+    let url = format!("https://api.github.com/repos/{repo}/pulls/{number}/files?per_page=100");
+    let resp = github_get(&url)?;
+    #[derive(Deserialize)]
+    struct GhFile {
+        filename: String,
+        status: String,
+        additions: u64,
+        deletions: u64,
+        patch: Option<String>,
+        previous_filename: Option<String>,
+    }
+    let raw: Vec<GhFile> = resp.into_json()?;
+    Ok(raw
+        .into_iter()
+        .map(|f| PrFile {
+            filename: f.filename,
+            status: f.status,
+            additions: f.additions,
+            deletions: f.deletions,
+            patch: f.patch,
+            previous_filename: f.previous_filename,
+        })
+        .collect())
+}
+
+/// Build the blast-radius graph for a PR.
+///
+/// Algorithm:
+///  1. Fetch the list of files changed in the PR.
+///  2. For each changed file, look up symbols defined there in the
+///     crabcc symbol index (direct SQL query against `index.db`).
+///  3. For each symbol, walk one hop of callers + callees in
+///     `graph.json` to find immediate dependencies.
+///  4. Return the induced sub-graph capped at MAX_IMPACT_NODES.
+pub fn pr_impact_graph(root: &Path, number: u64) -> Result<PrImpactGraph> {
+    let files = get_pr_files(root, number)?;
+    let changed_files: std::collections::HashSet<String> =
+        files.iter().map(|f| f.filename.clone()).collect();
+
+    let db_path = root.join(".crabcc").join("index.db");
+    let graph_path = root.join(".crabcc").join("graph.json");
+
+    // Early-exit if no index — return file-only graph.
+    if !db_path.exists() {
+        let nodes: Vec<ImpactNode> = changed_files
+            .iter()
+            .map(|f| ImpactNode {
+                id: f.clone(),
+                label: short_path(f),
+                file: f.clone(),
+                kind: "file".into(),
+                changed: true,
+                depth: 0,
+                line: None,
+            })
+            .collect();
+        return Ok(PrImpactGraph {
+            pr_number: number,
+            changed_files: changed_files.into_iter().collect(),
+            direct_symbols: nodes.len(),
+            impacted_symbols: 0,
+            nodes,
+            edges: vec![],
+        });
+    }
+
+    let conn = rusqlite::Connection::open_with_flags(
+        &db_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )?;
+
+    // Collect symbols from changed files.
+    let mut changed_symbols: std::collections::HashSet<String> =
+        std::collections::HashSet::new();
+    let mut node_map: std::collections::HashMap<String, ImpactNode> =
+        std::collections::HashMap::new();
+
+    for file in &changed_files {
+        let mut stmt = conn.prepare_cached(
+            "SELECT s.name, s.kind, s.line_start \
+             FROM symbols s JOIN files f ON f.id = s.file_id \
+             WHERE f.path = ?1 AND s.kind IN ('function','method','struct','enum','trait','class') \
+             ORDER BY s.line_start LIMIT 200",
+        )?;
+        let rows = stmt.query_map(rusqlite::params![file], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<i64>>(2)?,
+            ))
+        })?;
+        for row in rows.flatten() {
+            let (name, kind, line) = row;
+            let node = ImpactNode {
+                id: name.clone(),
+                label: short_name(&name),
+                file: file.clone(),
+                kind,
+                changed: true,
+                depth: 0,
+                line: line.map(|l| l as u32),
+            };
+            changed_symbols.insert(name.clone());
+            node_map.insert(name, node);
+        }
+    }
+
+    // Walk one hop of the call graph to find impacted symbols.
+    // The v4 CallGraph uses i64 node IDs; we bridge to names via the Store.
+    let mut edges: Vec<ImpactEdge> = Vec::new();
+    if graph_path.exists() {
+        if let (Ok(graph), Ok(store)) = (
+            crabcc_core::graph::CallGraph::load(&graph_path),
+            crabcc_core::store::Store::open(&db_path),
+        ) {
+            // Build name → id map for changed symbols.
+            let mut name_to_id: std::collections::HashMap<String, i64> =
+                std::collections::HashMap::new();
+            for sym in &changed_symbols {
+                if let Ok(Some(id)) = store.symbol_id_by_name(sym) {
+                    name_to_id.insert(sym.clone(), id);
+                }
+            }
+
+            let mut to_add: Vec<(i64, u32)> = Vec::new(); // (id, depth)
+            for (sym, &sym_id) in &name_to_id {
+                // Direct callers.
+                if let Some(callers) = graph.callers.get(&sym_id) {
+                    for &caller_id in callers.iter().take(20) {
+                        if let Ok(Some(caller_name)) = store.symbol_name_by_id(caller_id) {
+                            if !changed_symbols.contains(&caller_name) {
+                                to_add.push((caller_id, 1));
+                            }
+                            let e = ImpactEdge { src: caller_name.clone(), dst: sym.clone() };
+                            if !edges.iter().any(|x| x.src == e.src && x.dst == e.dst) {
+                                edges.push(e);
+                            }
+                        }
+                    }
+                }
+                // Direct callees.
+                if let Some(callees) = graph.callees.get(&sym_id) {
+                    for &callee_id in callees.iter().take(10) {
+                        if let Ok(Some(callee_name)) = store.symbol_name_by_id(callee_id) {
+                            if !changed_symbols.contains(&callee_name) {
+                                to_add.push((callee_id, 1));
+                            }
+                            let e = ImpactEdge { src: sym.clone(), dst: callee_name };
+                            if !edges.iter().any(|x| x.src == e.src && x.dst == e.dst) {
+                                edges.push(e);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Enrich the impacted symbols with metadata.
+            for (sym_id, depth) in to_add {
+                if node_map.len() >= MAX_IMPACT_NODES {
+                    break;
+                }
+                if let Ok(Some(sym_name)) = store.symbol_name_by_id(sym_id) {
+                    if node_map.contains_key(&sym_name) {
+                        continue;
+                    }
+                    let row: Option<(String, String, Option<i64>)> = conn
+                        .query_row(
+                            "SELECT f.path, s.kind, s.line_start \
+                             FROM symbols s JOIN files f ON f.id = s.file_id \
+                             WHERE s.id = ?1 LIMIT 1",
+                            rusqlite::params![sym_id],
+                            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                        )
+                        .ok();
+                    let (file, kind, line) = row.unwrap_or_else(|| ("?".into(), "?".into(), None));
+                    node_map.insert(
+                        sym_name.clone(),
+                        ImpactNode {
+                            id: sym_name.clone(),
+                            label: short_name(&sym_name),
+                            file,
+                            kind,
+                            changed: false,
+                            depth,
+                            line: line.map(|l| l as u32),
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    let direct_symbols = changed_symbols.len();
+    let impacted_symbols = node_map.len().saturating_sub(direct_symbols);
+    let nodes: Vec<ImpactNode> = node_map.into_values().collect();
+
+    Ok(PrImpactGraph {
+        pr_number: number,
+        changed_files: changed_files.into_iter().collect(),
+        nodes,
+        edges,
+        direct_symbols,
+        impacted_symbols,
+    })
+}
+
+const MAX_IMPACT_NODES: usize = 300;
+
+fn short_path(path: &str) -> String {
+    path.rsplit('/').next().unwrap_or(path).to_string()
+}
+
+fn short_name(name: &str) -> String {
+    // "a::b::c::d" → "c::d" (keep last two segments for readability)
+    let parts: Vec<&str> = name.split("::").collect();
+    if parts.len() <= 2 {
+        name.to_string()
+    } else {
+        parts[parts.len() - 2..].join("::")
+    }
+}

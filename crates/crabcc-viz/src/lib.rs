@@ -26,6 +26,8 @@ use std::sync::Arc;
 
 mod banner;
 mod bootstrap;
+pub mod forge;
+mod git_analytics;
 mod graph;
 mod memory_view;
 mod query;
@@ -306,7 +308,73 @@ fn handle(request: Request, root: &Path) -> Result<()> {
             Ok(snap) => respond_json(request, &snap),
             Err(e) => respond_status(request, 500, &format!("memory get failed: {e}")),
         },
-        _ => respond_status(request, 404, "not found"),
+        // ── Forge (GitHub / Gitea) ──────────────────────────────────────────
+        "/api/forge/config" => {
+            let cfg = forge::forge_config(root);
+            respond_json(request, &cfg)
+        }
+        "/api/forge/prs" => {
+            let state = query_param(query, "state").unwrap_or_else(|| "open".into());
+            let page: u32 = query_param(query, "page")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1);
+            match forge::list_prs(root, &state, page) {
+                Ok(snap) => respond_json(request, &snap),
+                Err(e) => respond_status(request, 400, &format!("forge prs failed: {e}")),
+            }
+        }
+        // ── Analytics ───────────────────────────────────────────────────────
+        "/api/analytics/hotspots" => {
+            let limit: usize = query_param(query, "limit")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(50)
+                .clamp(1, 200);
+            let snap = git_analytics::analytics_snapshot(root, limit, 200);
+            respond_json(request, &serde_json::json!({
+                "hotspots": snap.hotspots,
+                "head_sha": snap.head_sha,
+                "computed_at": snap.computed_at,
+                "total_commits_scanned": snap.total_commits_scanned,
+                "total_files_seen": snap.total_files_seen,
+            }))
+        }
+        "/api/analytics/deadcode" => {
+            let limit: usize = query_param(query, "limit")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(100)
+                .clamp(1, 500);
+            let snap = git_analytics::analytics_snapshot(root, 50, limit);
+            respond_json(request, &serde_json::json!({
+                "dead_code": snap.dead_code,
+                "head_sha": snap.head_sha,
+                "computed_at": snap.computed_at,
+            }))
+        }
+        _ => {
+            // Path-parameter forge routes: /api/forge/prs/{number}[/impact]
+            if let Some(rest) = path.strip_prefix("/api/forge/prs/") {
+                if let Some(num_str) = rest.strip_suffix("/impact") {
+                    if let Ok(number) = num_str.parse::<u64>() {
+                        return match forge::pr_impact_graph(root, number) {
+                            Ok(snap) => respond_json(request, &snap),
+                            Err(e) => respond_status(request, 400, &format!("impact graph: {e}")),
+                        };
+                    }
+                }
+                // /api/forge/prs/{number} — single PR detail
+                if let Ok(number) = rest.parse::<u64>() {
+                    return match (forge::get_pr(root, number), forge::get_pr_files(root, number)) {
+                        (Ok(pr), Ok(files)) => {
+                            respond_json(request, &forge::PrDetail { pr, files })
+                        }
+                        (Err(e), _) | (_, Err(e)) => {
+                            respond_status(request, 400, &format!("pr detail: {e}"))
+                        }
+                    };
+                }
+            }
+            respond_status(request, 404, "not found")
+        }
     }
 }
 
@@ -1752,6 +1820,17 @@ fn list_agent_ids() -> Result<std::collections::HashSet<String>> {
     Ok(out)
 }
 
+/// Extract a single query-string parameter by key.
+fn query_param(query: &str, key: &str) -> Option<String> {
+    for pair in query.split('&').filter(|s| !s.is_empty()) {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        if k == key {
+            return Some(query::url_decode(v));
+        }
+    }
+    None
+}
+
 fn respond_yaml(request: Request, body: &str) -> Result<()> {
     let mut resp = Response::from_string(body);
     resp.add_header(header("Content-Type", "application/yaml; charset=utf-8"));
@@ -2686,6 +2765,14 @@ mod tests {
         "/api/debug/dump",
         "/api/memory/recent",
         "/api/events",
+        // Forge (GitHub/Gitea) PR viewer
+        "/api/forge/config",
+        "/api/forge/prs",
+        "/api/forge/prs/{number}",
+        "/api/forge/prs/{number}/impact",
+        // Git analytics
+        "/api/analytics/hotspots",
+        "/api/analytics/deadcode",
     ];
 
     /// Extract every YAML key under `paths:` whose value starts with
