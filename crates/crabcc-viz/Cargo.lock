@@ -306,7 +306,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-core"
-version = "4.0.0"
+version = "4.1.0"
 dependencies = [
  "ahash",
  "anyhow",
@@ -338,7 +338,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-fetch"
-version = "4.0.0"
+version = "4.1.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -353,7 +353,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-memory"
-version = "4.0.0"
+version = "4.1.0"
 dependencies = [
  "anyhow",
  "crabcc-core",
@@ -368,7 +368,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-viz"
-version = "4.0.0"
+version = "4.1.0"
 dependencies = [
  "anyhow",
  "crabcc-core",
