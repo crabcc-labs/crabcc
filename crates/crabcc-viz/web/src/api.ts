@@ -134,7 +134,10 @@ type AgentModelsResponse = Schemas["AgentModelsResponse"];
 
 async function getJson<T>(path: string): Promise<T> {
   const r = await fetch(path);
-  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  if (!r.ok) {
+    const body = await r.text().catch(() => "");
+    throw new Error(`${r.status} ${r.statusText}: ${body}`);
+  }
   return (await r.json()) as T;
 }
 

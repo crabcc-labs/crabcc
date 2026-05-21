@@ -133,10 +133,33 @@ pub(crate) fn graph_snapshot(root: &Path, query: &str) -> Result<GraphSnapshot> 
     };
 
     let dir = q.dir.as_str();
-    let frontier: Vec<GraphHit> = match dir {
-        "callees" => graph.outgoing(&q.root, depth),
-        _ => graph.incoming(&q.root, depth),
+
+    // Resolve root name → symbol ID for graph traversal. CallGraph v4 uses
+    // i64 IDs; names are bridge-resolved via the Store at call and return time.
+    let root_id_opt = store.symbol_id_by_name(&q.root)?;
+    let mut id_to_name: std::collections::HashMap<i64, String> =
+        std::collections::HashMap::new();
+    if let Some(rid) = root_id_opt {
+        id_to_name.insert(rid, q.root.clone());
+    }
+    let frontier: Vec<GraphHit> = if let Some(root_id) = root_id_opt {
+        match dir {
+            "callees" => graph.outgoing(root_id, depth),
+            _ => graph.incoming(root_id, depth),
+        }
+    } else {
+        vec![]
     };
+
+    // Resolve each BFS hit's symbol_id back to a name.
+    let frontier_names: Vec<(String, usize)> = frontier
+        .into_iter()
+        .filter_map(|h| {
+            let name = store.symbol_name_by_id(h.symbol_id).ok()??;
+            id_to_name.insert(h.symbol_id, name.clone());
+            Some((name, h.depth))
+        })
+        .collect();
 
     // The frontier from `incoming` / `outgoing` excludes the root itself.
     // Add it back at depth 0 so the canvas has a recognizable focus point.
@@ -146,9 +169,9 @@ pub(crate) fn graph_snapshot(root: &Path, query: &str) -> Result<GraphSnapshot> 
     let mut nodes: Vec<NodeOut> =
         std::iter::once(NodeOut::from_id_with_store(q.root.clone(), 0, &store))
             .chain(
-                frontier
+                frontier_names
                     .into_iter()
-                    .map(|h| NodeOut::from_id_with_store(h.name, h.depth, &store)),
+                    .map(|(name, depth)| NodeOut::from_id_with_store(name, depth, &store)),
             )
             .collect();
     let truncated = nodes.len() > MAX_NODES;
@@ -156,30 +179,39 @@ pub(crate) fn graph_snapshot(root: &Path, query: &str) -> Result<GraphSnapshot> 
         nodes.truncate(MAX_NODES);
     }
 
+    // Build name→id reverse map (only for nodes in the final set) for edge
+    // materialization.
+    let name_to_id: std::collections::HashMap<&str, i64> =
+        id_to_name.iter().map(|(id, name)| (name.as_str(), *id)).collect();
     let in_set: std::collections::HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
     let mut edges: Vec<EdgeOut> = Vec::with_capacity(nodes.len() * 2);
     for n in &nodes {
+        let Some(&sym_id) = name_to_id.get(n.id.as_str()) else { continue };
         // For a `callees` view we draw edges in the call direction
         // (root → callee), and for `callers` we draw caller → root. The
         // direction of the arrow visualizes "who calls whom" in both modes.
         if dir == "callees" {
-            if let Some(neighbors) = graph.callees.get(&n.id) {
-                for nb in neighbors {
-                    if in_set.contains(nb.as_str()) {
-                        edges.push(EdgeOut {
-                            src: n.id.clone(),
-                            dst: nb.clone(),
-                        });
+            if let Some(neighbors) = graph.callees.get(&sym_id) {
+                for &nb_id in neighbors {
+                    if let Some(nb_name) = id_to_name.get(&nb_id) {
+                        if in_set.contains(nb_name.as_str()) {
+                            edges.push(EdgeOut {
+                                src: n.id.clone(),
+                                dst: nb_name.clone(),
+                            });
+                        }
                     }
                 }
             }
-        } else if let Some(neighbors) = graph.callers.get(&n.id) {
-            for nb in neighbors {
-                if in_set.contains(nb.as_str()) {
-                    edges.push(EdgeOut {
-                        src: nb.clone(),
-                        dst: n.id.clone(),
-                    });
+        } else if let Some(neighbors) = graph.callers.get(&sym_id) {
+            for &nb_id in neighbors {
+                if let Some(nb_name) = id_to_name.get(&nb_id) {
+                    if in_set.contains(nb_name.as_str()) {
+                        edges.push(EdgeOut {
+                            src: nb_name.clone(),
+                            dst: n.id.clone(),
+                        });
+                    }
                 }
             }
         }

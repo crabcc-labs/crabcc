@@ -51,22 +51,41 @@ pub struct AnalyticsSnapshot {
 
 // ── Cache helpers ─────────────────────────────────────────────────────────
 
+/// Cache envelope that includes the limits used when the snapshot was computed.
+/// Prevents a small-limit request from poisoning a subsequent large-limit one.
+#[derive(Serialize, Deserialize)]
+struct CacheEntry {
+    hotspot_limit: usize,
+    dead_limit: usize,
+    #[serde(flatten)]
+    snapshot: AnalyticsSnapshot,
+}
+
 fn cache_path(root: &Path) -> std::path::PathBuf {
     root.join(".crabcc").join("analytics.json")
 }
 
-fn read_cache(root: &Path, head_sha: &str) -> Option<AnalyticsSnapshot> {
+fn read_cache(
+    root: &Path,
+    head_sha: &str,
+    hotspot_limit: usize,
+    dead_limit: usize,
+) -> Option<AnalyticsSnapshot> {
     let bytes = std::fs::read(cache_path(root)).ok()?;
-    let snap: AnalyticsSnapshot = serde_json::from_slice(&bytes).ok()?;
-    if snap.head_sha == head_sha {
-        Some(snap)
+    let entry: CacheEntry = serde_json::from_slice(&bytes).ok()?;
+    if entry.snapshot.head_sha == head_sha
+        && entry.hotspot_limit == hotspot_limit
+        && entry.dead_limit == dead_limit
+    {
+        Some(entry.snapshot)
     } else {
         None
     }
 }
 
-fn write_cache(root: &Path, snap: &AnalyticsSnapshot) {
-    if let Ok(body) = serde_json::to_vec(snap) {
+fn write_cache(root: &Path, snap: &AnalyticsSnapshot, hotspot_limit: usize, dead_limit: usize) {
+    let entry = CacheEntry { hotspot_limit, dead_limit, snapshot: snap.clone() };
+    if let Ok(body) = serde_json::to_vec(&entry) {
         let _ = std::fs::write(cache_path(root), body);
     }
 }
@@ -95,7 +114,7 @@ fn unix_now() -> u64 {
 ///
 /// `git log --name-only --format="|%H|%ae|%ci"` produces blocks like:
 ///
-/// ```
+/// ```text
 /// |abc123...|author@x.com|2026-05-01T...
 ///
 /// path/to/file.rs
@@ -104,13 +123,13 @@ fn unix_now() -> u64 {
 ///
 /// We stream-parse this without loading the whole output into memory.
 fn compute_hotspots(root: &Path, limit: usize) -> Result<(Vec<HotspotFile>, u32, u32)> {
-    // `--diff-filter=ACDMRT` skips deleted files from the tallies so
-    // removed code doesn't inflate churn numbers.
+    // `--diff-filter=ACMRT` skips deleted (D) files so removed paths don't
+    // inflate hotspot rankings or total_files_seen.
     let out = std::process::Command::new("git")
         .args([
             "log",
             "--name-only",
-            "--diff-filter=ACDMRT",
+            "--diff-filter=ACMRT",
             "--format=|%H|%ae|%ci",
             "--max-count=2000", // hard cap so huge repos don't hang
         ])
@@ -228,7 +247,10 @@ fn compute_dead_code(root: &Path, limit: usize) -> Result<Vec<DeadSymbol>> {
              FROM symbols s JOIN files f ON f.id = s.file_id \
              WHERE s.kind IN ('function','method') \
                AND s.kind != 'sentinel' \
-               AND NOT EXISTS (SELECT 1 FROM edges e WHERE e.dst_symbol_id = s.id) \
+               AND NOT EXISTS ( \
+                   SELECT 1 FROM edges e \
+                   WHERE e.dst_symbol_id = s.id AND e.kind = 'call' \
+               ) \
                AND s.name NOT LIKE 'test_%' \
                AND s.name NOT LIKE '%::test_%' \
                AND s.name NOT LIKE '%_test' \
@@ -258,11 +280,22 @@ fn compute_dead_code(root: &Path, limit: usize) -> Result<Vec<DeadSymbol>> {
     let graph = crabcc_core::graph::CallGraph::load(&graph_path)?;
     let has_callers: std::collections::HashSet<i64> =
         graph.callers.keys().copied().collect();
-    let orphan_ids: Vec<i64> = graph
-        .callees
-        .keys()
-        .filter(|k| !has_callers.contains(k))
-        .copied()
+    // Derive candidates from ALL function symbols in the DB (not just
+    // graph.callees.keys(), which omits symbols with zero outgoing calls).
+    let mut fn_stmt = conn.prepare(
+        "SELECT s.id FROM symbols s \
+         WHERE s.kind IN ('function','method') \
+           AND s.name NOT LIKE 'test_%' \
+           AND s.name NOT LIKE '%::test_%' \
+           AND s.name NOT LIKE '%_test'",
+    )?;
+    let all_fn_ids: Vec<i64> = fn_stmt
+        .query_map([], |r| r.get::<_, i64>(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    let orphan_ids: Vec<i64> = all_fn_ids
+        .into_iter()
+        .filter(|id| !has_callers.contains(id))
         .take(limit)
         .collect();
     let mut dead: Vec<DeadSymbol> = Vec::new();
@@ -293,7 +326,7 @@ fn compute_dead_code(root: &Path, limit: usize) -> Result<Vec<DeadSymbol>> {
 
 pub fn analytics_snapshot(root: &Path, hotspot_limit: usize, dead_limit: usize) -> AnalyticsSnapshot {
     let sha = head_sha(root);
-    if let Some(cached) = read_cache(root, &sha) {
+    if let Some(cached) = read_cache(root, &sha, hotspot_limit, dead_limit) {
         return cached;
     }
 
@@ -309,6 +342,6 @@ pub fn analytics_snapshot(root: &Path, hotspot_limit: usize, dead_limit: usize) 
         total_commits_scanned: total_commits,
         total_files_seen: total_files,
     };
-    write_cache(root, &snap);
+    write_cache(root, &snap, hotspot_limit, dead_limit);
     snap
 }

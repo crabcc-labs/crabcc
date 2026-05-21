@@ -46,12 +46,18 @@ export const ImpactGraph = memo(function ImpactGraph({ data }: Props) {
     const width = svg.clientWidth || 600;
     const height = svg.clientHeight || 360;
 
+    // Track whether this effect instance has been torn down so the async
+    // continuation can bail out after unmount or a data change.
+    let cancelled = false;
+    let effectCleanup: (() => void) | undefined;
+
     // Dynamic import to keep initial bundle lean.
     Promise.all([
       import("d3-force"),
       import("d3-selection"),
       import("d3-zoom"),
     ]).then(([force, d3sel, zoom]) => {
+      if (cancelled) return;
       setD3Ready(true);
       const nodes: SimNode[] = data.nodes.map((n) => ({ ...n }));
       const links: SimLink[] = data.edges.map((e) => ({
@@ -159,11 +165,17 @@ export const ImpactGraph = memo(function ImpactGraph({ data }: Props) {
         });
       d3sel.select(svg).call(zoomBehavior);
 
-      return () => {
+      effectCleanup = () => {
         simulation.stop();
         d3sel.select(svg).on(".zoom", null);
       };
     });
+
+    // Return the cleanup to React so it runs on unmount or before re-running.
+    return () => {
+      cancelled = true;
+      effectCleanup?.();
+    };
   }, [data]);
 
   if (data.nodes.length === 0) {

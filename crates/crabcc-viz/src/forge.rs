@@ -474,27 +474,35 @@ pub fn pr_impact_graph(root: &Path, number: u64) -> Result<PrImpactGraph> {
     )?;
 
     // Collect symbols from changed files.
+    // Also build name→id from file-scoped lookups to avoid ambiguity when
+    // multiple files define the same symbol name.
     let mut changed_symbols: std::collections::HashSet<String> =
         std::collections::HashSet::new();
     let mut node_map: std::collections::HashMap<String, ImpactNode> =
         std::collections::HashMap::new();
+    let mut name_to_id: std::collections::HashMap<String, i64> =
+        std::collections::HashMap::new();
 
-    for file in &changed_files {
+    'outer: for file in &changed_files {
         let mut stmt = conn.prepare_cached(
-            "SELECT s.name, s.kind, s.line_start \
+            "SELECT s.id, s.name, s.kind, s.line_start \
              FROM symbols s JOIN files f ON f.id = s.file_id \
              WHERE f.path = ?1 AND s.kind IN ('function','method','struct','enum','trait','class') \
              ORDER BY s.line_start LIMIT 200",
         )?;
         let rows = stmt.query_map(rusqlite::params![file], |r| {
             Ok((
-                r.get::<_, String>(0)?,
+                r.get::<_, i64>(0)?,
                 r.get::<_, String>(1)?,
-                r.get::<_, Option<i64>>(2)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<i64>>(3)?,
             ))
         })?;
         for row in rows.flatten() {
-            let (name, kind, line) = row;
+            if node_map.len() >= MAX_IMPACT_NODES {
+                break 'outer;
+            }
+            let (sym_id, name, kind, line) = row;
             let node = ImpactNode {
                 id: name.clone(),
                 label: short_name(&name),
@@ -505,6 +513,8 @@ pub fn pr_impact_graph(root: &Path, number: u64) -> Result<PrImpactGraph> {
                 line: line.map(|l| l as u32),
             };
             changed_symbols.insert(name.clone());
+            // File-scoped ID takes precedence over any previously seen global match.
+            name_to_id.insert(name.clone(), sym_id);
             node_map.insert(name, node);
         }
     }
@@ -521,14 +531,7 @@ pub fn pr_impact_graph(root: &Path, number: u64) -> Result<PrImpactGraph> {
             crabcc_core::graph::CallGraph::load(&graph_path),
             crabcc_core::store::Store::open(&db_path),
         ) {
-            // Build name → id map for changed symbols.
-            let mut name_to_id: std::collections::HashMap<String, i64> =
-                std::collections::HashMap::new();
-            for sym in &changed_symbols {
-                if let Ok(Some(id)) = store.symbol_id_by_name(sym) {
-                    name_to_id.insert(sym.clone(), id);
-                }
-            }
+            // name_to_id was already populated with file-scoped IDs above.
 
             let mut to_add: Vec<(i64, u32)> = Vec::new(); // (id, depth)
             for (sym, &sym_id) in &name_to_id {
@@ -609,6 +612,15 @@ pub fn pr_impact_graph(root: &Path, number: u64) -> Result<PrImpactGraph> {
     let node_truncated = node_map.len() >= MAX_IMPACT_NODES;
     let impacted_symbols = node_map.len().saturating_sub(direct_symbols);
     let nodes: Vec<ImpactNode> = node_map.into_values().collect();
+
+    // Prune edges whose endpoints were dropped when the node cap was hit;
+    // d3.forceLink requires every link to resolve to a node in the set.
+    let retained: std::collections::HashSet<&str> =
+        nodes.iter().map(|n| n.id.as_str()).collect();
+    let edges: Vec<ImpactEdge> = edges
+        .into_iter()
+        .filter(|e| retained.contains(e.src.as_str()) && retained.contains(e.dst.as_str()))
+        .collect();
 
     Ok(PrImpactGraph {
         pr_number: number,

@@ -63,8 +63,9 @@ export function PrsView() {
         </div>
       </div>
 
-      {/* Config missing */}
-      {error && error.message?.includes("no GitHub repo") && (
+      {/* Config missing — check for the backend message OR any 4xx that implies
+          the forge is unconfigured (getJson throws "${status} ${statusText}"). */}
+      {error && (error.message?.includes("no GitHub repo") || error.message?.startsWith("400")) && (
         <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive flex gap-2">
           <AlertCircle size={16} className="shrink-0 mt-0.5" />
           <div>
@@ -108,8 +109,9 @@ export function PrsView() {
         </p>
       )}
 
-      {/* Pagination */}
-      {(data?.total ?? 0) > 0 && (
+      {/* Pagination — keep controls visible while page > 1 so Prev is always
+          reachable, even if the current page is empty. */}
+      {((data?.total ?? 0) > 0 || page > 1) && (
         <div className="flex items-center gap-2 justify-center mt-2">
           <Button
             variant="outline"
