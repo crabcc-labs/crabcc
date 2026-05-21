@@ -798,7 +798,8 @@ fn seed_graph(root: &Path, query: &str) -> Result<SeedSnapshot> {
     let mut ranked: Vec<(i64, usize)> = degree.into_iter().collect();
     ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
 
-    // Resolve top symbol IDs to names; skip IDs not in the index.
+    // Resolve top symbol IDs to names. We scan past failed resolutions so
+    // `seed_ids.len() == limit` (or exhausted) rather than silently short.
     let mut id_to_name: std::collections::HashMap<i64, String> =
         std::collections::HashMap::new();
     let mut seed_ids: Vec<i64> = Vec::new();
@@ -810,7 +811,11 @@ fn seed_graph(root: &Path, query: &str) -> Result<SeedSnapshot> {
             id_to_name.entry(id).or_insert(name);
             seed_ids.push(id);
         }
+        // IDs that fail resolution are skipped; we keep scanning `ranked`
+        // until we reach `limit` successful resolutions or exhaust the list.
     }
+    // `seeds.len() <= limit`; may be less if the graph has fewer than `limit`
+    // indexable symbols.
     let seeds: Vec<String> = seed_ids
         .iter()
         .filter_map(|id| id_to_name.get(id))

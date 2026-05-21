@@ -342,6 +342,11 @@ pub fn analytics_snapshot(root: &Path, hotspot_limit: usize, dead_limit: usize) 
         total_commits_scanned: total_commits,
         total_files_seen: total_files,
     };
-    write_cache(root, &snap, hotspot_limit, dead_limit);
+    // Don't cache results computed against an empty repo — `head_sha` is
+    // "unknown" when `git rev-parse HEAD` fails (no commits yet), and caching
+    // that entry would poison the cache for those limits until limits change.
+    if snap.head_sha != "unknown" {
+        write_cache(root, &snap, hotspot_limit, dead_limit);
+    }
     snap
 }

@@ -330,14 +330,8 @@ fn github_get(url: &str) -> Result<ureq::Response> {
             absorb_rate_limit_headers(&resp);
             Ok(resp)
         }
-        Err(ureq::Error::Status(401, _)) => {
-            Err(ForgeHttpError { status: 401 }.into())
-        }
-        Err(ureq::Error::Status(403, _)) => {
-            Err(ForgeHttpError { status: 403 }.into())
-        }
-        Err(ureq::Error::Status(404, _)) => {
-            Err(ForgeHttpError { status: 404 }.into())
+        Err(ureq::Error::Status(code, _)) => {
+            Err(ForgeHttpError { status: code }.into())
         }
         Err(e) => Err(e).context("GitHub API request failed"),
     }
@@ -498,9 +492,16 @@ pub fn pr_impact_graph(root: &Path, number: u64) -> Result<PrImpactGraph> {
                 r.get::<_, Option<i64>>(3)?,
             ))
         })?;
+        // Per-file sub-cap: no single file may consume more than half the
+        // budget, so symbol-heavy generated files can't starve other changed
+        // files of representation.
+        let per_file_cap = node_map.len() + (MAX_IMPACT_NODES / 2).max(1);
         for row in rows.flatten() {
             if node_map.len() >= MAX_IMPACT_NODES {
                 break 'outer;
+            }
+            if node_map.len() >= per_file_cap {
+                break;
             }
             let (sym_id, name, kind, line) = row;
             let node = ImpactNode {

@@ -53,7 +53,9 @@
 version: '3'
 
 vars:
-  REPO_FIXTURE: '{{.REPO_FIXTURE | default "/Users/peter.lodri/workspace/mc-mothership"}}'
+  # Default to sibling directory under the current user's home so any
+  # developer can run bench tasks without setting env vars.
+  REPO_FIXTURE: '{{.REPO_FIXTURE | default (printf "%s/workspace/mc-mothership" .HOME)}}'
 
   # Toolchain entry points. Centralized so a swap (e.g. `cross` for
   # cross-compilation) ripples to every task without find/replace.
@@ -62,89 +64,59 @@ vars:
   GH:    gh
 
   # Binaries we ship + the conventional install location.
-  CARGO_BIN:    ~/.cargo/bin
-  CRABCC:       ~/.cargo/bin/crabcc
-  CCC:          ~/.cargo/bin/ccc
+  # Use {{.HOME}} (not ~) for cross-shell reliability.
+  CARGO_BIN:    '{{.HOME}}/.cargo/bin'
+  CRABCC:       '{{.HOME}}/.cargo/bin/crabcc'
+  CCC:          '{{.HOME}}/.cargo/bin/ccc'
 
   # State directories. Per-repo .crabcc/ holds the symbol index and graph
   # sidecar; ~/.crabcc/ holds the singleton _internal.db (agent runs,
   # cli_calls, manager heartbeats) shared across repos.
-  REPO_CRABCC_DIR:   .crabcc
-  INDEX_DB:          .crabcc/index.db
-  GRAPH_JSON:        .crabcc/graph.json
+  # Anchored to {{.ROOT_DIR}} so `task` invoked from a subdirectory resolves correctly.
+  REPO_CRABCC_DIR:   '{{.ROOT_DIR}}/.crabcc'
+  INDEX_DB:          '{{.ROOT_DIR}}/.crabcc/index.db'
+  GRAPH_JSON:        '{{.ROOT_DIR}}/.crabcc/graph.json'
   USER_CRABCC_DIR:   '{{.HOME}}/.crabcc'
   INTERNAL_DB:       '{{.HOME}}/.crabcc/_internal.db'
 
   # macOS surfaces (issue #107). Build outputs land in dist/; the .app
   # bundle source lives under installer/.
-  DMG_DIR:           dist
-  DMG_OUT:           'dist/crabcc-{{.CRABCC_VERSION}}.dmg'
-  APP_BUNDLE_SRC:    installer/Crabcc.app
+  DMG_DIR:           '{{.ROOT_DIR}}/dist'
+  DMG_OUT:           '{{.ROOT_DIR}}/dist/crabcc-{{.CRABCC_VERSION}}.dmg'
+  APP_BUNDLE_SRC:    '{{.ROOT_DIR}}/installer/Crabcc.app'
   APP_INSTALLED:     /Applications/Crabcc.app
   LOGS_DIR:          '{{.HOME}}/Library/Logs/Crabcc'
   LAUNCH_AGENTS_DIR: '{{.HOME}}/Library/LaunchAgents'
 
   # Repomix output (token-minimized bundle for LLM ingestion).
-  REPOMIX_OUT: .repomix/crabcc.xml
+  REPOMIX_OUT: '{{.ROOT_DIR}}/.repomix/crabcc.xml'
 
   # Single source of truth for the workspace version. Other tasks read
   # through {{.CRABCC_VERSION}} so bumping Cargo.toml flips banners,
   # release messages, and `task version` automatically.
+  # NOTE: this shell command runs on every `task` invocation including
+  # `task --list`. Keep scripts/version.sh fast (grep, no cargo invocations).
   CRABCC_VERSION:
     sh: bash scripts/version.sh
 
 includes:
-  build:
-    taskfile: taskfiles/build.yml
-    flatten: true
-  install:
-    taskfile: taskfiles/install.yml
-    flatten: true
-  release:
-    taskfile: taskfiles/release.yml
-    flatten: true
-  bench:
-    taskfile: taskfiles/bench.yml
-    flatten: true
-  viz:
-    taskfile: taskfiles/viz.yml
-    flatten: true
-  ollama:
-    taskfile: taskfiles/ollama.yml
-    flatten: true
-  docker:
-    taskfile: taskfiles/docker.yml
-    flatten: true
-  telegram:
-    taskfile: taskfiles/telegram.yml
-    flatten: true
-  telemetry:
-    taskfile: taskfiles/telemetry.yml
-    flatten: true
-  jobs:
-    taskfile: taskfiles/jobs.yml
-    flatten: true
-  profile:
-    taskfile: taskfiles/profile.yml
-    flatten: true
-  e2e:
-    taskfile: taskfiles/e2e.yml
-    flatten: true
-  hitl:
-    taskfile: taskfiles/hitl.yml
-    flatten: true
-  cron:
-    taskfile: taskfiles/cron.yml
-    flatten: true
-  index-publish:
-    taskfile: taskfiles/index-publish.yml
-    flatten: true
-  linear:
-    taskfile: taskfiles/linear.yml
-    flatten: true
-  dev-local:
-    taskfile: taskfiles/dev-local.yml
-    flatten: true
+  build:         { taskfile: taskfiles/build.yml,         flatten: true }
+  install:       { taskfile: taskfiles/install.yml,       flatten: true }
+  release:       { taskfile: taskfiles/release.yml,       flatten: true }
+  bench:         { taskfile: taskfiles/bench.yml,         flatten: true }
+  viz:           { taskfile: taskfiles/viz.yml,           flatten: true }
+  ollama:        { taskfile: taskfiles/ollama.yml,        flatten: true }
+  docker:        { taskfile: taskfiles/docker.yml,        flatten: true }
+  telegram:      { taskfile: taskfiles/telegram.yml,      flatten: true }
+  telemetry:     { taskfile: taskfiles/telemetry.yml,     flatten: true }
+  jobs:          { taskfile: taskfiles/jobs.yml,          flatten: true }
+  profile:       { taskfile: taskfiles/profile.yml,       flatten: true }
+  e2e:           { taskfile: taskfiles/e2e.yml,           flatten: true }
+  hitl:          { taskfile: taskfiles/hitl.yml,          flatten: true }
+  cron:          { taskfile: taskfiles/cron.yml,          flatten: true }
+  index-publish: { taskfile: taskfiles/index-publish.yml, flatten: true }
+  linear:        { taskfile: taskfiles/linear.yml,        flatten: true }
+  dev-local:     { taskfile: taskfiles/dev-local.yml,     flatten: true }
 
 tasks:
   default:

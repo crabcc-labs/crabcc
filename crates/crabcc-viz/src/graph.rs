@@ -136,19 +136,15 @@ pub(crate) fn graph_snapshot(root: &Path, query: &str) -> Result<GraphSnapshot> 
 
     // Resolve root name → symbol ID for graph traversal. CallGraph v4 uses
     // i64 IDs; names are bridge-resolved via the Store at call and return time.
-    let root_id_opt = store.symbol_id_by_name(&q.root)?;
+    let root_id = store
+        .symbol_id_by_name(&q.root)?
+        .ok_or_else(|| anyhow::anyhow!("symbol {:?} not found in call graph", q.root))?;
     let mut id_to_name: std::collections::HashMap<i64, String> =
         std::collections::HashMap::new();
-    if let Some(rid) = root_id_opt {
-        id_to_name.insert(rid, q.root.clone());
-    }
-    let frontier: Vec<GraphHit> = if let Some(root_id) = root_id_opt {
-        match dir {
-            "callees" => graph.outgoing(root_id, depth),
-            _ => graph.incoming(root_id, depth),
-        }
-    } else {
-        vec![]
+    id_to_name.insert(root_id, q.root.clone());
+    let frontier: Vec<GraphHit> = match dir {
+        "callees" => graph.outgoing(root_id, depth),
+        _ => graph.incoming(root_id, depth),
     };
 
     // Resolve each BFS hit's symbol_id back to a name.
