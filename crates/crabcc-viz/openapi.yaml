@@ -903,6 +903,8 @@ components:
         configured: { type: boolean }
         token_present: { type: boolean }
         forge_kind: { type: string }
+        rate_limit_remaining: { type: integer, nullable: true }
+        rate_limit_reset: { type: integer, nullable: true }
 
     PrAuthor:
       type: object
@@ -993,7 +995,7 @@ components:
 
     PrImpactGraph:
       type: object
-      required: [pr_number, changed_files, nodes, edges, direct_symbols, impacted_symbols]
+      required: [pr_number, changed_files, nodes, edges, direct_symbols, impacted_symbols, truncated]
       properties:
         pr_number: { type: integer }
         changed_files:
@@ -1007,6 +1009,7 @@ components:
           items: { $ref: "#/components/schemas/ImpactEdge" }
         direct_symbols: { type: integer }
         impacted_symbols: { type: integer }
+        truncated: { type: boolean }
 
     HotspotFile:
       type: object

@@ -151,6 +151,11 @@ export function PrDetail({ prNumber }: Props) {
       {/* Diff tab */}
       {tab === "diff" && (
         <div className="flex flex-col gap-3">
+          {pr.changed_files > files.length && (
+            <div className="rounded border border-warning/40 bg-warning/5 px-3 py-2 text-xs text-warning">
+              This PR has {pr.changed_files} changed files — only the first {files.length} are shown.
+            </div>
+          )}
           {files.map((f) => (
             <DiffViewer key={f.filename} file={f} />
           ))}
@@ -170,9 +175,16 @@ export function PrDetail({ prNumber }: Props) {
             </div>
           )}
           {impactData && (
-            <Suspense fallback={<div className="py-12 text-center text-muted text-sm">Loading graph…</div>}>
-              <ImpactGraph data={impactData} />
-            </Suspense>
+            <>
+              {impactData.truncated && (
+                <div className="rounded border border-warning/40 bg-warning/5 px-3 py-2 text-xs text-warning mb-2">
+                  Graph is incomplete — file list or node count exceeded the 300-item cap.
+                </div>
+              )}
+              <Suspense fallback={<div className="py-12 text-center text-muted text-sm">Loading graph…</div>}>
+                <ImpactGraph data={impactData} />
+              </Suspense>
+            </>
           )}
           {!impactLoading && !impactData && (
             <p className="text-muted text-sm text-center py-6">

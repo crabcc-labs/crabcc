@@ -103,7 +103,7 @@ fn unix_now() -> u64 {
 /// ```
 ///
 /// We stream-parse this without loading the whole output into memory.
-fn compute_hotspots(root: &Path, limit: usize) -> Result<(Vec<HotspotFile>, u32)> {
+fn compute_hotspots(root: &Path, limit: usize) -> Result<(Vec<HotspotFile>, u32, u32)> {
     // `--diff-filter=ACDMRT` skips deleted files from the tallies so
     // removed code doesn't inflate churn numbers.
     let out = std::process::Command::new("git")
@@ -194,7 +194,7 @@ fn compute_hotspots(root: &Path, limit: usize) -> Result<(Vec<HotspotFile>, u32)
     hotspots.sort_by(|a, b| b.commits.cmp(&a.commits));
     hotspots.truncate(limit);
 
-    Ok((hotspots, total_commits.min(total_files)))
+    Ok((hotspots, total_commits, total_files))
 }
 
 /// Find symbols with zero callers ("dead code") via the symbol index.
@@ -301,8 +301,8 @@ pub fn analytics_snapshot(root: &Path, hotspot_limit: usize, dead_limit: usize) 
         return cached;
     }
 
-    let (hotspots, total_commits) = compute_hotspots(root, hotspot_limit).unwrap_or_default();
-    let total_files = hotspots.len() as u32;
+    let (hotspots, total_commits, total_files) =
+        compute_hotspots(root, hotspot_limit).unwrap_or_default();
     let dead_code = compute_dead_code(root, dead_limit).unwrap_or_default();
 
     let snap = AnalyticsSnapshot {

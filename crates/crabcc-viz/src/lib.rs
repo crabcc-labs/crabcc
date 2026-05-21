@@ -320,7 +320,7 @@ fn handle(request: Request, root: &Path) -> Result<()> {
                 .unwrap_or(1);
             match forge::list_prs(root, &state, page) {
                 Ok(snap) => respond_json(request, &snap),
-                Err(e) => respond_status(request, 400, &format!("forge prs failed: {e}")),
+                Err(e) => respond_status(request, forge_http_status(&e), &format!("forge prs: {e}")),
             }
         }
         // ── Analytics ───────────────────────────────────────────────────────
@@ -357,19 +357,25 @@ fn handle(request: Request, root: &Path) -> Result<()> {
                     if let Ok(number) = num_str.parse::<u64>() {
                         return match forge::pr_impact_graph(root, number) {
                             Ok(snap) => respond_json(request, &snap),
-                            Err(e) => respond_status(request, 400, &format!("impact graph: {e}")),
+                            Err(e) => respond_status(
+                                request,
+                                forge_http_status(&e),
+                                &format!("impact graph: {e}"),
+                            ),
                         };
                     }
                 }
                 // /api/forge/prs/{number} — single PR detail
                 if let Ok(number) = rest.parse::<u64>() {
                     return match (forge::get_pr(root, number), forge::get_pr_files(root, number)) {
-                        (Ok(pr), Ok(files)) => {
+                        (Ok(pr), Ok((files, _truncated))) => {
                             respond_json(request, &forge::PrDetail { pr, files })
                         }
-                        (Err(e), _) | (_, Err(e)) => {
-                            respond_status(request, 400, &format!("pr detail: {e}"))
-                        }
+                        (Err(e), _) | (_, Err(e)) => respond_status(
+                            request,
+                            forge_http_status(&e),
+                            &format!("pr detail: {e}"),
+                        ),
                     };
                 }
             }
@@ -1821,6 +1827,13 @@ fn list_agent_ids() -> Result<std::collections::HashSet<String>> {
 }
 
 /// Extract a single query-string parameter by key.
+/// Extract the HTTP status code from a forge error, defaulting to 400.
+fn forge_http_status(e: &anyhow::Error) -> u16 {
+    e.downcast_ref::<forge::ForgeHttpError>()
+        .map(|fe| fe.status)
+        .unwrap_or(400)
+}
+
 fn query_param(query: &str, key: &str) -> Option<String> {
     for pair in query.split('&').filter(|s| !s.is_empty()) {
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));

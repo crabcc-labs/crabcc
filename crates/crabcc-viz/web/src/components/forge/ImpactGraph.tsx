@@ -2,7 +2,7 @@
 // and which callers / callees are impacted. Built on top of the same
 // d3-force layout used by the existing RelationsGraph.
 
-import { useEffect, useRef, memo } from "react";
+import { useEffect, useRef, useState, memo } from "react";
 import { cn } from "../../lib/cn";
 import type { PrImpactGraph as PrImpactGraphData } from "../../api";
 
@@ -37,6 +37,7 @@ function nodeColor(node: SimNode): string {
 
 export const ImpactGraph = memo(function ImpactGraph({ data }: Props) {
   const svgRef = useRef<SVGSVGElement>(null);
+  const [d3Ready, setD3Ready] = useState(false);
 
   useEffect(() => {
     const svg = svgRef.current;
@@ -51,6 +52,7 @@ export const ImpactGraph = memo(function ImpactGraph({ data }: Props) {
       import("d3-selection"),
       import("d3-zoom"),
     ]).then(([force, d3sel, zoom]) => {
+      setD3Ready(true);
       const nodes: SimNode[] = data.nodes.map((n) => ({ ...n }));
       const links: SimLink[] = data.edges.map((e) => ({
         source: e.src,
@@ -174,6 +176,11 @@ export const ImpactGraph = memo(function ImpactGraph({ data }: Props) {
 
   return (
     <div className="relative rounded border border-border bg-background overflow-hidden">
+      {!d3Ready && (
+        <div className="absolute inset-0 flex items-center justify-center bg-background/80 z-20 text-muted text-sm">
+          <span className="animate-spin mr-2">⟳</span> Loading graph…
+        </div>
+      )}
       <div className="absolute top-2 right-2 flex gap-3 text-[10px] text-muted z-10">
         <span className="flex items-center gap-1">
           <span

@@ -79,6 +79,7 @@ export interface PrImpactGraph {
   edges: ImpactEdge[];
   direct_symbols: number;
   impacted_symbols: number;
+  truncated: boolean;
 }
 export interface HotspotFile {
   file: string;

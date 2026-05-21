@@ -2,7 +2,7 @@
 // Keeps the bundle lean: no external diff library needed — the GitHub API
 // already returns the unified patch string, we just tokenize it.
 
-import { memo } from "react";
+import { memo, useMemo } from "react";
 import { cn } from "../../lib/cn";
 import type { PrFile } from "../../api";
 
@@ -11,7 +11,10 @@ type Props = {
 };
 
 export const DiffViewer = memo(function DiffViewer({ file }: Props) {
-  const patch = file.patch;
+  const lines = useMemo(
+    () => (file.patch ? parsePatch(file.patch) : null),
+    [file.patch],
+  );
 
   return (
     <div className="rounded border border-border overflow-hidden text-xs font-mono">
@@ -46,9 +49,9 @@ export const DiffViewer = memo(function DiffViewer({ file }: Props) {
       </div>
 
       {/* Diff lines */}
-      {patch ? (
+      {lines ? (
         <div className="overflow-x-auto max-h-96">
-          {parsePatch(patch).map((line, i) => (
+          {lines.map((line, i) => (
             <div
               key={i}
               className={cn(

@@ -10,8 +10,9 @@
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::Mutex;
 
-// ── Types surfaced to the API layer ────────────────────────────────────────
+// ── Public API types ──────────────────────────────────────────────────────
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PrAuthor {
@@ -80,12 +81,17 @@ pub struct ForgeConfig {
     pub configured: bool,
     pub token_present: bool,
     pub forge_kind: &'static str,
+    /// Cached from the last successful GitHub API response.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_limit_remaining: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_limit_reset: Option<i64>,
 }
 
 /// A node in the PR impact (blast-radius) graph.
 #[derive(Serialize, Clone, Debug)]
 pub struct ImpactNode {
-    /// Symbol qualified name ("MyStruct::method" or file path for file-only nodes).
+    /// Symbol qualified name or file path for file-only nodes.
     pub id: String,
     pub label: String,
     pub file: String,
@@ -112,9 +118,136 @@ pub struct PrImpactGraph {
     pub edges: Vec<ImpactEdge>,
     pub direct_symbols: usize,
     pub impacted_symbols: usize,
+    /// true when the file list or node list was capped — the graph is incomplete.
+    pub truncated: bool,
 }
 
-// ── Config detection ───────────────────────────────────────────────────────
+// ── Structured HTTP error — carries status code back to the route handler ─
+
+#[derive(Debug)]
+pub struct ForgeHttpError {
+    pub status: u16,
+}
+
+impl std::fmt::Display for ForgeHttpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.status {
+            401 => write!(f, "HTTP 401: unauthorized — check CRABCC_FORGE_TOKEN"),
+            403 => write!(f, "HTTP 403: forbidden — token lacks permissions or is rate-limited"),
+            404 => write!(f, "HTTP 404: not found — check CRABCC_FORGE_REPO"),
+            n => write!(f, "HTTP {n}: GitHub API error"),
+        }
+    }
+}
+
+impl std::error::Error for ForgeHttpError {}
+
+// ── Shared GitHub JSON deserialization structs (module-private) ──────────
+
+#[derive(Deserialize)]
+struct GhUser {
+    login: String,
+    avatar_url: String,
+}
+
+#[derive(Deserialize)]
+struct GhRef {
+    #[serde(rename = "ref")]
+    ref_: String,
+}
+
+#[derive(Deserialize)]
+struct GhLabel {
+    name: String,
+    color: String,
+}
+
+#[derive(Deserialize)]
+struct GhPr {
+    number: u64,
+    title: String,
+    state: String,
+    draft: bool,
+    merged_at: Option<String>,
+    user: GhUser,
+    head: GhRef,
+    base: GhRef,
+    created_at: String,
+    updated_at: String,
+    labels: Vec<GhLabel>,
+    additions: Option<u64>,
+    deletions: Option<u64>,
+    changed_files: Option<u64>,
+    html_url: String,
+    body: Option<String>,
+}
+
+fn gh_pr_to_summary(p: GhPr) -> PrSummary {
+    PrSummary {
+        number: p.number,
+        title: p.title,
+        state: p.state,
+        draft: p.draft,
+        merged: p.merged_at.is_some(),
+        author: PrAuthor {
+            login: p.user.login,
+            avatar_url: p.user.avatar_url,
+        },
+        head_ref: p.head.ref_,
+        base_ref: p.base.ref_,
+        created_at: p.created_at,
+        updated_at: p.updated_at,
+        labels: p
+            .labels
+            .into_iter()
+            .map(|l| PrLabel { name: l.name, color: l.color })
+            .collect(),
+        additions: p.additions.unwrap_or(0),
+        deletions: p.deletions.unwrap_or(0),
+        changed_files: p.changed_files.unwrap_or(0),
+        html_url: p.html_url,
+        body: p.body,
+    }
+}
+
+// ── Rate-limit cache ──────────────────────────────────────────────────────
+
+#[derive(Clone, Copy)]
+struct RateLimit {
+    remaining: Option<i64>,
+    reset: Option<i64>,
+}
+
+static RATE_LIMIT_CACHE: Mutex<RateLimit> =
+    Mutex::new(RateLimit { remaining: None, reset: None });
+
+fn absorb_rate_limit_headers(resp: &ureq::Response) {
+    let remaining = resp
+        .header("X-RateLimit-Remaining")
+        .and_then(|v| v.parse().ok());
+    let reset = resp
+        .header("X-RateLimit-Reset")
+        .and_then(|v| v.parse().ok());
+    if remaining.is_some() || reset.is_some() {
+        if let Ok(mut rl) = RATE_LIMIT_CACHE.lock() {
+            if let Some(r) = remaining {
+                rl.remaining = Some(r);
+            }
+            if let Some(r) = reset {
+                rl.reset = Some(r);
+            }
+        }
+    }
+}
+
+fn cached_rate_limit() -> (Option<i64>, Option<i64>) {
+    RATE_LIMIT_CACHE
+        .lock()
+        .map(|rl| (rl.remaining, rl.reset))
+        .unwrap_or((None, None))
+}
+
+// ── Config detection ──────────────────────────────────────────────────────
 
 /// Detect "owner/repo" from `git remote get-url origin` in `root`.
 pub fn detect_repo(root: &Path) -> Option<String> {
@@ -165,11 +298,14 @@ pub fn forge_config(root: &Path) -> ForgeConfig {
         .unwrap_or_default();
     let token_present = token().is_some();
     let configured = !repo.is_empty();
+    let (rate_limit_remaining, rate_limit_reset) = cached_rate_limit();
     ForgeConfig {
         repo,
         configured,
         token_present,
         forge_kind: "github",
+        rate_limit_remaining,
+        rate_limit_reset,
     }
 }
 
@@ -183,7 +319,22 @@ fn github_get(url: &str) -> Result<ureq::Response> {
     if let Some(tok) = token() {
         req = req.set("Authorization", &format!("Bearer {tok}"));
     }
-    req.call().context("GitHub API request failed")
+    match req.call() {
+        Ok(resp) => {
+            absorb_rate_limit_headers(&resp);
+            Ok(resp)
+        }
+        Err(ureq::Error::Status(401, _)) => {
+            Err(ForgeHttpError { status: 401 }.into())
+        }
+        Err(ureq::Error::Status(403, _)) => {
+            Err(ForgeHttpError { status: 403 }.into())
+        }
+        Err(ureq::Error::Status(404, _)) => {
+            Err(ForgeHttpError { status: 404 }.into())
+        }
+        Err(e) => Err(e).context("GitHub API request failed"),
+    }
 }
 
 // ── API methods ────────────────────────────────────────────────────────────
@@ -202,79 +353,10 @@ pub fn list_prs(root: &Path, state: &str, page: u32) -> Result<PrListResponse> {
         "https://api.github.com/repos/{repo}/pulls?state={state}&per_page=30&page={page}"
     );
     let resp = github_get(&url)?;
-    #[derive(Deserialize)]
-    struct GhPr {
-        number: u64,
-        title: String,
-        state: String,
-        draft: bool,
-        merged_at: Option<String>,
-        user: GhUser,
-        head: GhRef,
-        base: GhRef,
-        created_at: String,
-        updated_at: String,
-        labels: Vec<GhLabel>,
-        additions: Option<u64>,
-        deletions: Option<u64>,
-        changed_files: Option<u64>,
-        html_url: String,
-        body: Option<String>,
-    }
-    #[derive(Deserialize)]
-    struct GhUser {
-        login: String,
-        avatar_url: String,
-    }
-    #[derive(Deserialize)]
-    struct GhRef {
-        #[serde(rename = "ref")]
-        ref_: String,
-    }
-    #[derive(Deserialize)]
-    struct GhLabel {
-        name: String,
-        color: String,
-    }
     let raw: Vec<GhPr> = resp.into_json()?;
     let total = raw.len();
-    let prs = raw
-        .into_iter()
-        .map(|p| PrSummary {
-            number: p.number,
-            title: p.title,
-            state: p.state,
-            draft: p.draft,
-            merged: p.merged_at.is_some(),
-            author: PrAuthor {
-                login: p.user.login,
-                avatar_url: p.user.avatar_url,
-            },
-            head_ref: p.head.ref_,
-            base_ref: p.base.ref_,
-            created_at: p.created_at,
-            updated_at: p.updated_at,
-            labels: p
-                .labels
-                .into_iter()
-                .map(|l| PrLabel {
-                    name: l.name,
-                    color: l.color,
-                })
-                .collect(),
-            additions: p.additions.unwrap_or(0),
-            deletions: p.deletions.unwrap_or(0),
-            changed_files: p.changed_files.unwrap_or(0),
-            html_url: p.html_url,
-            body: p.body,
-        })
-        .collect();
-    Ok(PrListResponse {
-        prs,
-        repo: repo.clone(),
-        total,
-        page,
-    })
+    let prs = raw.into_iter().map(gh_pr_to_summary).collect();
+    Ok(PrListResponse { prs, repo: repo.clone(), total, page })
 }
 
 pub fn get_pr(root: &Path, number: u64) -> Result<PrSummary> {
@@ -285,79 +367,20 @@ pub fn get_pr(root: &Path, number: u64) -> Result<PrSummary> {
     let repo = &cfg.repo;
     let url = format!("https://api.github.com/repos/{repo}/pulls/{number}");
     let resp = github_get(&url)?;
-    #[derive(Deserialize)]
-    struct GhPr {
-        number: u64,
-        title: String,
-        state: String,
-        draft: bool,
-        merged_at: Option<String>,
-        user: GhUser,
-        head: GhRef,
-        base: GhRef,
-        created_at: String,
-        updated_at: String,
-        labels: Vec<GhLabel>,
-        additions: u64,
-        deletions: u64,
-        changed_files: u64,
-        html_url: String,
-        body: Option<String>,
-    }
-    #[derive(Deserialize)]
-    struct GhUser {
-        login: String,
-        avatar_url: String,
-    }
-    #[derive(Deserialize)]
-    struct GhRef {
-        #[serde(rename = "ref")]
-        ref_: String,
-    }
-    #[derive(Deserialize)]
-    struct GhLabel {
-        name: String,
-        color: String,
-    }
     let p: GhPr = resp.into_json()?;
-    Ok(PrSummary {
-        number: p.number,
-        title: p.title,
-        state: p.state,
-        draft: p.draft,
-        merged: p.merged_at.is_some(),
-        author: PrAuthor {
-            login: p.user.login,
-            avatar_url: p.user.avatar_url,
-        },
-        head_ref: p.head.ref_,
-        base_ref: p.base.ref_,
-        created_at: p.created_at,
-        updated_at: p.updated_at,
-        labels: p
-            .labels
-            .into_iter()
-            .map(|l| PrLabel {
-                name: l.name,
-                color: l.color,
-            })
-            .collect(),
-        additions: p.additions,
-        deletions: p.deletions,
-        changed_files: p.changed_files,
-        html_url: p.html_url,
-        body: p.body,
-    })
+    Ok(gh_pr_to_summary(p))
 }
 
-pub fn get_pr_files(root: &Path, number: u64) -> Result<Vec<PrFile>> {
+/// Fetch changed files for a PR, paginating up to `FILES_PAGE_LIMIT` pages
+/// (300 files). Returns `(files, truncated)` — `truncated` is true when the
+/// PR has more files than the cap.
+pub fn get_pr_files(root: &Path, number: u64) -> Result<(Vec<PrFile>, bool)> {
     let cfg = forge_config(root);
     if !cfg.configured {
         bail!("no GitHub repo detected");
     }
     let repo = &cfg.repo;
-    let url = format!("https://api.github.com/repos/{repo}/pulls/{number}/files?per_page=100");
-    let resp = github_get(&url)?;
+
     #[derive(Deserialize)]
     struct GhFile {
         filename: String,
@@ -367,31 +390,47 @@ pub fn get_pr_files(root: &Path, number: u64) -> Result<Vec<PrFile>> {
         patch: Option<String>,
         previous_filename: Option<String>,
     }
-    let raw: Vec<GhFile> = resp.into_json()?;
-    Ok(raw
-        .into_iter()
-        .map(|f| PrFile {
+
+    let mut all: Vec<PrFile> = Vec::new();
+    let mut truncated = false;
+
+    for page in 1..=FILES_PAGE_LIMIT {
+        let url = format!(
+            "https://api.github.com/repos/{repo}/pulls/{number}/files?per_page=100&page={page}"
+        );
+        let resp = github_get(&url)?;
+        let batch: Vec<GhFile> = resp.into_json()?;
+        let batch_len = batch.len();
+        all.extend(batch.into_iter().map(|f| PrFile {
             filename: f.filename,
             status: f.status,
             additions: f.additions,
             deletions: f.deletions,
             patch: f.patch,
             previous_filename: f.previous_filename,
-        })
-        .collect())
+        }));
+        if batch_len < 100 {
+            break; // reached last page
+        }
+        if page == FILES_PAGE_LIMIT {
+            truncated = true; // hit the 300-file cap
+        }
+    }
+
+    Ok((all, truncated))
 }
 
 /// Build the blast-radius graph for a PR.
 ///
 /// Algorithm:
-///  1. Fetch the list of files changed in the PR.
+///  1. Fetch the list of files changed in the PR (up to 300; sets `truncated`).
 ///  2. For each changed file, look up symbols defined there in the
 ///     crabcc symbol index (direct SQL query against `index.db`).
 ///  3. For each symbol, walk one hop of callers + callees in
 ///     `graph.json` to find immediate dependencies.
 ///  4. Return the induced sub-graph capped at MAX_IMPACT_NODES.
 pub fn pr_impact_graph(root: &Path, number: u64) -> Result<PrImpactGraph> {
-    let files = get_pr_files(root, number)?;
+    let (files, file_truncated) = get_pr_files(root, number)?;
     let changed_files: std::collections::HashSet<String> =
         files.iter().map(|f| f.filename.clone()).collect();
 
@@ -417,6 +456,7 @@ pub fn pr_impact_graph(root: &Path, number: u64) -> Result<PrImpactGraph> {
             changed_files: changed_files.into_iter().collect(),
             direct_symbols: nodes.len(),
             impacted_symbols: 0,
+            truncated: file_truncated,
             nodes,
             edges: vec![],
         });
@@ -466,6 +506,10 @@ pub fn pr_impact_graph(root: &Path, number: u64) -> Result<PrImpactGraph> {
     // Walk one hop of the call graph to find impacted symbols.
     // The v4 CallGraph uses i64 node IDs; we bridge to names via the Store.
     let mut edges: Vec<ImpactEdge> = Vec::new();
+    // O(1) dedup set mirrors `edges` to avoid O(n²) linear scan.
+    let mut edge_set: std::collections::HashSet<(String, String)> =
+        std::collections::HashSet::new();
+
     if graph_path.exists() {
         if let (Ok(graph), Ok(store)) = (
             crabcc_core::graph::CallGraph::load(&graph_path),
@@ -489,9 +533,12 @@ pub fn pr_impact_graph(root: &Path, number: u64) -> Result<PrImpactGraph> {
                             if !changed_symbols.contains(&caller_name) {
                                 to_add.push((caller_id, 1));
                             }
-                            let e = ImpactEdge { src: caller_name.clone(), dst: sym.clone() };
-                            if !edges.iter().any(|x| x.src == e.src && x.dst == e.dst) {
-                                edges.push(e);
+                            let key = (caller_name.clone(), sym.clone());
+                            if edge_set.insert(key) {
+                                edges.push(ImpactEdge {
+                                    src: caller_name,
+                                    dst: sym.clone(),
+                                });
                             }
                         }
                     }
@@ -503,9 +550,12 @@ pub fn pr_impact_graph(root: &Path, number: u64) -> Result<PrImpactGraph> {
                             if !changed_symbols.contains(&callee_name) {
                                 to_add.push((callee_id, 1));
                             }
-                            let e = ImpactEdge { src: sym.clone(), dst: callee_name };
-                            if !edges.iter().any(|x| x.src == e.src && x.dst == e.dst) {
-                                edges.push(e);
+                            let key = (sym.clone(), callee_name.clone());
+                            if edge_set.insert(key) {
+                                edges.push(ImpactEdge {
+                                    src: sym.clone(),
+                                    dst: callee_name,
+                                });
                             }
                         }
                     }
@@ -530,7 +580,8 @@ pub fn pr_impact_graph(root: &Path, number: u64) -> Result<PrImpactGraph> {
                             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                         )
                         .ok();
-                    let (file, kind, line) = row.unwrap_or_else(|| ("?".into(), "?".into(), None));
+                    let (file, kind, line) =
+                        row.unwrap_or_else(|| ("?".into(), "?".into(), None));
                     node_map.insert(
                         sym_name.clone(),
                         ImpactNode {
@@ -549,6 +600,7 @@ pub fn pr_impact_graph(root: &Path, number: u64) -> Result<PrImpactGraph> {
     }
 
     let direct_symbols = changed_symbols.len();
+    let node_truncated = node_map.len() >= MAX_IMPACT_NODES;
     let impacted_symbols = node_map.len().saturating_sub(direct_symbols);
     let nodes: Vec<ImpactNode> = node_map.into_values().collect();
 
@@ -559,10 +611,12 @@ pub fn pr_impact_graph(root: &Path, number: u64) -> Result<PrImpactGraph> {
         edges,
         direct_symbols,
         impacted_symbols,
+        truncated: file_truncated || node_truncated,
     })
 }
 
 const MAX_IMPACT_NODES: usize = 300;
+const FILES_PAGE_LIMIT: usize = 3; // 3 × 100 = 300 files max
 
 fn short_path(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_string()
