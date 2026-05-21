@@ -12,6 +12,12 @@
 #   task coverage           # generate code-coverage report (cargo-llvm-cov)
 #   task version            # print the workspace version (Cargo.toml truth)
 #
+# Local dev pipeline (seamless end-to-end commands):
+#   task dev:local:start    # pull fresh main → new worktree + branch (BRANCH=feat/…)
+#   task dev:local:ship     # autofix → commit → CI → push → PR (MSG='…')
+#   task dev:local:bump     # semver bump → CHANGELOG → README → docs (BUMP=minor)
+#   task dev:local:build-prod  # optimized release → non-root hardened Docker image
+#
 # Workflow extras (one-off / situational):
 #   task viz                # localhost call-graph viewer (issue #64)
 #   task bench              # raw-CLI A/B benchmark + visualization
@@ -41,6 +47,7 @@
 #   taskfiles/cron.yml       cron-lint, cron-test
 #   taskfiles/index-publish.yml  index-publish-lint, index-publish-test
 #   taskfiles/linear.yml     linear-sync (GitHub → Linear backfill)
+#   taskfiles/dev-local.yml  dev:local:start/ship/bump/build-prod
 
 version: '3'
 
@@ -133,6 +140,9 @@ includes:
     flatten: true
   linear:
     taskfile: taskfiles/linear.yml
+    flatten: true
+  dev-local:
+    taskfile: taskfiles/dev-local.yml
     flatten: true
 
 tasks:

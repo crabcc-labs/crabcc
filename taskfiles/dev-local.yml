@@ -1,0 +1,287 @@
+# Developer local workflow tasks. Provides four seamless pipeline tasks
+# for the daily dev loop: worktree creation, commit-to-PR shipping,
+# version bumping, and hardened production builds.
+#
+# All tasks are flat (no prefix) because the root Taskfile includes this
+# file with `flatten: true`. Task names contain their own colons so they
+# stay grouped under `task --list`:
+#   dev:local:start      fresh main → new worktree + branch
+#   dev:local:ship       autofix → commit → CI → push → PR
+#   dev:local:bump       semver bump → CHANGELOG → README → docs
+#   dev:local:build-prod release build → hardened Docker image
+#
+# Conventions:
+#   * User-provided string vars (MSG, BRANCH) are passed via env: so Task
+#     never has to shell-quote them — avoids injection and quoting bugs.
+#   * Boolean/enum vars (FULL, BUMP, etc.) are passed as shell flags built
+#     inside the cmd block where quoting is controlled.
+#   * .summary/ captures all output; gitignored.
+
+version: '3'
+
+vars:
+  CARGO: cargo
+  WORKTREES_DIR: .worktrees
+
+tasks:
+
+  # ── dev:local:start ────────────────────────────────────────────────────────
+  dev:local:start:
+    desc: "Pull fresh main → new worktree + branch  (BRANCH=feat/… required)"
+    summary: |
+      Fetches origin/main, then creates a git worktree at
+      .worktrees/<branch-slug> branching off the freshly fetched tip.
+      Cargo, task, and crabcc all work from the worktree directory.
+
+      Usage:
+        task dev:local:start BRANCH=feat/my-feature
+        task dev:local:start BRANCH=fix/bug BASE=v4.1.0
+
+      Vars:
+        BRANCH   new branch name (required; slashes become dashes in path)
+        BASE     git ref to branch from (default: origin/main)
+
+      Remove when done:
+        git worktree remove .worktrees/<slug>
+        git branch -d <branch>
+    vars:
+      BRANCH: '{{.BRANCH | default ""}}'
+      BASE_REF: '{{.BASE | default "origin/main"}}'
+    cmds:
+      - |
+        test -n "{{.BRANCH}}" || {
+          echo "BRANCH=<name> is required"
+          echo "  e.g.  task dev:local:start BRANCH=feat/my-feature"
+          exit 1
+        }
+        git fetch origin main --quiet
+        BASE_SHA="$(git rev-parse --verify '{{.BASE_REF}}' 2>/dev/null)" || {
+          echo "dev:local:start: cannot resolve '{{.BASE_REF}}'" >&2; exit 1
+        }
+        BRANCH="{{.BRANCH}}"
+        SLUG="${BRANCH//\//-}"
+        SLUG="${SLUG//[^a-zA-Z0-9._-]/-}"
+        WT_PATH="{{.WORKTREES_DIR}}/$SLUG"
+
+        if [ -d "$WT_PATH" ]; then
+          echo "worktree already exists: $WT_PATH"
+          echo "  → cd $WT_PATH"
+        else
+          mkdir -p "{{.WORKTREES_DIR}}"
+          git worktree add "$WT_PATH" -b "$BRANCH" "{{.BASE_REF}}"
+          echo ""
+          echo "✓ worktree ready"
+          echo "  path:   $WT_PATH"
+          echo "  branch: $BRANCH  (from {{.BASE_REF}} @ $(git rev-parse --short '{{.BASE_REF}}'))"
+          echo ""
+          echo "  → cd $WT_PATH"
+          echo "  → task build-fast   # warm the cache"
+          echo ""
+          echo "  remove later:"
+          echo "    git worktree remove $WT_PATH"
+          echo "    git branch -d $BRANCH"
+        fi
+
+  # ── dev:local:ship ─────────────────────────────────────────────────────────
+  dev:local:ship:
+    desc: "Autofix → commit → CI → structured report → push + PR  (MSG='…' required)"
+    summary: |
+      Five-stage pipeline from dirty working tree to open PR:
+
+        1. cargo fmt --all          (autofix; re-stages touched .rs files)
+        2. git commit -m MSG        (hooks fire: clippy, TS typecheck, actionlint)
+        3. scripts/local-ci.sh      (fmt-check + clippy + tests)
+        4. git push -u origin       (pre-push hook skipped — CI already ran)
+        5. gh pr create             (or prints existing PR URL)
+
+      On any failure a structured ASCII report is printed and a JSON
+      summary written to .summary/dev-local-ship.json.
+
+      Usage:
+        task dev:local:ship MSG="feat(cli): add --json flag to sym"
+        task dev:local:ship MSG="fix(core): null-ptr" FULL=1
+        task dev:local:ship MSG="chore: bump deps"    PUSH_ONLY=1
+
+      Vars:
+        MSG         commit message (required; Conventional Commits format)
+        FULL        1 = full local-ci  (default: 0 = --quick)
+        PUSH_ONLY   1 = skip CI, commit+push only
+        BASE        PR base branch (default: main)
+        NO_AUTOFIX  1 = skip cargo fmt step
+        DRY_RUN     1 = print what would happen, touch nothing
+    vars:
+      MSG:        '{{.MSG        | default ""}}'
+      FULL:       '{{.FULL       | default "0"}}'
+      PUSH_ONLY:  '{{.PUSH_ONLY  | default "0"}}'
+      BASE:       '{{.BASE       | default "main"}}'
+      NO_AUTOFIX: '{{.NO_AUTOFIX | default "0"}}'
+      DRY_RUN:    '{{.DRY_RUN    | default "0"}}'
+    env:
+      # Pass user-provided strings via env vars — no shell quoting needed.
+      _SHIP_MSG:        '{{.MSG}}'
+      _SHIP_BASE:       '{{.BASE}}'
+      _SHIP_FULL:       '{{.FULL}}'
+      _SHIP_PUSH_ONLY:  '{{.PUSH_ONLY}}'
+      _SHIP_NO_AUTOFIX: '{{.NO_AUTOFIX}}'
+      _SHIP_DRY_RUN:    '{{.DRY_RUN}}'
+    cmds:
+      - |
+        test -n "$_SHIP_MSG" || {
+          echo "MSG='...' is required (Conventional Commits format)"
+          echo "  e.g.  task dev:local:ship MSG=\"feat(cli): add --json flag\""
+          exit 1
+        }
+        bash scripts/dev-local-ship.sh
+
+  # ── dev:local:bump ─────────────────────────────────────────────────────────
+  dev:local:bump:
+    desc: "Semver bump → CHANGELOG → README → docs  (BUMP=patch|minor|major)"
+    summary: |
+      Increments the version in every versioned file and brings docs
+      in sync:
+
+        1. Compute new version  (patch: x.y.Z+1, minor: x.Y+1.0, major: X+1.0.0)
+        2. Cargo.toml           [workspace.package].version
+        3. crabcc-viz/Cargo.toml [package].version  (standalone crate)
+        4. Cargo.lock           regenerated via `cargo check --workspace`
+        5. CHANGELOG.md         insert ## [x.y.z] — date  after [Unreleased]
+        6. README.md            v<old> → v<new> badge + code references
+        7. git commit           chore(release): bump v<old> → v<new>
+        8. docs-refresh         background `claude -p` pass (optional)
+
+      Usage:
+        task dev:local:bump                         # patch bump
+        task dev:local:bump BUMP=minor MSG="Redis pub/sub support"
+        task dev:local:bump BUMP=major NO_COMMIT=1
+        task dev:local:bump DRY_RUN=1               # preview
+
+      Vars:
+        BUMP        patch (default) | minor | major
+        MSG         plain-English headline for the CHANGELOG section
+        NO_COMMIT   1 = update files without git commit
+        NO_DOCS     1 = skip docs-refresh spawn
+        DRY_RUN     1 = print what would change, touch nothing
+    vars:
+      BUMP:      '{{.BUMP      | default "patch"}}'
+      MSG:       '{{.MSG       | default ""}}'
+      NO_COMMIT: '{{.NO_COMMIT | default "0"}}'
+      NO_DOCS:   '{{.NO_DOCS   | default "0"}}'
+      DRY_RUN:   '{{.DRY_RUN   | default "0"}}'
+    env:
+      # Pass user-provided strings via env vars — no shell quoting needed.
+      _BUMP_MSG:       '{{.MSG}}'
+      _BUMP_NO_COMMIT: '{{.NO_COMMIT}}'
+      _BUMP_NO_DOCS:   '{{.NO_DOCS}}'
+      _BUMP_DRY_RUN:   '{{.DRY_RUN}}'
+    cmds:
+      - bash scripts/dev-local-bump.sh '{{.BUMP}}'
+
+  # ── dev:local:build-prod ───────────────────────────────────────────────────
+  dev:local:build-prod:
+    desc: "Release build → strip → hardened Docker image → smoke verify"
+    summary: |
+      Full production build + hardening verification pipeline:
+
+        1. cargo build --release  (LTO=fat, jemalloc, already stripped by profile)
+        2. docker build crabcc-base:local  (if not already built or SKIP_BASE=1)
+        3. docker build crabcc:prod  (multi-stage, non-root UID 1000,
+                                      /usr/sbin/nologin shell, OCI labels)
+        4. Hardened smoke: docker run --read-only --tmpfs /tmp --cap-drop ALL
+                               --security-opt no-new-privileges --user 1000
+        5. trivy / docker scout scan  (if available; warn-only, no block)
+        6. Print: binary size, image size, layer count
+
+      Usage:
+        task dev:local:build-prod
+        task dev:local:build-prod SKIP_BASE=1   # reuse existing base image
+        task dev:local:build-prod TAG=v4.1.0    # custom image tag
+    vars:
+      TAG:       '{{.TAG       | default "prod"}}'
+      SKIP_BASE: '{{.SKIP_BASE | default "0"}}'
+      GIT_SHA:
+        sh: git rev-parse --short HEAD 2>/dev/null || echo unknown
+      BUILD_DATE:
+        sh: date -u +%Y-%m-%dT%H:%M:%SZ
+      VERSION:
+        sh: bash scripts/version.sh 2>/dev/null || echo dev
+    env:
+      CRABCC_GIT_SHA:    '{{.GIT_SHA}}'
+      CRABCC_BUILD_DATE: '{{.BUILD_DATE}}'
+      CRABCC_VERSION:    '{{.VERSION}}'
+      DOCKER_BUILDKIT:   '1'
+    cmds:
+      # ── 1: release binary ─────────────────────────────────────────────────
+      - |
+        echo "[dev:local:build-prod] 1/5  cargo build --release"
+        {{.CARGO}} build --release -p crabcc-cli --features jemalloc
+        BIN_SIZE="$(du -sh target/release/crabcc 2>/dev/null | cut -f1 || echo '?')"
+        echo "  ✓ target/release/crabcc  ($BIN_SIZE stripped)"
+
+      # ── 2: base image ─────────────────────────────────────────────────────
+      - |
+        echo "[dev:local:build-prod] 2/5  base image"
+        if [ "{{.SKIP_BASE}}" = "1" ] && docker image inspect crabcc-base:local >/dev/null 2>&1; then
+          echo "  ✓ crabcc-base:local exists (SKIP_BASE=1)"
+        else
+          docker build -t crabcc-base:local -f install/Dockerfile.base .
+          echo "  ✓ crabcc-base:local built"
+        fi
+
+      # ── 3: production image ───────────────────────────────────────────────
+      - |
+        echo "[dev:local:build-prod] 3/5  production image  (crabcc:{{.TAG}})"
+        docker build \
+          --build-arg "GIT_SHA={{.GIT_SHA}}" \
+          --build-arg "BUILD_DATE={{.BUILD_DATE}}" \
+          --build-arg "VERSION={{.VERSION}}" \
+          -t "crabcc:{{.TAG}}" \
+          -t "crabcc:{{.VERSION}}" \
+          -f install/Dockerfile.crabcc .
+        IMG_MB="$(docker image inspect "crabcc:{{.TAG}}" 2>/dev/null \
+          | jq -r '.[0].Size / 1048576 | floor | tostring + " MiB"' 2>/dev/null || echo '?')"
+        LAYERS="$(docker image inspect "crabcc:{{.TAG}}" 2>/dev/null \
+          | jq -r '.[0].RootFS.Layers | length' 2>/dev/null || echo '?')"
+        echo "  ✓ crabcc:{{.TAG}}  ($IMG_MB, $LAYERS layers)"
+
+      # ── 4: hardened smoke ─────────────────────────────────────────────────
+      - |
+        echo "[dev:local:build-prod] 4/5  hardened smoke"
+        docker run --rm \
+          --read-only \
+          --tmpfs /tmp \
+          --cap-drop ALL \
+          --security-opt no-new-privileges:true \
+          --user 1000 \
+          "crabcc:{{.TAG}}" --version
+        echo "  ✓ non-root  read-only rootfs  no-new-privileges  cap-drop ALL"
+
+      # ── 5: CVE scan (optional) ────────────────────────────────────────────
+      - |
+        echo "[dev:local:build-prod] 5/5  security scan"
+        if command -v trivy >/dev/null 2>&1; then
+          trivy image --exit-code 0 --severity HIGH,CRITICAL \
+            --format table "crabcc:{{.TAG}}" 2>&1 | tail -30
+        elif docker scout version >/dev/null 2>&1; then
+          docker scout cves "crabcc:{{.TAG}}" --exit-code 0 2>&1 | tail -20
+        else
+          echo "  ⚠ trivy / docker scout not found — install for CVE scanning"
+          echo "    brew install aquasecurity/trivy/trivy   (macOS)"
+          echo "    apt-get install trivy                   (Debian/Ubuntu)"
+        fi
+
+      # ── summary ───────────────────────────────────────────────────────────
+      - |
+        echo ""
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        BIN_SIZE="$(du -sh target/release/crabcc 2>/dev/null | cut -f1 || echo '?')"
+        IMG_MB="$(docker image inspect "crabcc:{{.TAG}}" 2>/dev/null \
+          | jq -r '.[0].Size / 1048576 | floor | tostring + " MiB"' 2>/dev/null || echo '?')"
+        echo "  binary  target/release/crabcc   $BIN_SIZE"
+        echo "  image   crabcc:{{.TAG}}          $IMG_MB"
+        echo "  sha     {{.GIT_SHA}}  v{{.VERSION}}"
+        echo "  hardened:  UID 1000 · --read-only · --cap-drop ALL · no-new-privileges"
+        echo ""
+        echo "  Push:"
+        echo "    docker tag crabcc:{{.TAG}} <registry>/crabcc:{{.VERSION}}"
+        echo "    docker push <registry>/crabcc:{{.VERSION}}"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

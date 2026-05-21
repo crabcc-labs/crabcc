@@ -22,6 +22,9 @@ node_modules/
 # coverage, profiling, ollama smoke replies). Kept on disk between
 # runs but never checked in.
 .summary/
+# git worktrees created by `task dev:local:start`. Each is a full checkout
+# at a specific branch; gitignored so the parent repo doesn't track them.
+.worktrees/
 
 # Local-only — no longer published to the remote. Kept on disk for the
 # author's reference; ship-relevant content lives in README.md, CLAUDE.md,
