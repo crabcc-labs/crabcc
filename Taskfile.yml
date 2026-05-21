@@ -52,6 +52,10 @@
 
 version: '3'
 
+# Prefix every output line with the generating task's name so multi-step
+# pipelines (dev:local:ship, ci, etc.) are easy to attribute at a glance.
+output: prefixed
+
 vars:
   # Default to sibling directory under the current user's home so any
   # developer can run bench tasks without setting env vars.
