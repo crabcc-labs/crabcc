@@ -9,6 +9,7 @@
 #   dev:local:ship       autofix → commit → CI → push → PR
 #   dev:local:bump       semver bump → CHANGELOG → README → docs
 #   dev:local:build-prod release build → hardened Docker image
+#   dev:clean:all        stash → prune old worktrees → sync → install deps
 #
 # Conventions:
 #   * User-provided string vars (MSG, BRANCH) are passed via env: so Task
@@ -204,6 +205,8 @@ tasks:
         sh: date -u +%Y-%m-%dT%H:%M:%SZ
       VERSION:
         sh: bash scripts/version.sh 2>/dev/null || echo dev
+      BRANCH:
+        sh: git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown
     env:
       CRABCC_GIT_SHA:    '{{.GIT_SHA}}'
       CRABCC_BUILD_DATE: '{{.BUILD_DATE}}'
@@ -234,6 +237,7 @@ tasks:
           --build-arg "GIT_SHA={{.GIT_SHA}}" \
           --build-arg "BUILD_DATE={{.BUILD_DATE}}" \
           --build-arg "VERSION={{.VERSION}}" \
+          --build-arg "BRANCH={{.BRANCH}}" \
           -t "crabcc:{{.TAG}}" \
           -t "crabcc:{{.VERSION}}" \
           -f install/Dockerfile.crabcc .
@@ -278,10 +282,61 @@ tasks:
           | jq -r '.[0].Size / 1048576 | floor | tostring + " MiB"' 2>/dev/null || echo '?')"
         echo "  binary  target/release/crabcc   $BIN_SIZE"
         echo "  image   crabcc:{{.TAG}}          $IMG_MB"
-        echo "  sha     {{.GIT_SHA}}  v{{.VERSION}}"
+        echo "  sha     {{.GIT_SHA}}  v{{.VERSION}}  ({{.BRANCH}})"
         echo "  hardened:  UID 1000 · --read-only · --cap-drop ALL · no-new-privileges"
+        echo ""
+        echo "  build_info (from binary):"
+        docker run --rm --user 1000 "crabcc:{{.TAG}}" info --text 2>/dev/null | sed 's/^/    /' || true
+        echo ""
+        echo "  image labels (com.crabcc.*):"
+        docker image inspect "crabcc:{{.TAG}}" 2>/dev/null \
+          | jq -r '.[0].Config.Labels | to_entries[] | select(.key | startswith("com.crabcc") or startswith("org.opencontainers")) | "    \(.key)=\(.value)"' \
+          2>/dev/null || true
         echo ""
         echo "  Push:"
         echo "    docker tag crabcc:{{.TAG}} <registry>/crabcc:{{.VERSION}}"
         echo "    docker push <registry>/crabcc:{{.VERSION}}"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  # ── dev:clean:all ──────────────────────────────────────────────────────────
+  dev:clean:all:
+    desc: "Stash → prune old worktrees (+remote) → sync → install deps → summary"
+    summary: |
+      Comprehensive workspace reset for a clean slate:
+
+        1. git stash          (any dirty working tree)
+        2. prune worktrees    remove .worktrees/ entries older than AGE days
+                              and delete the matching remote branches
+        3. git fetch + pull   --all --prune + --ff-only on current branch
+        4. install hooks      scripts/install-hooks.sh --force
+        5. install deps       gh jq rg bat rtk(mise) task akt(act)
+                              cargo/rust docker opencode
+        6. summary            structured report + system fingerprint
+
+      Structured one-liner also written to .summary/dev-clean-all.summary.
+
+      Usage:
+        task dev:clean:all                   # default: prune worktrees > 7d
+        task dev:clean:all AGE=14            # keep worktrees up to 14 days
+        task dev:clean:all DRY_RUN=1         # preview all changes
+        task dev:clean:all NO_INSTALL=1      # check deps, don't install
+        task dev:clean:all NO_PULL=1         # skip fetch+pull
+
+      Vars:
+        AGE         worktree age threshold in days (default: 7)
+        DRY_RUN     1 = print what would happen, touch nothing
+        NO_INSTALL  1 = audit deps only, don't install missing ones
+        NO_PULL     1 = skip git fetch + pull
+    vars:
+      AGE:        '{{.AGE        | default "7"}}'
+      DRY_RUN:    '{{.DRY_RUN    | default "0"}}'
+      NO_INSTALL: '{{.NO_INSTALL | default "0"}}'
+      NO_PULL:    '{{.NO_PULL    | default "0"}}'
+    cmds:
+      - |
+        FLAGS="--age {{.AGE}}"
+        [ "{{.DRY_RUN}}"    = "1" ] && FLAGS="$FLAGS --dry-run"
+        [ "{{.NO_INSTALL}}" = "1" ] && FLAGS="$FLAGS --no-install"
+        [ "{{.NO_PULL}}"    = "1" ] && FLAGS="$FLAGS --no-pull"
+        # shellcheck disable=SC2086
+        bash scripts/dev-clean-all.sh $FLAGS {{.CLI_ARGS}}

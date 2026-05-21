@@ -22,11 +22,14 @@ fn main() {
     let time = utc_iso8601();
     let target = std::env::var("TARGET").unwrap_or_else(|_| "unknown-target".into());
 
+    let profile = std::env::var("PROFILE").unwrap_or_else(|_| "unknown".into());
+
     println!("cargo:rustc-env=CRABCC_BUILD_COMMIT={commit}");
     println!("cargo:rustc-env=CRABCC_BUILD_BRANCH={branch}");
     println!("cargo:rustc-env=CRABCC_BUILD_TAG={tag}");
     println!("cargo:rustc-env=CRABCC_BUILD_TIME={time}");
     println!("cargo:rustc-env=CRABCC_BUILD_TARGET={target}");
+    println!("cargo:rustc-env=CRABCC_BUILD_PROFILE={profile}");
 
     // Re-run on commit changes so dev rebuilds pick up the latest sha
     // without needing a `cargo clean`. The `.git/HEAD` watch covers both

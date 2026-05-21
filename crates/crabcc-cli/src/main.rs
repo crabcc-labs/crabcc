@@ -2183,7 +2183,7 @@ fn print_upgrade_human(r: &crabcc_core::upgrade::UpgradeReport, repo: &str) {
 }
 
 /// Compile-time build provenance — populated by `build.rs` via cargo:rustc-env.
-/// Always-present: version, target. Possibly empty: tag (only when HEAD is tagged).
+/// Always-present: version, target, profile. Possibly empty: tag (only when HEAD is tagged).
 struct BuildInfo {
     version: &'static str,
     commit: &'static str,
@@ -2191,6 +2191,7 @@ struct BuildInfo {
     tag: &'static str,
     time: &'static str,
     target: &'static str,
+    profile: &'static str,
 }
 
 const BUILD: BuildInfo = BuildInfo {
@@ -2200,6 +2201,7 @@ const BUILD: BuildInfo = BuildInfo {
     tag: env!("CRABCC_BUILD_TAG"),
     time: env!("CRABCC_BUILD_TIME"),
     target: env!("CRABCC_BUILD_TARGET"),
+    profile: env!("CRABCC_BUILD_PROFILE"),
 };
 
 // Compressed one-line summary: kept short enough for an LLM context tag,
@@ -2224,6 +2226,7 @@ fn run_info(text: bool) -> Result<()> {
                         else { serde_json::Value::String(BUILD.tag.into()) },
             "time":     BUILD.time,
             "target":   BUILD.target,
+            "profile":  BUILD.profile,
             "summary":  PROJECT_SUMMARY,
         });
         println!("{}", sonic_rs::to_string_pretty(&v)?);
@@ -2258,6 +2261,7 @@ fn run_info(text: bool) -> Result<()> {
     );
     println!("  built:    {}", BUILD.time);
     println!("  target:   {}", BUILD.target);
+    println!("  profile:  {}", BUILD.profile);
     println!();
     println!("  {}", PROJECT_SUMMARY);
     Ok(())

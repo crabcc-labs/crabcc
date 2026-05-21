@@ -17,6 +17,7 @@
 #   task dev:local:ship     # autofix → commit → CI → push → PR (MSG='…')
 #   task dev:local:bump     # semver bump → CHANGELOG → README → docs (BUMP=minor)
 #   task dev:local:build-prod  # optimized release → non-root hardened Docker image
+#   task dev:clean:all         # stash + prune old worktrees + sync + install deps
 #
 # Workflow extras (one-off / situational):
 #   task viz                # localhost call-graph viewer (issue #64)
