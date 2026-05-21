@@ -65,6 +65,8 @@ pub struct PrFile {
 pub struct PrDetail {
     pub pr: PrSummary,
     pub files: Vec<PrFile>,
+    /// True when the PR has more than 300 changed files and the file list is capped.
+    pub files_truncated: bool,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -260,7 +262,11 @@ pub fn detect_repo(root: &Path) -> Option<String> {
         return None;
     }
     let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    parse_github_repo(&url)
+    let result = parse_github_repo(&url);
+    if result.is_none() {
+        tracing::warn!("crabcc-viz: no GitHub repo matched for remote URL: {url:?}");
+    }
+    result
 }
 
 fn parse_github_repo(url: &str) -> Option<String> {
@@ -629,5 +635,46 @@ fn short_name(name: &str) -> String {
         name.to_string()
     } else {
         parts[parts.len() - 2..].join("::")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_github_repo_ssh() {
+        assert_eq!(
+            parse_github_repo("git@github.com:owner/repo.git"),
+            Some("owner/repo".to_string())
+        );
+        assert_eq!(
+            parse_github_repo("git@github.com:org/sub-repo.git"),
+            Some("org/sub-repo".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_github_repo_https() {
+        assert_eq!(
+            parse_github_repo("https://github.com/owner/repo"),
+            Some("owner/repo".to_string())
+        );
+        assert_eq!(
+            parse_github_repo("https://github.com/owner/repo.git"),
+            Some("owner/repo".to_string())
+        );
+        assert_eq!(
+            parse_github_repo("http://github.com/owner/repo"),
+            Some("owner/repo".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_github_repo_non_github() {
+        assert_eq!(parse_github_repo("https://gitlab.com/owner/repo"), None);
+        assert_eq!(parse_github_repo("git@bitbucket.org:owner/repo.git"), None);
+        assert_eq!(parse_github_repo(""), None);
+        assert_eq!(parse_github_repo("https://github.com/no-slash"), None);
     }
 }

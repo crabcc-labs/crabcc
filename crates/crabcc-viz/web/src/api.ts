@@ -52,6 +52,7 @@ export interface PrFile {
 export interface PrDetail {
   pr: PrSummary;
   files: PrFile[];
+  files_truncated: boolean;
 }
 export interface PrListResponse {
   prs: PrSummary[];
@@ -84,7 +85,7 @@ export interface PrImpactGraph {
 export interface HotspotFile {
   file: string;
   commits: number;
-  churn: number;
+  churn_lines?: number;
   authors: number;
   first_seen: string;
   last_seen: string;

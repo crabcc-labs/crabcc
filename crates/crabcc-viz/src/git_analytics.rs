@@ -20,8 +20,8 @@ pub struct HotspotFile {
     pub file: String,
     /// Number of distinct commits that touched this file.
     pub commits: u32,
-    /// Total lines added + removed across all commits.
-    pub churn: u32,
+    /// Lines added + removed (None until `--numstat` is wired in a future release).
+    pub churn_lines: Option<u32>,
     /// Unique authors who committed to this file.
     pub authors: u32,
     /// First commit touching this file (ISO-8601).
@@ -171,10 +171,12 @@ fn compute_hotspots(root: &Path, limit: usize) -> Result<(Vec<HotspotFile>, u32,
             if !current_author.is_empty() {
                 e.authors.insert(current_author.clone());
             }
-            // git log is newest-first, so last_seen is set on first encounter.
+            // git log is newest-first: first encounter = most recent date = last_seen.
             if e.commits == 1 {
                 e.last_seen = current_date.clone();
             }
+            // Always overwrite first_seen; after all commits are processed the
+            // final value is the oldest date (the furthest commit we scanned).
             e.first_seen = current_date.clone();
         }
     }
@@ -183,8 +185,8 @@ fn compute_hotspots(root: &Path, limit: usize) -> Result<(Vec<HotspotFile>, u32,
     let mut hotspots: Vec<HotspotFile> = stats
         .into_iter()
         .map(|(file, s)| HotspotFile {
-            churn: s.commits, // TODO: wire numstat for line-level churn in v2
             commits: s.commits,
+            churn_lines: None, // wired once --numstat is added to the git log pass
             authors: s.authors.len() as u32,
             first_seen: s.first_seen,
             last_seen: s.last_seen,
@@ -247,48 +249,42 @@ fn compute_dead_code(root: &Path, limit: usize) -> Result<Vec<DeadSymbol>> {
         return Ok(dead);
     }
 
-    let dead: Vec<DeadSymbol> = if false {
-        // unreachable placeholder to satisfy the compiler; real path is above.
-        vec![]
-    } else {
-        // Fall back to graph.json orphan walk (slower but always available).
-        // The v4 graph uses i64 node IDs; we bridge to names via symbol_name_by_id.
-        let graph_path = root.join(".crabcc").join("graph.json");
-        if !graph_path.exists() {
-            return Ok(vec![]);
+    // Fall back to graph.json orphan walk (slower but always available).
+    // The v4 graph uses i64 node IDs; we bridge to names via symbol_name_by_id.
+    let graph_path = root.join(".crabcc").join("graph.json");
+    if !graph_path.exists() {
+        return Ok(vec![]);
+    }
+    let graph = crabcc_core::graph::CallGraph::load(&graph_path)?;
+    let has_callers: std::collections::HashSet<i64> =
+        graph.callers.keys().copied().collect();
+    let orphan_ids: Vec<i64> = graph
+        .callees
+        .keys()
+        .filter(|k| !has_callers.contains(k))
+        .copied()
+        .take(limit)
+        .collect();
+    let mut dead: Vec<DeadSymbol> = Vec::new();
+    for id in orphan_ids {
+        let row: Option<(String, String, String, Option<i64>)> = conn
+            .query_row(
+                "SELECT s.name, s.kind, f.path, s.line_start \
+                 FROM symbols s JOIN files f ON f.id = s.file_id \
+                 WHERE s.id = ?1 LIMIT 1",
+                rusqlite::params![id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .ok();
+        if let Some((name, kind, file, line)) = row {
+            dead.push(DeadSymbol {
+                name,
+                kind,
+                file,
+                line: line.unwrap_or(0) as u32,
+            });
         }
-        let graph = crabcc_core::graph::CallGraph::load(&graph_path)?;
-        let has_callers: std::collections::HashSet<i64> =
-            graph.callers.keys().copied().collect();
-        let orphan_ids: Vec<i64> = graph
-            .callees
-            .keys()
-            .filter(|k| !has_callers.contains(k))
-            .copied()
-            .take(limit)
-            .collect();
-        let mut dead: Vec<DeadSymbol> = Vec::new();
-        for id in orphan_ids {
-            let row: Option<(String, String, String, Option<i64>)> = conn
-                .query_row(
-                    "SELECT s.name, s.kind, f.path, s.line_start \
-                     FROM symbols s JOIN files f ON f.id = s.file_id \
-                     WHERE s.id = ?1 LIMIT 1",
-                    rusqlite::params![id],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-                )
-                .ok();
-            if let Some((name, kind, file, line)) = row {
-                dead.push(DeadSymbol {
-                    name,
-                    kind,
-                    file,
-                    line: line.unwrap_or(0) as u32,
-                });
-            }
-        }
-        dead
-    };
+    }
 
     Ok(dead)
 }

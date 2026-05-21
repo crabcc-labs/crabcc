@@ -956,12 +956,13 @@ components:
 
     PrDetail:
       type: object
-      required: [pr, files]
+      required: [pr, files, files_truncated]
       properties:
         pr: { $ref: "#/components/schemas/PrSummary" }
         files:
           type: array
           items: { $ref: "#/components/schemas/PrFile" }
+        files_truncated: { type: boolean, description: "True when the PR has >300 changed files and the list is capped." }
 
     PrListResponse:
       type: object
@@ -1013,11 +1014,11 @@ components:
 
     HotspotFile:
       type: object
-      required: [file, commits, churn, authors, first_seen, last_seen]
+      required: [file, commits, authors, first_seen, last_seen]
       properties:
         file: { type: string }
         commits: { type: integer }
-        churn: { type: integer }
+        churn_lines: { type: integer, nullable: true, description: "Total lines added + removed (null until numstat is wired)." }
         authors: { type: integer }
         first_seen: { type: string }
         last_seen: { type: string }

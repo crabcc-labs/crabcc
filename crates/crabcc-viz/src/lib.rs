@@ -368,8 +368,8 @@ fn handle(request: Request, root: &Path) -> Result<()> {
                 // /api/forge/prs/{number} — single PR detail
                 if let Ok(number) = rest.parse::<u64>() {
                     return match (forge::get_pr(root, number), forge::get_pr_files(root, number)) {
-                        (Ok(pr), Ok((files, _truncated))) => {
-                            respond_json(request, &forge::PrDetail { pr, files })
+                        (Ok(pr), Ok((files, files_truncated))) => {
+                            respond_json(request, &forge::PrDetail { pr, files, files_truncated })
                         }
                         (Err(e), _) | (_, Err(e)) => respond_status(
                             request,
