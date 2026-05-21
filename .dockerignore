@@ -55,3 +55,8 @@ examples/
 crates/crabcc-viz/web/dist/
 crates/crabcc-viz/web/node_modules/
 crates/crabcc-viz/web/bun.lock
+
+# Node / bun install trees under apps/ (jobs-worker, chrome-extension, etc.).
+# Never needed in the build context; bun.lock files in apps/ are similarly excluded.
+apps/*/node_modules/
+apps/*/bun.lock

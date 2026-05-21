@@ -5,6 +5,19 @@
 /dist/
 /build/
 .DS_Store
+# Node / bun package directories. bun.lock IS tracked (intentional lockfile);
+# node_modules/ is never committed. The per-crate web frontend
+# (crates/crabcc-viz/web/) has its own .gitignore for node_modules/;
+# this root-level pattern covers apps/ (jobs-worker, etc.) that lack
+# a per-directory .gitignore.
+node_modules/
+# IDE project metadata — JetBrains and VS Code.
+.idea/
+.vscode/
+!.vscode/settings.json
+# Vim swap files.
+*.swp
+*.swo
 # Per-developer scratch — task outputs land here (local-ci, smoke,
 # coverage, profiling, ollama smoke replies). Kept on disk between
 # runs but never checked in.

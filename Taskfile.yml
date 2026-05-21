@@ -37,6 +37,9 @@
 #   taskfiles/jobs.yml       jobs-up/down/board/e2e/submit
 #   taskfiles/profile.yml    profile-build/index, flamegraph-index
 #   taskfiles/e2e.yml        e2e, e2e:dashboard, e2e:graph, e2e:cli, …
+#   taskfiles/hitl.yml       hitl:up/down/logs/test, hitl:env-init, hitl:open
+#   taskfiles/cron.yml       cron-lint, cron-test
+#   taskfiles/index-publish.yml  index-publish-lint, index-publish-test
 #   taskfiles/linear.yml     linear-sync (GitHub → Linear backfill)
 
 version: '3'

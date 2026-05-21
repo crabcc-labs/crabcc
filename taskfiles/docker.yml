@@ -1,6 +1,6 @@
 # Docker / container image tasks: build, push, SBOM, OrbStack setup.
 # docker-build-crabcc, docker-push-crabcc, docker-sbom-crabcc,
-# docker-build-telegram, setup-orbstack.
+# setup-orbstack. (docker-build-telegram removed in #571 — HITL owns Telegram)
 version: '3'
 
 vars:
