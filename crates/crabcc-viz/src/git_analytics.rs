@@ -165,9 +165,9 @@ fn compute_hotspots(root: &Path, limit: usize) -> Result<(Vec<HotspotFile>, u32,
         if line.is_empty() {
             continue;
         }
-        if line.starts_with('|') {
+        if let Some(rest) = line.strip_prefix('|') {
             // Header line: |sha|email|date
-            let parts: Vec<&str> = line[1..].splitn(3, '|').collect();
+            let parts: Vec<&str> = rest.splitn(3, '|').collect();
             current_author = parts.get(1).copied().unwrap_or("").to_string();
             current_date = parts
                 .get(2)
@@ -212,7 +212,7 @@ fn compute_hotspots(root: &Path, limit: usize) -> Result<(Vec<HotspotFile>, u32,
             file,
         })
         .collect();
-    hotspots.sort_by(|a, b| b.commits.cmp(&a.commits));
+    hotspots.sort_by_key(|b| std::cmp::Reverse(b.commits));
     hotspots.truncate(limit);
 
     Ok((hotspots, total_commits, total_files))
