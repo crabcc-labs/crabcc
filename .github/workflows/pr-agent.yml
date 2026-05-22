@@ -5,7 +5,8 @@ name: PR-Agent
 # Compression: https://docs.pr-agent.ai/core-abilities/compression_strategy/
 #
 # Secrets required (Settings → Secrets → Actions):
-#   ANTHROPIC_API_KEY   — Claude API key (pr-agent uses claude-sonnet-4-6 by default here)
+#   # ANTHROPIC_API_KEY   — Claude API key (pr-agent uses claude-sonnet-4-6 by default here)
+#   OPENROUTER_API_KEY  — OpenRouter key (openrouter.ai → Keys)
 #   GITHUB_TOKEN        — auto-provisioned, no setup needed
 #
 # Usage:
@@ -39,10 +40,13 @@ jobs:
         uses: the-pr-agent/pr-agent@main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           # Model — override in .pr_agent.toml for per-repo tuning.
-          config.model: "claude-sonnet-4-6"
-          config.fallback_models: '["claude-haiku-4-5-20251001"]'
+          # config.model: "claude-sonnet-4-6"
+          # config.fallback_models: '["claude-haiku-4-5-20251001"]'
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          config.model: "openrouter/anthropic/claude-sonnet-4-5"
+          config.fallback_models: '["openrouter/anthropic/claude-haiku-4-5"]'
           # Auto-actions: review + describe on open; improve only on-demand.
           github_action_config.auto_review: "true"
           github_action_config.auto_describe: "true"
