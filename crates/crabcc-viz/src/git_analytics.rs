@@ -16,7 +16,7 @@ use std::path::Path;
 // ── Types ──────────────────────────────────────────────────────────────────
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct HotspotFile {
+pub(crate) struct HotspotFile {
     pub file: String,
     /// Number of distinct commits that touched this file.
     pub commits: u32,
@@ -31,7 +31,7 @@ pub struct HotspotFile {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct DeadSymbol {
+pub(crate) struct DeadSymbol {
     pub name: String,
     pub kind: String,
     pub file: String,
@@ -39,7 +39,7 @@ pub struct DeadSymbol {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct AnalyticsSnapshot {
+pub(crate) struct AnalyticsSnapshot {
     /// Git HEAD SHA this snapshot was computed from.
     pub head_sha: String,
     pub computed_at: u64,
@@ -324,7 +324,7 @@ fn compute_dead_code(root: &Path, limit: usize) -> Result<Vec<DeadSymbol>> {
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
-pub fn analytics_snapshot(root: &Path, hotspot_limit: usize, dead_limit: usize) -> AnalyticsSnapshot {
+pub(crate) fn analytics_snapshot(root: &Path, hotspot_limit: usize, dead_limit: usize) -> AnalyticsSnapshot {
     let sha = head_sha(root);
     if let Some(cached) = read_cache(root, &sha, hotspot_limit, dead_limit) {
         return cached;
