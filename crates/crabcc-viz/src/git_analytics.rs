@@ -350,3 +350,63 @@ pub(crate) fn analytics_snapshot(root: &Path, hotspot_limit: usize, dead_limit: 
     }
     snap
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn make_snap(sha: &str) -> AnalyticsSnapshot {
+        AnalyticsSnapshot {
+            head_sha: sha.to_string(),
+            computed_at: 1_000_000,
+            hotspots: vec![],
+            dead_code: vec![],
+            total_commits_scanned: 42,
+            total_files_seen: 7,
+        }
+    }
+
+    fn setup_crabcc_dir(dir: &TempDir) {
+        std::fs::create_dir_all(dir.path().join(".crabcc")).unwrap();
+    }
+
+    #[test]
+    fn cache_round_trip() {
+        let dir = TempDir::new().unwrap();
+        setup_crabcc_dir(&dir);
+        let snap = make_snap("abc123");
+        write_cache(dir.path(), &snap, 50, 100);
+        let result = read_cache(dir.path(), "abc123", 50, 100);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().head_sha, "abc123");
+    }
+
+    #[test]
+    fn cache_miss_on_sha_change() {
+        let dir = TempDir::new().unwrap();
+        setup_crabcc_dir(&dir);
+        let snap = make_snap("abc");
+        write_cache(dir.path(), &snap, 50, 100);
+        let result = read_cache(dir.path(), "xyz", 50, 100);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn cache_miss_on_limit_change() {
+        let dir = TempDir::new().unwrap();
+        setup_crabcc_dir(&dir);
+        let snap = make_snap("abc");
+        write_cache(dir.path(), &snap, 50, 100);
+        let result = read_cache(dir.path(), "abc", 10, 100);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn analytics_snapshot_non_git_dir_returns_empty() {
+        let dir = TempDir::new().unwrap();
+        let snap = analytics_snapshot(dir.path(), 50, 200);
+        assert_eq!(snap.head_sha, "unknown");
+        assert!(snap.hotspots.is_empty());
+    }
+}

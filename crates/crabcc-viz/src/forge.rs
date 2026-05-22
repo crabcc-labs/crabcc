@@ -695,4 +695,17 @@ mod tests {
         assert_eq!(parse_github_repo(""), None);
         assert_eq!(parse_github_repo("https://github.com/no-slash"), None);
     }
+
+    #[test]
+    fn short_name_truncates_long_paths() {
+        assert_eq!(short_name("a::b::c::d"), "c::d");
+        assert_eq!(short_name("foo::bar"), "foo::bar");
+        assert_eq!(short_name("single"), "single");
+    }
+
+    #[test]
+    fn short_path_extracts_filename() {
+        assert_eq!(short_path("src/foo/bar.rs"), "bar.rs");
+        assert_eq!(short_path("bar.rs"), "bar.rs");
+    }
 }
