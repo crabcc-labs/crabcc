@@ -6,7 +6,7 @@
 
 import { useSyncExternalStore } from "react";
 
-export type Route = "dashboard" | "logs" | "system" | "knowledge";
+export type Route = "dashboard" | "logs" | "system" | "knowledge" | "prs" | "analytics";
 
 /** Map a raw `window.location.hash` onto our internal route enum. */
 export function routeFor(hash: string): Route {
@@ -18,6 +18,8 @@ export function routeFor(hash: string): Route {
   if (clean === "knowledge") return "knowledge";
   if (clean === "logs") return "logs";
   if (clean === "system") return "system";
+  if (clean.startsWith("prs")) return "prs";
+  if (clean === "analytics") return "analytics";
   return "dashboard";
 }
 
@@ -26,12 +28,21 @@ export function routeFor(hash: string): Route {
  * will fire a `hashchange` event afterward, which `useRoute` listens
  * for — so callers don't need to do anything else to trigger a re-render.
  */
-export function navigate(route: Route): void {
+export function navigate(route: Route, sub?: string): void {
   if (typeof window === "undefined") return;
-  const target = route === "dashboard" ? "" : `#/${route}`;
+  const base = route === "dashboard" ? "" : `#/${route}`;
+  const target = sub ? `${base}/${sub}` : base;
   if (window.location.hash !== target) {
     window.location.hash = target;
   }
+}
+
+/** For routes like #/prs/42, extract the sub-segment ("42"). */
+export function routeSub(): string {
+  if (typeof window === "undefined") return "";
+  const hash = window.location.hash.replace(/^#\/?/, "");
+  const parts = hash.split("/");
+  return parts.length >= 2 ? parts[1]! : "";
 }
 
 // ── React subscription -------------------------------------------------------

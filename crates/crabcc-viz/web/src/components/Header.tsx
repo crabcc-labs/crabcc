@@ -1,9 +1,11 @@
 import { memo } from "react";
 import {
+  BarChart2,
   BookOpen,
   ChevronRight,
   Circle,
   FileText,
+  GitPullRequest,
   LayoutDashboard,
   RefreshCw,
   Server,
@@ -22,6 +24,7 @@ type Props = {
   version: string;
   live: boolean;
   route: Route;
+  mobile?: boolean;
   onReindex: () => void;
   onRandomQuery: () => void;
   onSettings?: () => void;
@@ -36,6 +39,8 @@ interface NavLink {
 
 const NAV: ReadonlyArray<NavLink> = [
   { href: "#/", label: "overview", match: "dashboard", icon: LayoutDashboard },
+  { href: "#/prs", label: "prs", match: "prs", icon: GitPullRequest },
+  { href: "#/analytics", label: "health", match: "analytics", icon: BarChart2 },
   { href: "#/logs", label: "logs", match: "logs", icon: FileText },
   { href: "#/system", label: "system", match: "system", icon: Server },
   { href: "#/knowledge", label: "knowledge", match: "knowledge", icon: BookOpen },
@@ -50,6 +55,7 @@ export const Header = memo(function Header({
   version,
   live,
   route,
+  mobile = false,
   onReindex,
   onRandomQuery,
   onSettings,
@@ -61,18 +67,16 @@ export const Header = memo(function Header({
         "border-b border-border bg-card",
       )}
     >
-      <span className="font-bold tracking-wider text-primary">
+      <span className="font-bold tracking-wider text-primary shrink-0">
         crabcc · live
       </span>
       <span
         className={cn(
-          "inline-flex items-center gap-1.5",
+          "inline-flex items-center gap-1.5 shrink-0",
           live ? "text-success" : "text-inactive",
         )}
         title={live ? "SSE connected" : "SSE disconnected"}
       >
-        {/* Filled circle when connected, outline when offline — gives a
-            crisper read than the prior CSS-only background-color flip. */}
         <Icon
           of={Circle}
           size={10}
@@ -80,49 +84,52 @@ export const Header = memo(function Header({
           fill={live ? "currentColor" : "none"}
           aria-hidden="true"
         />
-        <span>{live ? "live" : "offline"}</span>
+        <span className="max-[480px]:hidden">{live ? "live" : "offline"}</span>
       </span>
-      <nav
-        className="flex items-center gap-0.5 ml-1"
-        aria-label="Primary"
-      >
-        {NAV.map((n) => {
-          const isActive = route === n.match;
-          return (
-            <a
-              key={n.match}
-              href={n.href}
-              className={cn(
-                "px-2.5 py-1 rounded text-xs font-semibold tracking-wider",
-                "no-underline border border-transparent",
-                "max-[800px]:px-1.5 max-[800px]:text-[11px]",
-                isActive
-                  ? "text-primary bg-background border-border"
-                  : "text-muted hover:text-foreground hover:bg-background hover:border-border",
-                "focus-visible:outline-2 focus-visible:outline-primary",
-                "focus-visible:outline-offset-2",
-              )}
-              aria-current={isActive ? "page" : undefined}
-              tabIndex={0}
-            >
-              <Icon
-                of={n.icon}
-                size={12}
-                className="opacity-80 mr-1 -translate-y-px"
-                aria-hidden="true"
-              />
-              {n.label}
-            </a>
-          );
-        })}
-      </nav>
+      {/* Desktop nav — hidden on mobile (bottom nav takes over) */}
+      {!mobile && (
+        <nav
+          className="flex items-center gap-0.5 ml-1"
+          aria-label="Primary"
+        >
+          {NAV.map((n) => {
+            const isActive = route === n.match;
+            return (
+              <a
+                key={n.match}
+                href={n.href}
+                className={cn(
+                  "px-2.5 py-1 rounded text-xs font-semibold tracking-wider",
+                  "no-underline border border-transparent",
+                  "max-[900px]:px-1.5 max-[900px]:text-[11px]",
+                  isActive
+                    ? "text-primary bg-background border-border"
+                    : "text-muted hover:text-foreground hover:bg-background hover:border-border",
+                  "focus-visible:outline-2 focus-visible:outline-primary",
+                  "focus-visible:outline-offset-2",
+                )}
+                aria-current={isActive ? "page" : undefined}
+                tabIndex={0}
+              >
+                <Icon
+                  of={n.icon}
+                  size={12}
+                  className="opacity-80 mr-1 -translate-y-px"
+                  aria-hidden="true"
+                />
+                {n.label}
+              </a>
+            );
+          })}
+        </nav>
+      )}
       <span
         className={cn(
           "flex-1 text-muted text-xs",
           "max-[1100px]:text-[11px] max-[1100px]:max-w-[200px]",
           "max-[1100px]:overflow-hidden max-[1100px]:text-ellipsis",
           "max-[1100px]:whitespace-nowrap",
-          "max-[800px]:hidden",
+          mobile ? "hidden" : "max-[800px]:hidden",
         )}
       >
         <b className="text-foreground font-semibold">{repo}</b> · {root} · v

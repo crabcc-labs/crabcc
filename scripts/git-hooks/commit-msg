@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# ---------------------------------------------------------------------------
+# crabcc :: .git/hooks/commit-msg (installed by scripts/install-hooks.sh)
+#
+# Enforces Conventional Commits format:
+#   type(scope)?: description
+#   type!: description          (breaking change)
+#
+# Valid types: feat fix chore refactor docs test ci perf style build revert
+#
+# Examples (good):
+#   feat(cli): add --json flag to sym subcommand
+#   fix(core): handle empty FTS5 results without panic
+#   chore: bump serde to 1.0.215
+#   ci(hetzner)!: drop ubuntu-20.04 runner image
+#
+# Bypass: CRABCC_SKIP_HOOKS=1 git commit ...
+#         git commit --no-verify
+# ---------------------------------------------------------------------------
+
+set -uo pipefail
+
+if [ "${CRABCC_SKIP_HOOKS:-0}" = "1" ]; then exit 0; fi
+
+MSG_FILE="$1"
+FIRST_LINE=$(head -1 "$MSG_FILE")
+
+# Skip merge commits, revert auto-messages, fixup!/squash! from `git rebase`.
+case "$FIRST_LINE" in
+    Merge\ *|Revert\ \"*|fixup\!\ *|squash\!\ *|amend\!\ *) exit 0 ;;
+esac
+
+# Conventional Commits pattern.
+PATTERN='^(feat|fix|chore|refactor|docs|test|ci|perf|style|build|revert)(\([a-z0-9_./-]+\))?(!)?: .{1,}'
+
+if ! echo "$FIRST_LINE" | grep -qE "$PATTERN"; then
+    cat >&2 <<EOF
+[crabcc-hooks] commit-msg: message does not follow Conventional Commits.
+
+  Got:      $FIRST_LINE
+  Expected: type(scope)?: description
+
+  Valid types: feat  fix  chore  refactor  docs  test  ci  perf  style  build  revert
+  Breaking:    append ! before the colon — e.g. feat(api)!: rename endpoint
+
+  Bypass: CRABCC_SKIP_HOOKS=1 git commit -m "..."
+          git commit --no-verify
+EOF
+    exit 1
+fi
+
+exit 0

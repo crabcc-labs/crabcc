@@ -209,8 +209,10 @@ impl LanguageServer for Backend {
 
     async fn did_open(&self, p: DidOpenTextDocumentParams) {
         let cfg = self.root_config.lock().await.clone();
-        self.open_docs
-            .insert(p.text_document.uri.clone(), Arc::new(p.text_document.text.clone()));
+        self.open_docs.insert(
+            p.text_document.uri.clone(),
+            Arc::new(p.text_document.text.clone()),
+        );
         self.cache.invalidate_all();
         self.index_uri(&p.text_document.uri, &p.text_document.text, &cfg.repo_root)
             .await;
@@ -310,10 +312,8 @@ impl LanguageServer for Backend {
         };
         let syms = store.symbols_in_file(&rel).unwrap_or_default();
         let dsyms = handlers::document_symbols(syms);
-        self.cache.put(
-            key,
-            CacheValue::DocumentSymbols(StdArc::new(dsyms.clone())),
-        );
+        self.cache
+            .put(key, CacheValue::DocumentSymbols(StdArc::new(dsyms.clone())));
         Ok(Some(DocumentSymbolResponse::Nested(dsyms)))
     }
 
@@ -377,9 +377,8 @@ impl LanguageServer for Backend {
         };
         // Gate find_refs to languages that support edge-based refs
         let lang = crabcc_core::extract::detect_lang(std::path::Path::new(&rel));
-        let do_find_refs = lang.is_some_and(|l| {
-            matches!(l, "typescript" | "tsx" | "javascript" | "ruby")
-        });
+        let do_find_refs =
+            lang.is_some_and(|l| matches!(l, "typescript" | "tsx" | "javascript" | "ruby"));
 
         ensure_store(&self.store, &cfg.db_path);
         let store_guard = self.store.lock().unwrap();
@@ -480,10 +479,8 @@ impl LanguageServer for Backend {
         syms.dedup_by(|a, b| a.name == b.name && a.file == b.file && a.line_start == b.line_start);
         syms.truncate(200);
         let out = handlers::workspace_symbol_legacy(&cfg.repo_root, syms);
-        self.cache.put(
-            key,
-            CacheValue::WorkspaceSymbol(StdArc::new(out.clone())),
-        );
+        self.cache
+            .put(key, CacheValue::WorkspaceSymbol(StdArc::new(out.clone())));
         Ok(Some(out))
     }
 

@@ -6,6 +6,75 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+## [4.1.0] — 2026-05-21
+
+Forge visualizer improvements, developer tooling hardening, and local CI via
+`act`. All crabcc-viz changes are in the standalone crate (excluded from the
+workspace); the workspace version bumps in lock-step for release tracking.
+
+### Added
+
+- **`nektos/act` integration.** `.actrc` maps the `[self-hosted, linux,
+  hetzner]` runner label to `catthehacker/ubuntu:act-22.04`; `--reuse` keeps
+  the container warm for incremental re-runs. Two new `Taskfile` targets:
+  - `task act` — runs the full push-event CI workflow locally.
+  - `task act-pr` — generates a PR-event JSON from `git merge-base` and
+    scopes the test run to the diff, matching real CI behavior.
+- **Conventional Commits enforcement** via a new `scripts/git-hooks/commit-msg`
+  hook. Pattern: `type(scope)?: description`. Valid types: `feat`, `fix`,
+  `chore`, `refactor`, `docs`, `test`, `ci`, `perf`, `style`, `build`,
+  `revert`. Merge/revert/fixup/squash commits are exempt. Bypass:
+  `CRABCC_SKIP_HOOKS=1` or `--no-verify`.
+- **Scoped pre-push test gate** via a new `scripts/git-hooks/pre-push` hook.
+  Runs `cargo nextest` (falling back to `cargo test`) for every workspace crate
+  touched by the pushed commits — same diff scope as the CI `test` job on
+  `pull_request` events.
+- **`scripts/install-hooks.sh` generalized.** Now installs every executable in
+  `scripts/git-hooks/` (pre-commit, commit-msg, pre-push) via symlinks from a
+  single loop, rather than a hardcoded list. `--remove` and `--print` work for
+  all hooks.
+- **Pre-commit TypeScript typecheck** (`bun run typecheck`) added for staged
+  `crates/crabcc-viz/web/src/**/*.{ts,tsx}` and `package.json` changes.
+- **Pre-commit `actionlint`** for staged `.github/workflows/*.yml` files.
+- **Pre-commit `yq` YAML validation** for `openapi.yaml`.
+- **`deny-draft-prs.yml` workflow.** Marks all PRs as ready for review on
+  `opened`, `reopened`, `converted_to_draft` events. Enforces the repo policy
+  that all PRs land in "ready for review" state.
+- **forge: HTTP status propagation.** New `ForgeHttpError` type carries the
+  raw HTTP status from GitHub API errors through `anyhow` to the route handler,
+  so 401/403/404 errors from the forge routes return the correct HTTP response
+  code instead of always 400.
+- **forge: rate-limit awareness.** `X-RateLimit-Remaining` / `X-RateLimit-Reset`
+  headers are absorbed from every GitHub API response into a module-level
+  `Mutex<RateLimit>` cache. `ForgeConfig` exposes `rate_limit_remaining` and
+  `rate_limit_reset` fields.
+- **forge: paginated file list.** `get_pr_files` pages up to 3 pages
+  (300 files max) and returns a `truncated: bool` flag when the cap is hit.
+  `PrImpactGraph` carries the flag to the frontend.
+- **forge: edge-dedup via `HashSet`.** Replaced O(n²) `iter().any()` scan
+  in impact graph construction with a `HashSet<(String, String)>` accumulator.
+- **`DiffViewer` memoization.** `parsePatch` result computed via `useMemo`
+  to avoid re-parsing on every re-render.
+- **`ImpactGraph` D3 loading state.** Spinner overlay shown until the lazy
+  `Promise.all([import d3, import d3-dag])` resolves.
+- **Truncation warnings in `PrDetail`.** Diff tab warns when `changed_files >
+  files.length`; impact tab warns when `impactData.truncated` is set.
+
+### Fixed
+
+- **`compute_hotspots` return type.** Was returning `total_commits.min(total_files)`
+  for `total_commits_scanned` — semantically wrong. Now returns
+  `(hotspots, total_commits, total_files)` as a 3-tuple; `analytics_snapshot`
+  destructures correctly.
+- **`get_pr_files` call-site destructuring.** Route handler now destructures
+  `(files, _truncated)` after the return-type change.
+
+### Chores
+
+- `.gitignore`: added `node_modules/`, `.idea/`, `.vscode/`
+  (`!.vscode/settings.json` preserved), `*.swp`, `*.swo`, `.secrets`.
+- `.dockerignore`: added `apps/*/node_modules/` and `apps/*/bun.lock`.
+
 ### Fixed
 
 - **`Store::replace_edges` / `callers_of` / `refs_of`** rewritten against the

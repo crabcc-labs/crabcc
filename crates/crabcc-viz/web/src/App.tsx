@@ -18,6 +18,7 @@ import {
   useState,
 } from "react";
 import { Header } from "./components/Header";
+import { MobileNav } from "./components/MobileNav";
 import { ReindexDialog } from "./components/ReindexDialog";
 import {
   SettingsPanel,
@@ -29,7 +30,8 @@ import { useEventStream } from "./useEventStream";
 import { usePolling } from "./usePolling";
 import { updateDebugBridge } from "./debugBridge";
 import { logFetchOk, logUserAction } from "./lifecycle";
-import { useRoute } from "./router";
+import { useRoute, routeSub } from "./router";
+import { useMobile } from "./hooks/useMobile";
 import {
   api,
   type ActivityHit,
@@ -55,9 +57,20 @@ const SystemView = lazy(() =>
 const KnowledgeView = lazy(() =>
   import("./components/knowledge").then((m) => ({ default: m.KnowledgeView })),
 );
+const PrsView = lazy(() =>
+  import("./components/forge").then((m) => ({ default: m.PrsView })),
+);
+const PrDetail = lazy(() =>
+  import("./components/forge").then((m) => ({ default: m.PrDetail })),
+);
+const AnalyticsView = lazy(() =>
+  import("./components/analytics").then((m) => ({ default: m.AnalyticsView })),
+);
 
 export function App() {
   const route = useRoute();
+  const mobile = useMobile();
+  const sub = routeSub();
   const [reindexOpen, setReindexOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settings, setSettings] = useState<Settings>(loadSettings);
@@ -159,6 +172,11 @@ export function App() {
       }
     : null;
 
+  // On mobile the bottom nav replaces the header nav tabs, so we give
+  // the main content area extra padding-bottom so content isn't hidden
+  // behind the fixed 56px nav bar.
+  const mainStyle = mobile ? { paddingBottom: "calc(56px + env(safe-area-inset-bottom, 0px))" } : undefined;
+
   return (
     <div className="layout">
       <Header
@@ -167,6 +185,7 @@ export function App() {
         version={bs?.version ?? "?"}
         live={connected}
         route={route}
+        mobile={mobile}
         onReindex={() => {
           logUserAction("reindex requested");
           setReindexOpen(true);
@@ -178,37 +197,48 @@ export function App() {
         onSettings={() => setSettingsOpen(true)}
       />
       <Suspense fallback={<div className="placeholder">loading view…</div>}>
-        {route === "knowledge" ? (
-          <KnowledgeView />
-        ) : route === "logs" ? (
-          <LogsView events={telEvents} source={telSource} />
-        ) : route === "system" ? (
-          <SystemView
-            agents={agents}
-            bootstrap={bs}
-            debug={{
-              sseConnected: connected,
-              sseUrl: "/api/events",
-              activityCount: activity.length,
-              agentCount: agents.length,
-              telemetryCount: telEvents.length,
-              telemetryCursor: telemetry.data?.cursor ?? 0,
-              telemetryPath: telSource?.path ?? "",
-              telemetryExists: telSource?.exists ?? false,
-            }}
-          />
-        ) : (
-          <DashboardHome
-            connected={connected}
-            liveSince={liveSince}
-            activity={activity}
-            agents={agents}
-            telEvents={telEvents}
-            otlp={otlpData}
-            bootstrap={bs}
-          />
-        )}
+        <div style={mainStyle}>
+          {route === "prs" ? (
+            sub ? (
+              <PrDetail prNumber={parseInt(sub, 10)} />
+            ) : (
+              <PrsView />
+            )
+          ) : route === "analytics" ? (
+            <AnalyticsView />
+          ) : route === "knowledge" ? (
+            <KnowledgeView />
+          ) : route === "logs" ? (
+            <LogsView events={telEvents} source={telSource} />
+          ) : route === "system" ? (
+            <SystemView
+              agents={agents}
+              bootstrap={bs}
+              debug={{
+                sseConnected: connected,
+                sseUrl: "/api/events",
+                activityCount: activity.length,
+                agentCount: agents.length,
+                telemetryCount: telEvents.length,
+                telemetryCursor: telemetry.data?.cursor ?? 0,
+                telemetryPath: telSource?.path ?? "",
+                telemetryExists: telSource?.exists ?? false,
+              }}
+            />
+          ) : (
+            <DashboardHome
+              connected={connected}
+              liveSince={liveSince}
+              activity={activity}
+              agents={agents}
+              telEvents={telEvents}
+              otlp={otlpData}
+              bootstrap={bs}
+            />
+          )}
+        </div>
       </Suspense>
+      {mobile && <MobileNav route={route} />}
       {reindexOpen && <ReindexDialog onClose={() => setReindexOpen(false)} />}
       {settingsOpen && (
         <SettingsPanel

@@ -31,15 +31,26 @@ fi
 run_rust=0
 run_shell=0
 run_image=0
+run_ts=0
+run_workflows=0
+run_openapi=0
 while IFS= read -r f; do
     case "$f" in
         *.rs|Cargo.toml|Cargo.lock|crates/*/Cargo.toml) run_rust=1 ;;
         scripts/install-aliases.sh|scripts/aliases-smoke.sh) run_shell=1 ;;
         *.png|*.PNG|*.jpg|*.JPG|*.jpeg|*.JPEG) run_image=1 ;;
+        crates/crabcc-viz/web/src/*.ts|\
+        crates/crabcc-viz/web/src/*.tsx|\
+        crates/crabcc-viz/web/src/**/*.ts|\
+        crates/crabcc-viz/web/src/**/*.tsx|\
+        crates/crabcc-viz/web/package.json) run_ts=1 ;;
+        .github/workflows/*.yml|.github/workflows/*.yaml) run_workflows=1 ;;
+        crates/crabcc-viz/openapi.yaml) run_openapi=1 ;;
     esac
 done <<<"$changed"
 
-if [ "$run_rust" = "0" ] && [ "$run_shell" = "0" ] && [ "$run_image" = "0" ]; then
+if [ "$run_rust" = "0" ] && [ "$run_shell" = "0" ] && [ "$run_image" = "0" ] \
+   && [ "$run_ts" = "0" ] && [ "$run_workflows" = "0" ] && [ "$run_openapi" = "0" ]; then
     exit 0
 fi
 
@@ -96,6 +107,49 @@ if [ "$run_image" = "1" ]; then
         fi
     else
         echo "  ⚠ scripts/compress-images.sh not executable — skipping" >&2
+    fi
+fi
+
+# TypeScript typecheck — fast (~2 s warm). Only when web/src or package.json changed.
+if [ "$run_ts" = "1" ]; then
+    if command -v bun >/dev/null 2>&1; then
+        echo "  → bun run typecheck (crabcc-viz/web)"
+        if ! (cd "$REPO_ROOT/crates/crabcc-viz/web" && bun run typecheck 2>&1 | tail -30); then
+            echo "[crabcc-hooks] TypeScript typecheck failed — fix and re-commit" >&2
+            exit 1
+        fi
+    else
+        echo "  ⚠ bun not found — skipping TypeScript typecheck" >&2
+    fi
+fi
+
+# actionlint — validates staged workflow YAML files against the GHA schema.
+# Catches most "why is CI broken?" issues before the first push.
+if [ "$run_workflows" = "1" ]; then
+    if command -v actionlint >/dev/null 2>&1; then
+        echo "  → actionlint (staged workflow files)"
+        WORKFLOW_FILES=$(echo "$changed" | grep -E '^\.github/workflows/.*\.ya?ml$' || true)
+        if [ -n "$WORKFLOW_FILES" ]; then
+            # shellcheck disable=SC2086
+            if ! echo "$WORKFLOW_FILES" | xargs actionlint 2>&1; then
+                echo "[crabcc-hooks] actionlint failed — fix and re-commit" >&2
+                exit 1
+            fi
+        fi
+    else
+        echo "  ⚠ actionlint not found — skipping workflow lint (brew install actionlint)" >&2
+    fi
+fi
+
+# YAML validity check for openapi.yaml — catches syntax errors before they
+# break the TypeScript codegen step in the frontend build.
+if [ "$run_openapi" = "1" ]; then
+    if command -v yq >/dev/null 2>&1; then
+        echo "  → yq validate openapi.yaml"
+        if ! yq eval '.' "$REPO_ROOT/crates/crabcc-viz/openapi.yaml" >/dev/null 2>&1; then
+            echo "[crabcc-hooks] openapi.yaml: invalid YAML — fix and re-commit" >&2
+            exit 1
+        fi
     fi
 fi
 

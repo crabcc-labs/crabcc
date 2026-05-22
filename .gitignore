@@ -5,10 +5,26 @@
 /dist/
 /build/
 .DS_Store
+# Node / bun package directories. bun.lock IS tracked (intentional lockfile);
+# node_modules/ is never committed. The per-crate web frontend
+# (crates/crabcc-viz/web/) has its own .gitignore for node_modules/;
+# this root-level pattern covers apps/ (jobs-worker, etc.) that lack
+# a per-directory .gitignore.
+node_modules/
+# IDE project metadata — JetBrains and VS Code.
+.idea/
+.vscode/
+!.vscode/settings.json
+# Vim swap files.
+*.swp
+*.swo
 # Per-developer scratch — task outputs land here (local-ci, smoke,
 # coverage, profiling, ollama smoke replies). Kept on disk between
 # runs but never checked in.
 .summary/
+# git worktrees created by `task dev:local:start`. Each is a full checkout
+# at a specific branch; gitignored so the parent repo doesn't track them.
+.worktrees/
 
 # Local-only — no longer published to the remote. Kept on disk for the
 # author's reference; ship-relevant content lives in README.md, CLAUDE.md,
@@ -23,6 +39,7 @@
 STORAGE_RESEARCH.md
 DB_*.md
 crates/crabcc-core/fuzz/target/
+crates/crabcc-viz/target/
 
 # Generated secrets for the Ollama auth stack. Real .env never committed;
 # track install/ollama-stack/.env.example instead. See issue #105.
@@ -59,3 +76,7 @@ __pycache__/
 # every build). Bundle output lives next to it; only the `.html`/`.js`/`.css`
 # chunks the Rust crate `include_str!`s should be tracked.
 crates/crabcc-viz/web/dist/metafile.json
+
+# act (nektos/act) local secrets file — copy from .secrets.example and fill in.
+# Never commit real tokens.
+.secrets

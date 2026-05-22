@@ -80,7 +80,10 @@ FROM crabcc-base:local AS runtime
 ARG GIT_SHA=unknown
 ARG BUILD_DATE=unknown
 ARG VERSION=dev
+ARG BRANCH=unknown
 
+LABEL com.crabcc.build.branch="${BRANCH}"
+LABEL com.crabcc.build.profile="release"
 LABEL org.opencontainers.image.title="crabcc"
 LABEL org.opencontainers.image.description="Symbol index for AI coding agents"
 LABEL org.opencontainers.image.url="https://github.com/peterlodri-sec/crabcc"

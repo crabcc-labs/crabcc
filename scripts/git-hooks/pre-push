@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# ---------------------------------------------------------------------------
+# crabcc :: .git/hooks/pre-push (installed by scripts/install-hooks.sh)
+#
+# Scoped test gate before push. Runs cargo nextest (or cargo test) for
+# every workspace crate touched by the commits being pushed — same scope
+# logic as the CI `test` job on a pull_request event.
+#
+# A push that would fail CI tests is rejected locally, saving a round-trip
+# to the Hetzner runners. The full workspace test suite is left to CI so the
+# hook stays fast on focused branches.
+#
+# Bypass: CRABCC_SKIP_HOOKS=1 git push ...
+#         git push --no-verify
+# ---------------------------------------------------------------------------
+
+set -uo pipefail
+
+if [ "${CRABCC_SKIP_HOOKS:-0}" = "1" ]; then
+    echo "[crabcc-hooks] CRABCC_SKIP_HOOKS=1 — skipping pre-push"
+    exit 0
+fi
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT" || exit 1
+
+# Each line from stdin: <local-ref> <local-sha> <remote-ref> <remote-sha>
+any_tested=0
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+    # Skip branch deletions.
+    [ "$local_sha" = "0000000000000000000000000000000000000000" ] && continue
+
+    # New branch with no upstream yet — diff against origin/main or HEAD~1.
+    if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
+        BASE=$(git merge-base HEAD origin/main 2>/dev/null \
+               || git merge-base HEAD main 2>/dev/null \
+               || git rev-parse HEAD~1 2>/dev/null \
+               || echo "")
+    else
+        BASE="$remote_sha"
+    fi
+
+    [ -z "$BASE" ] && continue
+
+    CHANGED=$(git diff --name-only "$BASE" "$local_sha" 2>/dev/null || true)
+    [ -z "$CHANGED" ] && continue
+
+    # Resolve changed crates that are in the workspace (same filter as ci.yml).
+    RAW_CRATES=$(echo "$CHANGED" | awk -F/ '/^crates\// {print $2}' | sort -u)
+    [ -z "$RAW_CRATES" ] && continue
+
+    WORKSPACE_CRATES=$(cargo metadata --no-deps --format-version=1 2>/dev/null \
+                       | jq -r '.packages[].name' 2>/dev/null || true)
+    CRATES=$(echo "$RAW_CRATES" \
+             | grep -Fxf <(echo "$WORKSPACE_CRATES") 2>/dev/null || true)
+    [ -z "$CRATES" ] && continue
+
+    ARGS=""
+    for c in $CRATES; do ARGS="$ARGS -p $c"; done
+
+    echo "[crabcc-hooks] pre-push: nextest scope:$ARGS"
+    any_tested=1
+
+    if cargo nextest run $ARGS 2>/dev/null; then
+        : # nextest succeeded
+    elif cargo nextest --version >/dev/null 2>&1; then
+        # nextest installed but failed
+        echo "[crabcc-hooks] pre-push: tests failed — fix and re-push" >&2
+        echo "  bypass: CRABCC_SKIP_HOOKS=1 git push" >&2
+        exit 1
+    else
+        # Fallback: plain cargo test
+        if ! cargo test $ARGS; then
+            echo "[crabcc-hooks] pre-push: tests failed — fix and re-push" >&2
+            echo "  bypass: CRABCC_SKIP_HOOKS=1 git push" >&2
+            exit 1
+        fi
+    fi
+done
+
+[ "$any_tested" = "0" ] && echo "[crabcc-hooks] pre-push: no workspace crate changes — skipping tests"
+exit 0

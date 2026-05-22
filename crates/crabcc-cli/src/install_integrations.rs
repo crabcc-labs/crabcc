@@ -12,8 +12,10 @@ use std::process::Command;
 
 const MCP_CRABCC: &str = include_str!("../../../install/integrations/mcp-crabcc.json");
 const HOOKS_CURSOR: &str = include_str!("../../../install/integrations/hooks-cursor.json");
-const GEMINI_FRAGMENT: &str = include_str!("../../../install/integrations/gemini-settings.fragment.json");
-const OPENCODE_FRAGMENT: &str = include_str!("../../../install/integrations/opencode.fragment.jsonc");
+const GEMINI_FRAGMENT: &str =
+    include_str!("../../../install/integrations/gemini-settings.fragment.json");
+const OPENCODE_FRAGMENT: &str =
+    include_str!("../../../install/integrations/opencode.fragment.jsonc");
 const HOOK_HINT_SH: &str = include_str!("../../../install/integrations/hooks/crabcc-hint.sh");
 const OS_SERVICE: &str = include_str!("../../../install/integrations/os/crabcc-mcp.service");
 const OS_PLIST: &str = include_str!("../../../install/integrations/os/com.crabcc.mcp.plist");
@@ -154,8 +156,7 @@ fn install_cursor(opts: Options, project_root: &Path) -> Result<()> {
         let hooks_dir = project_root.join(".cursor/hooks");
         install_hook_script(&hooks_dir.join("crabcc-hint.sh"), opts)?;
         println!(
-            "  hooks: merge {} into .cursor/hooks.json (or use install/integrations/hooks-cursor.json)",
-            "hooks-cursor"
+            "  hooks: merge hooks-cursor into .cursor/hooks.json (or use install/integrations/hooks-cursor.json)"
         );
         if opts.dry_run {
             println!("  [dry-run] would print hooks-cursor.json");
@@ -257,9 +258,18 @@ fn install_os(opts: Options) -> Result<()> {
         include_str!("../../../install/integrations/os/README.md"),
         true,
     )?;
-    println!("  wrote: {}/{{crabcc-mcp.service,com.crabcc.mcp.plist,README.md}}", dest.display());
-    println!("  macOS: cp {} ~/Library/LaunchAgents/ && launchctl load …", dest.join("com.crabcc.mcp.plist").display());
-    println!("  linux: cp {} ~/.config/systemd/user/ && systemctl --user enable crabcc-mcp", dest.join("crabcc-mcp.service").display());
+    println!(
+        "  wrote: {}/{{crabcc-mcp.service,com.crabcc.mcp.plist,README.md}}",
+        dest.display()
+    );
+    println!(
+        "  macOS: cp {} ~/Library/LaunchAgents/ && launchctl load …",
+        dest.join("com.crabcc.mcp.plist").display()
+    );
+    println!(
+        "  linux: cp {} ~/.config/systemd/user/ && systemctl --user enable crabcc-mcp",
+        dest.join("crabcc-mcp.service").display()
+    );
     Ok(())
 }
 
@@ -305,7 +315,10 @@ fn merge_mcp_file(path: &Path, opts: Options) -> Result<()> {
         println!("{merged}");
         return Ok(());
     }
-    if path.exists() && !opts.yes && !confirm(&format!("overwrite/merge {}? [y/N] ", path.display()))? {
+    if path.exists()
+        && !opts.yes
+        && !confirm(&format!("overwrite/merge {}? [y/N] ", path.display()))?
+    {
         println!("  skipped {}", path.display());
         return Ok(());
     }
@@ -528,11 +541,7 @@ mod tests {
         let path = dir.path().join("a/b/c/skill.md");
         write_atomic(&path, SKILL_MD, true).unwrap();
         assert!(path.exists());
-        assert!(
-            std::fs::read_to_string(&path)
-                .unwrap()
-                .contains("crabcc")
-        );
+        assert!(std::fs::read_to_string(&path).unwrap().contains("crabcc"));
     }
 
     #[test]

@@ -26,6 +26,8 @@ use std::sync::Arc;
 
 mod banner;
 mod bootstrap;
+pub mod forge;
+mod git_analytics;
 mod graph;
 mod memory_view;
 mod query;
@@ -306,7 +308,79 @@ fn handle(request: Request, root: &Path) -> Result<()> {
             Ok(snap) => respond_json(request, &snap),
             Err(e) => respond_status(request, 500, &format!("memory get failed: {e}")),
         },
-        _ => respond_status(request, 404, "not found"),
+        // ── Forge (GitHub / Gitea) ──────────────────────────────────────────
+        "/api/forge/config" => {
+            let cfg = forge::forge_config(root);
+            respond_json(request, &cfg)
+        }
+        "/api/forge/prs" => {
+            let state = query_param(query, "state").unwrap_or_else(|| "open".into());
+            let page: u32 = query_param(query, "page")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1);
+            match forge::list_prs(root, &state, page) {
+                Ok(snap) => respond_json(request, &snap),
+                Err(e) => respond_status(request, forge_http_status(&e), &format!("forge prs: {e}")),
+            }
+        }
+        // ── Analytics ───────────────────────────────────────────────────────
+        "/api/analytics/hotspots" => {
+            let limit: usize = query_param(query, "limit")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(50)
+                .clamp(1, 200);
+            let snap = git_analytics::analytics_snapshot(root, limit, 200);
+            respond_json(request, &serde_json::json!({
+                "hotspots": snap.hotspots,
+                "head_sha": snap.head_sha,
+                "computed_at": snap.computed_at,
+                "total_commits_scanned": snap.total_commits_scanned,
+                "total_files_seen": snap.total_files_seen,
+            }))
+        }
+        "/api/analytics/deadcode" => {
+            let limit: usize = query_param(query, "limit")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(100)
+                .clamp(1, 500);
+            let snap = git_analytics::analytics_snapshot(root, 50, limit);
+            respond_json(request, &serde_json::json!({
+                "dead_code": snap.dead_code,
+                "head_sha": snap.head_sha,
+                "computed_at": snap.computed_at,
+            }))
+        }
+        _ => {
+            // Path-parameter forge routes: /api/forge/prs/{number}[/impact]
+            if let Some(rest) = path.strip_prefix("/api/forge/prs/") {
+                if let Some(num_str) = rest.strip_suffix("/impact") {
+                    if let Ok(number) = num_str.parse::<u64>() {
+                        return match forge::pr_impact_graph(root, number) {
+                            Ok(snap) => respond_json(request, &snap),
+                            Err(e) => respond_status(
+                                request,
+                                forge_http_status(&e),
+                                &format!("impact graph: {e}"),
+                            ),
+                        };
+                    }
+                }
+                // /api/forge/prs/{number} — single PR detail
+                if let Ok(number) = rest.parse::<u64>() {
+                    return match (forge::get_pr(root, number), forge::get_pr_files(root, number)) {
+                        (Ok(pr), Ok((files, files_truncated))) => {
+                            respond_json(request, &forge::PrDetail { pr, files, files_truncated })
+                        }
+                        (Err(e), _) | (_, Err(e)) => respond_status(
+                            request,
+                            forge_http_status(&e),
+                            &format!("pr detail: {e}"),
+                        ),
+                    };
+                }
+            }
+            respond_status(request, 404, "not found")
+        }
     }
 }
 
@@ -713,71 +787,106 @@ fn seed_graph(root: &Path, query: &str) -> Result<SeedSnapshot> {
     // is the sum of its outgoing + incoming edge counts. This biases
     // toward central / heavily-traversed symbols, which are usually
     // the more interesting starting points than leaf-of-the-tree fns.
-    let mut degree: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-    for (k, v) in &graph.callees {
-        *degree.entry(k.as_str()).or_insert(0) += v.len();
-        for nb in v {
-            *degree.entry(nb.as_str()).or_insert(0) += 1;
+    // CallGraph v4 keys by i64 symbol IDs; names are resolved via the Store.
+    let mut degree: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+    for (&k, v) in &graph.callees {
+        *degree.entry(k).or_insert(0) += v.len();
+        for &nb in v {
+            *degree.entry(nb).or_insert(0) += 1;
         }
     }
-    let mut ranked: Vec<(&str, usize)> = degree.into_iter().collect();
-    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
-    let seeds: Vec<String> = ranked
+    let mut ranked: Vec<(i64, usize)> = degree.into_iter().collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+    // Resolve top symbol IDs to names. We scan past failed resolutions so
+    // `seed_ids.len() == limit` (or exhausted) rather than silently short.
+    let mut id_to_name: std::collections::HashMap<i64, String> =
+        std::collections::HashMap::new();
+    let mut seed_ids: Vec<i64> = Vec::new();
+    for &(id, _) in &ranked {
+        if seed_ids.len() >= limit {
+            break;
+        }
+        if let Ok(Some(name)) = store.symbol_name_by_id(id) {
+            id_to_name.entry(id).or_insert(name);
+            seed_ids.push(id);
+        }
+        // IDs that fail resolution are skipped; we keep scanning `ranked`
+        // until we reach `limit` successful resolutions or exhaust the list.
+    }
+    // `seeds.len() <= limit`; may be less if the graph has fewer than `limit`
+    // indexable symbols.
+    let seeds: Vec<String> = seed_ids
         .iter()
-        .take(limit)
-        .map(|(s, _)| s.to_string())
+        .filter_map(|id| id_to_name.get(id))
+        .cloned()
         .collect();
 
     // Materialize the induced subgraph: for each seed, pull its direct
     // callers + callees and keep edges where both endpoints are in
     // the seed set OR are an immediate neighbor of one.
-    let mut node_set: std::collections::HashSet<String> = seeds.iter().cloned().collect();
-    for s in &seeds {
-        if let Some(callees) = graph.callees.get(s) {
-            for c in callees {
-                node_set.insert(c.clone());
+    let seed_id_set: std::collections::HashSet<i64> = seed_ids.iter().copied().collect();
+    let mut node_ids: std::collections::HashSet<i64> = seed_id_set.clone();
+    for &seed_id in &seed_ids {
+        if let Some(callees) = graph.callees.get(&seed_id) {
+            for &c in callees {
+                node_ids.insert(c);
             }
         }
-        if let Some(callers) = graph.callers.get(s) {
-            for c in callers {
-                node_set.insert(c.clone());
+        if let Some(callers) = graph.callers.get(&seed_id) {
+            for &c in callers {
+                node_ids.insert(c);
             }
         }
     }
     // Cap total nodes — really popular seeds blow up the snapshot
     // otherwise (one symbol with 200 callers floods the canvas).
-    let cap = MAX_NODES.min(seeds.len() * 12);
-    if node_set.len() > cap {
+    let cap = MAX_NODES.min(seed_ids.len() * 12);
+    if node_ids.len() > cap {
         // Keep the seeds first, then add neighbors deterministically
-        // by sorted name until we hit `cap`.
-        let mut out: std::collections::BTreeSet<String> = seeds.iter().cloned().collect();
-        let mut others: Vec<&String> = node_set.iter().filter(|n| !out.contains(*n)).collect();
+        // by sorted ID until we hit `cap`.
+        let mut out: std::collections::BTreeSet<i64> = seed_id_set.iter().copied().collect();
+        let mut others: Vec<i64> =
+            node_ids.iter().copied().filter(|n| !out.contains(n)).collect();
         others.sort();
         for n in others.into_iter().take(cap.saturating_sub(out.len())) {
-            out.insert(n.clone());
+            out.insert(n);
         }
-        node_set = out.into_iter().collect();
+        node_ids = out.into_iter().collect();
     }
 
-    let nodes: Vec<NodeOut> = node_set
+    // Resolve any not-yet-resolved node IDs to names.
+    for &id in &node_ids {
+        id_to_name.entry(id).or_insert_with(|| {
+            store.symbol_name_by_id(id).ok().flatten().unwrap_or_default()
+        });
+    }
+    // Remove IDs that couldn't be resolved (empty name).
+    id_to_name.retain(|_, v| !v.is_empty());
+    node_ids.retain(|id| id_to_name.contains_key(id));
+
+    let nodes: Vec<NodeOut> = node_ids
         .iter()
-        .map(|id| {
-            // Seeds are "depth 0" (queried-equivalent), neighbors are 1.
-            let depth = if seeds.contains(id) { 0 } else { 1 };
-            NodeOut::from_id_with_store(id.clone(), depth, &store)
+        .filter_map(|id| {
+            let name = id_to_name.get(id)?.clone();
+            let depth = if seed_id_set.contains(id) { 0 } else { 1 };
+            Some(NodeOut::from_id_with_store(name, depth, &store))
         })
         .collect();
     let mut edges: Vec<EdgeOut> = Vec::new();
-    for (src, dsts) in &graph.callees {
-        if !node_set.contains(src) {
+    for (&src_id, dsts) in &graph.callees {
+        if !node_ids.contains(&src_id) {
             continue;
         }
-        for d in dsts {
-            if node_set.contains(d) {
-                edges.push(EdgeOut {
-                    src: src.clone(),
-                    dst: d.clone(),
-                });
+        let Some(src_name) = id_to_name.get(&src_id) else { continue };
+        for &dst_id in dsts {
+            if node_ids.contains(&dst_id) {
+                if let Some(dst_name) = id_to_name.get(&dst_id) {
+                    edges.push(EdgeOut {
+                        src: src_name.clone(),
+                        dst: dst_name.clone(),
+                    });
+                }
             }
         }
     }
@@ -1605,11 +1714,15 @@ fn random_query(_request: Request, root: &Path) -> Result<()> {
 
     // Random symbol from graph.json. We avoid hitting Store::find_by_name
     // because we want a name we know exists in the call-graph.
+    // CallGraph v4 keys by i64 IDs; resolve to names via the Store.
     let graph_path = root.join(".crabcc").join("graph.json");
+    let db_path = root.join(".crabcc").join("index.db");
     let mut symbols: Vec<String> = Vec::new();
-    if let Ok(g) = CallGraph::load(&graph_path) {
-        for k in g.callees.keys() {
-            symbols.push(k.clone());
+    if let (Ok(g), Ok(store)) = (CallGraph::load(&graph_path), Store::open(&db_path)) {
+        for &id in g.callees.keys().take(500) {
+            if let Ok(Some(name)) = store.symbol_name_by_id(id) {
+                symbols.push(name);
+            }
         }
     }
     if symbols.is_empty() {
@@ -1750,6 +1863,24 @@ fn list_agent_ids() -> Result<std::collections::HashSet<String>> {
         }
     }
     Ok(out)
+}
+
+/// Extract a single query-string parameter by key.
+/// Extract the HTTP status code from a forge error, defaulting to 400.
+fn forge_http_status(e: &anyhow::Error) -> u16 {
+    e.downcast_ref::<forge::ForgeHttpError>()
+        .map(|fe| fe.status)
+        .unwrap_or(400)
+}
+
+fn query_param(query: &str, key: &str) -> Option<String> {
+    for pair in query.split('&').filter(|s| !s.is_empty()) {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        if k == key {
+            return Some(query::url_decode(v));
+        }
+    }
+    None
 }
 
 fn respond_yaml(request: Request, body: &str) -> Result<()> {
@@ -2686,6 +2817,14 @@ mod tests {
         "/api/debug/dump",
         "/api/memory/recent",
         "/api/events",
+        // Forge (GitHub/Gitea) PR viewer
+        "/api/forge/config",
+        "/api/forge/prs",
+        "/api/forge/prs/{number}",
+        "/api/forge/prs/{number}/impact",
+        // Git analytics
+        "/api/analytics/hotspots",
+        "/api/analytics/deadcode",
     ];
 
     /// Extract every YAML key under `paths:` whose value starts with

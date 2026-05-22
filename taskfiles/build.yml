@@ -123,6 +123,56 @@ tasks:
       - task: smoke
       - task: memory-smoke
 
+  act:
+    desc: "Run the full CI workflow locally via act (mirrors push-to-main)"
+    summary: |
+      Requires: act (https://github.com/nektos/act) + Docker.
+      Install:  brew install act
+                go install github.com/nektos/act/v2/cmd/act@latest
+
+      Simulates a push-to-main event — runs fmt, lint (full workspace),
+      test (full workspace), and actionlint. Equivalent to what GitHub CI
+      runs after a merge. Config lives in .actrc; the catthehacker/ubuntu
+      act-22.04 image (~500 MB) is pulled on first run.
+
+      With --reuse (set in .actrc) the container filesystem is kept between
+      runs, so target/ and ~/.cargo stay warm — incremental recompilation
+      without needing the GHA cache backend.
+
+      Pass-through flags:
+        task act -- -j lint       # only the lint job
+        task act -- -j test       # only the test job
+        task act -- --list        # list all jobs without running
+        task act -- --verbose     # verbose container output
+        task act -- --rm          # force fresh container (discard --reuse)
+    cmds:
+      - act push --eventpath .github/act/push-event.json {{.CLI_ARGS}}
+
+  act-pr:
+    desc: "Run the PR CI workflow locally via act (scoped to diff from main)"
+    summary: |
+      Requires: act + Docker.
+
+      Generates a PR event payload from the current branch diff against
+      origin/main, then runs the scoped CI — only the crates touched by
+      the diff are compiled and tested, matching what GitHub CI does on
+      a real PR. Fast on focused branches; full workspace on branches that
+      touch many crates.
+
+      Pass-through flags:
+        task act-pr -- -j lint    # only the lint job
+        task act-pr -- --list     # list jobs without running
+    vars:
+      BASE_SHA:
+        sh: git merge-base HEAD origin/main 2>/dev/null || git merge-base HEAD main 2>/dev/null || git rev-parse HEAD~1
+      HEAD_SHA:
+        sh: git rev-parse HEAD
+    cmds:
+      - |
+        printf '{"action":"synchronize","pull_request":{"number":0,"head":{"sha":"%s","ref":"local-act"},"base":{"sha":"%s","ref":"main"}}}' \
+          "{{.HEAD_SHA}}" "{{.BASE_SHA}}" > /tmp/act-pr-event.json
+      - act pull_request --eventpath /tmp/act-pr-event.json {{.CLI_ARGS}}
+
   smoke:
     desc: Index a tiny fixture + assert sym/callers/refs return data
     deps: [install]
