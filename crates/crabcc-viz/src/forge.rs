@@ -135,7 +135,10 @@ impl std::fmt::Display for ForgeHttpError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.status {
             401 => write!(f, "HTTP 401: unauthorized — check CRABCC_FORGE_TOKEN"),
-            403 => write!(f, "HTTP 403: forbidden — token lacks permissions or is rate-limited"),
+            403 => write!(
+                f,
+                "HTTP 403: forbidden — token lacks permissions or is rate-limited"
+            ),
             404 => write!(f, "HTTP 404: not found — check CRABCC_FORGE_REPO"),
             n => write!(f, "HTTP {n}: GitHub API error"),
         }
@@ -202,7 +205,10 @@ fn gh_pr_to_summary(p: GhPr) -> PrSummary {
         labels: p
             .labels
             .into_iter()
-            .map(|l| PrLabel { name: l.name, color: l.color })
+            .map(|l| PrLabel {
+                name: l.name,
+                color: l.color,
+            })
             .collect(),
         additions: p.additions.unwrap_or(0),
         deletions: p.deletions.unwrap_or(0),
@@ -220,8 +226,10 @@ struct RateLimit {
     reset: Option<i64>,
 }
 
-static RATE_LIMIT_CACHE: Mutex<RateLimit> =
-    Mutex::new(RateLimit { remaining: None, reset: None });
+static RATE_LIMIT_CACHE: Mutex<RateLimit> = Mutex::new(RateLimit {
+    remaining: None,
+    reset: None,
+});
 
 fn absorb_rate_limit_headers(resp: &ureq::Response) {
     let remaining = resp
@@ -330,9 +338,7 @@ fn github_get(url: &str) -> Result<ureq::Response> {
             absorb_rate_limit_headers(&resp);
             Ok(resp)
         }
-        Err(ureq::Error::Status(code, _)) => {
-            Err(ForgeHttpError { status: code }.into())
-        }
+        Err(ureq::Error::Status(code, _)) => Err(ForgeHttpError { status: code }.into()),
         Err(e) => Err(e).context("GitHub API request failed"),
     }
 }
@@ -342,21 +348,27 @@ fn github_get(url: &str) -> Result<ureq::Response> {
 pub fn list_prs(root: &Path, state: &str, page: u32) -> Result<PrListResponse> {
     let cfg = forge_config(root);
     if !cfg.configured {
-        bail!("no GitHub repo detected — set CRABCC_FORGE_REPO=owner/repo or push to a GitHub remote");
+        bail!(
+            "no GitHub repo detected — set CRABCC_FORGE_REPO=owner/repo or push to a GitHub remote"
+        );
     }
     let repo = &cfg.repo;
     let state = match state {
         "open" | "closed" | "all" => state,
         _ => "open",
     };
-    let url = format!(
-        "https://api.github.com/repos/{repo}/pulls?state={state}&per_page=30&page={page}"
-    );
+    let url =
+        format!("https://api.github.com/repos/{repo}/pulls?state={state}&per_page=30&page={page}");
     let resp = github_get(&url)?;
     let raw: Vec<GhPr> = resp.into_json()?;
     let total = raw.len();
     let prs = raw.into_iter().map(gh_pr_to_summary).collect();
-    Ok(PrListResponse { prs, repo: repo.clone(), total, page })
+    Ok(PrListResponse {
+        prs,
+        repo: repo.clone(),
+        total,
+        page,
+    })
 }
 
 pub fn get_pr(root: &Path, number: u64) -> Result<PrSummary> {
@@ -470,12 +482,10 @@ pub fn pr_impact_graph(root: &Path, number: u64) -> Result<PrImpactGraph> {
     // Collect symbols from changed files.
     // Also build name→id from file-scoped lookups to avoid ambiguity when
     // multiple files define the same symbol name.
-    let mut changed_symbols: std::collections::HashSet<String> =
-        std::collections::HashSet::new();
+    let mut changed_symbols: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut node_map: std::collections::HashMap<String, ImpactNode> =
         std::collections::HashMap::new();
-    let mut name_to_id: std::collections::HashMap<String, i64> =
-        std::collections::HashMap::new();
+    let mut name_to_id: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
 
     'outer: for file in &changed_files {
         let mut stmt = conn.prepare_cached(
@@ -595,8 +605,7 @@ pub fn pr_impact_graph(root: &Path, number: u64) -> Result<PrImpactGraph> {
                             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
                         )
                         .ok();
-                    let (file, kind, line) =
-                        row.unwrap_or_else(|| ("?".into(), "?".into(), None));
+                    let (file, kind, line) = row.unwrap_or_else(|| ("?".into(), "?".into(), None));
                     node_map.insert(
                         sym_name.clone(),
                         ImpactNode {
@@ -621,8 +630,7 @@ pub fn pr_impact_graph(root: &Path, number: u64) -> Result<PrImpactGraph> {
 
     // Prune edges whose endpoints were dropped when the node cap was hit;
     // d3.forceLink requires every link to resolve to a node in the set.
-    let retained: std::collections::HashSet<&str> =
-        nodes.iter().map(|n| n.id.as_str()).collect();
+    let retained: std::collections::HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
     let edges: Vec<ImpactEdge> = edges
         .into_iter()
         .filter(|e| retained.contains(e.src.as_str()) && retained.contains(e.dst.as_str()))
