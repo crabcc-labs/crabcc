@@ -504,8 +504,14 @@ pub fn pr_impact_graph(root: &Path, number: u64) -> Result<PrImpactGraph> {
                 break;
             }
             let (sym_id, name, kind, line) = row;
+            // Use sym_id as the node key/id so two files that define the same
+            // symbol name get distinct entries instead of the later overwriting
+            // the earlier.  The human-readable `label` still shows the short
+            // name; `id` is opaque to the frontend (used only for D3 link
+            // resolution, which accepts any unique string).
+            let node_id = sym_id.to_string();
             let node = ImpactNode {
-                id: name.clone(),
+                id: node_id.clone(),
                 label: short_name(&name),
                 file: file.clone(),
                 kind,
@@ -514,9 +520,8 @@ pub fn pr_impact_graph(root: &Path, number: u64) -> Result<PrImpactGraph> {
                 line: line.map(|l| l as u32),
             };
             changed_symbols.insert(name.clone());
-            // File-scoped ID takes precedence over any previously seen global match.
-            name_to_id.insert(name.clone(), sym_id);
-            node_map.insert(name, node);
+            name_to_id.insert(node_id.clone(), sym_id);
+            node_map.insert(node_id, node);
         }
     }
 

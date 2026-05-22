@@ -37,12 +37,13 @@ export function PrDetail({ prNumber }: Props) {
     { source: "/api/forge/prs/{number}" },
   );
 
-  const { data: impactData } = usePolling(
+  const { data: impactData, error: impactError } = usePolling(
     () => api.forgePrImpact(prNumber),
     0,
     [prNumber, tab],
     { source: "/api/forge/prs/{number}/impact" },
   );
+  const impactLoading = impactData === undefined && impactError === undefined;
 
   const pr = data?.pr;
   const files: PrFile[] = data?.files ?? [];
