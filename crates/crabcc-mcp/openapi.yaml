@@ -429,6 +429,71 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/UpgradeReport"}
 
+  /tools/test_context:
+    post:
+      tags: [symbol-index]
+      operationId: test_context
+      summary: Bundle all context needed to generate a unit test for a symbol.
+      description: |
+        Single round-trip replacement for the LSPRAG fan-out: definition +
+        signature + body excerpt, all call sites (callers), all references,
+        the file outline, and the symbol's dependency blast radius (transitive
+        callees from the edge graph). Pass `name` (required) and optionally
+        `file` to disambiguate when a name resolves in multiple files.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:        {type: string, description: Symbol name (required).}
+                file:        {type: string, description: Repo-relative path to disambiguate.}
+                max_callers: {type: integer, description: Cap on callers returned (default 50).}
+                max_refs:    {type: integer, description: Cap on refs returned (default 50).}
+                blast_depth: {type: integer, description: BFS depth for transitive callees (default 2).}
+      responses:
+        "200":
+          description: Object with keys symbol, callers, refs, outline, blast_radius.
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /tools/write_file:
+    post:
+      tags: [symbol-index]
+      operationId: write_file
+      summary: Write a repo-relative file and return a semantic validation envelope.
+      description: |
+        Writes the file in full, then returns: `parse_ok`, `symbol_diff`
+        (added/removed/signature_changed/body_moved vs pre-write snapshot),
+        and `broken_caller_files` (deduped files containing call edges to any
+        removed symbol). Faster than a compiler round-trip and language-agnostic.
+        Compiler/lint diagnostics are not part of this envelope.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [path, content]
+              properties:
+                path:    {type: string, description: Repo-relative file path.}
+                content: {type: string, description: Full new file contents (UTF-8).}
+      responses:
+        "200":
+          description: Validation envelope.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  parse_ok:            {type: boolean}
+                  symbol_diff:         {type: array, items: {type: object}}
+                  broken_caller_files: {type: array, items: {type: string}}
+
   # ---------------- memory.* tools ----------------
 
   /tools/memory.init:

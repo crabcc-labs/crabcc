@@ -22,10 +22,24 @@ use std::path::Path;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "change", rename_all = "snake_case")]
 pub enum SymbolChange {
-    Added { name: String, line_start: u32 },
-    Removed { name: String, line_start: u32 },
-    SignatureChanged { name: String, before: Option<String>, after: Option<String> },
-    BodyMoved { name: String, before_line: u32, after_line: u32 },
+    Added {
+        name: String,
+        line_start: u32,
+    },
+    Removed {
+        name: String,
+        line_start: u32,
+    },
+    SignatureChanged {
+        name: String,
+        before: Option<String>,
+        after: Option<String>,
+    },
+    BodyMoved {
+        name: String,
+        before_line: u32,
+        after_line: u32,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -35,18 +49,26 @@ pub struct SymbolDiff {
 }
 
 impl SymbolDiff {
-    pub fn is_empty(&self) -> bool { self.changes.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.changes.is_empty()
+    }
     pub fn removed_names(&self) -> Vec<String> {
-        self.changes.iter().filter_map(|c| match c {
-            SymbolChange::Removed { name, .. } => Some(name.clone()),
-            _ => None,
-        }).collect()
+        self.changes
+            .iter()
+            .filter_map(|c| match c {
+                SymbolChange::Removed { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect()
     }
     pub fn added_names(&self) -> Vec<String> {
-        self.changes.iter().filter_map(|c| match c {
-            SymbolChange::Added { name, .. } => Some(name.clone()),
-            _ => None,
-        }).collect()
+        self.changes
+            .iter()
+            .filter_map(|c| match c {
+                SymbolChange::Added { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect()
     }
 }
 
@@ -93,24 +115,24 @@ pub fn diff_symbols(file: &str, before: &[Symbol], after: &[Symbol]) -> SymbolDi
         }
     }
 
-    let mut changes = Vec::with_capacity(removed.len() + added.len() + sig_changed.len() + body_moved.len());
+    let mut changes =
+        Vec::with_capacity(removed.len() + added.len() + sig_changed.len() + body_moved.len());
     changes.extend(removed);
     changes.extend(added);
     changes.extend(sig_changed);
     changes.extend(body_moved);
 
-    SymbolDiff { file: file.to_string(), changes }
+    SymbolDiff {
+        file: file.to_string(),
+        changes,
+    }
 }
 
 /// Re-extract symbols + edges from in-memory `src` and write through
 /// to `store`. Returns the new symbol vector + an optional parse-error.
 /// No-op (returns empty + None) if the path's extension isn't in
 /// `extract::detect_lang`.
-pub fn reindex_file(
-    store: &Store,
-    rel: &str,
-    src: &str,
-) -> Result<(Vec<Symbol>, Option<String>)> {
+pub fn reindex_file(store: &Store, rel: &str, src: &str) -> Result<(Vec<Symbol>, Option<String>)> {
     let lang = match extract::detect_lang(Path::new(rel)) {
         Some(l) => l,
         None => return Ok((Vec::new(), None)),
@@ -169,7 +191,10 @@ mod tests {
         let after = vec![sym("foo", Some("fn foo(x: u32)"), 10)];
         let d = diff_symbols("x.rs", &before, &after);
         assert_eq!(d.changes.len(), 1);
-        assert!(matches!(d.changes[0], SymbolChange::SignatureChanged { .. }));
+        assert!(matches!(
+            d.changes[0],
+            SymbolChange::SignatureChanged { .. }
+        ));
     }
 
     #[test]
