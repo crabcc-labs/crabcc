@@ -2,14 +2,19 @@
   "mcpServers": {
     "crabcc": {
       "command": "crabcc",
-      "args": ["--mcp"]
-    },
-    "shadcn": {
-      "command": "npx",
       "args": [
-        "shadcn@latest",
-        "mcp"
+        "--mcp"
       ]
+    },
+    "repowise": {
+      "command": "repowise",
+      "args": [
+        "mcp",
+        "/Users/lodripeter/workspace/peterlodri-sec/crabcc",
+        "--transport",
+        "stdio"
+      ],
+      "description": "repowise: codebase intelligence \u2014 docs, graph, git signals, dead code, decisions"
     }
   }
 }
