@@ -1,0 +1,53 @@
+name: Claude Assistant
+
+# Triggered by @claude mentions in PR/issue comments and review bodies.
+# OAuth auth via Claude Max subscription (no separate API key required).
+#
+# Secrets required (Settings → Secrets → Actions):
+#   CLAUDE_ACCESS_TOKEN   — from ~/.claude/.credentials.json
+#   CLAUDE_REFRESH_TOKEN  — from ~/.claude/.credentials.json
+#   CLAUDE_EXPIRES_AT     — from ~/.claude/.credentials.json
+#   SECRETS_ADMIN_PAT     — classic PAT with repo scope (for token auto-refresh)
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  issues:
+    types: [opened, assigned, labeled]
+
+concurrency:
+  group: claude-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  claude:
+    if: |
+      github.event.sender.type != 'Bot' && (
+        (github.event_name == 'issue_comment' && contains(github.event.comment.body, '@claude')) ||
+        (github.event_name == 'pull_request_review_comment' && contains(github.event.comment.body, '@claude')) ||
+        (github.event_name == 'pull_request_review' && contains(github.event.review.body, '@claude')) ||
+        (github.event_name == 'issues' && contains(github.event.issue.body, '@claude'))
+      )
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: grll/claude-code-action@beta
+        with:
+          use_oauth: true
+          claude_access_token: ${{ secrets.CLAUDE_ACCESS_TOKEN }}
+          claude_refresh_token: ${{ secrets.CLAUDE_REFRESH_TOKEN }}
+          claude_expires_at: ${{ secrets.CLAUDE_EXPIRES_AT }}
+          secrets_admin_pat: ${{ secrets.SECRETS_ADMIN_PAT }}
+          timeout_minutes: "60"
