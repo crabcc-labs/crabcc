@@ -74,9 +74,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          # fetch-depth 0 only needed on PRs to diff HEAD against base;
-          # push-to-main always runs --workspace so depth 1 is enough.
-          fetch-depth: ${{ github.event_name == 'pull_request' && 0 || 1 }}
+          # Full history so the PR diff (base..head) resolves. Must be a literal
+          # 0, not `event == 'pull_request' && 0 || 1`: that ternary always
+          # yields 1 because 0 is falsy in GitHub Actions expressions, leaving a
+          # shallow clone where `git diff <base> <head>` dies with "bad object".
+          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -182,9 +184,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          # fetch-depth 0 only needed on PRs to diff HEAD against base;
-          # push-to-main always runs --workspace so depth 1 is enough.
-          fetch-depth: ${{ github.event_name == 'pull_request' && 0 || 1 }}
+          # Full history so the PR diff (base..head) resolves. Must be a literal
+          # 0, not `event == 'pull_request' && 0 || 1`: that ternary always
+          # yields 1 because 0 is falsy in GitHub Actions expressions, leaving a
+          # shallow clone where `git diff <base> <head>` dies with "bad object".
+          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
 
