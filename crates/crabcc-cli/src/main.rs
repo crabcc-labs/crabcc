@@ -1718,6 +1718,12 @@ fn run_loop(root: &Path, op: &LoopOp) -> Result<()> {
 fn run_workspace(cli: Cli) -> Result<()> {
     use crabcc_core::store::Store;
 
+    let Some(cmd) = cli.cmd.as_ref() else {
+        anyhow::bail!(
+            "--workspace requires a subcommand (sym, fuzzy, prefix in v4.5)"
+        );
+    };
+
     let repos = workspace::discover()?;
     if repos.is_empty() {
         eprintln!(
@@ -1725,12 +1731,6 @@ fn run_workspace(cli: Cli) -> Result<()> {
              run `crabcc index` in one or more repos first"
         );
     }
-
-    let Some(cmd) = cli.cmd.as_ref() else {
-        anyhow::bail!(
-            "--workspace requires a subcommand (sym, fuzzy, prefix in v4.5)"
-        );
-    };
 
     let op_label = match cmd {
         Cmd::Lookup { op: LookupOp::Sym { .. } } => "workspace/sym",
