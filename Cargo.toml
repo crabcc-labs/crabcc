@@ -9,7 +9,6 @@ exclude = [
     "crates/crabcc-desktop",
 ]
 members = [
-    "crates/crabcc-chrome",
     "crates/crabcc-cli",
     "crates/crabcc-core",
     "crates/crabcc-fetch",
