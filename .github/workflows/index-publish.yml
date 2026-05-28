@@ -32,6 +32,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y sqlite3 zstd
 
+      - uses: dtolnay/rust-toolchain@stable
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
