@@ -10,18 +10,24 @@
   <strong>85% fewer bytes</strong> sent to the LLM
 </p>
 
+> **🔒 Repository moved 2026-05-28.** crabcc is now hosted at
+> [`crabcc-labs/crabcc`](https://github.com/crabcc-labs/crabcc) (**private
+> repository**). Previously at `peterlodri-sec/crabcc`. Existing references
+> — bookmarks, CI configs, `cargo install --git` URLs, `gh api` calls —
+> should update to the new URL. Access is invite-only.
+
 <p align="center">
-  <a href="https://github.com/peterlodri-sec/crabcc/actions/workflows/ci.yml">
-    <img src="https://img.shields.io/github/actions/workflow/status/peterlodri-sec/crabcc/ci.yml?branch=main&label=CI&style=flat-square" alt="CI status"/>
+  <a href="https://github.com/crabcc-labs/crabcc/actions/workflows/ci.yml">
+    <img src="https://img.shields.io/github/actions/workflow/status/crabcc-labs/crabcc/ci.yml?branch=main&label=CI&style=flat-square" alt="CI status"/>
   </a>
-  <a href="https://github.com/peterlodri-sec/crabcc/actions/workflows/index-publish.yml">
-    <img src="https://github.com/peterlodri-sec/crabcc/actions/workflows/index-publish.yml/badge.svg" alt="index-publish"/>
+  <a href="https://github.com/crabcc-labs/crabcc/actions/workflows/index-publish.yml">
+    <img src="https://github.com/crabcc-labs/crabcc/actions/workflows/index-publish.yml/badge.svg" alt="index-publish"/>
   </a>
-  <a href="https://github.com/peterlodri-sec/crabcc/releases/latest">
-    <img src="https://img.shields.io/github/v/release/peterlodri-sec/crabcc?label=release&style=flat-square&include_prereleases" alt="latest release"/>
+  <a href="https://github.com/crabcc-labs/crabcc/releases/latest">
+    <img src="https://img.shields.io/github/v/release/crabcc-labs/crabcc?label=release&style=flat-square&include_prereleases" alt="latest release"/>
   </a>
-  <a href="https://github.com/peterlodri-sec/crabcc/issues">
-    <img src="https://img.shields.io/github/issues/peterlodri-sec/crabcc?style=flat-square" alt="open issues"/>
+  <a href="https://github.com/crabcc-labs/crabcc/issues">
+    <img src="https://img.shields.io/github/issues/crabcc-labs/crabcc?style=flat-square" alt="open issues"/>
   </a>
   <img src="https://img.shields.io/badge/rust-1.86%2B-orange?style=flat-square&logo=rust" alt="rust version"/>
   <img src="https://img.shields.io/badge/MCP-server-7057ff?style=flat-square" alt="MCP server"/>
@@ -39,10 +45,10 @@
 ### One-line (canonical)
 
 ```bash
-gh api -H 'Accept: application/vnd.github.v3.raw' /repos/peterlodri-sec/crabcc/contents/install.sh | bash
+gh api -H 'Accept: application/vnd.github.v3.raw' /repos/crabcc-labs/crabcc/contents/install.sh | bash
 ```
 
-(Or, without `gh`: `curl -fsSL https://raw.githubusercontent.com/peterlodri-sec/crabcc/main/install.sh | bash`.)
+(Or, without `gh`: `curl -fsSL https://raw.githubusercontent.com/crabcc-labs/crabcc/main/install.sh | bash`.)
 
 The installer:
 
