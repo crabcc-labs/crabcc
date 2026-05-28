@@ -108,9 +108,6 @@ jobs:
           # taiki-e/install-action artifacts, etc) — adds <1% size,
           # saves a fresh download next run.
           cache-all-crates: "true"
-          # Don't write a new cache entry for cancelled runs — the partial
-          # target/ would poison the next warm start.
-          save-if: ${{ !cancelled() }}
 
       # Issue #87 — Pillar 3 (PR-only-changed-files CI). On PR, scope
       # clippy + aliases-smoke to changed crates / scripts. On push to
@@ -204,7 +201,6 @@ jobs:
           shared-key: ci-ubuntu
           cache-on-failure: "true"
           cache-all-crates: "true"
-          save-if: ${{ !cancelled() }}
 
       - name: install cargo-nextest (JUnit reporter)
         uses: taiki-e/install-action@v2
