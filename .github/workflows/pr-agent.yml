@@ -45,8 +45,8 @@ jobs:
           # config.model: "claude-sonnet-4-6"
           # config.fallback_models: '["claude-haiku-4-5-20251001"]'
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          config.model: "openrouter/anthropic/claude-sonnet-4-5"
-          config.fallback_models: '["openrouter/anthropic/claude-haiku-4-5"]'
+          config.model: "openrouter/anthropic/claude-haiku-4-5"
+          config.fallback_models: '["openrouter/anthropic/claude-sonnet-4-5"]'
           # Auto-actions: review + describe on open; improve only on-demand.
           github_action_config.auto_review: "true"
           github_action_config.auto_describe: "true"
