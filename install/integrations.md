@@ -1,13 +1,17 @@
 # Integrations guide
 
-v4.5 narrows the integration surface to **Claude Code** (the "big" example)
-plus the OS-native and kernel paths. pi support follows immediately after as
-the "tiny" example. Cursor / Gemini / OpenCode / LangChain were removed in
-the sharpening release — see CHANGELOG.
+v4.5 narrows the integration surface to two agents:
+
+- **Claude Code** — the "big" example (full MCP server + slash commands + hooks)
+- **pi** — the "tiny" example (single SKILL.md, skills array config)
+
+Cursor / Gemini / OpenCode / LangChain were removed in the sharpening release —
+see CHANGELOG.
 
 ```bash
 crabcc setup install-integrations --target all --yes
 crabcc setup install-integrations --target claude --yes
+crabcc setup install-integrations --target pi --yes
 ```
 
 ## Coding agents
@@ -21,6 +25,32 @@ crabcc setup install-integrations --target claude --yes
 ```
 
 Registers skill + slash commands; prints `claude mcp add crabcc -- crabcc --mcp` and hook JSON.
+
+### pi
+
+```bash
+crabcc setup install-integrations --target pi --yes              # global only
+crabcc setup install-integrations --target pi --project --yes    # global + project
+```
+
+pi reads skills from `~/.pi/agent/skills/<name>/SKILL.md` (global) and
+`.pi/skills/<name>/SKILL.md` (project) and enables them via the `skills` array
+in `settings.json`. The installer symlinks `skill/crabcc/SKILL.md` into the
+right place and prints the settings fragment to merge:
+
+```json
+{
+  "skills": ["crabcc"]
+}
+```
+
+Merge into `~/.pi/agent/settings.json` (global) or `.pi/settings.json` (project).
+
+> pi does not currently expose a native MCP server config (per
+> [pi.dev/docs/latest/settings](https://pi.dev/docs/latest/settings) —
+> `skills` and `extensions` are the supported registration paths). When pi
+> grows MCP support we'll route crabcc through that channel; for now the
+> skill provides the integration surface.
 
 ## macOS — centralised index (worktrees)
 

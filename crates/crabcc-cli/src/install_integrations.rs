@@ -1,9 +1,9 @@
 //! `crabcc setup install-integrations` — wire crabcc into Claude Code,
-//! OS-native services, and kernel builds.
+//! pi, OS-native services, and kernel builds.
 //!
-//! v4.5 narrowed the integration surface to Claude Code as the supported
-//! agent integration. pi support is added separately. Cursor / Gemini /
-//! OpenCode / LangChain were removed as part of the sharpening release.
+//! v4.5 narrowed the integration surface to two agents: Claude Code (the
+//! "big" example) and pi (the "tiny" example). Cursor / Gemini / OpenCode /
+//! LangChain were removed as part of the sharpening release.
 //!
 //! Deliberately does not overwrite global agent settings without `--yes`.
 
@@ -15,14 +15,15 @@ use std::process::Command;
 
 const OS_SERVICE: &str = include_str!("../../../install/integrations/os/crabcc-mcp.service");
 const OS_PLIST: &str = include_str!("../../../install/integrations/os/com.crabcc.mcp.plist");
-#[allow(dead_code)] // referenced by tests; kept embedded for parity with skill installer
 const SKILL_MD: &str = include_str!("../../../skill/crabcc/SKILL.md");
+const PI_FRAGMENT: &str = include_str!("../../../install/integrations/pi.fragment.json");
 #[allow(dead_code)] // referenced by tests; kept embedded so the snippet ships with the binary
 const MCP_CRABCC: &str = include_str!("../../../install/integrations/mcp-crabcc.json");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Target {
     Claude,
+    Pi,
     Os,
     Kernel,
 }
@@ -31,15 +32,16 @@ impl Target {
     fn parse(s: &str) -> Result<Self> {
         match s.to_ascii_lowercase().as_str() {
             "claude" => Ok(Self::Claude),
+            "pi" => Ok(Self::Pi),
             "os" | "native" => Ok(Self::Os),
             "kernel" => Ok(Self::Kernel),
             "all" => bail!("use expand_targets instead of parsing 'all'"),
-            other => bail!("unknown target '{other}' — expected claude|os|kernel|all"),
+            other => bail!("unknown target '{other}' — expected claude|pi|os|kernel|all"),
         }
     }
 
     fn all() -> Vec<Self> {
-        vec![Self::Claude, Self::Os, Self::Kernel]
+        vec![Self::Claude, Self::Pi, Self::Os, Self::Kernel]
     }
 }
 
@@ -66,7 +68,6 @@ pub struct Options {
 }
 
 pub fn run(targets: &[Target], opts: Options, project_root: &Path) -> Result<()> {
-    let _ = project_root;
     println!("crabcc install-integrations");
     if opts.dry_run {
         println!("(dry-run — no files will be touched)\n");
@@ -75,6 +76,7 @@ pub fn run(targets: &[Target], opts: Options, project_root: &Path) -> Result<()>
         println!("── target: {} ──", target_label(*t));
         match t {
             Target::Claude => install_claude(opts)?,
+            Target::Pi => install_pi(opts, project_root)?,
             Target::Os => install_os(opts)?,
             Target::Kernel => install_kernel(opts)?,
         }
@@ -87,6 +89,7 @@ pub fn run(targets: &[Target], opts: Options, project_root: &Path) -> Result<()>
 fn target_label(t: Target) -> &'static str {
     match t {
         Target::Claude => "claude",
+        Target::Pi => "pi",
         Target::Os => "os",
         Target::Kernel => "kernel",
     }
@@ -104,6 +107,84 @@ fn install_claude(opts: Options) -> Result<()> {
         print_stack_instructions: false,
         dry_run: false,
     })
+}
+
+/// Install crabcc as a pi agent skill.
+///
+/// pi reads skills from `~/.pi/agent/skills/<name>/SKILL.md` (global) and
+/// `.pi/skills/<name>/SKILL.md` (project) and enables them via the `skills`
+/// array in `~/.pi/agent/settings.json` or `.pi/settings.json`.
+/// See https://pi.dev/docs/latest/settings — pi uses skills + extensions
+/// rather than MCP servers.
+fn install_pi(opts: Options, project_root: &Path) -> Result<()> {
+    let home = home_dir().ok_or_else(|| anyhow!("$HOME not set"))?;
+    let global_skill = home.join(".pi/agent/skills/crabcc/SKILL.md");
+    install_skill(&global_skill, opts)?;
+
+    if opts.project {
+        let proj_skill = project_root.join(".pi/skills/crabcc/SKILL.md");
+        install_skill(&proj_skill, opts)?;
+    }
+
+    println!();
+    println!(
+        "Merge into ~/.pi/agent/settings.json (global) or .pi/settings.json (project):"
+    );
+    println!("{PI_FRAGMENT}");
+    if !opts.dry_run {
+        let dest = integrations_home()?.join("pi.fragment.json");
+        write_atomic(&dest, PI_FRAGMENT, opts.yes)?;
+        println!("  also wrote: {}", dest.display());
+    }
+    Ok(())
+}
+
+fn install_skill(dst: &Path, opts: Options) -> Result<()> {
+    if let Some(parent) = dst.parent() {
+        if opts.dry_run {
+            println!("  [dry-run] would mkdir {}", parent.display());
+        } else {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    if let Ok(repo) = git_repo_root() {
+        let src = repo.join("skill/crabcc/SKILL.md");
+        if src.exists() {
+            symlink_file(&src, dst, opts)?;
+            return Ok(());
+        }
+    }
+    write_atomic(dst, SKILL_MD, opts.yes)
+}
+
+fn symlink_file(src: &Path, dst: &Path, opts: Options) -> Result<()> {
+    let action = format!("symlink {} -> {}", dst.display(), src.display());
+    if opts.dry_run {
+        println!("  [dry-run] would {action}");
+        return Ok(());
+    }
+    if dst.exists() {
+        if let Ok(link) = std::fs::read_link(dst) {
+            if link == src {
+                println!("  ✓ already linked: {}", dst.display());
+                return Ok(());
+            }
+        }
+    }
+    if !opts.yes && !confirm(&format!("{action}? [y/N] "))? {
+        println!("  skipped");
+        return Ok(());
+    }
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let _ = std::fs::remove_file(dst);
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(src, dst).with_context(|| action.clone())?;
+    #[cfg(not(unix))]
+    bail!("symlinks require Unix");
+    println!("  ✓ {action}");
+    Ok(())
 }
 
 fn install_os(opts: Options) -> Result<()> {
@@ -244,7 +325,6 @@ fn write_atomic(path: &Path, content: &str, force: bool) -> Result<()> {
     Ok(())
 }
 
-#[allow(dead_code)]
 fn confirm(prompt: &str) -> Result<bool> {
     print!("{prompt}");
     io::stdout().flush()?;

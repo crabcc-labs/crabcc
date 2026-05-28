@@ -274,14 +274,14 @@ enum SetupOp {
     },
     /// Print the embedded OpenAPI 3.1 description of the MCP tool surface.
     Openapi,
-    /// Install crabcc into Claude Code, OS-native services, or kernel.
+    /// Install crabcc into Claude Code, pi, OS-native services, or kernel.
     InstallIntegrations {
-        /// Targets: claude, os, kernel, all
+        /// Targets: claude, pi, os, kernel, all
         #[arg(long, value_delimiter = ',')]
         target: Vec<String>,
         #[arg(long)]
         yes: bool,
-        /// Reserved for project-level merges (currently no-op after v4.5 sunset).
+        /// Also install project-local skills (pi: .pi/skills/crabcc/).
         #[arg(long)]
         project: bool,
         #[arg(long)]
