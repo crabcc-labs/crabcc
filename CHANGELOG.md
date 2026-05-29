@@ -6,6 +6,92 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+## [4.5.0] — 2026-05-29 — *the sharpening release*
+
+v4.5 is the discipline release. Two-thirds of the diff is *removal* — six
+surfaces and four agent integrations cut to restate the moat: **crabcc is
+the deterministic substrate between tree-sitter and the agent.** Every
+feature that didn't extend that statement got shown the door.
+
+The one feature *added* — cross-repo `--workspace` queries — is the moat
+extension itself: symbolic lookup that now works across every indexed repo
+in `$CRABCC_HOME/repos/*/`, not just the one you're standing in.
+
+### Added
+
+- **Cross-repo symbolic lookup via `--workspace`** (the anchor feature). Reads
+  against every indexed repo under `$CRABCC_HOME/repos/*/` discovered by
+  filesystem walk (no manifest, no write coordination, microseconds at the
+  ~60-repo scale). Supported in v4.5: `sym`, `fuzzy`, `prefix`. Output is a
+  stable envelope:
+
+  ```json
+  {
+    "workspace": true,
+    "queried_repos": N,
+    "total_hits": M,
+    "by_repo": [{"repo": "<key>", "count": K, "hits": [...]}, ...]
+  }
+  ```
+
+  `refs`, `callers`, and `graph walk` defer to v5 — they need per-repo
+  source-dir resolution which is its own design decision. The error message
+  points the user at the per-repo equivalent.
+
+  Mutually exclusive with `--root`. Not yet wired through the MCP surface
+  (single-store-bound in v4.5).
+
+- **pi agent integration** (the second supported integration alongside
+  Claude Code). pi reads skills from `~/.pi/agent/skills/<name>/SKILL.md`
+  (global) and `.pi/skills/<name>/SKILL.md` (project) and enables them via
+  the `skills` array in `settings.json`. The installer symlinks
+  `skill/crabcc/SKILL.md` into pi's skill dir and prints the settings
+  fragment. pi does not currently support MCP servers natively; when it
+  does, this integration migrates.
+
+### Removed (the sharpening cuts)
+
+**Surfaces:**
+
+- `apps/crabcc-hitl-agent/` — HITL agent (Telegram was its only frontend)
+- `apps/crabcc-notify-ext-poc/` — POC that didn't graduate
+- `apps/jobs-worker/` — background job runner, off-moat
+- `apps/crabcc-iterm2/` — iTerm2 HUD
+- `apps/crabcc-chrome-extension/` + `crates/crabcc-chrome/` — Chrome
+  extension + native-messaging Rust crate. Browser-side agent work belongs
+  to a separate lane.
+- `taskfiles/telegram.yml`, `taskfiles/hitl.yml`, `scripts/telegram-*.sh` —
+  Telegram tooling
+
+**Agent integrations** (kept: Claude Code + pi):
+
+- Cursor (`install/integrations/hooks-cursor.json` + Rust support + docs)
+- Gemini CLI (`install/integrations/gemini-settings.fragment.json` + Rust + docs)
+- OpenCode (`install/integrations/opencode.fragment.jsonc` + Rust + docs)
+- LangChain / LangGraph / LangSmith (`install/integrations/langchain/` + Rust + docs)
+
+**CI:**
+
+- `.github/workflows/linear-sync.yml` — Linear sync, Linear integration removed
+- `tools/linear/` — Linear backfill scripts
+- Dead secrets from `load-copilot-env.yml`: `LINEAR_API_KEY`,
+  `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `CURSOR_ADMIN_KEY`
+
+### Architectural decisions worth surfacing
+
+- **Cross-repo schema: union materialized view (filesystem-walked) for v4.5.**
+  Virtual-table-with-lazy-ATTACH is the right end-state but caps at 10
+  databases by default in SQLite, and benchmarking it against the current
+  ~60-repo scale isn't justified until users have more repos. Targeted
+  refactor in 2-3 minor versions after v4.5 ships.
+- **No MCP cross-repo in v4.5.** The agent surface stays single-store-bound
+  for now. Cross-repo via MCP needs schema decisions about how to express
+  "this hit came from repo X" in a way agents can act on — a v5 design
+  conversation.
+- **Confident migration tone.** This release isn't an apology for cutting
+  features; it's a statement about what crabcc is *for*. The above list of
+  removals is the deliverable, not collateral damage.
+
 ## [4.1.0] — 2026-05-21
 
 Forge visualizer improvements, developer tooling hardening, and local CI via

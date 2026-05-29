@@ -57,6 +57,15 @@ crabcc memory list --limit 20
 
 # 11. Token-savings ledger:
 crabcc track
+
+# 12. Cross-repo (v4.5+): query every indexed repo at once.
+crabcc --workspace lookup sym Store
+crabcc --workspace lookup fuzzy strore
+crabcc --workspace lookup prefix Stor
+# → {"workspace": true, "queried_repos": N, "total_hits": M, "by_repo": [...]}
+# Discovers $CRABCC_HOME/repos/*/ via filesystem walk (no manifest).
+# `--workspace` is mutually exclusive with `--root`.
+# v4.5 ops: sym, fuzzy, prefix. refs/callers/graph walk → v5.
 ```
 
 The same surface is exposed as the **`crabcc` MCP server** — every CLI

@@ -43,6 +43,7 @@ mod memory;
 mod model_info;
 mod read;
 mod root_resolver;
+mod workspace;
 mod status;
 #[cfg(feature = "telemetry")]
 mod telemetry;
@@ -55,6 +56,15 @@ struct Cli {
     /// Path to repo root (defaults to cwd).
     #[arg(long, global = true)]
     root: Option<PathBuf>,
+
+    /// Cross-repo query mode — read against every indexed repo under
+    /// `$CRABCC_HOME/repos/*/`. Mutually exclusive with `--root`.
+    ///
+    /// v4.5 supports `sym`, `fuzzy`, `prefix`. `refs` / `callers` /
+    /// `graph walk` need per-repo source-dir resolution and are deferred
+    /// to v5 (see CHANGELOG).
+    #[arg(long, global = true, conflicts_with = "root")]
+    workspace: bool,
 
     /// Run as MCP server over stdio instead of one-shot CLI.
     #[arg(long, global = true)]
@@ -274,14 +284,14 @@ enum SetupOp {
     },
     /// Print the embedded OpenAPI 3.1 description of the MCP tool surface.
     Openapi,
-    /// Install crabcc into Cursor, Gemini, OpenCode, LangChain, OS-native, kernel.
+    /// Install crabcc into Claude Code, pi, OS-native services, or kernel.
     InstallIntegrations {
-        /// Targets: cursor, claude, gemini, opencode, langchain, os, kernel, all
+        /// Targets: claude, pi, os, kernel, all
         #[arg(long, value_delimiter = ',')]
         target: Vec<String>,
         #[arg(long)]
         yes: bool,
-        /// Also merge project-level configs (.mcp.json, .cursor/hooks, skills).
+        /// Also install project-local skills (pi: .pi/skills/crabcc/).
         #[arg(long)]
         project: bool,
         #[arg(long)]
@@ -799,6 +809,19 @@ fn main() -> Result<()> {
     reset_sigpipe();
 
     let cli = Cli::parse();
+
+    // Cross-repo (`--workspace`) early-fork. Discovery walks
+    // `$CRABCC_HOME/repos/*/`; per-repo Store/Fts opens happen inside the
+    // op handler so a single corrupt index doesn't sink the whole query.
+    // MCP transport over workspace is intentionally unimplemented in v4.5
+    // — the agent surface stays single-store-bound.
+    if cli.workspace {
+        if cli.mcp || cli.mcp_http.is_some() {
+            anyhow::bail!("--workspace is not supported with --mcp/--mcp-http in v4.5");
+        }
+        return run_workspace(cli);
+    }
+
     // Resolve `--root` to a concrete source dir + index-artifact dir.
     // Supports local paths AND git URLs (https://, git@, ssh://, gh:owner/repo).
     // For URLs and uninitialised local paths we centralise artifacts under
@@ -1678,6 +1701,112 @@ fn run_loop(root: &Path, op: &LoopOp) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Cross-repo (`--workspace`) entry point. Discovery + per-repo query loop.
+///
+/// v4.5 supports a deliberate subset of the read commands:
+///
+/// - `sym <NAME>`            → uniform `Vec<Symbol>` per repo
+/// - `fuzzy <QUERY>`         → uniform `Vec<FuzzyHit>` per repo
+/// - `prefix <QUERY>`        → uniform `Vec<FuzzyHit>` per repo
+///
+/// `refs` / `callers` / `graph walk` are intentionally rejected here —
+/// they need per-repo source-dir resolution (RefsCallersAreFs-bound), and
+/// the right shape is a v5 design call. The error message points the user
+/// at the equivalent per-repo command.
+fn run_workspace(cli: Cli) -> Result<()> {
+    use crabcc_core::store::Store;
+
+    let Some(cmd) = cli.cmd.as_ref() else {
+        anyhow::bail!(
+            "--workspace requires a subcommand (sym, fuzzy, prefix in v4.5)"
+        );
+    };
+
+    let repos = workspace::discover()?;
+    if repos.is_empty() {
+        eprintln!(
+            "workspace: no indexed repos found under $CRABCC_HOME/repos/ — \
+             run `crabcc index` in one or more repos first"
+        );
+    }
+
+    let op_label = match cmd {
+        Cmd::Lookup { op: LookupOp::Sym { .. } } => "workspace/sym",
+        Cmd::Lookup { op: LookupOp::Fuzzy { .. } } => "workspace/fuzzy",
+        Cmd::Lookup { op: LookupOp::Prefix { .. } } => "workspace/prefix",
+        Cmd::Lookup { op: LookupOp::Refs { .. } } => {
+            anyhow::bail!(
+                "--workspace + refs is deferred to v5 (needs per-repo source-dir \
+                 resolution). v4.5 path: run `crabcc refs <NAME>` per repo."
+            );
+        }
+        Cmd::Lookup { op: LookupOp::Callers { .. } } => {
+            anyhow::bail!(
+                "--workspace + callers is deferred to v5 (needs per-repo source-dir \
+                 resolution). v4.5 path: run `crabcc callers <NAME>` per repo."
+            );
+        }
+        Cmd::Graph { .. } => {
+            anyhow::bail!(
+                "--workspace + graph is deferred to v5. v4.5 path: run `crabcc graph walk` \
+                 per repo with `--root <PATH>`."
+            );
+        }
+        _ => {
+            anyhow::bail!(
+                "--workspace only supports `sym`, `fuzzy`, `prefix` in v4.5"
+            );
+        }
+    };
+
+    match cmd {
+        Cmd::Lookup { op: LookupOp::Sym { name, since } } => {
+            if since.is_some() {
+                anyhow::bail!("--workspace + --since is not supported in v4.5");
+            }
+            let name = name.clone();
+            let by_repo = workspace::map_each(&repos, |r| {
+                let store = Store::open_with_compress(&r.db(), cli.compress)?;
+                let syms = crabcc_core::query::find_symbol(&store, &name)?;
+                Ok((syms.len(), syms))
+            });
+            let env = workspace::WorkspaceEnvelope::new(by_repo);
+            let body = sonic_rs::to_string(&env)?;
+            crabcc_core::track::record(op_label, &name, env.total_hits, "workspace", body.len());
+            println!("{body}");
+        }
+        Cmd::Lookup { op: LookupOp::Fuzzy { query, limit } } => {
+            let query = query.clone();
+            let limit = *limit;
+            let by_repo = workspace::map_each(&repos, |r| {
+                let fts = crabcc_core::fts::Fts::open(&r.fts_dir())?;
+                let hits = fts.fuzzy(&query, limit)?;
+                Ok((hits.len(), hits))
+            });
+            let env = workspace::WorkspaceEnvelope::new(by_repo);
+            let body = sonic_rs::to_string(&env)?;
+            crabcc_core::track::record(op_label, &query, env.total_hits, "workspace", body.len());
+            println!("{body}");
+        }
+        Cmd::Lookup { op: LookupOp::Prefix { query, limit } } => {
+            let query = query.clone();
+            let limit = *limit;
+            let by_repo = workspace::map_each(&repos, |r| {
+                let fts = crabcc_core::fts::Fts::open(&r.fts_dir())?;
+                let hits = fts.prefix(&query, limit)?;
+                Ok((hits.len(), hits))
+            });
+            let env = workspace::WorkspaceEnvelope::new(by_repo);
+            let body = sonic_rs::to_string(&env)?;
+            crabcc_core::track::record(op_label, &query, env.total_hits, "workspace", body.len());
+            println!("{body}");
+        }
+        _ => unreachable!("op_label dispatch covers all v4.5 workspace ops"),
+    }
+
+    Ok(())
 }
 
 fn run_shell(root: &Path, op: &ShellOp) -> Result<()> {

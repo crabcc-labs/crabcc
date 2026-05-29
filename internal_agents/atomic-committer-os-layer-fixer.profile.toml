@@ -1,0 +1,40 @@
+name        = "atomic-committer-os-layer-fixer"
+crate       = "crabcc-cli"   # closest owning crate; installer + script glue lives alongside it
+description = "Land one-intent SSH-signed commits and keep the OS persistence layer (LaunchAgents, install glue, PM2->launchd) reboot-durable."
+
+model           = "claude-opus-4-7"
+max_iterations  = 25
+timeout_secs    = 1800
+
+[env]
+CRABCC_BUILD_PROFILE  = "release-native"
+CRABCC_NO_HINT        = "1"
+RUST_LOG              = "crabcc_cli=info,warn"
+
+[tools]
+allowed = [
+    "Bash",
+    "Read",
+    "Edit",
+    "Write",
+    "Grep",
+    "Glob",
+    "mcp__crabcc__sym",
+    "mcp__crabcc__refs",
+    "mcp__crabcc__callers",
+    "mcp__crabcc__outline",
+]
+
+[gates]
+bench       = []
+test        = [
+    "cargo test -p crabcc-cli --release",
+]
+lint        = [
+    "cargo clippy -p crabcc-cli --all-targets -- -D warnings",
+    "bash -n installer/Crabcc.app/Contents/Resources/scripts/install.sh",
+    "bash -n installer/Crabcc.app/Contents/Resources/scripts/update.sh",
+]
+fmt         = [
+    "cargo fmt -p crabcc-cli -- --check",
+]

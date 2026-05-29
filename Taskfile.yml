@@ -38,16 +38,12 @@
 #   taskfiles/bench.yml      bench, bench-compress, memory-smoke, memory-bench
 #   taskfiles/viz.yml        viz, repomix, repomix-context, docs:ingest
 #   taskfiles/ollama.yml     ollama-bootstrap, ollama-stack-*, ask, agent-runtime-smoke
-#   taskfiles/docker.yml     docker-build/push/sbom, docker-build-telegram, setup-orbstack
-#   taskfiles/telegram.yml   telegram-*, tunnel-*, mcp-serve
+#   taskfiles/docker.yml     docker-build/push/sbom, setup-orbstack
 #   taskfiles/telemetry.yml  telemetry-*, db-inspect, fetch
-#   taskfiles/jobs.yml       jobs-up/down/board/e2e/submit
 #   taskfiles/profile.yml    profile-build/index, flamegraph-index
 #   taskfiles/e2e.yml        e2e, e2e:dashboard, e2e:graph, e2e:cli, …
-#   taskfiles/hitl.yml       hitl:up/down/logs/test, hitl:env-init, hitl:open
 #   taskfiles/cron.yml       cron-lint, cron-test
 #   taskfiles/index-publish.yml  index-publish-lint, index-publish-test
-#   taskfiles/linear.yml     linear-sync (GitHub → Linear backfill)
 #   taskfiles/dev-local.yml  dev:local:start/ship/bump/build-prod
 
 version: '3'
@@ -111,15 +107,11 @@ includes:
   viz:           { taskfile: taskfiles/viz.yml,           flatten: true }
   ollama:        { taskfile: taskfiles/ollama.yml,        flatten: true }
   docker:        { taskfile: taskfiles/docker.yml,        flatten: true }
-  telegram:      { taskfile: taskfiles/telegram.yml,      flatten: true }
   telemetry:     { taskfile: taskfiles/telemetry.yml,     flatten: true }
-  jobs:          { taskfile: taskfiles/jobs.yml,          flatten: true }
   profile:       { taskfile: taskfiles/profile.yml,       flatten: true }
   e2e:           { taskfile: taskfiles/e2e.yml,           flatten: true }
-  hitl:          { taskfile: taskfiles/hitl.yml,          flatten: true }
   cron:          { taskfile: taskfiles/cron.yml,          flatten: true }
   index-publish: { taskfile: taskfiles/index-publish.yml, flatten: true }
-  linear:        { taskfile: taskfiles/linear.yml,        flatten: true }
   dev-local:     { taskfile: taskfiles/dev-local.yml,     flatten: true }
 
 tasks:

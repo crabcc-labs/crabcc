@@ -1,27 +1,20 @@
 # Integrations guide
 
-One installer wires crabcc into coding agents, orchestration stacks, and OS services.
+v4.5 narrows the integration surface to two agents:
+
+- **Claude Code** — the "big" example (full MCP server + slash commands + hooks)
+- **pi** — the "tiny" example (single SKILL.md, skills array config)
+
+Cursor / Gemini / OpenCode / LangChain were removed in the sharpening release —
+see CHANGELOG.
 
 ```bash
 crabcc setup install-integrations --target all --yes
-crabcc setup install-integrations --target cursor,langchain --project
+crabcc setup install-integrations --target claude --yes
+crabcc setup install-integrations --target pi --yes
 ```
 
 ## Coding agents
-
-### Cursor
-
-| Surface | Location |
-|---------|----------|
-| MCP | `~/.cursor/mcp.json` or project `.cursor/mcp.json` |
-| Skill | `~/.cursor/skills/crabcc/SKILL.md` |
-| Hooks | `.cursor/hooks.json` + `.cursor/hooks/crabcc-hint.sh` |
-
-```bash
-crabcc setup install-integrations --target cursor --project --yes
-```
-
-Restart Cursor after MCP changes. Enable the `crabcc` server under **Settings → MCP**.
 
 ### Claude Code
 
@@ -33,40 +26,31 @@ crabcc setup install-integrations --target claude --yes
 
 Registers skill + slash commands; prints `claude mcp add crabcc -- crabcc --mcp` and hook JSON.
 
-### Gemini CLI
-
-Merge `install/integrations/gemini-settings.fragment.json` into:
-
-- User: `~/.gemini/settings.json`
-- Project: `.gemini/settings.json`
+### pi
 
 ```bash
-crabcc setup install-integrations --target gemini
+crabcc setup install-integrations --target pi --yes              # global only
+crabcc setup install-integrations --target pi --project --yes    # global + project
 ```
 
-### OpenCode
+pi reads skills from `~/.pi/agent/skills/<name>/SKILL.md` (global) and
+`.pi/skills/<name>/SKILL.md` (project) and enables them via the `skills` array
+in `settings.json`. The installer symlinks `skill/crabcc/SKILL.md` into the
+right place and prints the settings fragment to merge:
 
-Merge `install/integrations/opencode.fragment.jsonc` into:
-
-- Global: `~/.config/opencode/opencode.json`
-- Project: `opencode.json`
-
-```bash
-crabcc setup install-integrations --target opencode
+```json
+{
+  "skills": ["crabcc"]
+}
 ```
 
-## LangChain / LangGraph / LangSmith
+Merge into `~/.pi/agent/settings.json` (global) or `.pi/settings.json` (project).
 
-```bash
-crabcc setup install-integrations --target langchain --yes
-cd ~/.crabcc/integrations/langchain && pip install -e .
-```
-
-- **Tools**: `crabcc_sym`, `crabcc_refs`, `crabcc_callers`, `crabcc_outline`
-- **Graph**: `build_lookup_graph(model)` — agent ↔ tools loop
-- **LangSmith batch eval**: `tools/orchestrator/import-dataset.sh` → queue → `upload-experiment.sh`
-
-Set `LANGSMITH_API_KEY` and `LANGCHAIN_TRACING_V2=true` for trace export.
+> pi does not currently expose a native MCP server config (per
+> [pi.dev/docs/latest/settings](https://pi.dev/docs/latest/settings) —
+> `skills` and `extensions` are the supported registration paths). When pi
+> grows MCP support we'll route crabcc through that channel; for now the
+> skill provides the integration surface.
 
 ## macOS — centralised index (worktrees)
 
@@ -89,7 +73,6 @@ Materializes under `~/.crabcc/integrations/os/`:
 
 - `com.crabcc.mcp.plist` — macOS LaunchAgent (`--mcp-http` on :8091)
 - `crabcc-mcp.service` — systemd user unit (Linux)
-- iTerm2: `task install-iterm2`
 - macOS app + agentd: `task dmg`
 
 ## Kernel (containers / custom Linux)
