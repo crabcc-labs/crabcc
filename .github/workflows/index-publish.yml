@@ -32,6 +32,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y sqlite3 zstd
 
+      - uses: dtolnay/rust-toolchain@stable
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
@@ -39,7 +41,13 @@ jobs:
         run: cargo build --release -p crabcc-cli
 
       - name: Build crabcc index against this repo
-        run: ./target/release/crabcc index
+        # Create .crabcc/ first so crabcc selects the in-repo layout and writes
+        # the DB to .crabcc/index.db (where build-manifest.sh looks for it). On a
+        # fresh checkout the dir is absent, so crabcc would otherwise fall back to
+        # the centralised $CRABCC_HOME/repos/<key>/ layout.
+        run: |
+          mkdir -p .crabcc
+          ./target/release/crabcc index
 
       - name: Build manifest + compress index
         run: |

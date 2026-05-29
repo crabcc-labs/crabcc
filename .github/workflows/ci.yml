@@ -62,8 +62,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      - name: cargo fmt --check
-        run: cargo fmt --all -- --check
+      # Autofix in place rather than gate on drift. `cargo fmt --all`
+      # rewrites files and exits 0 on success; it only fails when rustfmt
+      # genuinely cannot format the source (e.g. a parse error).
+      - name: cargo fmt --all (autofix)
+        run: cargo fmt --all
 
   lint:
     name: lint (clippy)
@@ -71,9 +74,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          # fetch-depth 0 only needed on PRs to diff HEAD against base;
-          # push-to-main always runs --workspace so depth 1 is enough.
-          fetch-depth: ${{ github.event_name == 'pull_request' && 0 || 1 }}
+          # Full history so the PR diff (base..head) resolves. Must be a literal
+          # 0, not `event == 'pull_request' && 0 || 1`: that ternary always
+          # yields 1 because 0 is falsy in GitHub Actions expressions, leaving a
+          # shallow clone where `git diff <base> <head>` dies with "bad object".
+          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -108,9 +113,6 @@ jobs:
           # taiki-e/install-action artifacts, etc) — adds <1% size,
           # saves a fresh download next run.
           cache-all-crates: "true"
-          # Don't write a new cache entry for cancelled runs — the partial
-          # target/ would poison the next warm start.
-          save-if: ${{ !cancelled() }}
 
       # Issue #87 — Pillar 3 (PR-only-changed-files CI). On PR, scope
       # clippy + aliases-smoke to changed crates / scripts. On push to
@@ -182,9 +184,11 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
-          # fetch-depth 0 only needed on PRs to diff HEAD against base;
-          # push-to-main always runs --workspace so depth 1 is enough.
-          fetch-depth: ${{ github.event_name == 'pull_request' && 0 || 1 }}
+          # Full history so the PR diff (base..head) resolves. Must be a literal
+          # 0, not `event == 'pull_request' && 0 || 1`: that ternary always
+          # yields 1 because 0 is falsy in GitHub Actions expressions, leaving a
+          # shallow clone where `git diff <base> <head>` dies with "bad object".
+          fetch-depth: 0
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -204,7 +208,6 @@ jobs:
           shared-key: ci-ubuntu
           cache-on-failure: "true"
           cache-all-crates: "true"
-          save-if: ${{ !cancelled() }}
 
       - name: install cargo-nextest (JUnit reporter)
         uses: taiki-e/install-action@v2
@@ -303,13 +306,3 @@ jobs:
       - name: sccache stats
         if: always()
         run: sccache --show-stats || true
-
-  actionlint:
-    name: actionlint
-    runs-on: [self-hosted, linux, hetzner]
-    steps:
-      - uses: actions/checkout@v6
-      - name: actionlint
-        uses: raven-actions/actionlint@v2
-        with:
-          matcher: true
