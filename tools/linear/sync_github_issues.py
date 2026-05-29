@@ -26,7 +26,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-REPO = "peterlodri-sec/crabcc"
+REPO = os.environ.get("GITHUB_REPOSITORY", "crabcc-labs/crabcc")
 TEAM_KEY = "VIB"
 PROJECT_NAME = "crabcc"
 LINEAR_API = "https://api.linear.app/graphql"
