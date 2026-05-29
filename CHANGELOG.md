@@ -72,7 +72,6 @@ in `$CRABCC_HOME/repos/*/`, not just the one you're standing in.
 
 **CI:**
 
-- `.github/workflows/pr-agent.yml` — Codium's PR-Agent retired
 - `.github/workflows/linear-sync.yml` — Linear sync, Linear integration removed
 - `tools/linear/` — Linear backfill scripts
 - Dead secrets from `load-copilot-env.yml`: `LINEAR_API_KEY`,

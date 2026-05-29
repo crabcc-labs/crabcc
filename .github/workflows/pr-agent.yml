@@ -1,0 +1,53 @@
+name: PR-Agent
+
+# Docs: https://docs.pr-agent.ai/installation/github/#run-as-a-github-action
+# Config ref: https://github.com/The-PR-Agent/pr-agent/blob/main/pr_agent/settings/configuration.toml
+# Compression: https://docs.pr-agent.ai/core-abilities/compression_strategy/
+#
+# Secrets required (Settings → Secrets → Actions):
+#   # ANTHROPIC_API_KEY   — Claude API key (pr-agent uses claude-sonnet-4-6 by default here)
+#   OPENROUTER_API_KEY  — OpenRouter key (openrouter.ai → Keys)
+#   GITHUB_TOKEN        — auto-provisioned, no setup needed
+#
+# Usage:
+#   Auto-review + auto-describe fires on PR open/reopen/ready_for_review.
+#   Respond via issue comment to trigger on-demand:
+#     /review   /describe   /improve   /ask <question>
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review]
+  issue_comment:
+
+# Never self-trigger on bot output.
+# Cancel any in-flight run on the same PR when a new comment/push lands.
+concurrency:
+  group: pr-agent-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+
+permissions:
+  issues: write
+  pull-requests: write
+  contents: read
+
+jobs:
+  pr_agent:
+    if: ${{ github.event.sender.type != 'Bot' }}
+    runs-on: [self-hosted, linux, hetzner]
+    name: PR-Agent (Claude)
+    steps:
+      - name: Run PR-Agent
+        uses: the-pr-agent/pr-agent@main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Model — override in .pr_agent.toml for per-repo tuning.
+          # config.model: "claude-sonnet-4-6"
+          # config.fallback_models: '["claude-haiku-4-5-20251001"]'
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          config.model: "openrouter/anthropic/claude-haiku-4-5"
+          config.fallback_models: '["openrouter/anthropic/claude-sonnet-4-5"]'
+          # Auto-actions: review + describe on open; improve only on-demand.
+          github_action_config.auto_review: "true"
+          github_action_config.auto_describe: "true"
+          github_action_config.auto_improve: "false"
