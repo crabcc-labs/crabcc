@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   sync:
-    runs-on: [self-hosted, linux, hetzner]
+    runs-on: [self-hosted, linux, light]
     steps:
     - uses: actions/checkout@v4
 

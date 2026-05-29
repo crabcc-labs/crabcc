@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   mark-ready:
-    runs-on: [self-hosted, linux, hetzner]
+    runs-on: [self-hosted, linux, light]
     if: github.event.pull_request.draft == true
     steps:
       - name: Mark PR ready for review
