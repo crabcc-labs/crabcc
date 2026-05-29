@@ -87,7 +87,9 @@ pub(crate) fn discover_with_home(home_override: Option<&std::path::Path>) -> Res
     {
         let entry = entry?;
         let path = entry.path();
-        if !path.is_dir() {
+        // file_type() does not follow symlinks; a symlink planted in repos/
+        // must not let us open an index.db outside the repos tree.
+        if !entry.file_type()?.is_dir() {
             continue;
         }
         if !path.join("index.db").exists() {
