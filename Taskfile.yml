@@ -44,7 +44,6 @@
 #   taskfiles/e2e.yml        e2e, e2e:dashboard, e2e:graph, e2e:cli, …
 #   taskfiles/cron.yml       cron-lint, cron-test
 #   taskfiles/index-publish.yml  index-publish-lint, index-publish-test
-#   taskfiles/linear.yml     linear-sync (GitHub → Linear backfill)
 #   taskfiles/dev-local.yml  dev:local:start/ship/bump/build-prod
 
 version: '3'

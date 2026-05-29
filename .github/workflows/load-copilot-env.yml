@@ -20,7 +20,7 @@ concurrency:
 
 jobs:
   export:
-    runs-on: [self-hosted, linux, hetzner]
+    runs-on: [self-hosted, linux, light]
     environment: copilot
     steps:
       - uses: actions/checkout@v4
