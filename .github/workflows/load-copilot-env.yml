@@ -58,7 +58,7 @@ jobs:
           } > out/copilot.env
           chmod 600 out/copilot.env
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: copilot-env
           path: out/copilot.env
