@@ -332,7 +332,19 @@ fn ensure_cloned(clone_url: &str, dest: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
     use tempfile::tempdir;
+
+    // CRABCC_LAYOUT is process-global; `layout_centralised_env_ignores_dotcrabcc`
+    // mutates it via set_var, which races sibling layout assertions under the
+    // default parallel test runner. Every test whose expected Layout depends on
+    // that env var holds this lock across its resolve. Poison is recovered (a
+    // panicking test must not cascade-fail the rest).
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn env_guard() -> MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     #[test]
     fn url_detection() {
@@ -385,6 +397,7 @@ mod tests {
 
     #[test]
     fn local_path_with_existing_dotcrabcc_picks_in_repo() {
+        let _g = env_guard();
         let tmp = tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join(".crabcc")).unwrap();
         let home = tempdir().unwrap();
@@ -403,6 +416,7 @@ mod tests {
 
     #[test]
     fn local_path_without_dotcrabcc_picks_centralised() {
+        let _g = env_guard();
         let tmp = tempdir().unwrap();
         let home = tempdir().unwrap();
         let r = resolve_with_home(&tmp.path().to_string_lossy(), Some(home.path())).unwrap();
@@ -458,6 +472,7 @@ mod tests {
 
     #[test]
     fn display_origin_local_centralised() {
+        let _g = env_guard();
         let tmp = tempdir().unwrap();
         let home = tempdir().unwrap();
         let r = resolve_with_home(&tmp.path().to_string_lossy(), Some(home.path())).unwrap();
@@ -468,6 +483,7 @@ mod tests {
 
     #[test]
     fn display_origin_local_in_repo() {
+        let _g = env_guard();
         let tmp = tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join(".crabcc")).unwrap();
         let home = tempdir().unwrap();
@@ -479,6 +495,7 @@ mod tests {
 
     #[test]
     fn layout_centralised_env_ignores_dotcrabcc() {
+        let _g = env_guard();
         let tmp = tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join(".crabcc")).unwrap();
         let home = tempdir().unwrap();
