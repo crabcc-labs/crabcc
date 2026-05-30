@@ -32,7 +32,13 @@ permissions:
 
 jobs:
   pr_agent:
-    if: ${{ github.event.sender.type != 'Bot' }}
+    # Full review tier: auto-fires only on PRs targeting `main` (the merge
+    # gate). On-demand slash commands (/review, /ask, …) via issue_comment
+    # still work on any PR. The fast low-noise smoke pass on every PR lives in
+    # pr-smoke-review.yml.
+    if: >-
+      ${{ github.event.sender.type != 'Bot'
+          && (github.event_name == 'issue_comment' || github.base_ref == 'main') }}
     runs-on: [self-hosted, linux, hetzner]
     name: PR-Agent (Claude)
     steps:
