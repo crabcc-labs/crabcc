@@ -6,6 +6,14 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+## [5.0.0] — 2026-06-01 — *stable baseline*
+
+Promotes the battle-tested v4.5 sharpening line to a stable **v5.0** major, so
+downstream systems (FieldFeed, agent-os-v2, crabcc-private) can pin a stable v5
+baseline. **No behaviour changes vs 4.5.0** — this is the version-stability cut
+the v5.x line builds on. The v5 *feature* scope (streaming queries, waste
+analyzer, godfather `report --json`) lands in **5.1** (see #616).
+
 ## [4.5.0] — 2026-05-29 — *the sharpening release*
 
 v4.5 is the discipline release. Two-thirds of the diff is *removal* — six
