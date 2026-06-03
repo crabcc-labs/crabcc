@@ -19,9 +19,15 @@ on:
   issues:
     types: [opened, assigned, labeled]
 
+# cancel-in-progress MUST be false: claude-code-action posts an "I'll analyze
+# this..." tracking comment at start, which fires an issue_comment event in
+# this same group. With cancel-in-progress the queued (bot) run cancels the
+# real in-flight run -> "The operation was canceled" before any PR can be
+# opened. The bot run is then skipped by the job-level `if` anyway, so letting
+# it queue behind (not cancel) is correct.
 concurrency:
   group: claude-${{ github.event.pull_request.number || github.event.issue.number }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   claude:
