@@ -1,0 +1,28 @@
+# Opt-in systemd unit for the runner cache-proxy. DEFAULT-OFF.
+# Install: copy cache_proxy.py to /opt/actions-runner/cache-proxy/, drop this
+# at /etc/systemd/system/cache-proxy.service (without .example), edit UPSTREAM,
+# then: sudo systemctl enable --now cache-proxy
+[Unit]
+Description=Runner cache-proxy (generic LRU+TTL)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# The ONE upstream this proxy fronts. Change per use case.
+Environment=CACHE_PROXY_UPSTREAM=https://api.anthropic.com
+Environment=CACHE_PROXY_LISTEN=127.0.0.1:8899
+Environment=CACHE_PROXY_CAPACITY=256
+Environment=CACHE_PROXY_TTL_FALLBACK=300
+Environment=CACHE_PROXY_METHODS=GET,POST
+ExecStart=/usr/bin/python3 /opt/actions-runner/cache-proxy/cache_proxy.py
+Restart=always
+RestartSec=2
+# Hardening: loopback-only service, no privileges needed.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
