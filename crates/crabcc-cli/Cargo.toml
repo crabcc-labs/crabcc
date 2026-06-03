@@ -46,6 +46,7 @@ viz = ["dep:crabcc-viz"]
 telemetry = ["dep:tracing-subscriber", "dep:tracing-appender"]
 
 [dependencies]
+walkdir = "2.5.0"
 crabcc-core   = { workspace = true, features = ["jobs"] }
 crabcc-fetch  = { workspace = true }
 crabcc-mcp    = { workspace = true }
