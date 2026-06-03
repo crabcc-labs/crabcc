@@ -29,6 +29,7 @@ mod agent_bullmq;
 mod agent_guard;
 mod agent_profile;
 mod agent_runs_db;
+mod audit;
 mod auto_index;
 mod backup;
 mod compress_cmd;
@@ -43,12 +44,12 @@ mod memory;
 mod model_info;
 mod read;
 mod root_resolver;
-mod workspace;
 mod status;
 #[cfg(feature = "telemetry")]
 mod telemetry;
 #[cfg(test)]
 mod test_support;
+mod workspace;
 
 #[derive(Parser)]
 #[command(name = "crabcc", version, about = "Symbol index for AI coding agents")]
@@ -497,6 +498,11 @@ enum Cmd {
         #[arg(long, default_value_t = 2.5)]
         threshold: f64,
     },
+    /// Audit Claude session logs for token waste.
+    Audit {
+        #[command(subcommand)]
+        op: audit::AuditOp,
+    },
 }
 
 #[derive(Subcommand)]
@@ -809,6 +815,10 @@ fn main() -> Result<()> {
     reset_sigpipe();
 
     let cli = Cli::parse();
+
+    if let Some(Cmd::Audit { op }) = cli.cmd.as_ref() {
+        return audit::run(op);
+    }
 
     // Cross-repo (`--workspace`) early-fork. Discovery walks
     // `$CRABCC_HOME/repos/*/`; per-repo Store/Fts opens happen inside the
@@ -1502,6 +1512,7 @@ fn main() -> Result<()> {
         Cmd::Jobs(_) => unreachable!("jobs handled before store init"),
         Cmd::Memory { .. } => unreachable!("memory handled before store init"),
         Cmd::Shell { .. } => unreachable!("shell handled before store init"),
+        Cmd::Audit { .. } => unreachable!("audit handled before store init"),
         Cmd::Loop { .. } => unreachable!("loop handled before store init"),
     }
     Ok(())
@@ -1719,9 +1730,7 @@ fn run_workspace(cli: Cli) -> Result<()> {
     use crabcc_core::store::Store;
 
     let Some(cmd) = cli.cmd.as_ref() else {
-        anyhow::bail!(
-            "--workspace requires a subcommand (sym, fuzzy, prefix in v4.5)"
-        );
+        anyhow::bail!("--workspace requires a subcommand (sym, fuzzy, prefix in v4.5)");
     };
 
     let repos = workspace::discover()?;
@@ -1733,16 +1742,26 @@ fn run_workspace(cli: Cli) -> Result<()> {
     }
 
     let op_label = match cmd {
-        Cmd::Lookup { op: LookupOp::Sym { .. } } => "workspace/sym",
-        Cmd::Lookup { op: LookupOp::Fuzzy { .. } } => "workspace/fuzzy",
-        Cmd::Lookup { op: LookupOp::Prefix { .. } } => "workspace/prefix",
-        Cmd::Lookup { op: LookupOp::Refs { .. } } => {
+        Cmd::Lookup {
+            op: LookupOp::Sym { .. },
+        } => "workspace/sym",
+        Cmd::Lookup {
+            op: LookupOp::Fuzzy { .. },
+        } => "workspace/fuzzy",
+        Cmd::Lookup {
+            op: LookupOp::Prefix { .. },
+        } => "workspace/prefix",
+        Cmd::Lookup {
+            op: LookupOp::Refs { .. },
+        } => {
             anyhow::bail!(
                 "--workspace + refs is deferred to v5 (needs per-repo source-dir \
                  resolution). v4.5 path: run `crabcc refs <NAME>` per repo."
             );
         }
-        Cmd::Lookup { op: LookupOp::Callers { .. } } => {
+        Cmd::Lookup {
+            op: LookupOp::Callers { .. },
+        } => {
             anyhow::bail!(
                 "--workspace + callers is deferred to v5 (needs per-repo source-dir \
                  resolution). v4.5 path: run `crabcc callers <NAME>` per repo."
@@ -1755,14 +1774,14 @@ fn run_workspace(cli: Cli) -> Result<()> {
             );
         }
         _ => {
-            anyhow::bail!(
-                "--workspace only supports `sym`, `fuzzy`, `prefix` in v4.5"
-            );
+            anyhow::bail!("--workspace only supports `sym`, `fuzzy`, `prefix` in v4.5");
         }
     };
 
     match cmd {
-        Cmd::Lookup { op: LookupOp::Sym { name, since } } => {
+        Cmd::Lookup {
+            op: LookupOp::Sym { name, since },
+        } => {
             if since.is_some() {
                 anyhow::bail!("--workspace + --since is not supported in v4.5");
             }
@@ -1777,7 +1796,9 @@ fn run_workspace(cli: Cli) -> Result<()> {
             crabcc_core::track::record(op_label, &name, env.total_hits, "workspace", body.len());
             println!("{body}");
         }
-        Cmd::Lookup { op: LookupOp::Fuzzy { query, limit } } => {
+        Cmd::Lookup {
+            op: LookupOp::Fuzzy { query, limit },
+        } => {
             let query = query.clone();
             let limit = *limit;
             let by_repo = workspace::map_each(&repos, |r| {
@@ -1790,7 +1811,9 @@ fn run_workspace(cli: Cli) -> Result<()> {
             crabcc_core::track::record(op_label, &query, env.total_hits, "workspace", body.len());
             println!("{body}");
         }
-        Cmd::Lookup { op: LookupOp::Prefix { query, limit } } => {
+        Cmd::Lookup {
+            op: LookupOp::Prefix { query, limit },
+        } => {
             let query = query.clone();
             let limit = *limit;
             let by_repo = workspace::map_each(&repos, |r| {
@@ -2001,6 +2024,7 @@ fn needs_auto_index(c: &Option<Cmd>) -> bool {
 /// without re-deriving the name from the noisy `Debug` repr.
 fn cmd_name_for_log(c: &Cmd) -> &'static str {
     match c {
+        Cmd::Audit { .. } => "audit",
         // New groups
         Cmd::Index { op } => match op {
             None | Some(IndexOp::Build) => "index",
