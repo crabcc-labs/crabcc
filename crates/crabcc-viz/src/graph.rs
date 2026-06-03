@@ -139,8 +139,7 @@ pub(crate) fn graph_snapshot(root: &Path, query: &str) -> Result<GraphSnapshot> 
     let root_id = store
         .symbol_id_by_name(&q.root)?
         .ok_or_else(|| anyhow::anyhow!("symbol {:?} not found in call graph", q.root))?;
-    let mut id_to_name: std::collections::HashMap<i64, String> =
-        std::collections::HashMap::new();
+    let mut id_to_name: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
     id_to_name.insert(root_id, q.root.clone());
     let frontier: Vec<GraphHit> = match dir {
         "callees" => graph.outgoing(root_id, depth),
@@ -177,12 +176,16 @@ pub(crate) fn graph_snapshot(root: &Path, query: &str) -> Result<GraphSnapshot> 
 
     // Build name→id reverse map (only for nodes in the final set) for edge
     // materialization.
-    let name_to_id: std::collections::HashMap<&str, i64> =
-        id_to_name.iter().map(|(id, name)| (name.as_str(), *id)).collect();
+    let name_to_id: std::collections::HashMap<&str, i64> = id_to_name
+        .iter()
+        .map(|(id, name)| (name.as_str(), *id))
+        .collect();
     let in_set: std::collections::HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
     let mut edges: Vec<EdgeOut> = Vec::with_capacity(nodes.len() * 2);
     for n in &nodes {
-        let Some(&sym_id) = name_to_id.get(n.id.as_str()) else { continue };
+        let Some(&sym_id) = name_to_id.get(n.id.as_str()) else {
+            continue;
+        };
         // For a `callees` view we draw edges in the call direction
         // (root → callee), and for `callers` we draw caller → root. The
         // direction of the arrow visualizes "who calls whom" in both modes.
