@@ -10,8 +10,8 @@
 #   pr-agent --pr_url https://github.com/peterlodri-sec/crabcc/pull/123 review
 
 [config]
-model = "claude-sonnet-4-6"
-fallback_models = ["claude-haiku-4-5-20251001"]
+model = "openrouter/anthropic/claude-haiku-4-5"
+fallback_models = ["openrouter/anthropic/claude-sonnet-4-5"]
 git_provider = "github"
 max_model_tokens = 32000
 temperature = 0.2
