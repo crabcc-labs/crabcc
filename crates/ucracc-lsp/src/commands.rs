@@ -27,13 +27,20 @@ pub fn known_commands() -> Vec<String> {
     v
 }
 
+/// Extract a required string argument from an `executeCommand` arg list,
+/// erroring with `<what> must be a string` when it's missing or not a string.
+/// Centralises the arg-0/arg-1 string parsing the command handlers share.
+#[cfg(any(feature = "memory", feature = "fetch", feature = "rerank"))]
+fn str_arg<'a>(args: &'a [Value], idx: usize, what: &str) -> Result<&'a str> {
+    args.get(idx)
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("{what} must be a string"))
+}
+
 #[cfg(feature = "memory")]
 pub fn memory_search(repo_root: &Path, args: &[Value]) -> Result<Value> {
     use crabcc_memory::palace::Palace;
-    let query = args
-        .first()
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("memory.search: arg 0 (query) must be a string"))?;
+    let query = str_arg(args, 0, "memory.search: arg 0 (query)")?;
     let limit = args.get(1).and_then(|v| v.as_u64()).unwrap_or(10).min(200) as usize;
     let palace = Palace::open(repo_root)?;
     let result = palace.search(query, limit)?;
@@ -52,11 +59,7 @@ pub fn memory_search(_repo_root: &Path, _args: &[Value]) -> Result<Value> {
 #[cfg(feature = "fetch")]
 pub fn webfetch(args: &[Value]) -> Result<Value> {
     use crabcc_fetch::{fetch_and_clean, FetchOpts};
-    let url = args
-        .first()
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("webfetch: arg 0 (url) must be a string"))?
-        .to_string();
+    let url = str_arg(args, 0, "webfetch: arg 0 (url)")?.to_string();
     let rt = tokio::runtime::Handle::try_current();
     let results = match rt {
         Ok(handle) => {
@@ -80,10 +83,7 @@ pub fn webfetch(_args: &[Value]) -> Result<Value> {
 
 #[cfg(feature = "rerank")]
 pub fn rerank(args: &[Value]) -> Result<Value> {
-    let query = args
-        .first()
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow::anyhow!("rerank: arg 0 (query) must be a string"))?;
+    let query = str_arg(args, 0, "rerank: arg 0 (query)")?;
     let docs: Vec<String> = args
         .get(1)
         .and_then(|v| v.as_array())
