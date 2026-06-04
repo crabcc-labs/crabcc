@@ -621,13 +621,15 @@ impl Backend for SqliteBackend {
     }
 
     fn query(&self, q: &Query) -> Result<QueryResult> {
-        // ANN path only for unfiltered 384-dim queries. Filtered queries
-        // (wing/room) use brute-force: SQL applies the predicate before
-        // ranking, so the result set is correct regardless of total DB size.
-        // ANN can't guarantee coverage of a filtered subset from a global
-        // top-k window.
+        // ANN path only for unfiltered 384-dim queries within sqlite-vec's
+        // k limit.  Filtered queries (wing/room) use brute-force: SQL
+        // applies the predicate before ranking, so the result set is correct
+        // regardless of total DB size.  Oversized limits (> 4096) also use
+        // brute-force: vec0 rejects k > 4096 with an error.  Note that
+        // Palace::search_hybrid passes limit * 2 as the candidate pool, so
+        // the effective fallback boundary for hybrid callers is limit > 2048.
         #[cfg(feature = "memory-vec")]
-        if q.embedding.len() == 384 && q.wing.is_none() && q.room.is_none() {
+        if q.embedding.len() == 384 && q.wing.is_none() && q.room.is_none() && q.limit <= 4096 {
             return self.query_vec(q);
         }
         self.query_brute(q)
@@ -1316,6 +1318,30 @@ mod tests {
             let _ = SqliteBackend::open(&path).unwrap();
             let _ = SqliteBackend::open(&path).unwrap();
             let _ = SqliteBackend::open(&path).unwrap();
+        }
+
+        #[test]
+        fn query_vec_falls_back_to_brute_for_oversized_limit() {
+            // sqlite-vec rejects k > 4096.  query() must route oversized
+            // limit requests to query_brute so they don't error.
+            let dir = tempdir().unwrap();
+            let b = SqliteBackend::open(&dir.path().join("memory.db")).unwrap();
+            let e = HashEmbedder::new();
+            b.add(&[ins(&e, "1", "alpha", "w")]).unwrap();
+
+            // limit = 4097 must not return an error (brute-force fallback).
+            let q = Query {
+                embedding: e.embed_one("alpha").unwrap(),
+                limit: 4097,
+                wing: None,
+                room: None,
+            };
+            let r = b.query(&q).unwrap();
+            assert_eq!(
+                r.hits.len(),
+                1,
+                "oversized-limit query should still return results"
+            );
         }
 
         #[test]
