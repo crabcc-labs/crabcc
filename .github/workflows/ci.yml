@@ -52,7 +52,12 @@ env:
 jobs:
   fmt:
     name: fmt
-    runs-on: [self-hosted, linux, hetzner]
+    # Requires the 'gh-runner' label on runner-01 and runner-01b (Ubuntu).
+    # bench-node (NixOS, full disk) does not carry this label and must never
+    # pick up build jobs.  Jobs queue here until an eligible runner is ready.
+    # One-time setup: GitHub Settings → Actions → Runners → add 'gh-runner'
+    # label to runner-01 and runner-01b.
+    runs-on: [self-hosted, linux, hetzner, gh-runner]
     env:
       RUSTC_WRAPPER: ""  # override global; cargo fmt never invokes rustc
     steps:
@@ -70,7 +75,7 @@ jobs:
 
   lint:
     name: lint (clippy)
-    runs-on: [self-hosted, linux, hetzner]
+    runs-on: [self-hosted, linux, hetzner, gh-runner]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -184,7 +189,7 @@ jobs:
 
   test:
     name: test (ubuntu, scoped)
-    runs-on: [self-hosted, linux, hetzner]
+    runs-on: [self-hosted, linux, hetzner, gh-runner]
     steps:
       - uses: actions/checkout@v6
         with:
