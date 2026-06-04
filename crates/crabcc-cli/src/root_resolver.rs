@@ -411,7 +411,7 @@ mod tests {
             .join("repos")
             .read_dir()
             .map(|it| it.count())
-            .unwrap_or(0);
+            .unwrap_or_default();
         assert_eq!(pollution, 0, "crabcc_home was used despite InRepo");
     }
 

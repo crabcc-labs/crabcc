@@ -219,7 +219,10 @@ pub fn dispatch(tool: &str, args: &Value, server_root: &Path) -> Result<String> 
                 .get("source")
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
-            let all = args.get("all").and_then(|v| v.as_bool()).unwrap_or(false);
+            let all = args
+                .get("all")
+                .and_then(|v| v.as_bool())
+                .unwrap_or_default();
             let count = [id.is_some(), source.is_some(), all]
                 .iter()
                 .filter(|x| **x)

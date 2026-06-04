@@ -82,7 +82,7 @@ impl SqliteBackend {
                 |_| Ok(true),
             )
             .optional()?
-            .unwrap_or(false);
+            .unwrap_or_default();
         if !has_enc {
             conn.execute(
                 "ALTER TABLE drawers ADD COLUMN body_enc INTEGER NOT NULL DEFAULT 0",
@@ -101,7 +101,7 @@ impl SqliteBackend {
                 |_| Ok(true),
             )
             .optional()?
-            .unwrap_or(false);
+            .unwrap_or_default();
         if !has_emb_model {
             conn.execute(
                 "ALTER TABLE drawer_embeddings ADD COLUMN embedding_model TEXT NOT NULL DEFAULT 'hash-m0'",
@@ -115,7 +115,7 @@ impl SqliteBackend {
                 |_| Ok(true),
             )
             .optional()?
-            .unwrap_or(false);
+            .unwrap_or_default();
         if !has_emb_at {
             conn.execute(
                 "ALTER TABLE drawer_embeddings ADD COLUMN embedded_at INTEGER NOT NULL DEFAULT 0",
@@ -131,10 +131,10 @@ impl SqliteBackend {
         // route through `body_from_row` (same decoder query() uses).
         let drawer_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM drawers", [], |r| r.get(0))
-            .unwrap_or(0);
+            .unwrap_or_default();
         let fts_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM drawers_fts", [], |r| r.get(0))
-            .unwrap_or(0);
+            .unwrap_or_default();
         if drawer_count > 0 && fts_count == 0 {
             // Open codec early just for the backfill — needs the same
             // decode path that `body_from_row` uses. We can't call
@@ -1258,7 +1258,7 @@ mod tests {
                     )
                     .optional()
                     .unwrap()
-                    .unwrap_or(false);
+                    .unwrap_or_default();
                 assert!(!has_enc, "test fixture should lack body_enc to begin with");
             }
             // Open via SqliteBackend — schema apply is idempotent (CREATE
@@ -1273,7 +1273,7 @@ mod tests {
                 )
                 .optional()
                 .unwrap()
-                .unwrap_or(false);
+                .unwrap_or_default();
             assert!(has_enc, "Store::open must add body_enc to pre-existing DBs");
         }
     }

@@ -73,7 +73,7 @@ pub struct PruneStats {
 
 pub fn prune_if_due(conn: &Connection, retention: &Retention) -> Result<PruneStats> {
     let now = now_secs();
-    let last = read_metadata_i64(conn, "last_pruned_at").unwrap_or(0);
+    let last = read_metadata_i64(conn, "last_pruned_at").unwrap_or_default();
     if now - last < retention.prune_interval_secs {
         return Ok(PruneStats {
             skipped: true,
@@ -148,7 +148,7 @@ pub fn prune_now(conn: &Connection, retention: &Retention) -> Result<PruneStats>
         conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE);")?;
     }
 
-    let last_vac = read_metadata_i64(conn, "last_vacuumed_at").unwrap_or(0);
+    let last_vac = read_metadata_i64(conn, "last_vacuumed_at").unwrap_or_default();
     if now - last_vac >= retention.vacuum_interval_secs {
         // Full VACUUM — exclusive lock, but fast on a few-MB DB. Not
         // wrapped in a transaction (VACUUM can't be).

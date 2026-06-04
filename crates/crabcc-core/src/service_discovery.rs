@@ -195,7 +195,7 @@ pub fn probe_service(svc: &Service) -> ServiceStatus {
     let probed_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .unwrap_or_default();
 
     tracing::debug!(
         target: "crabcc_core::service_discovery",

@@ -82,7 +82,7 @@ fn http_request(
         .next()
         .and_then(|l| l.split_whitespace().nth(1))
         .and_then(|s| s.parse().ok())
-        .unwrap_or(0);
+        .unwrap_or_default();
     (status, body)
 }
 

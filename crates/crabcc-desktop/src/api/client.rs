@@ -122,7 +122,7 @@ impl Client {
     }
 
     pub fn activity(&self, since_ts: Option<i64>, limit: u32) -> Result<ActivityResponse> {
-        let since = since_ts.unwrap_or(0);
+        let since = since_ts.unwrap_or_default();
         self.get_json(&format!("/api/activity?since={since}&limit={limit}"))
     }
 
@@ -155,7 +155,7 @@ impl Client {
     }
 
     pub fn telemetry(&self, since_ts: Option<i64>, limit: u32) -> Result<TelemetrySnapshot> {
-        let since = since_ts.unwrap_or(0);
+        let since = since_ts.unwrap_or_default();
         self.get_json(&format!("/api/telemetry?since={since}&limit={limit}"))
     }
 

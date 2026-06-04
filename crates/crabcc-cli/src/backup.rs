@@ -167,7 +167,7 @@ pub fn list(home: &Path, repo_root: &Path) -> Result<Vec<BackupEntry>> {
         .filter_map(|e| {
             let ts = e.file_name().to_string_lossy().parse::<u64>().ok()?;
             let p = e.path();
-            let bytes = dir_size(&p).unwrap_or(0);
+            let bytes = dir_size(&p).unwrap_or_default();
             Some(BackupEntry {
                 timestamp: ts,
                 path: p,
@@ -349,7 +349,7 @@ fn dir_size(p: &Path) -> Result<u64> {
         if sub.is_dir() {
             total += dir_size(&sub)?;
         } else {
-            total += std::fs::metadata(&sub).map(|m| m.len()).unwrap_or(0);
+            total += std::fs::metadata(&sub).map(|m| m.len()).unwrap_or_default();
         }
     }
     Ok(total)

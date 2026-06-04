@@ -1,5 +1,5 @@
 //! Tiny shared time utilities. The `SystemTime::now().duration_since(UNIX_EPOCH)
-//! .map(|d| d.as_secs()).unwrap_or(0)` incantation was copy-pasted in 9 places
+//! .map(|d| d.as_secs()).unwrap_or_default()` incantation was copy-pasted in 9 places
 //! across godfather/cli/memory; this is the single source of truth.
 
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -15,7 +15,7 @@ pub fn unix_now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

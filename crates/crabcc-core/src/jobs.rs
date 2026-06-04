@@ -233,7 +233,7 @@ pub async fn submit_async(opts: &Options, spec: JobSpec) -> Result<JobReceipt> {
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
+        .unwrap_or_default();
 
     let data_json = serde_json::to_string(&spec.data).context("serialize job data")?;
     let opts_json =
@@ -517,7 +517,7 @@ fn synth_job_id() -> JobId {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .unwrap_or_default();
     format!("ccc-job-{nanos:x}")
 }
 
