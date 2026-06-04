@@ -57,6 +57,33 @@ tasks:
     cmds:
       - 'CRABCC="target/release/crabcc" bash scripts/bench-flow-matrix.sh'
 
+  bench-opt-bin:
+    desc: |
+      Advanced binary-optimization smoke sweep (2 legs, no PGO/BOLT) — proves
+      the harness shape on any box. Full matrix: `task bench-opt-bin-full`.
+      One-hour OVHcloud run: scripts/bench-opt-bin/provision-ovh.sh.
+    cmds:
+      - 'python3 scripts/bench-opt-bin/sweep.py --quick'
+
+  bench-opt-bin-full:
+    desc: |
+      Full fractional optimization matrix (~11 legs):
+      target-cpu × allocator × PGO{off,on} × BOLT{off,on} + opt-level=z corner,
+      on the reserved `release-nightly` profile. Builds fan out in parallel
+      (JOBS), measurements run serially (PIN = taskset core spec). Needs
+      hyperfine + binutils `size` + llvm-tools-preview (+ llvm-bolt for BOLT
+      legs). Results → bench/results/opt-bin-REPORT.md.
+    vars:
+      JOBS: '{{.JOBS | default ""}}'
+      PIN:  '{{.PIN | default ""}}'
+      RUNS: '{{.RUNS | default "8"}}'
+    cmds:
+      - >-
+        python3 scripts/bench-opt-bin/sweep.py
+        {{if .JOBS}}--jobs {{.JOBS}}{{end}}
+        {{if .PIN}}--pin {{.PIN}}{{end}}
+        --runs {{.RUNS}}
+
   compress:
     desc: Train FSST symbol table on the current index + re-encode all rows + report stats
     deps: [build]
