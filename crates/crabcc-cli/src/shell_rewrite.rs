@@ -248,6 +248,10 @@ struct GrepOpts {
     ignore_case: bool,
     word: bool,
     fixed: bool,
+    /// `grep -H` — force filename prefix on every match line.
+    with_filename: bool,
+    /// `grep -h` — suppress filename prefix (even with multiple files).
+    no_filename: bool,
     positionals: Vec<String>,
 }
 
@@ -263,7 +267,9 @@ fn parse_short_flags(args: &[String], allow_recursive: bool) -> Option<GrepOpts>
             for ch in a[1..].chars() {
                 match ch {
                     'r' | 'R' if allow_recursive => o.recursive = true,
-                    'I' | 's' | 'H' | 'h' => {} // no-ops vs ripgrep defaults
+                    'I' | 's' => {} // binary-skip / suppress-errors: rg default matches
+                    'H' => o.with_filename = true,
+                    'h' => o.no_filename = true,
                     'n' => o.line_numbers = true,
                     'l' => o.files_only = true,
                     'c' => o.count = true,
@@ -317,11 +323,14 @@ fn plan_rg(args: &[String], is_symbol: &dyn Fn(&str) -> bool) -> Option<Rewrite>
 }
 
 fn plan_find(args: &[String]) -> Option<Rewrite> {
-    // Only the `find PATH... -name GLOB [-type f]` shape maps cleanly to
-    // `rg --files -g GLOB PATH`. Any other predicate -> passthrough.
+    // Only the `find PATH... -name GLOB -type f` shape maps cleanly to
+    // `rg --files -g GLOB PATH`. `-type f` is required: without it, `find`
+    // can return directories that match the glob, but `rg --files` only
+    // lists files, which would silently drop those directory entries.
     let mut paths = Vec::new();
     let mut glob: Option<String> = None;
     let mut iglob = false;
+    let mut type_f = false;
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
@@ -338,6 +347,7 @@ fn plan_find(args: &[String]) -> Option<Rewrite> {
                 if args.get(i + 1)?.as_str() != "f" {
                     return None; // only plain files map to `rg --files`
                 }
+                type_f = true;
                 i += 2;
             }
             s if s.starts_with('-') => return None, // unknown predicate
@@ -346,6 +356,9 @@ fn plan_find(args: &[String]) -> Option<Rewrite> {
                 i += 1;
             }
         }
+    }
+    if !type_f {
+        return None; // without -type f, find may match dirs; rg --files doesn't
     }
     let glob = glob?;
     let flag = if iglob { "--iglob" } else { "-g" };
@@ -401,6 +414,12 @@ fn rg_swap(o: &GrepOpts, pattern: &str, paths: &[String]) -> Rewrite {
     }
     if o.count {
         inner.push_str(" -c");
+    }
+    if o.with_filename {
+        inner.push_str(" --with-filename");
+    }
+    if o.no_filename {
+        inner.push_str(" --no-filename");
     }
     inner.push(' ');
     inner.push_str(&shq(pattern));

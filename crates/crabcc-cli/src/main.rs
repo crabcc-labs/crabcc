@@ -2207,7 +2207,14 @@ fn needs_auto_index(c: &Option<Cmd>) -> bool {
         // Implicit default = `index` — no auto-index needed (we're about
         // to index anyway).
         None => false,
-        Some(cmd) => matches!(cmd, Cmd::Lookup { .. } | Cmd::Graph { .. }),
+        Some(cmd) => matches!(
+            cmd,
+            Cmd::Lookup { .. }
+                | Cmd::Graph { .. }
+                | Cmd::Rag {
+                    op: RagOp::Build { .. }
+                }
+        ),
     }
 }
 
