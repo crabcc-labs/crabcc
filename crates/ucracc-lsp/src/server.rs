@@ -307,6 +307,7 @@ impl LanguageServer for Backend {
         let store = self.store.clone();
         let graph = self.graph.clone();
         let fts = self.fts.clone();
+        let cache = self.cache.clone();
         tokio::task::spawn_blocking(move || {
             ensure_store(&store, &cfg.db_path);
             let store_guard = store.lock().unwrap();
@@ -318,6 +319,10 @@ impl LanguageServer for Backend {
                 // the symbol table, so the next workspace/symbol request must
                 // rebuild `fts` from the updated store (mirrors `graph`).
                 *fts.lock().unwrap() = None;
+                // And re-clear the LRU: a query racing this background refresh
+                // may have re-cached a pre-refresh result after the entry-point
+                // invalidate_all() above but before the new rows landed.
+                cache.invalidate_all();
             }
         });
         let _ = p; // saved file was already re-indexed by did_change/did_open.
@@ -753,9 +758,15 @@ impl Backend {
 
         match result {
             // The store just changed — drop the cached fuzzy/prefix snapshot
-            // so the next workspace/symbol request rebuilds it from the
-            // updated symbol table instead of serving a stale name list.
-            Ok(()) => *self.fts.lock().unwrap() = None,
+            // AND re-clear the LRU. tower-lsp dispatches notifications
+            // concurrently, so a workspace/symbol racing this edit may have
+            // re-cached a pre-edit result between the entry-point
+            // invalidate_all() and now; clearing again pins post-edit queries
+            // to the fresh rows. The next request rebuilds `fts` lazily.
+            Ok(()) => {
+                *self.fts.lock().unwrap() = None;
+                self.cache.invalidate_all();
+            }
             Err(e) => warn!(target: "ucracc_lsp", ?uri, error = %e, "index_uri failed"),
         }
     }
