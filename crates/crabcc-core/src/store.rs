@@ -236,13 +236,13 @@ impl Store {
     /// Coarse — multiple files may define the same name. Used by MCP/CLI
     /// graph dispatch when the user typed just a name without file context.
     pub fn symbol_id_by_name(&self, name: &str) -> Result<Option<i64>> {
+        // prepare_cached: replace_edges resolves a dst per edge (~50k on a cold
+        // index), so compiling this SELECT once and reusing it across the run
+        // avoids ~50k statement recompiles.
         let id = self
             .conn
-            .query_row(
-                "SELECT id FROM symbols WHERE name = ?1 LIMIT 1",
-                params![name],
-                |r| r.get::<_, i64>(0),
-            )
+            .prepare_cached("SELECT id FROM symbols WHERE name = ?1 LIMIT 1")?
+            .query_row(params![name], |r| r.get::<_, i64>(0))
             .optional()?;
         Ok(id)
     }
@@ -252,13 +252,12 @@ impl Store {
     /// dispatch to turn user-typed symbol names into the IDs the query/*
     /// modules expect.
     pub fn symbol_id_by_name_file(&self, name: &str, file_id: i64) -> Result<Option<i64>> {
+        // prepare_cached: called once per edge in replace_edges (~50k on a cold
+        // index) to resolve the enclosing symbol; reuse the compiled statement.
         let id = self
             .conn
-            .query_row(
-                "SELECT id FROM symbols WHERE name = ?1 AND file_id = ?2 LIMIT 1",
-                params![name, file_id],
-                |r| r.get::<_, i64>(0),
-            )
+            .prepare_cached("SELECT id FROM symbols WHERE name = ?1 AND file_id = ?2 LIMIT 1")?
+            .query_row(params![name, file_id], |r| r.get::<_, i64>(0))
             .optional()?;
         Ok(id)
     }
@@ -559,13 +558,12 @@ impl Store {
     /// Read a value from the `meta` table, or `None` if the key isn't set.
     /// Used for boolean flags like `edges_populated` that gate query paths.
     pub fn meta_get(&self, key: &str) -> Result<Option<String>> {
+        // prepare_cached: edges_ready() hits this on every refs/callers query;
+        // with a per-session Store the compiled statement is reused.
         let v = self
             .conn
-            .query_row(
-                "SELECT value FROM meta WHERE key = ?1",
-                params![key],
-                |row| row.get::<_, String>(0),
-            )
+            .prepare_cached("SELECT value FROM meta WHERE key = ?1")?
+            .query_row(params![key], |row| row.get::<_, String>(0))
             .ok();
         Ok(v)
     }
@@ -660,14 +658,12 @@ impl Store {
     /// holds the `(name, symbol_id)` mapping; `UNIQUE(name)` makes the
     /// SELECT-then-INSERT race-safe under the single-writer model.
     pub fn upsert_unresolved_sentinel(&self, name: &str) -> Result<i64> {
-        // Fast path: already mapped.
+        // Fast path: already mapped. prepare_cached — hit once per unresolved
+        // edge dst in replace_edges, so the compiled SELECT is reused.
         if let Some(id) = self
             .conn
-            .query_row(
-                "SELECT symbol_id FROM unresolved_names WHERE name = ?1",
-                params![name],
-                |row| row.get::<_, i64>(0),
-            )
+            .prepare_cached("SELECT symbol_id FROM unresolved_names WHERE name = ?1")?
+            .query_row(params![name], |row| row.get::<_, i64>(0))
             .optional()?
         {
             return Ok(id);
@@ -681,26 +677,27 @@ impl Store {
 
         // Create the sentinel symbol. kind='sentinel' so callers can filter it
         // out of normal symbol queries. line_start/end = 0 (no source).
-        self.conn.execute(
-            "INSERT INTO symbols(file_id, name, qualified, kind, parent_id,
+        self.conn
+            .prepare_cached(
+                "INSERT INTO symbols(file_id, name, qualified, kind, parent_id,
                                   line_start, line_end, signature, signature_enc, visibility)
              VALUES (?1, ?2, NULL, 'sentinel', NULL, 0, 0, NULL, 0, NULL)",
-            params![anchor_file_id, name],
-        )?;
+            )?
+            .execute(params![anchor_file_id, name])?;
         let sym_id = self.conn.last_insert_rowid();
 
         // Record the mapping. `INSERT OR IGNORE` defends against a hypothetical
         // race in case anyone ever wraps this in concurrent writers.
-        self.conn.execute(
-            "INSERT OR IGNORE INTO unresolved_names(symbol_id, name) VALUES (?1, ?2)",
-            params![sym_id, name],
-        )?;
+        self.conn
+            .prepare_cached(
+                "INSERT OR IGNORE INTO unresolved_names(symbol_id, name) VALUES (?1, ?2)",
+            )?
+            .execute(params![sym_id, name])?;
         // Re-read so we return the canonical id even if INSERT OR IGNORE no-op'd.
-        let final_id: i64 = self.conn.query_row(
-            "SELECT symbol_id FROM unresolved_names WHERE name = ?1",
-            params![name],
-            |row| row.get(0),
-        )?;
+        let final_id: i64 = self
+            .conn
+            .prepare_cached("SELECT symbol_id FROM unresolved_names WHERE name = ?1")?
+            .query_row(params![name], |row| row.get(0))?;
         Ok(final_id)
     }
 
