@@ -52,26 +52,26 @@ pub struct FuzzyHit {
 const MAX_EDIT_DISTANCE: usize = 2;
 
 impl Fts {
-    /// Build the in-memory index from the live SQLite store. Cheap — a single
-    /// `iter_all_symbols` scan and a `to_lowercase` per name.
+    /// Build the in-memory index from the live SQLite store. Uses the name-only
+    /// projection (`iter_symbol_names`) so the FSST-compressed `signature`
+    /// column is never fetched or decoded — fuzzy/prefix only need the name.
     pub fn from_store(store: &Store) -> Result<Self> {
-        Ok(Self::from_symbols(store.iter_all_symbols()?))
+        let rows = store
+            .iter_symbol_names()?
+            .into_iter()
+            .map(|s| Row::build(s.name, kind_str(s.kind), s.parent, s.file, s.line_start))
+            .collect();
+        Ok(Self { rows })
     }
 
-    /// Build directly from in-memory symbols, bypassing SQLite. `from_store`
-    /// delegates here; benches and perf-guard tests use it to spin up large
-    /// synthetic corpora without paying the indexing cost.
+    /// Build directly from full in-memory symbols, bypassing SQLite. Benches
+    /// and perf-guard tests use it to spin up large synthetic corpora without
+    /// paying the indexing cost. (`signature` is ignored — only the name-ish
+    /// fields are indexed.)
     pub fn from_symbols(symbols: impl IntoIterator<Item = crate::types::Symbol>) -> Self {
         let rows = symbols
             .into_iter()
-            .map(|s| Row {
-                name_lower: s.name.to_lowercase(),
-                kind: kind_str(s.kind),
-                file: s.file,
-                line: s.line_start as u64,
-                parent: s.parent.filter(|p| !p.is_empty()),
-                name: s.name,
-            })
+            .map(|s| Row::build(s.name, kind_str(s.kind), s.parent, s.file, s.line_start))
             .collect();
         Self { rows }
     }
@@ -138,6 +138,25 @@ impl Fts {
 }
 
 impl Row {
+    /// Construct a row, precomputing the lowercased name and dropping an empty
+    /// parent. Shared by both the store-backed and in-memory build paths.
+    fn build(
+        name: String,
+        kind: &'static str,
+        parent: Option<String>,
+        file: String,
+        line_start: u32,
+    ) -> Row {
+        Row {
+            name_lower: name.to_lowercase(),
+            name,
+            kind,
+            file,
+            line: line_start as u64,
+            parent: parent.filter(|p| !p.is_empty()),
+        }
+    }
+
     fn to_hit(&self, score: f32) -> FuzzyHit {
         FuzzyHit {
             name: self.name.clone(),

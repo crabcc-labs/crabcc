@@ -24,6 +24,7 @@
 use crabcc_core::store::Store;
 use crabcc_core::types::{Symbol, SymbolKind};
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
+use std::hint::black_box;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
@@ -106,7 +107,7 @@ fn bench_find_by_name_cold(c: &mut Criterion) {
             let s = Store::open(&db_path).expect("reopen");
             let hits = s.find_by_name(TARGET_NAME).expect("find");
             assert!(!hits.is_empty());
-            criterion::black_box(hits);
+            black_box(hits);
         })
     });
     group.finish();
@@ -124,7 +125,7 @@ fn bench_find_by_name_warm(c: &mut Criterion) {
         b.iter(|| {
             for _ in 0..100 {
                 let hits = store.find_by_name(TARGET_NAME).expect("find");
-                criterion::black_box(hits);
+                black_box(hits);
             }
         })
     });
@@ -142,7 +143,7 @@ fn bench_iter_all_symbols(c: &mut Criterion) {
         b.iter(|| {
             let all = store.iter_all_symbols().expect("iter");
             assert_eq!(all.len(), N_SYMBOLS);
-            criterion::black_box(all);
+            black_box(all);
         })
     });
     group.finish();
@@ -171,7 +172,7 @@ fn bench_replace_symbols_1k(c: &mut Criterion) {
                 store
                     .replace_symbols(file_id, &symbols)
                     .expect("replace_symbols");
-                criterion::black_box(&store);
+                black_box(&store);
             },
         )
     });

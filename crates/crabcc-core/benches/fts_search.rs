@@ -23,6 +23,7 @@
 use crabcc_core::fts::Fts;
 use crabcc_core::types::{Symbol, SymbolKind};
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use std::hint::black_box;
 
 const SIZES: &[usize] = &[1_000, 10_000, 50_000];
 const LIMIT: usize = 20;
@@ -61,16 +62,18 @@ fn bench_build(c: &mut Criterion) {
         group.bench_with_input(BenchmarkId::from_parameter(n), &symbols, |b, syms| {
             b.iter(|| {
                 let fts = Fts::from_symbols(syms.iter().cloned());
-                criterion::black_box(fts);
+                black_box(fts);
             })
         });
     }
     group.finish();
 }
 
+// (label, derive query from the mid-corpus target name).
+type Shape = (&'static str, fn(&str) -> String);
+
 fn bench_fuzzy(c: &mut Criterion) {
-    // query-shape → how to derive it from the mid-corpus target name.
-    let shapes: &[(&str, fn(&str) -> String)] = &[
+    let shapes: &[Shape] = &[
         ("exact", |t| t.to_string()),
         // One digit flipped — still distance 1 from a dense cluster.
         ("typo1", |t| {
@@ -97,7 +100,7 @@ fn bench_fuzzy(c: &mut Criterion) {
             group.bench_with_input(BenchmarkId::new(*label, n), &q, |b, q| {
                 b.iter(|| {
                     let hits = fts.fuzzy(q, LIMIT).expect("fuzzy");
-                    criterion::black_box(hits);
+                    black_box(hits);
                 })
             });
         }
@@ -121,7 +124,7 @@ fn bench_prefix(c: &mut Criterion) {
             group.bench_with_input(BenchmarkId::new(label, n), &q, |b, q| {
                 b.iter(|| {
                     let hits = fts.prefix(q, LIMIT).expect("prefix");
-                    criterion::black_box(hits);
+                    black_box(hits);
                 })
             });
         }

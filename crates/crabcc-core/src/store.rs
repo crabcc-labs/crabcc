@@ -1,4 +1,4 @@
-use crate::types::{Edge, Symbol, SymbolKind};
+use crate::types::{Edge, Symbol, SymbolKind, SymbolName};
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
@@ -804,6 +804,30 @@ impl Store {
                 line_start: row.get(5)?,
                 line_end: row.get(6)?,
                 visibility: row.get(7)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Name-only projection of every (non-sentinel) symbol. Used by the
+    /// fuzzy/prefix FTS build path, which only needs name/kind/file/line/parent
+    /// — so this deliberately omits `signature`/`signature_enc` and never pays
+    /// the FSST decompress + allocation that `iter_all_symbols` does per row.
+    pub fn iter_symbol_names(&self) -> Result<Vec<SymbolName>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT s.name, s.kind, p.name AS parent, f.path, s.line_start
+             FROM symbols s
+             JOIN files f ON s.file_id = f.id
+             LEFT JOIN symbols p ON p.id = s.parent_id
+             WHERE s.kind != 'sentinel'",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(SymbolName {
+                name: row.get(0)?,
+                kind: kind_from_str(&row.get::<_, String>(1)?),
+                parent: row.get(2)?,
+                file: row.get(3)?,
+                line_start: row.get(4)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
