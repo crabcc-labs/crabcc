@@ -1,0 +1,87 @@
+name: provision-postgres
+
+# Stand up a PostgreSQL instance on a self-hosted Hetzner runner (the
+# runners ARE the Hetzner hosts) for the crawl frontier backend
+# (roadmap #3b). Runs Postgres in Docker, bound to 127.0.0.1 only, and
+# prints the CRABCC_CRAWL_PG connection string to the job summary.
+#
+# Caveats (read the summary): it provisions on whichever runner the job
+# lands on, and binds localhost-only — so it's reachable by processes on
+# THAT host. Re-dispatch is idempotent (recreates the container). The
+# crawl frontier is a working queue (durable output is the Palace), so the
+# instance is ephemeral by default — pass persist=true for a named volume.
+
+on:
+  workflow_dispatch:
+    inputs:
+      password:
+        description: "Password for the crabcc role"
+        type: string
+        required: false
+        default: "crawl"
+      persist:
+        description: "Keep data across re-provisions (named volume)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: provision-postgres
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  postgres:
+    name: provision postgres
+    runs-on: [self-hosted, linux, hetzner]
+    timeout-minutes: 15
+    steps:
+      - name: run postgres (docker, 127.0.0.1 only)
+        shell: bash
+        run: |
+          set -uo pipefail
+          if ! command -v docker >/dev/null 2>&1 || ! docker version >/dev/null 2>&1; then
+            echo "::error::docker not present / daemon unreachable on $(hostname)"
+            exit 1
+          fi
+          PW='${{ inputs.password }}'; PW="${PW:-crawl}"
+          VOL_ARGS=""
+          [ "${{ inputs.persist }}" = "true" ] && VOL_ARGS="-v crabcc-pg-data:/var/lib/postgresql/data"
+
+          docker rm -f crabcc-pg >/dev/null 2>&1 || true
+          docker run -d --name crabcc-pg --restart unless-stopped \
+            -e POSTGRES_USER=crabcc \
+            -e POSTGRES_PASSWORD="$PW" \
+            -e POSTGRES_DB=crabcc_crawl \
+            -p 127.0.0.1:5432:5432 \
+            $VOL_ARGS \
+            postgres:16
+
+          # Wait for readiness (up to ~60s).
+          ready=0
+          for _ in $(seq 1 30); do
+            if docker exec crabcc-pg pg_isready -U crabcc -d crabcc_crawl >/dev/null 2>&1; then
+              ready=1; break
+            fi
+            sleep 2
+          done
+
+          {
+            echo "## postgres on $(hostname)"
+            echo
+            if [ "$ready" = 1 ]; then
+              echo "✅ ready — \`crabcc-pg\` (postgres:16), bound to 127.0.0.1:5432"
+            else
+              echo "⚠️ container started but pg_isready timed out — check \`docker logs crabcc-pg\`"
+            fi
+            echo
+            echo "Point the crawler at it (from THIS host — it's localhost-bound):"
+            echo '```'
+            echo "export CRABCC_CRAWL_PG=postgres://crabcc:$PW@127.0.0.1:5432/crabcc_crawl"
+            echo '```'
+            echo
+            echo "Manage: \`docker logs crabcc-pg\` · stop \`docker rm -f crabcc-pg\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          [ "$ready" = 1 ]
