@@ -636,7 +636,10 @@ enum MorphOp {
         /// Fraction of text to retain (0.05–1.0).
         #[arg(long, default_value_t = 0.5)]
         ratio: f64,
-        /// Skip the network round-trip for inputs smaller than this.
+        /// Skip the network round-trip for inputs smaller than this. This
+        /// is the standalone-CLI default; the rewrite chain always passes
+        /// an explicit value from `.crabcc-cli.conf` (`morph_min_bytes`,
+        /// default 8000), so the two don't need to match.
         #[arg(long, default_value_t = 2000)]
         min_bytes: usize,
     },

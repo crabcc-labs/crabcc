@@ -648,6 +648,11 @@ pub fn run(root: &Path, db: &Path, command: &str, session_id: Option<&str>) -> R
     if !chain.is_empty() {
         hdr.push_str(&format!(" | +{}", chain.join("+")));
     }
+    // The header `printf` + piped stages mean the wrapped command's exit
+    // code is the last stage's, not the engine command's — so a `grep`/`rg`
+    // that exits 1 on no-match now exits 0. stdout is still faithful (empty
+    // => the model sees "no matches") and the agent reads output, not the
+    // code, so this is an accepted nuance, not output loss.
     let wrapped = format!("printf '%s\\n' {}; {}", shq(&hdr), inner);
 
     let chain_str = chain.join("+");
