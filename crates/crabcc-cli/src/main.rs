@@ -41,6 +41,7 @@ mod memory;
 mod model_info;
 mod read;
 mod root_resolver;
+mod shell_rewrite;
 mod status;
 #[cfg(feature = "telemetry")]
 mod telemetry;
@@ -575,6 +576,24 @@ enum ShellOp {
         #[arg(long)]
         session_id: Option<String>,
     },
+    /// Plan a safe rewrite of a Claude Code Bash command into a cheaper
+    /// modern equivalent (`rg`, `crabcc refs`). Prints the PreToolUse
+    /// `hookSpecificOutput.updatedInput` envelope on stdout when a
+    /// provably safe rewrite exists, otherwise prints nothing (the
+    /// original command runs unchanged). Set `CRABCC_NO_REWRITE=1` to
+    /// disable. Called by the PreToolUse Bash hook.
+    Rewrite {
+        /// The shell command Claude Code is about to fire.
+        #[arg(long)]
+        command: String,
+        /// Working directory the command will run in (accepted for hook
+        /// parity; rewrite resolves the repo from the process cwd).
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        /// Session id, used only to correlate the rewrite trace event.
+        #[arg(long)]
+        session_id: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1088,9 +1107,10 @@ fn main() -> Result<()> {
         return memory::run(&root, sub);
     }
 
-    // shell group — observation-only ledger; no Store::open needed.
+    // shell group — record is observation-only; rewrite reads the index
+    // (read-only) to gate symbol upgrades.
     if let Some(Cmd::Shell { op }) = &cli.cmd {
-        return run_shell(&root, op);
+        return run_shell(&root, &db, op);
     }
 
     // loop-detector group — pure read; no Store::open needed.
@@ -1758,8 +1778,13 @@ fn run_workspace(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-fn run_shell(root: &Path, op: &ShellOp) -> Result<()> {
+fn run_shell(root: &Path, db: &Path, op: &ShellOp) -> Result<()> {
     match op {
+        ShellOp::Rewrite {
+            command,
+            cwd: _,
+            session_id,
+        } => shell_rewrite::run(root, db, command, session_id.as_deref()),
         ShellOp::Record {
             command,
             cwd,
