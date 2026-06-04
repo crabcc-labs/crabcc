@@ -92,9 +92,7 @@ pub(crate) fn hits_to_ndjson(out: &query::Output) -> Result<String> {
     let hits = match out {
         query::Output::Hits(h) => h,
         _ => {
-            return Err(anyhow::anyhow!(
-                "stream=true requires hits-mode output (got non-Hits shape)"
-            ));
+            anyhow::bail!("stream=true requires hits-mode output (got non-Hits shape)");
         }
     };
     let mut buf = String::new();

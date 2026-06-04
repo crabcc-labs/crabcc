@@ -458,7 +458,7 @@ impl Backend for SqliteBackend {
             placeholders
         );
         let mut stmt = conn.prepare(&sql)?;
-        let id_vals: Vec<rusqlite::types::Value> = ids.iter().map(|i| (*i).into()).collect();
+        let id_vals: Vec<rusqlite::types::Value> = ids.iter().copied().map(Into::into).collect();
         let id_refs: Vec<&dyn rusqlite::ToSql> =
             id_vals.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
         let rows = stmt.query_map(id_refs.as_slice(), |row| {
@@ -498,7 +498,7 @@ impl Backend for SqliteBackend {
                     let placeholders = vec!["?"; want.len()].join(",");
                     let sql = format!("SELECT id FROM drawers WHERE id IN ({})", placeholders);
                     let id_vals: Vec<rusqlite::types::Value> =
-                        want.iter().map(|i| (*i).into()).collect();
+                        want.iter().copied().map(Into::into).collect();
                     let id_refs: Vec<&dyn rusqlite::ToSql> =
                         id_vals.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
                     let mut stmt = tx.prepare(&sql)?;
@@ -530,7 +530,7 @@ impl Backend for SqliteBackend {
                     let placeholders = vec!["?"; want.len()].join(",");
                     let sql = format!("DELETE FROM drawers WHERE id IN ({})", placeholders);
                     let id_vals: Vec<rusqlite::types::Value> =
-                        want.iter().map(|i| (*i).into()).collect();
+                        want.iter().copied().map(Into::into).collect();
                     let id_refs: Vec<&dyn rusqlite::ToSql> =
                         id_vals.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
                     tx.execute(&sql, id_refs.as_slice())?
