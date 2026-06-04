@@ -53,7 +53,7 @@ impl SqliteBackend {
         #[cfg(feature = "memory-vec")]
         register_sqlite_vec_once();
 
-        let mut conn = Connection::open(path).context("open memory.db")?;
+        let conn = Connection::open(path).context("open memory.db")?;
         // Mirrors crabcc_core::store::Store::open. Documented there; keeping
         // the same set of pragmas so a single `.crabcc/` directory has
         // consistent durability/perf characteristics across stores.
@@ -189,6 +189,11 @@ impl SqliteBackend {
         }
 
         let _ = conn.execute_batch("PRAGMA optimize;");
+
+        // Make conn mutable for the vec resync transaction below.
+        // Without memory-vec, all preceding calls take &self so mut is unused.
+        #[cfg(feature = "memory-vec")]
+        let mut conn = conn;
 
         // v2.5.1 (#17) + #20 — sqlite-vec virtual table for ANN search.
         // Dim is fixed at 384 (MiniLM-L6-v2 / HashEmbedder default).
