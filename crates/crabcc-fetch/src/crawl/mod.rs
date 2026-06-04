@@ -12,6 +12,8 @@
 //! - [`fetcher`] — transports (HTTP today, Lightpanda next).
 //! - [`proxy`] — opt-in rotating proxy pool.
 
+#[cfg(feature = "crawl-lightpanda")]
+mod cdp;
 mod fetcher;
 mod frontier;
 #[cfg(feature = "crawl-lightpanda")]

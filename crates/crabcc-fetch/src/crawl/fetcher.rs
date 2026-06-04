@@ -67,7 +67,7 @@ impl HttpFetcher {
         })
     }
 
-    async fn fetch(&self, url: &str) -> FetchedPage {
+    pub(crate) async fn fetch(&self, url: &str) -> FetchedPage {
         // Reddit resolves to a JSON API with no crawlable HTML; defer to
         // the single-shot fetcher and surface no links from it.
         if is_reddit_url(url) {
@@ -138,7 +138,8 @@ fn error_result(url: &str, error: String) -> FetchResult {
 /// engine stays free of `async-trait`; Lightpanda joins as a variant.
 pub enum Fetcher {
     Http(HttpFetcher),
-    // Lightpanda(LightpandaFetcher),  // next layer: CDP rendered DOM.
+    #[cfg(feature = "crawl-lightpanda")]
+    Lightpanda(super::lightpanda::LightpandaFetcher),
 }
 
 impl Fetcher {
@@ -148,24 +149,29 @@ impl Fetcher {
         Ok(Fetcher::Http(HttpFetcher::new(opts, proxy)?))
     }
 
-    /// Select the default transport. Prefers Lightpanda (rendered DOM)
-    /// and falls back to HTTP when its binary/endpoint isn't reachable.
-    ///
-    /// The lifecycle/detection half ships now; the CDP rendered-DOM fetch
-    /// is the next commit, so for the moment we still resolve to HTTP even
-    /// when Lightpanda is detected (logged), to avoid selecting a
-    /// transport that can't yet fetch.
+    /// Select the default transport. Prefers Lightpanda (rendered DOM,
+    /// behind `crawl-lightpanda`) and falls back to the native HTTP
+    /// transport when its binary/endpoint isn't reachable. The per-page
+    /// fetch *also* falls back to HTTP on any browser failure, so a flaky
+    /// browser never drops a page.
     pub fn auto(opts: &FetchOpts, proxy: Option<&str>) -> anyhow::Result<Self> {
         #[cfg(feature = "crawl-lightpanda")]
         if let Some(cfg) = super::lightpanda::LightpandaConfig::from_env() {
-            // TODO(crawl-lightpanda): build Fetcher::Lightpanda from `cfg`
-            // (spawn/connect over CDP) and return it here.
-            tracing::info!(
-                target: "crabcc_fetch",
-                source = ?cfg.source,
-                profile = %cfg.profile_dir.display(),
-                "lightpanda detected; CDP transport not wired yet, using HTTP",
-            );
+            match super::lightpanda::LightpandaFetcher::start(cfg, opts, proxy) {
+                Ok(f) => {
+                    tracing::info!(
+                        target: "crabcc_fetch",
+                        endpoint = %f.ws_url(),
+                        "lightpanda transport active",
+                    );
+                    return Ok(Fetcher::Lightpanda(f));
+                }
+                Err(e) => tracing::warn!(
+                    target: "crabcc_fetch",
+                    error = %e,
+                    "lightpanda unavailable; falling back to HTTP transport",
+                ),
+            }
         }
         Self::http(opts, proxy)
     }
@@ -173,6 +179,8 @@ impl Fetcher {
     pub async fn fetch(&self, url: &str) -> FetchedPage {
         match self {
             Fetcher::Http(f) => f.fetch(url).await,
+            #[cfg(feature = "crawl-lightpanda")]
+            Fetcher::Lightpanda(f) => f.fetch(url).await,
         }
     }
 }
