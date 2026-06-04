@@ -5,7 +5,7 @@
 # Modern one-liner installer. Designed to be invoked verbatim:
 #
 #   gh api -H 'Accept: application/vnd.github.v3.raw' \
-#       /repos/peterlodri-sec/crabcc/contents/install.sh | bash
+#       /repos/crabcc-labs/crabcc/contents/install.sh | bash
 #
 # What it does in a single pass (idempotent — re-run any time):
 #
@@ -46,7 +46,7 @@
 #
 # Environment:
 #   CRABCC_INSTALL_DIR   target dir (defaults to ~/.cargo/bin)
-#   CRABCC_REPO          source repo (defaults to peterlodri-sec/crabcc;
+#   CRABCC_REPO          source repo (defaults to crabcc-labs/crabcc;
 #                        also honoured by `crabcc upgrade`)
 #
 # Exit codes:
@@ -107,9 +107,53 @@ for arg in "$@"; do
 done
 
 # --- config ---------------------------------------------------------------
-REPO="${CRABCC_REPO:-peterlodri-sec/crabcc}"
+REPO="${CRABCC_REPO:-crabcc-labs/crabcc}"
 BIN_NAME="crabcc"
 INSTALL_DIR="${BIN_DIR_OVERRIDE:-${CRABCC_INSTALL_DIR:-$HOME/.cargo/bin}}"
+
+# --- prebuilt binary fast path --------------------------------------------
+# crabcc publishes per-target release tarballs (crabcc-<tag>-<triple>.tar.gz).
+# Downloading the prebuilt binary is seconds vs the ~2-5 min cargo build.
+# Falls back to source for unsupported platforms or missing assets.
+detect_target() {
+    case "$(uname -s)/$(uname -m)" in
+        Darwin/arm64|Darwin/aarch64) echo "aarch64-apple-darwin" ;;
+        Linux/aarch64|Linux/arm64)   echo "aarch64-unknown-linux-gnu" ;;
+        Linux/x86_64|Linux/amd64)    echo "x86_64-unknown-linux-gnu" ;;
+        *) echo "" ;;
+    esac
+}
+
+try_install_prebuilt() {
+    # echoes nothing; returns 0 if a prebuilt binary was installed, 1 to fall
+    # back to a source build.
+    local target tag asset dir crabcc_bin ccc_bin
+    target="$(detect_target)"
+    [ -n "$target" ] || { warn "no prebuilt for $(uname -s)/$(uname -m) — building from source"; return 1; }
+    if [ -n "$VERSION_ARG" ]; then
+        tag="$VERSION_ARG"
+    else
+        tag="$(gh release list --repo "$REPO" --limit 1 --json tagName --jq '.[0].tagName // ""' 2>/dev/null)"
+    fi
+    [ -n "$tag" ] || { warn "no release tag on $REPO — building from source"; return 1; }
+    asset="crabcc-${tag}-${target}.tar.gz"
+    dir="$(mktemp -d -t crabcc-bin.XXXXXX)"
+    say "trying prebuilt: $asset ($tag) …"
+    if ! gh release download "$tag" --repo "$REPO" --pattern "$asset" --dir "$dir" >/dev/null 2>&1; then
+        warn "prebuilt asset not found for $tag/$target — building from source"
+        rm -rf "$dir"; return 1
+    fi
+    tar -xzf "$dir/$asset" -C "$dir" 2>/dev/null || { warn "extract failed — building from source"; rm -rf "$dir"; return 1; }
+    crabcc_bin="$(find "$dir" -type f -name "$BIN_NAME" | head -1)"
+    [ -n "$crabcc_bin" ] || { warn "tarball missing $BIN_NAME — building from source"; rm -rf "$dir"; return 1; }
+    mkdir -p "$INSTALL_DIR"
+    install -m 0755 "$crabcc_bin" "$INSTALL_DIR/$BIN_NAME"
+    ccc_bin="$(find "$dir" -type f -name ccc | head -1)"
+    [ -n "$ccc_bin" ] && install -m 0755 "$ccc_bin" "$INSTALL_DIR/ccc"
+    rm -rf "$dir"
+    say "✓ installed prebuilt $BIN_NAME + ccc ($tag) → $INSTALL_DIR"
+    return 0
+}
 
 # --- preflight ------------------------------------------------------------
 say "${BOLD}crabcc installer${RESET} (repo: $REPO, target: $INSTALL_DIR)"
@@ -223,6 +267,9 @@ gh repo clone "$REPO" "$TMP/src" -- --quiet --depth 1 ${VERSION_ARG:+--branch "$
 
 if [ "$SKIP_BUILD" = "1" ]; then
     say "skipping build — local install is current."
+elif try_install_prebuilt; then
+    : # fast path: prebuilt binary installed. The shallow clone (above) still
+      # serves the Claude skill/command symlinks in step 3.
 else
     say "building (cargo install — this is the slow step, ~2–5 min on a cold cache)"
     mkdir -p "$INSTALL_DIR"

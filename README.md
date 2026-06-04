@@ -50,10 +50,11 @@ gh api -H 'Accept: application/vnd.github.v3.raw' /repos/crabcc-labs/crabcc/cont
 
 (Or, without `gh`: `curl -fsSL https://raw.githubusercontent.com/crabcc-labs/crabcc/main/install.sh | bash`.)
 
-The installer:
+The installer (idempotent — same command for **fresh install and upgrade**):
 
 - Prompts for `gh auth login` if you aren't authenticated yet (private-repo aware).
-- Builds `crabcc` from source via `cargo install --locked`.
+- **Fresh install**: downloads the prebuilt binary for your platform (seconds), falling back to `cargo install --locked` from source if no prebuilt asset exists.
+- **Upgrade**: re-running compares your installed version against the latest release and only reinstalls when newer (`--force` to override, `--check` to dry-run).
 - Writes shell completions for your current shell (zsh / bash / fish).
 - Links the Claude Code skill + slash commands into `~/.claude/` when the
   `claude` CLI is present.
