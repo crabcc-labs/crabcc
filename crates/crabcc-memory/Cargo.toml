@@ -51,6 +51,10 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 tracing = { workspace = true }
 moka = { workspace = true }
+# Myers line-diff for `read` diff-on-re-read: when an agent re-reads a file
+# it just edited, serve a unified diff vs the last-seen version instead of the
+# whole file. Pure-Rust, no build script (offline-safe).
+similar = "2"
 # Optional — only built when the `memory-vec` feature is on. Bundles the
 # sqlite-vec C extension; we register it via sqlite3_auto_extension so every
 # rusqlite Connection inherits it.
