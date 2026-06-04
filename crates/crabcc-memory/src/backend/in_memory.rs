@@ -7,9 +7,9 @@
 
 use crate::backend::{cosine, Backend, LexicalQuery};
 use crate::types::*;
+use ahash::HashMap;
 use anyhow::{anyhow, Result};
 use crabcc_core::hash::sha256_hex;
-use ahash::HashMap;
 use std::sync::Mutex;
 
 #[derive(Default)]

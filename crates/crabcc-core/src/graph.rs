@@ -19,10 +19,10 @@
 //!   `orphans()` returns symbol-IDs with outgoing edges but no incoming.
 
 use crate::store::Store;
+use ahash::HashSet;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use ahash::HashSet;
 use std::path::Path;
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]

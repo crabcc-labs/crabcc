@@ -48,10 +48,10 @@ use notify_debouncer_mini::{
     notify::{ErrorKind as NotifyErrorKind, RecursiveMode},
     DebouncedEventKind,
 };
+use parking_lot::Mutex;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, RecvTimeoutError};
-use parking_lot::Mutex;
 use std::sync::Arc;
 use std::time::Duration;
 

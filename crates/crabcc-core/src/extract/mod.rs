@@ -1,10 +1,10 @@
 use crate::resolve::{ImportSpec, Resolver, ScopeCtx, SymbolId};
 use crate::store::Store;
 use crate::types::{Edge, Symbol, SymbolKind};
+use ahash::HashMap;
 use anyhow::{anyhow, Result};
 use bumpalo::Bump;
 use std::cell::RefCell;
-use ahash::HashMap;
 use std::path::Path;
 use tree_sitter::{Node, Parser};
 

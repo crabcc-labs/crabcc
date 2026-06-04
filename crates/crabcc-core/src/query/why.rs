@@ -12,11 +12,11 @@
 
 use crate::store::Store;
 use crate::types::{Symbol, SymbolKind};
+use ahash::{HashMap, HashSet};
 use anyhow::Result;
 use rusqlite::params;
 use serde::Serialize;
 use std::collections::VecDeque;
-use ahash::{HashMap, HashSet};
 
 #[derive(Debug, Serialize)]
 pub struct Path {

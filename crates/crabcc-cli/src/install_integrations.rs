@@ -7,8 +7,8 @@
 //!
 //! Deliberately does not overwrite global agent settings without `--yes`.
 
-use anyhow::{anyhow, bail, Context, Result};
 use ahash::HashSet;
+use anyhow::{anyhow, bail, Context, Result};
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
