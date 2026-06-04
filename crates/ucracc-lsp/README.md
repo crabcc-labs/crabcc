@@ -108,8 +108,12 @@ standard LSP `initialization_options` blob:
 |---|---|---|
 | `indexPath` (a.k.a. `index_path`) | string | Path to the `.crabcc` dir holding `index.db` + `tantivy/`. Relative paths resolve against the workspace root; absolute paths are used as-is. Default: `<root>/.crabcc`. |
 
-Handy for monorepos, out-of-tree indexes, and remote hosts where the
-checkout path differs from the client's. In Zed, set it under
+Handy for out-of-tree indexes (CI artifacts, shared caches) and remote
+hosts where the `.crabcc` dir sits outside the checkout. It overrides the
+index *location* only — the index must still have been built **for the
+same workspace root** (stored file paths are relative to it), so pointing
+at a different root's index (e.g. a subcrate reading the parent monorepo's
+`.crabcc`) is not supported. In Zed, set it under
 `lsp.ucracc-lsp.initialization_options`.
 
 ## Performance

@@ -116,10 +116,16 @@ Points the server at the `.crabcc` directory (the one containing
 root; absolute paths are used as-is. Both `indexPath` and `index_path`
 spellings are accepted. Omit it and the server uses `<root>/.crabcc`.
 
-Use it when:
-- the index is built out-of-tree (CI artifact, shared cache dir), or
-- you're in a monorepo and want a sub-project to read a parent index, or
-- on a remote host where the checkout path differs from your Mac.
+Use it when **this workspace's** index lives somewhere other than
+`<root>/.crabcc`:
+- the index is built out-of-tree (CI artifact, shared/read-only cache dir), or
+- on a remote host where the `.crabcc` dir sits outside the checkout.
+
+> `indexPath` only moves *where* the index is read from — it must still have
+> been built **for this workspace root** (file paths are stored relative to
+> it). Pointing at a *different* root's index — e.g. a subcrate reading the
+> parent monorepo's `.crabcc` — misaligns those paths and isn't supported;
+> build a per-root index instead.
 
 ### `binary.env.UCRACC_LOG`
 

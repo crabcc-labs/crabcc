@@ -15,8 +15,10 @@
 //!      release tarball).
 //!
 //! The server self-discovers `<root>/.crabcc/index.db`; point it elsewhere
-//! with `lsp.ucracc-lsp.initialization_options.indexPath` (handy on remote
-//! hosts or monorepos where the index lives outside the worktree root).
+//! with `lsp.ucracc-lsp.initialization_options.indexPath` (handy when this
+//! workspace's index lives outside the checkout — an out-of-tree build or a
+//! remote host. It's a location override only; the index must still have
+//! been built for this same workspace root).
 
 use zed_extension_api::{
     self as zed,
@@ -26,22 +28,20 @@ use zed_extension_api::{
 
 const SERVER_BINARY: &str = "ucracc-lsp";
 
-struct CrabccExtension {
-    /// Resolved binary path, cached so we don't re-walk `$PATH` on every
-    /// server (re)start within a session.
-    cached_binary_path: Option<String>,
-}
+struct CrabccExtension;
 
 impl CrabccExtension {
     /// Resolve the `ucracc-lsp` binary, honoring an explicit
     /// `lsp.ucracc-lsp.binary.path` override before falling back to `$PATH`.
-    fn binary_path(
-        &mut self,
-        language_server_id: &LanguageServerId,
-        worktree: &Worktree,
-    ) -> Result<String> {
-        // 1. Explicit override from settings always wins, and is never
-        //    cached — the user may edit it live.
+    ///
+    /// Resolution is **per-worktree** and deliberately uncached:
+    /// `worktree.which` is evaluated against *that worktree's* host `$PATH`,
+    /// so a local project and a remote SSH project in the same Zed session
+    /// each get the binary that actually exists on their respective host.
+    /// Caching the first hit across worktrees would launch a local path on a
+    /// remote host (or vice-versa) and break the documented remote workflow.
+    fn binary_path(worktree: &Worktree) -> Result<String> {
+        // Explicit override from settings always wins.
         if let Some(path) = LspSettings::for_worktree(SERVER_BINARY, worktree)
             .ok()
             .and_then(|s| s.binary)
@@ -50,14 +50,8 @@ impl CrabccExtension {
             return Ok(path);
         }
 
-        // 2. Cached resolution from a previous launch this session.
-        if let Some(path) = &self.cached_binary_path {
-            return Ok(path.clone());
-        }
-
-        // 3. Discover on the worktree `$PATH`.
-        let _ = language_server_id;
-        let path = worktree.which(SERVER_BINARY).ok_or_else(|| {
+        // Otherwise discover on this worktree's `$PATH`.
+        worktree.which(SERVER_BINARY).ok_or_else(|| {
             format!(
                 "`{SERVER_BINARY}` was not found on $PATH. Install it with \
                  `cargo install --path crates/ucracc-lsp` (or from a crabcc \
@@ -65,25 +59,21 @@ impl CrabccExtension {
                  a specific binary, set `lsp.{SERVER_BINARY}.binary.path` in \
                  your Zed settings."
             )
-        })?;
-        self.cached_binary_path = Some(path.clone());
-        Ok(path)
+        })
     }
 }
 
 impl zed::Extension for CrabccExtension {
     fn new() -> Self {
-        Self {
-            cached_binary_path: None,
-        }
+        Self
     }
 
     fn language_server_command(
         &mut self,
-        language_server_id: &LanguageServerId,
+        _language_server_id: &LanguageServerId,
         worktree: &Worktree,
     ) -> Result<Command> {
-        let command = self.binary_path(language_server_id, worktree)?;
+        let command = Self::binary_path(worktree)?;
 
         let settings = LspSettings::for_worktree(SERVER_BINARY, worktree).ok();
         let binary = settings.and_then(|s| s.binary);

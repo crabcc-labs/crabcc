@@ -86,8 +86,9 @@ All keys are optional. Defaults: find `ucracc-lsp` on `$PATH`, use
       },
       // Forwarded to the server's `initialize`.
       "initialization_options": {
-        // Point at a .crabcc dir that isn't <project>/.crabcc — useful for
-        // monorepos or when the index is built out-of-tree.
+        // Point at a .crabcc dir that isn't <project>/.crabcc — e.g. an
+        // out-of-tree/shared-cache index built FOR THIS workspace root.
+        // (Location override only; not a different root's index.)
         "indexPath": ".crabcc"
       }
     }

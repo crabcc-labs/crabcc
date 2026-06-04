@@ -18,10 +18,12 @@ All notable changes to crabcc are documented here. Format follows
   `settings`. Guide: `crates/ucracc-lsp/docs/ZED.md`.
 - **`ucracc-lsp` honors `initialization_options.indexPath`.** Clients (the
   Zed extension, or any LSP client) can point the server at a `.crabcc`
-  directory other than `<root>/.crabcc` — useful for monorepos, out-of-tree
-  indexes, and remote/SSH hosts where the checkout path differs. Relative
-  paths resolve against the workspace root; absent → unchanged default
-  behavior. Both `indexPath` and `index_path` spellings accepted.
+  directory other than `<root>/.crabcc` — useful for out-of-tree indexes
+  (CI artifacts, shared caches) and remote/SSH hosts where the `.crabcc`
+  dir sits outside the checkout. Location override only: the index must
+  still have been built for the same workspace root. Relative paths resolve
+  against the workspace root; absent → unchanged default behavior. Both
+  `indexPath` and `index_path` spellings accepted.
 - **`install/zed.sh`** — one-shot installer for the Zed integration.
   Installs the `ucracc-lsp` binary, builds the project index, ensures the
   `wasm32-wasip1` toolchain, and build-checks the extension; finishes with

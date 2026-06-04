@@ -158,6 +158,16 @@ impl LanguageServer for Backend {
         // `index.db` + `tantivy/`. Relative paths resolve against the repo
         // root. Absent → the default `<root>/.crabcc` auto-discovery, so
         // existing clients (Neovim, the tests) are unaffected.
+        //
+        // NOTE: `indexPath` overrides only the *location* of the index, not
+        // the root it was built against. Stored file paths stay relative to
+        // `repo_root` (the editor workspace root) — `document_symbol` /
+        // `definition` resolve them via `rel_from_url(repo_root, …)` and
+        // `repo_root.join(file)`. So the index must have been built *for this
+        // same workspace root* (out-of-tree builds, shared caches, remote
+        // hosts with the same checkout layout). Pointing at a *different*
+        // root's index (e.g. a parent repo's `.crabcc` from a subcrate) would
+        // misalign those relative paths and is not supported.
         let crabcc_dir = init_options_index_path(params.initialization_options.as_ref())
             .map(|p| if p.is_absolute() { p } else { root.join(p) })
             .unwrap_or_else(|| root.join(".crabcc"));
