@@ -39,7 +39,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 for arg in "$@"; do
   case "$arg" in
     --keep) KEEP=1 ;;
-    --quick) SWEEP_ARGS="$SWEEP_ARGS --quick" ;;
+    --quick) SWEEP_ARGS="--quick" ;;   # replace, not append (drop --deep)
     *) echo "unknown arg: $arg" >&2; exit 2 ;;
   esac
 done
@@ -90,7 +90,13 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 sudo apt-get update -qq
 sudo apt-get install -y -qq build-essential clang lld pkg-config libssl-dev \
+  binutils hyperfine git rsync python3 curl \
+  linux-tools-common "linux-tools-$(uname -r)" linux-tools-generic >/dev/null 2>&1 || \
+  sudo apt-get install -y -qq build-essential clang lld pkg-config libssl-dev \
   binutils hyperfine git rsync python3 curl >/dev/null
+# Let perf read kernel/user stacks so the flamegraphs symbolize.
+sudo sysctl -w kernel.perf_event_paranoid=-1 >/dev/null 2>&1 || true
+sudo sysctl -w kernel.kptr_restrict=0 >/dev/null 2>&1 || true
 # BOLT: try the distro 'bolt' package, fall back to apt.llvm.org.
 if ! command -v llvm-bolt >/dev/null; then
   sudo apt-get install -y -qq bolt >/dev/null 2>&1 || {
@@ -110,6 +116,7 @@ if ! command -v cargo >/dev/null; then
 fi
 source "$HOME/.cargo/env"
 rustup component add llvm-tools-preview >/dev/null 2>&1 || true
+command -v flamegraph >/dev/null || cargo install flamegraph --locked >/dev/null 2>&1 || true
 # sccache: shares cached crate artifacts across the per-leg target dirs so the
 # matrix doesn't recompile the whole dependency tree N times — turns redundant
 # work into useful throughput on the rented box. Prebuilt binary (cargo install
@@ -120,7 +127,7 @@ if ! command -v sccache >/dev/null; then
     | tar xz -C /tmp 2>/dev/null \
     && sudo install "/tmp/sccache-${SCV}-x86_64-unknown-linux-musl/sccache" /usr/local/bin/sccache 2>/dev/null || true
 fi
-echo "toolchain ready: $(rustc --version), bolt=$(command -v llvm-bolt || echo none), sccache=$(command -v sccache || echo none), nproc=$(nproc)"
+echo "toolchain ready: $(rustc --version), bolt=$(command -v llvm-bolt || echo none), sccache=$(command -v sccache || echo none), perf=$(command -v perf || echo none), flamegraph=$(command -v flamegraph || echo none), nproc=$(nproc)"
 BOOTSTRAP
 
 echo ">> syncing repo → $IP"
@@ -128,16 +135,32 @@ rsync -az --delete -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o UserKnownH
   --exclude '.git' --exclude 'target' --exclude 'bench' --exclude 'node_modules' \
   "$REPO_ROOT"/ "ubuntu@$IP:~/crabcc/"
 
+# --flamegraph: symbolized SVGs for baseline+fastest. --archive-dir: mirror the
+# curated artifacts into a TRACKED path so the run survives the VM teardown via
+# git (bench/ itself is gitignored).
+ARCHIVE_DIR="docs/bench/opt-bin"
 echo ">> running sweep (this is the ~1h part)…"
 $SSH "source ~/.cargo/env && cd ~/crabcc && \
   export SCCACHE_DIR=\$HOME/.cache/sccache SCCACHE_CACHE_SIZE=40G && \
-  python3 scripts/bench-opt-bin/sweep.py $SWEEP_ARGS && \
+  python3 scripts/bench-opt-bin/sweep.py $SWEEP_ARGS --flamegraph --archive-dir $ARCHIVE_DIR && \
   (command -v sccache >/dev/null && sccache --show-stats || true)"
 
-echo ">> pulling results back"
-mkdir -p "$REPO_ROOT/bench/results"
-rsync -az -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" \
-  "ubuntu@$IP:~/crabcc/bench/results/" "$REPO_ROOT/bench/results/"
+echo ">> pulling ALL generated output back (reports, ndjson, logs, hyperfine, flamegraphs, tarballs)"
+mkdir -p "$REPO_ROOT/bench/results" "$REPO_ROOT/$ARCHIVE_DIR"
+RSYNC_SSH="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
+rsync -az -e "$RSYNC_SSH" "ubuntu@$IP:~/crabcc/bench/results/"   "$REPO_ROOT/bench/results/"
+rsync -az -e "$RSYNC_SSH" "ubuntu@$IP:~/crabcc/$ARCHIVE_DIR/"    "$REPO_ROOT/$ARCHIVE_DIR/"
 
-echo ">> done. Report: bench/results/opt-bin-REPORT.md"
-cat "$REPO_ROOT/bench/results/opt-bin-REPORT.md" 2>/dev/null | head -40 || true
+# Durable backup: commit the tracked archive (small text + SVG + gzipped logs)
+# so the run is preserved on the remote even after this box AND the local
+# checkout are gone. Set BACKUP_GIT=0 to skip.
+if [ "${BACKUP_GIT:-1}" = "1" ] && [ -n "$(ls -A "$REPO_ROOT/$ARCHIVE_DIR" 2>/dev/null)" ]; then
+  echo ">> committing backup under $ARCHIVE_DIR"
+  ( cd "$REPO_ROOT" && git add "$ARCHIVE_DIR" \
+    && git commit -q -m "bench-opt-bin: archive sweep run ($(date -u +%Y-%m-%dT%H:%MZ))" \
+    && for i in 1 2 3 4; do git push && break || sleep $((2**i)); done ) || \
+    echo "   (git backup skipped — commit/push failed; tarball still in bench/results/)"
+fi
+
+echo ">> done. Report: bench/results/opt-bin-REPORT.md ; backup: $ARCHIVE_DIR/"
+head -40 "$REPO_ROOT/bench/results/opt-bin-REPORT.md" 2>/dev/null || true

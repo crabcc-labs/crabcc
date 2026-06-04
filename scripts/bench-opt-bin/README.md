@@ -67,6 +67,30 @@ Outputs land in `bench/results/` (gitignored, matching every other bench):
 - `opt-bin-REPORT.md` — speed table (Δ% vs baseline), footprint table, and a
   paste-ready `RUSTFLAGS` block for the fastest config.
 
+## Saving / backing up output
+
+Every run is bundled into a self-contained, timestamped
+`bench/results/run-<host>-<stamp>/` (REPORT, NDJSON, per-leg build logs,
+hyperfine JSONs, flamegraphs) plus a `.tar.gz` and a `MANIFEST.json` carrying
+a sha256 of each artifact. Because `bench/` is gitignored — and both the OVH
+box and the CI container are ephemeral — pass `--archive-dir` to *also* mirror
+the curated subset into a **tracked** path; committing that is what actually
+preserves the run:
+
+```bash
+python3 scripts/bench-opt-bin/sweep.py --deep --flamegraph \
+  --archive-dir docs/bench/opt-bin
+```
+
+`provision-ovh.sh` does this automatically (archive dir `docs/bench/opt-bin/`,
+then `git commit` + push — set `BACKUP_GIT=0` to skip). Archived runs live
+under [`docs/bench/opt-bin/`](../../docs/bench/opt-bin/).
+
+`--flamegraph` renders symbolized SVGs for the baseline + fastest legs by
+rebuilding just those two under the `profiling` profile (debug info, no strip —
+the same one `task flamegraph-index` uses), so perf can resolve symbols.
+Needs `cargo-flamegraph` + `perf`; skipped with a note if absent.
+
 ### Requirements
 
 `cargo`, `rustc`, `hyperfine`, `size` (binutils), and `llvm-profdata`

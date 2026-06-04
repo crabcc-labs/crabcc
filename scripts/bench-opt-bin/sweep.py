@@ -40,11 +40,13 @@ Stdlib only.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
 import re
 import shutil
+import tarfile
 import subprocess
 import sys
 import time
@@ -474,6 +476,114 @@ def render_report(legs: list[Leg], meta: dict) -> str:
 
 
 # ----------------------------------------------------------------------------
+# Flamegraphs + archival
+# ----------------------------------------------------------------------------
+
+def capture_flamegraphs(built: list[Leg], work: Path, flame_dir: Path,
+                        jobs: int, log_print) -> list[Path]:
+    """Render symbolized flamegraph SVGs for the baseline + fastest legs.
+
+    The sweep binaries are stripped (release profile), so we rebuild the two
+    legs of interest under the `profiling` profile (LTO + debug info, no strip
+    — same one `task flamegraph-index` uses) so perf can resolve symbols."""
+    if not (have("flamegraph") and have("perf")):
+        log_print("   flamegraph: skipped (need cargo-flamegraph + perf on PATH)")
+        return []
+    ok = [l for l in built if l.status == "ok" and l.index_mean_s is not None]
+    if not ok:
+        return []
+    fastest = min(ok, key=lambda l: l.index_mean_s)
+    baseline = next((l for l in ok if l.id.startswith("baseline")), None)
+    targets = {l.id: l for l in (baseline, fastest) if l}
+    root = work / "_measure-root"
+    flame_dir.mkdir(parents=True, exist_ok=True)
+    svgs: list[Path] = []
+    for lid, leg in targets.items():
+        svg = flame_dir / f"{lid}.svg"
+        feats = ALLOC_FEATURES[leg.alloc]
+        cmd = ["flamegraph", "--profile", "profiling", "-p", PKG,
+               "--bin", BIN, "-o", str(svg)]
+        if feats:
+            cmd += ["--features", ",".join(feats)]
+        cmd += ["--", "index", "--root", str(root)]
+        env = {**os.environ,
+               "RUSTFLAGS": f"-C target-cpu={leg.target_cpu}",
+               "CARGO_TARGET_DIR": str(work / f"flame-{lid}" / "target"),
+               "CARGO_BUILD_JOBS": str(jobs)}
+        try:
+            shutil.rmtree(root / ".crabcc", ignore_errors=True)
+            subprocess.run(cmd, cwd=REPO_ROOT, env=env, check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if svg.exists():
+                svgs.append(svg)
+                log_print(f"   flamegraph: {svg}")
+        except Exception as e:
+            log_print(f"   flamegraph({lid}) failed: {e}")
+    return svgs
+
+
+def _sha256(p: Path) -> str:
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _targz(dest: Path, src_dir: Path):
+    with tarfile.open(dest, "w:gz") as tar:
+        tar.add(src_dir, arcname=src_dir.name)
+
+
+def archive_run(built, meta, out: Path, work: Path, flame_dir: Path,
+                archive_dir: str | None, log_print) -> Path:
+    """Bundle every generated artifact into a timestamped, self-contained run
+    dir + tarball + MANIFEST (sha256 per file). Optionally mirror the curated
+    subset into a tracked dir so `git commit` durably backs the run up."""
+    ts = re.sub(r"[^0-9]", "", meta["generated"])
+    runid = f"run-{meta['host']}-{ts}"
+    rd = out / runid
+    (rd / "logs").mkdir(parents=True, exist_ok=True)
+    (rd / "hyperfine").mkdir(exist_ok=True)
+
+    shutil.copy(out / "opt-bin-REPORT.md", rd / "REPORT.md")
+    shutil.copy(out / "opt-bin.ndjson", rd / "opt-bin.ndjson")
+    for leg in built:
+        lg = work / leg.id / "build.log"
+        if lg.exists():
+            shutil.copy(lg, rd / "logs" / f"{leg.id}.log")
+    for pat in ("*.hyperfine.json", "*.query.json"):
+        for j in work.glob(pat):
+            shutil.copy(j, rd / "hyperfine" / j.name)
+    if flame_dir.exists() and any(flame_dir.iterdir()):
+        shutil.copytree(flame_dir, rd / "flamegraphs", dirs_exist_ok=True)
+
+    artifacts = {str(p.relative_to(rd)): {"bytes": p.stat().st_size,
+                                          "sha256": _sha256(p)}
+                 for p in sorted(rd.rglob("*")) if p.is_file()}
+    manifest = {**meta, "run_id": runid,
+                "legs": [asdict(l) for l in built], "artifacts": artifacts}
+    (rd / "MANIFEST.json").write_text(json.dumps(manifest, indent=2))
+
+    tarball = out / f"{runid}.tar.gz"
+    _targz(tarball, rd)
+    log_print(f"   archive dir: {rd}")
+    log_print(f"   tarball:     {tarball}")
+
+    if archive_dir:
+        adir = Path(archive_dir) / runid
+        (adir).mkdir(parents=True, exist_ok=True)
+        for name in ("REPORT.md", "opt-bin.ndjson", "MANIFEST.json"):
+            shutil.copy(rd / name, adir / name)
+        if (rd / "flamegraphs").exists():
+            shutil.copytree(rd / "flamegraphs", adir / "flamegraphs",
+                            dirs_exist_ok=True)
+        _targz(adir / "logs.tar.gz", rd / "logs")
+        log_print(f"   tracked backup: {adir}  (commit to persist)")
+    return rd
+
+
+# ----------------------------------------------------------------------------
 # Main
 # ----------------------------------------------------------------------------
 
@@ -500,15 +610,30 @@ def main() -> int:
                     help="size per-leg jobs to exactly cores (no oversubscription)")
     ap.add_argument("--quick", action="store_true",
                     help="smoke: baseline + one mimalloc leg, no PGO/BOLT")
+    ap.add_argument("--flamegraph", action="store_true",
+                    help="render symbolized flamegraph SVGs for baseline + "
+                         "fastest leg (rebuilds them under the `profiling` "
+                         "profile; needs cargo-flamegraph + perf)")
+    ap.add_argument("--archive-dir", default=None,
+                    help="ALSO mirror curated artifacts (report, ndjson, "
+                         "manifest, flamegraphs, gzipped logs) into this dir — "
+                         "point it at a tracked path to back the run up via git")
     ap.add_argument("--dry-run", action="store_true", help="print the plan and exit")
     args = ap.parse_args()
 
-    legs = deep_matrix() if args.deep else default_matrix()
+    # --quick is a fixed 2-leg smoke, independent of --deep — the deep matrix
+    # renames the smoke candidates, so filtering by id would drop every leg.
     if args.quick:
-        legs = [l for l in legs if l.id in ("baseline-v3-system", "v3-mimalloc")]
+        legs = [Leg("baseline-v3-system", "x86-64-v3", "system"),
+                Leg("v3-mimalloc", "x86-64-v3", "mimalloc")]
+    else:
+        legs = deep_matrix() if args.deep else default_matrix()
     if args.only:
         want = set(args.only.split(","))
         legs = [l for l in legs if l.id in want]
+        if not legs:
+            print(f"no legs match --only={args.only}", file=sys.stderr)
+            return 2
 
     # Saturating job math. Fat-LTO's final link is largely single-threaded, so
     # to keep every core busy we run ~one leg per core (capped by leg count)
@@ -591,6 +716,17 @@ def main() -> int:
     print(f"\n== done in {meta['wall_seconds']}s ==")
     print(f"   NDJSON: {ndjson}")
     print(f"   report: {report}")
+
+    # Optional symbolized flamegraphs (baseline + fastest).
+    flame_dir = work / "flamegraphs"
+    if args.flamegraph:
+        print("\n-- flamegraphs --")
+        capture_flamegraphs(built, work, flame_dir, per_leg_jobs, print)
+
+    # Bundle + (optionally) mirror into a tracked dir so nothing is lost when
+    # the box / container is reclaimed.
+    print("\n-- archiving --")
+    archive_run(built, meta, out, work, flame_dir, args.archive_dir, print)
     return 0
 
 
