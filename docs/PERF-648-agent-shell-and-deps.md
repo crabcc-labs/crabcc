@@ -172,6 +172,36 @@ the chain is for volume, not trivia. Numbers are flow-invariant to the
 underlying crab version (the reductions come from the rewrite layer, not
 the index).
 
+## 9. Per-profile matrix (with vs without hooks)
+
+Section 8 is per-*operation*; this is per-*agent-profile* — the same three
+CLI-agent usage mixes the MCP benches model (`claude_code` / `nullclaw` /
+`zeroclaw`, see `crates/crabcc-mcp/benches/agent_profiles.rs`), each replayed
+**vanilla vs through the full flow**. Reproduce with
+`task bench-flow-matrix` (or `scripts/bench-flow-matrix.sh`): it benches a
+clean `git archive HEAD` tree (no `target/` noise), Morph off, tokens =
+bytes/4.
+
+| profile | vanilla | flow | reduction |
+|---|---:|---:|---:|
+| claude_code (read-heavy, widest mix) | 134,272 | 30,318 | **−77%** |
+| nullclaw (lean sequential lookups) | 100,032 | 2,737 | **−97%** |
+| zeroclaw (dependency-analysis biased) | 101,332 | 2,800 | **−97%** |
+
+The symbol-lookup-dominated profiles (nullclaw/zeroclaw) collapse to −97%
+because nearly every call is a `grep IDENT` → `lookup refs` upgrade. The
+read-heavy `claude_code` mix lands −77%: it includes the first-read source
+case (+4%) and text search, which dilute the symbol wins. Enabling Morph
+(`MORPH_API_KEY` set) pushes `claude_code` further (−81% measured) by
+compacting the residual text/source dumps.
+
+**OpenRouter lane (opt-in).** The byte reductions above are
+model-independent. To see the *real* billed-token reduction through each
+model's own tokenizer, run with `OPENROUTER_API_KEY` + `MODELS="…"` set:
+the harness sends a vanilla-context vs flow-context task per model and
+reports the API's `usage.prompt_tokens`. Costs real tokens, so it is off by
+default and not run here.
+
 ## 7. Which features benefit AI agents most (measured)
 
 Per-operation token cost vs the naive baseline, on the crabcc repo
