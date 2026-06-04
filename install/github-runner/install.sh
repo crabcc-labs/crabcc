@@ -284,6 +284,48 @@ configure_shm() {
   echo "[runner] /dev/shm sized to ${SHM_SIZE} ($(df -h /dev/shm | awk 'NR==2{print $2}'))"
 }
 
+# ── /tmp sizing + apt/sudo TMPDIR redirect ───────────────────────────────
+# THE root cause of the CI `apt-get install mold` ENOSPC: /tmp is a tmpfs
+# ≈50% of RAM (≈3.8 GB on the 8 GB boxes), shared by BOTH runner services.
+# Rust build temp + sccache + linkers fill it, then apt (which mkstemp()s its
+# cache rebuild in TMPDIR, default /tmp) ENOSPCs — even though / is ~15% full,
+# which is why every `df /`-based check called the host healthy.
+#
+# The runner unit already exports TMPDIR=${CACHE_BASE}/tmp (on the dedicated
+# data volume), but `sudo` strips it, so `sudo apt-get` falls back to /tmp.
+# Fix = (1) preserve TMPDIR across sudo so apt/dpkg temp lands on the volume,
+# (2) enlarge the /tmp tmpfs for anything that still uses it directly.
+TMP_SIZE="${TMP_SIZE:-60%}"
+configure_tmp() {
+  # 1. Keep TMPDIR through sudo — the load-bearing fix. Validated; removed if
+  #    it doesn't parse so a bad drop-in can never lock sudo out.
+  local sudoers=/etc/sudoers.d/10-runner-tmpdir
+  printf 'Defaults env_keep += "TMPDIR"\n' > "$sudoers"
+  chmod 440 "$sudoers"
+  if visudo -cf "$sudoers" >/dev/null 2>&1; then
+    echo "[runner] sudo now preserves TMPDIR → apt/dpkg temp uses ${CACHE_BASE}/tmp (data volume), not /tmp"
+  else
+    rm -f "$sudoers"
+    echo "[runner] WARN: sudoers TMPDIR drop-in failed validation — removed"
+  fi
+
+  # 2. Size the tmpfs /tmp. Ubuntu 24.04 mounts /tmp via systemd's tmp.mount;
+  #    a drop-in is the canonical persistent resize. tmpfs is swap-backed, so
+  #    size is a ceiling, not a reservation.
+  if systemctl cat tmp.mount >/dev/null 2>&1; then
+    mkdir -p /etc/systemd/system/tmp.mount.d
+    printf '[Mount]\nOptions=mode=1777,strictatime,nosuid,nodev,size=%s\n' "$TMP_SIZE" \
+      > /etc/systemd/system/tmp.mount.d/size.conf
+    systemctl daemon-reload 2>/dev/null || true
+  fi
+  # Best-effort live resize (no-op if /tmp is busy or not a tmpfs).
+  if mount -o "remount,size=${TMP_SIZE}" /tmp 2>/dev/null; then
+    echo "[runner] /tmp resized live to ${TMP_SIZE} ($(df -h /tmp | awk 'NR==2{print $2}'))"
+  else
+    echo "[runner] /tmp size=${TMP_SIZE} written (applies on next boot)"
+  fi
+}
+
 # ── Disk-watchdog timer (15 min, threshold-guarded) ──────────────────────
 # The 4h full-GC timer is too slow to catch a disk spike during a heavy
 # build. This watchdog fires every 15 minutes but exits immediately when
@@ -397,6 +439,7 @@ if [ "$GC_ONLY" = 1 ]; then
   patch_runner_unit
   configure_docker
   configure_shm
+  configure_tmp
   install_gc_timer
   install_disk_watch_timer
   # Pre-bake the CI build tools so jobs never run `apt-get install` at the
@@ -410,8 +453,11 @@ if [ "$GC_ONLY" = 1 ]; then
     # `docker system prune -af` ONLY when the host is idle. Forcing --deep here
     # could delete an image a concurrent sibling job still needs.
     bash "$(dirname "${BASH_SOURCE[0]}")/runner-gc.sh" 2>/dev/null || true
-    apt-get update -qq 2>/dev/null || true
-    apt-get install -y --no-install-recommends mold ripgrep 2>/dev/null \
+    # Force apt's temp onto the data volume — /tmp is the small tmpfs that
+    # ENOSPCs this very install (configure_tmp fixed it for CI's sudo path;
+    # set it explicitly here since this runs as root, not via sudo).
+    TMPDIR="${CACHE_BASE}/tmp" apt-get update -qq 2>/dev/null || true
+    TMPDIR="${CACHE_BASE}/tmp" apt-get install -y --no-install-recommends mold ripgrep 2>/dev/null \
       || echo "[runner] WARN: mold/ripgrep install failed (apt ENOSPC?) — inspect 'df -h; df -i' on this host; CI will keep apt-get'ing per job until it succeeds"
   fi
   exit 0
@@ -520,5 +566,6 @@ systemctl --no-pager status actions-runner || true
 
 configure_docker
 configure_shm
+configure_tmp
 install_gc_timer
 install_disk_watch_timer
