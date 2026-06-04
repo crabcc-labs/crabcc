@@ -1,0 +1,45 @@
+name: docker-usage-report
+
+# On-demand + weekly report of current usage: Docker Hub repos/pulls/visibility
+# (via docker_user/docker_pat) plus recent GitHub Actions run activity (the
+# self-hosted-runner usage proxy). Writes to the job summary. Read-only.
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: '0 8 * * 1'   # Mondays 08:00 UTC
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Docker Hub usage
+        env:
+          DOCKER_USER: ${{ secrets.docker_user }}
+          DOCKER_PAT: ${{ secrets.docker_pat }}
+          DOCKER_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+        run: |
+          if [ -z "${DOCKER_USER:-}" ] || [ -z "${DOCKER_PAT:-}" ]; then
+            echo "docker_user/docker_pat not set; skipping Docker Hub section." >> "$GITHUB_STEP_SUMMARY"
+          else
+            bash scripts/docker-usage.sh >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: GitHub Actions usage (recent runs)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo
+            echo "## GitHub Actions — last 50 runs by workflow"
+            echo
+            echo "| workflow | runs | last conclusion |"
+            echo "|---|---:|---|"
+            gh run list --repo "${{ github.repository }}" --limit 50 \
+              --json workflowName,conclusion \
+              --jq 'group_by(.workflowName)[] | "| \(.[0].workflowName) | \(length) | \(.[-1].conclusion // "?") |"'
+          } >> "$GITHUB_STEP_SUMMARY"
