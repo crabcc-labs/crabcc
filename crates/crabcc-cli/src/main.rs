@@ -3,35 +3,36 @@ use clap::{Args, Parser, Subcommand};
 use crabcc_core::{query, store::Store};
 use std::path::{Path, PathBuf};
 
-// Issue #112 follow-up — global allocator swap. tikv-jemallocator is the
-// maintained jemalloc bindings (5.x). Measured ~5-12% on the indexing
-// hot path (alloc-heavy: tree-sitter cursors + Vec<Symbol> push) and
-// ~3-6% on the MCP serve_io loop. Behaviour-equivalent to the system
-// allocator at the API level — drop-in.
+// Global allocator. **Default = system.** Benched head-to-head (cold index,
+// the most alloc-heavy path) on Linux x86 *and* darwin arm64: the system
+// allocator is fastest or tied with the lowest variance; jemalloc and
+// mimalloc add a dep + build time for zero measured benefit (docs/PERF-648
+// §4 — the old "+5-12% jemalloc" claim reproduced on neither host). Both
+// are kept as opt-in experiment knobs so the verdict stays reproducible;
+// the shipped build enables neither.
 //
-// Why not mimalloc: jemalloc is what tantivy and tikv ship with, so
-// the workspace has more aligned tuning knobs (decay times, arena
-// counts) if we ever need them. mimalloc was the runner-up at +3-7 %
-// on the same micro-benches; switch is one line if the calculus
-// changes.
-//
-// Bumpalo (per-file arenas during the tree-sitter walk) is already a
-// workspace dep at [workspace.dependencies] and used in
-// `crabcc-core/src/extract.rs`. The two allocators compose: jemalloc
-// owns the heap, bumpalo carves transient regions out of it.
+// Bumpalo (per-file arenas during the tree-sitter walk) is a workspace dep
+// used in `crabcc-core/src/extract.rs` and composes with whichever global
+// allocator is active — bumpalo carves transient regions out of the heap.
 #[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+// Allocator bench candidate (issue #648). Gated `not(jemalloc)` so the two
+// never both claim #[global_allocator]; benched head-to-head vs jemalloc +
+// system to settle the shipped default.
+#[cfg(all(feature = "mimalloc", not(feature = "jemalloc")))]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod agent;
-#[cfg(feature = "agents-bullmq")]
-mod agent_bullmq;
 mod agent_guard;
 mod agent_profile;
 mod agent_runs_db;
 mod audit;
 mod auto_index;
 mod backup;
+mod cli_config;
 mod compress_cmd;
 mod crawl_cmd;
 mod debug_network;
@@ -40,11 +41,16 @@ mod fetch_cmd;
 mod go;
 mod install;
 mod install_integrations;
-mod jobs_cmd;
+mod media;
 mod memory;
 mod model_info;
+mod morph;
+mod rag;
 mod read;
+mod rewrite_log;
 mod root_resolver;
+mod shell_context;
+mod shell_rewrite;
 mod status;
 #[cfg(feature = "telemetry")]
 mod telemetry;
@@ -165,6 +171,12 @@ enum LookupOp {
         ext: Option<String>,
         #[arg(long, default_value_t = 0)]
         limit: usize,
+        /// Group basenames under their directory
+        /// (`{"<dir>":["a.rs","b.rs"],…}`) instead of a flat array of full
+        /// paths. Eliminates the repeated directory prefixes — far fewer
+        /// tokens for a large file list.
+        #[arg(long)]
+        group: bool,
     },
     /// Symbol-aware grep wrapper.
     Grep { pattern: String },
@@ -396,6 +408,28 @@ enum Cmd {
         #[command(subcommand)]
         op: ShellOp,
     },
+    /// Optional Morph LLM (https://morphllm.com) helpers. Off unless
+    /// `MORPH_API_KEY` is set — nothing leaves the machine otherwise.
+    Morph {
+        #[command(subcommand)]
+        op: MorphOp,
+    },
+    /// Media helpers for the `Read` hook. `downscale` bounds an oversized
+    /// image to Anthropic's effective vision resolution before the model
+    /// reads it (vision tokens scale with area). On by default; set
+    /// `CRABCC_NO_MEDIA=1` to disable.
+    Media {
+        #[command(subcommand)]
+        op: MediaOp,
+    },
+    /// Symbol-aware code retrieval (RAG) over the index, on the
+    /// crabcc-memory backend (BM25 + sqlite-vec, RRF-fused). `build`
+    /// chunks every indexed symbol; `query` returns the top relevant
+    /// snippets. Complements — never replaces — `lookup sym/refs`.
+    Rag {
+        #[command(subcommand)]
+        op: RagOp,
+    },
     /// Loop detector (lean-ctx integration #5). Surfaces
     /// `(path, session_id)` / `(command, cwd, session_id)` pairs
     /// whose `read_count` / `run_count` cross a threshold (default
@@ -409,9 +443,6 @@ enum Cmd {
         #[command(subcommand)]
         op: BackupOp,
     },
-    /// BullMQ job queue — submit / inspect / cancel jobs.
-    #[command(subcommand)]
-    Jobs(JobsCmd),
     /// Setup operations: install-claude, install-integrations, upgrade, completions, openapi.
     Setup {
         #[command(subcommand)]
@@ -589,6 +620,72 @@ enum LoopOp {
 }
 
 #[derive(Subcommand)]
+enum RagOp {
+    /// Chunk every indexed symbol into the `code` wing (idempotent).
+    Build {
+        /// Clear existing code chunks first so renamed/deleted symbols
+        /// don't leave stale entries.
+        #[arg(long)]
+        rebuild: bool,
+    },
+    /// Search the code chunks; returns the top relevant snippets as JSON.
+    Query {
+        query: String,
+        #[arg(long, default_value_t = 8)]
+        limit: usize,
+    },
+}
+
+#[derive(Subcommand)]
+enum MediaOp {
+    /// Print the path the `Read` tool should open: a bounded copy when
+    /// `<path>` is an oversized png/jpg, else the original path unchanged.
+    /// Never fails the read — any error falls back to the original.
+    Downscale {
+        path: PathBuf,
+        /// Longest-edge cap in pixels (default 1568, Anthropic's effective
+        /// vision resolution).
+        #[arg(long)]
+        max_edge: Option<u32>,
+    },
+}
+
+#[derive(Subcommand)]
+enum MorphOp {
+    /// Read stdin and emit a query-conditioned, byte-verbatim compacted
+    /// version via Morph Compact. Passthrough (prints input unchanged) when
+    /// `MORPH_API_KEY` is unset, the input is below `--min-bytes`, or the
+    /// API errors — the agent never loses output.
+    Compact {
+        /// What the agent is looking for; sharpens the compression. Omitted
+        /// => Morph auto-detects.
+        #[arg(long)]
+        query: Option<String>,
+        /// Fraction of text to retain (0.05–1.0).
+        #[arg(long, default_value_t = 0.5)]
+        ratio: f64,
+        /// Skip the network round-trip for inputs smaller than this.
+        #[arg(long, default_value_t = 2000)]
+        min_bytes: usize,
+    },
+    /// Merge a lazy edit snippet into a file via Morph Fast Apply
+    /// (`morph-v3-fast`). Errors if `MORPH_API_KEY` is unset.
+    Apply {
+        #[arg(long)]
+        file: PathBuf,
+        /// The lazy edit snippet (use `// ... existing code ...` markers).
+        #[arg(long)]
+        update: String,
+        /// One-line description of the edit (improves ambiguous merges).
+        #[arg(long, default_value = "")]
+        instruction: String,
+        /// Write the merged result back to the file instead of stdout.
+        #[arg(long)]
+        write: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum ShellOp {
     /// UPSERT a row into `session_shells`. Idempotent — repeats on
     /// the same `(command, cwd, session_id)` bump `run_count`. Used
@@ -606,6 +703,41 @@ enum ShellOp {
         /// `$CRABCC_SESSION_ID`; when both are empty, the row is
         /// keyed against an empty-session sentinel so repeat
         /// detection still works for ungated callers.
+        #[arg(long)]
+        session_id: Option<String>,
+    },
+    /// Plan a safe rewrite of a Claude Code Bash command into a cheaper
+    /// modern equivalent (`rg`, `crabcc refs`). Prints the PreToolUse
+    /// `hookSpecificOutput.updatedInput` envelope on stdout when a
+    /// provably safe rewrite exists, otherwise prints nothing (the
+    /// original command runs unchanged). Set `CRABCC_NO_REWRITE=1` to
+    /// disable. Called by the PreToolUse Bash hook.
+    Rewrite {
+        /// The shell command Claude Code is about to fire.
+        #[arg(long)]
+        command: String,
+        /// Working directory the command will run in (accepted for hook
+        /// parity; rewrite resolves the repo from the process cwd).
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        /// Session id, used only to correlate the rewrite trace event.
+        #[arg(long)]
+        session_id: Option<String>,
+    },
+    /// PostToolUse counterpart of `rewrite`. Reads the hook payload on
+    /// stdin and records the rewritten command's actual output size into
+    /// `_internal.db`, flagging + suppressing rewrites that did not
+    /// reduce tokens (META_ERROR_OPERATOR_NEEDED). Best-effort.
+    RewriteMeasure,
+    /// Inject smart standing context for the SessionStart hook. Prints a
+    /// SessionStart `hookSpecificOutput.additionalContext` carrying the
+    /// repo's most-referenced symbols + densest files (from the index) +
+    /// a `crabcc lookup` example + context7/MCP nudge. On by default; set
+    /// `CRABCC_NO_CTX_INJECT=1` to disable. Override the text per-repo via
+    /// `.crabcc/ctx-inject.md`.
+    Context {
+        /// Session id (accepted for hook parity; not required since
+        /// SessionStart fires once per session).
         #[arg(long)]
         session_id: Option<String>,
     },
@@ -631,64 +763,6 @@ enum ModelInfoOp {
     Ls {
         #[arg(long)]
         json: bool,
-    },
-}
-
-/// `crabcc jobs` — submit, inspect, and cancel BullMQ jobs (issue #109).
-#[derive(Subcommand)]
-#[allow(clippy::large_enum_variant)]
-enum JobsCmd {
-    /// Submit a job to a queue.
-    Submit {
-        /// Queue name: agent:run | agent:flow | repo:index | repo:reindex
-        #[arg(long)]
-        queue: String,
-        /// Job name (label for the worker).
-        #[arg(long)]
-        name: String,
-        /// Job data as JSON (e.g. '{"prompt":"audit this repo"}').
-        #[arg(long, default_value = "{}")]
-        data: String,
-        /// Optional delay in milliseconds before the job becomes active.
-        #[arg(long)]
-        delay_ms: Option<u64>,
-        /// Job priority (lower = higher priority).
-        #[arg(long)]
-        priority: Option<u32>,
-        /// Max retry attempts.
-        #[arg(long)]
-        attempts: Option<u32>,
-        /// Human-readable agent identifier (shown in Bull Board / /live).
-        #[arg(long)]
-        agent_name: Option<String>,
-        /// Repo path this job operates on.
-        #[arg(long)]
-        repo_path: Option<String>,
-        /// GitHub URL for this repo (surfaced in dashboard links).
-        #[arg(long)]
-        github_url: Option<String>,
-        /// Agent run-dir path (contains lock, pid, log — for correlation).
-        #[arg(long)]
-        agent_folder: Option<String>,
-    },
-    /// Query the current state of a job.
-    Status {
-        #[arg(long)]
-        queue: String,
-        #[arg(long)]
-        id: String,
-    },
-    /// List waiting jobs in a queue (shows depth, not full payloads).
-    List {
-        /// Queue to inspect. Omit to list all queues.
-        queue: Option<String>,
-    },
-    /// Cancel (remove) a waiting or delayed job.
-    Cancel {
-        #[arg(long)]
-        queue: String,
-        #[arg(long)]
-        id: String,
     },
 }
 
@@ -727,9 +801,6 @@ enum DoctorOp {
     /// `OLLAMA_BASE_URL`+`OLLAMA_API_KEY` env vars set. Doesn't invoke
     /// the agent — use `crabcc agent --dry-run` for that.
     Agent,
-    /// Jobs queue reachability: shells out to `redis-cli ping` against
-    /// `$REDIS_URL` (default `redis://127.0.0.1:6379`). Issue #109.
-    Jobs,
 }
 
 /// Shaping flags for refs/callers. `--files-only`, `--summary`, and
@@ -858,6 +929,33 @@ fn main() -> Result<()> {
             anyhow::bail!("--workspace is not supported with --mcp/--mcp-http in v4.5");
         }
         return run_workspace(cli);
+    }
+
+    // morph group — optional external LLM filter; needs neither a repo
+    // root nor the Store, so dispatch before resolution (compact is a
+    // generic stdin pipe usable anywhere).
+    if let Some(Cmd::Morph { op }) = &cli.cmd {
+        return match op {
+            MorphOp::Compact {
+                query,
+                ratio,
+                min_bytes,
+            } => morph::run_compact(query.as_deref(), *ratio, *min_bytes),
+            MorphOp::Apply {
+                file,
+                update,
+                instruction,
+                write,
+            } => morph::run_apply(file, instruction, update, *write),
+        };
+    }
+
+    // media group — pure file -> file transform for the Read hook; needs
+    // neither a repo root nor the Store, so dispatch before resolution.
+    if let Some(Cmd::Media { op }) = &cli.cmd {
+        return match op {
+            MediaOp::Downscale { path, max_edge } => media::run_downscale(path, *max_edge),
+        };
     }
 
     // Resolve `--root` to a concrete source dir + index-artifact dir.
@@ -1166,11 +1264,6 @@ fn main() -> Result<()> {
         return run_backup(&root, op);
     }
 
-    // jobs group
-    if let Some(Cmd::Jobs(op)) = cli.cmd.as_ref() {
-        return jobs_cmd::run(op);
-    }
-
     // doctor group
     if let Some(Cmd::Doctor { op, text }) = cli.cmd.as_ref() {
         return match op {
@@ -1179,7 +1272,6 @@ fn main() -> Result<()> {
             Some(DoctorOp::Stack) => doctor::run_stack(*text),
             Some(DoctorOp::Keys) => doctor::run_keys(*text),
             Some(DoctorOp::Agent) => doctor::run_agent(*text),
-            Some(DoctorOp::Jobs) => doctor::run_jobs(*text),
         };
     }
 
@@ -1213,9 +1305,10 @@ fn main() -> Result<()> {
         return memory::run(&root, sub);
     }
 
-    // shell group — observation-only ledger; no Store::open needed.
+    // shell group — record is observation-only; rewrite reads the index
+    // (read-only) to gate symbol upgrades.
     if let Some(Cmd::Shell { op }) = &cli.cmd {
-        return run_shell(&root, op);
+        return run_shell(&root, &db, op);
     }
 
     // loop-detector group — pure read; no Store::open needed.
@@ -1391,6 +1484,7 @@ fn main() -> Result<()> {
                 lang,
                 ext,
                 limit,
+                group,
             } => {
                 let files = list_files(
                     &store,
@@ -1399,7 +1493,11 @@ fn main() -> Result<()> {
                     ext.as_deref(),
                     limit,
                 )?;
-                let body = sonic_rs::to_string(&files)?;
+                let body = if group {
+                    sonic_rs::to_string(&group_by_dir(&files))?
+                } else {
+                    sonic_rs::to_string(&files)?
+                };
                 crabcc_core::track::record(
                     "files",
                     "list",
@@ -1551,6 +1649,10 @@ fn main() -> Result<()> {
                 threshold,
             )?;
         }
+        Cmd::Rag { op } => match op {
+            RagOp::Build { rebuild } => rag::run_build(&root, &store, rebuild)?,
+            RagOp::Query { query, limit } => rag::run_query(&root, &query, limit)?,
+        },
         // All other variants were handled in the early-return block above.
         Cmd::Setup { .. } => unreachable!("setup handled before store init"),
         Cmd::Info { .. } => unreachable!("info handled before store init"),
@@ -1562,9 +1664,10 @@ fn main() -> Result<()> {
         Cmd::Stack { .. } => unreachable!("stack handled before store init"),
         Cmd::Backup { .. } => unreachable!("backup handled before store init"),
         Cmd::Doctor { .. } => unreachable!("doctor handled before store init"),
-        Cmd::Jobs(_) => unreachable!("jobs handled before store init"),
         Cmd::Memory { .. } => unreachable!("memory handled before store init"),
         Cmd::Shell { .. } => unreachable!("shell handled before store init"),
+        Cmd::Morph { .. } => unreachable!("morph handled before store init"),
+        Cmd::Media { .. } => unreachable!("media handled before store init"),
         Cmd::Audit { .. } => unreachable!("audit handled before store init"),
         Cmd::Loop { .. } => unreachable!("loop handled before store init"),
     }
@@ -1885,8 +1988,29 @@ fn run_workspace(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-fn run_shell(root: &Path, op: &ShellOp) -> Result<()> {
+fn run_shell(root: &Path, db: &Path, op: &ShellOp) -> Result<()> {
     match op {
+        ShellOp::Rewrite {
+            command,
+            cwd,
+            session_id,
+        } => {
+            // Use the hook-supplied cwd to resolve root/db so rewrites
+            // consult the correct index when the tool call runs from a
+            // different directory (e.g. a subdirectory or a different repo).
+            let (eff_root, eff_db);
+            let (rw_root, rw_db, rw_cwd) = if let Some(hook_cwd) = &cwd {
+                let resolved = root_resolver::resolve(Some(hook_cwd.as_path()))?;
+                eff_root = resolved.source_dir.clone();
+                eff_db = resolved.db();
+                (eff_root.as_path(), eff_db.as_path(), Some(hook_cwd.as_path()))
+            } else {
+                (root, db, None)
+            };
+            shell_rewrite::run(rw_root, rw_db, command, session_id.as_deref(), rw_cwd)
+        }
+        ShellOp::RewriteMeasure => shell_rewrite::run_measure(),
+        ShellOp::Context { session_id } => shell_context::run(root, db, session_id.as_deref()),
         ShellOp::Record {
             command,
             cwd,
@@ -2055,6 +2179,21 @@ fn list_files(
     Ok(out)
 }
 
+/// Fold a flat list of repo-relative paths into `{ "<dir>": ["base", …] }`,
+/// eliminating the directory prefix repeated on every path. Root-level
+/// files group under ".". `BTreeMap` keeps the output deterministic.
+fn group_by_dir(paths: &[String]) -> std::collections::BTreeMap<&str, Vec<&str>> {
+    let mut map: std::collections::BTreeMap<&str, Vec<&str>> = std::collections::BTreeMap::new();
+    for p in paths {
+        let (dir, base) = match p.rfind('/') {
+            Some(i) => (&p[..i], &p[i + 1..]),
+            None => (".", p.as_str()),
+        };
+        map.entry(dir).or_default().push(base);
+    }
+    map
+}
+
 /// True for commands that read the symbol index but don't build it
 /// themselves — i.e. anything that would silently return empty on a
 /// fresh project. The auto-index guard fires once before dispatch.
@@ -2068,7 +2207,14 @@ fn needs_auto_index(c: &Option<Cmd>) -> bool {
         // Implicit default = `index` — no auto-index needed (we're about
         // to index anyway).
         None => false,
-        Some(cmd) => matches!(cmd, Cmd::Lookup { .. } | Cmd::Graph { .. }),
+        Some(cmd) => matches!(
+            cmd,
+            Cmd::Lookup { .. }
+                | Cmd::Graph { .. }
+                | Cmd::Rag {
+                    op: RagOp::Build { .. }
+                }
+        ),
     }
 }
 
@@ -2121,10 +2267,12 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::Graph { .. } => "graph",
         Cmd::Memory { .. } => "memory",
         Cmd::Shell { .. } => "shell",
+        Cmd::Morph { .. } => "morph",
+        Cmd::Media { .. } => "media",
+        Cmd::Rag { .. } => "rag",
         Cmd::Loop { .. } => "loop",
         Cmd::Backup { .. } => "backup",
         Cmd::Doctor { .. } => "doctor",
-        Cmd::Jobs(_) => "jobs",
         Cmd::Go => "go",
         Cmd::Fetch { .. } => "fetch",
         Cmd::Crawl { .. } => "crawl",
@@ -2144,13 +2292,7 @@ fn run_agent_run(
     root: &Path,
 ) -> Result<()> {
     let backend = agent::Backend::from_str(backend)?;
-    // Transport: opt-in via env (Phase 1). A `--transport` CLI flag is
-    // intentionally deferred — wiring through clap's deeply-nested
-    // command tree is a separate cleanup.
-    let transport = match std::env::var("CRABCC_AGENT_TRANSPORT").ok().as_deref() {
-        None | Some("") => agent::AgentTransport::Subprocess,
-        Some(t) => agent::AgentTransport::from_str(t)?,
-    };
+    let transport = agent::AgentTransport::Subprocess;
     let loaded_profile = match profile.as_deref() {
         None => None,
         Some(p) => {

@@ -633,8 +633,9 @@ main.layout-main {
   flex: 1;
   min-height: 0;
   grid-template-columns: repeat(4, 1fr);
-  grid-template-rows: 92px minmax(280px, 1fr) minmax(220px, auto) auto;
+  grid-template-rows: auto 92px minmax(280px, 1fr) minmax(220px, auto) auto;
   grid-template-areas:
+    "saved    saved      saved        saved"
     "kpi-live kpi-agents kpi-activity kpi-services"
     "graph    graph      events       events"
     "activity activity   system       system"
@@ -643,8 +644,9 @@ main.layout-main {
 @media (max-width: 1280px) {
   .dash-grid {
     grid-template-columns: repeat(2, 1fr);
-    grid-template-rows: repeat(2, 92px) minmax(280px, 1fr) auto auto auto auto;
+    grid-template-rows: auto repeat(2, 92px) minmax(280px, 1fr) auto auto auto auto;
     grid-template-areas:
+      "saved         saved"
       "kpi-live      kpi-agents"
       "kpi-activity  kpi-services"
       "graph         graph"
@@ -658,6 +660,7 @@ main.layout-main {
     grid-template-columns: 1fr;
     grid-template-rows: auto;
     grid-template-areas:
+      "saved"
       "kpi-live"
       "kpi-agents"
       "kpi-activity"
@@ -680,6 +683,37 @@ main.layout-main {
   box-shadow: 0 1px 2px rgba(0,0,0,0.04);
   overflow: hidden;
 }
+
+/* ── live token-savings banner (#648) ─────────────────────────── */
+.dash-saved {
+  display: flex; gap: 18px; align-items: center;
+  padding: 4px 6px; flex-wrap: wrap;
+}
+.dash-saved-kpis { display: flex; align-items: baseline; gap: 16px; flex: 0 0 auto; }
+.dash-saved-big { display: flex; flex-direction: column; }
+.dash-saved-num {
+  font-size: 30px; font-weight: 700; line-height: 1;
+  color: var(--accent); font-variant-numeric: tabular-nums;
+}
+.dash-saved-lbl {
+  font-size: 10px; text-transform: uppercase; letter-spacing: .08em;
+  color: var(--muted); margin-top: 3px;
+}
+.dash-saved-sub { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
+.dash-saved-sub b { color: var(--fg); font-variant-numeric: tabular-nums; }
+.dash-saved-ops {
+  flex: 1 1 320px; min-width: 220px;
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 3px 14px;
+}
+.dash-saved-op {
+  display: grid; grid-template-columns: 52px 1fr 44px;
+  gap: 6px; align-items: center; font-size: 11px;
+}
+.dash-saved-op-name { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.dash-saved-op-bar { height: 6px; background: var(--bg); border-radius: 3px; overflow: hidden; }
+.dash-saved-op-bar > span { display: block; height: 100%; background: var(--accent); }
+.dash-saved-op-val { text-align: right; font-variant-numeric: tabular-nums; color: var(--fg); }
 .dash-tile:hover { box-shadow: 0 2px 6px rgba(0,0,0,0.08); }
 .dash-tile-head {
   display: flex; align-items: center; gap: 8px;
