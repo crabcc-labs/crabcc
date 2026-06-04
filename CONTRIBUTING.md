@@ -39,6 +39,15 @@ The `nix` CI workflow runs `nix flake check` on every PR, so the shell stays
 buildable. Agent runtimes (claude-code, the *claw bench profiles) live in the
 same upstream flake: `nix run github:numtide/llm-agents.nix#<tool>`.
 
+### Claude Code plugins
+
+`.claude/settings.json` enables the [`superpowers`](https://github.com/obra/superpowers)
+skills plugin (TDD / systematic-debugging / writing-plans, MIT) from the
+**official** Claude plugin marketplace for everyone who opens the repo. It
+activates only after you accept the standard workspace-trust prompt — committing
+the setting never runs plugin code without that consent. To opt out locally, set
+`"superpowers@claude-plugins-official": false` in `.claude/settings.local.json`.
+
 ## Workflow
 
 1. **Open an issue first** for anything non-trivial. Use one of the templates: bug, feature, performance, rfc, epic, chore. The template pre-fills the labels and the title prefix (`feat(scope):`, `perf(scope):`, etc.).
