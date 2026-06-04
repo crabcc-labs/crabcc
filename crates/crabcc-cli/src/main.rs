@@ -24,8 +24,6 @@ use std::path::{Path, PathBuf};
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 mod agent;
-#[cfg(feature = "agents-bullmq")]
-mod agent_bullmq;
 mod agent_guard;
 mod agent_profile;
 mod agent_runs_db;
@@ -40,7 +38,6 @@ mod fetch_cmd;
 mod go;
 mod install;
 mod install_integrations;
-mod jobs_cmd;
 mod memory;
 mod model_info;
 mod read;
@@ -409,9 +406,6 @@ enum Cmd {
         #[command(subcommand)]
         op: BackupOp,
     },
-    /// BullMQ job queue — submit / inspect / cancel jobs.
-    #[command(subcommand)]
-    Jobs(JobsCmd),
     /// Setup operations: install-claude, install-integrations, upgrade, completions, openapi.
     Setup {
         #[command(subcommand)]
@@ -634,64 +628,6 @@ enum ModelInfoOp {
     },
 }
 
-/// `crabcc jobs` — submit, inspect, and cancel BullMQ jobs (issue #109).
-#[derive(Subcommand)]
-#[allow(clippy::large_enum_variant)]
-enum JobsCmd {
-    /// Submit a job to a queue.
-    Submit {
-        /// Queue name: agent:run | agent:flow | repo:index | repo:reindex
-        #[arg(long)]
-        queue: String,
-        /// Job name (label for the worker).
-        #[arg(long)]
-        name: String,
-        /// Job data as JSON (e.g. '{"prompt":"audit this repo"}').
-        #[arg(long, default_value = "{}")]
-        data: String,
-        /// Optional delay in milliseconds before the job becomes active.
-        #[arg(long)]
-        delay_ms: Option<u64>,
-        /// Job priority (lower = higher priority).
-        #[arg(long)]
-        priority: Option<u32>,
-        /// Max retry attempts.
-        #[arg(long)]
-        attempts: Option<u32>,
-        /// Human-readable agent identifier (shown in Bull Board / /live).
-        #[arg(long)]
-        agent_name: Option<String>,
-        /// Repo path this job operates on.
-        #[arg(long)]
-        repo_path: Option<String>,
-        /// GitHub URL for this repo (surfaced in dashboard links).
-        #[arg(long)]
-        github_url: Option<String>,
-        /// Agent run-dir path (contains lock, pid, log — for correlation).
-        #[arg(long)]
-        agent_folder: Option<String>,
-    },
-    /// Query the current state of a job.
-    Status {
-        #[arg(long)]
-        queue: String,
-        #[arg(long)]
-        id: String,
-    },
-    /// List waiting jobs in a queue (shows depth, not full payloads).
-    List {
-        /// Queue to inspect. Omit to list all queues.
-        queue: Option<String>,
-    },
-    /// Cancel (remove) a waiting or delayed job.
-    Cancel {
-        #[arg(long)]
-        queue: String,
-        #[arg(long)]
-        id: String,
-    },
-}
-
 #[derive(Subcommand)]
 enum GraphOp {
     /// Rebuild the call-graph sidecar (.crabcc/graph.json) from the index.
@@ -727,9 +663,6 @@ enum DoctorOp {
     /// `OLLAMA_BASE_URL`+`OLLAMA_API_KEY` env vars set. Doesn't invoke
     /// the agent — use `crabcc agent --dry-run` for that.
     Agent,
-    /// Jobs queue reachability: shells out to `redis-cli ping` against
-    /// `$REDIS_URL` (default `redis://127.0.0.1:6379`). Issue #109.
-    Jobs,
 }
 
 /// Shaping flags for refs/callers. `--files-only`, `--summary`, and
@@ -1166,11 +1099,6 @@ fn main() -> Result<()> {
         return run_backup(&root, op);
     }
 
-    // jobs group
-    if let Some(Cmd::Jobs(op)) = cli.cmd.as_ref() {
-        return jobs_cmd::run(op);
-    }
-
     // doctor group
     if let Some(Cmd::Doctor { op, text }) = cli.cmd.as_ref() {
         return match op {
@@ -1179,7 +1107,6 @@ fn main() -> Result<()> {
             Some(DoctorOp::Stack) => doctor::run_stack(*text),
             Some(DoctorOp::Keys) => doctor::run_keys(*text),
             Some(DoctorOp::Agent) => doctor::run_agent(*text),
-            Some(DoctorOp::Jobs) => doctor::run_jobs(*text),
         };
     }
 
@@ -1562,7 +1489,6 @@ fn main() -> Result<()> {
         Cmd::Stack { .. } => unreachable!("stack handled before store init"),
         Cmd::Backup { .. } => unreachable!("backup handled before store init"),
         Cmd::Doctor { .. } => unreachable!("doctor handled before store init"),
-        Cmd::Jobs(_) => unreachable!("jobs handled before store init"),
         Cmd::Memory { .. } => unreachable!("memory handled before store init"),
         Cmd::Shell { .. } => unreachable!("shell handled before store init"),
         Cmd::Audit { .. } => unreachable!("audit handled before store init"),
@@ -2124,7 +2050,6 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::Loop { .. } => "loop",
         Cmd::Backup { .. } => "backup",
         Cmd::Doctor { .. } => "doctor",
-        Cmd::Jobs(_) => "jobs",
         Cmd::Go => "go",
         Cmd::Fetch { .. } => "fetch",
         Cmd::Crawl { .. } => "crawl",
@@ -2144,13 +2069,7 @@ fn run_agent_run(
     root: &Path,
 ) -> Result<()> {
     let backend = agent::Backend::from_str(backend)?;
-    // Transport: opt-in via env (Phase 1). A `--transport` CLI flag is
-    // intentionally deferred — wiring through clap's deeply-nested
-    // command tree is a separate cleanup.
-    let transport = match std::env::var("CRABCC_AGENT_TRANSPORT").ok().as_deref() {
-        None | Some("") => agent::AgentTransport::Subprocess,
-        Some(t) => agent::AgentTransport::from_str(t)?,
-    };
+    let transport = agent::AgentTransport::Subprocess;
     let loaded_profile = match profile.as_deref() {
         None => None,
         Some(p) => {
