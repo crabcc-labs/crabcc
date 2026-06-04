@@ -22,7 +22,7 @@ mod links;
 mod proxy;
 
 pub use fetcher::{FetchedPage, Fetcher, HttpFetcher};
-pub use frontier::{open_frontier, Pending, SqliteFrontier};
+pub use frontier::{open_frontier, Frontier, Pending, SqliteFrontier};
 pub use links::extract_links;
 pub use proxy::{Protocol, ProxiflySource, ProxyPool, ProxySource, ProxyUrl};
 
@@ -123,7 +123,7 @@ fn rejected(url: String, depth: usize, reason: String) -> (String, usize, Fetche
 pub async fn crawl(
     seed: &str,
     opts: &CrawlOpts,
-    frontier: &SqliteFrontier,
+    frontier: &Frontier,
     fetcher: Arc<Fetcher>,
     mut on_page: impl FnMut(&FetchResult, usize),
 ) -> anyhow::Result<CrawlReport> {
@@ -131,7 +131,7 @@ pub async fn crawl(
     // that redirects (example.com → www.example.com) scopes to where it
     // landed rather than dropping every link as off-host.
     let mut seed_host = url_host(seed).unwrap_or_default().to_string();
-    frontier.enqueue(seed, 0, Some(&seed_host))?;
+    frontier.enqueue(seed, 0, Some(&seed_host)).await?;
 
     let mut report = CrawlReport::default();
     let global = Arc::new(Semaphore::new(opts.concurrency.max(1)));
@@ -142,7 +142,7 @@ pub async fn crawl(
             break;
         }
         let budget = opts.max_pages - report.fetched;
-        let batch = frontier.claim(budget.min(opts.concurrency))?;
+        let batch = frontier.claim(budget.min(opts.concurrency)).await?;
         if batch.is_empty() {
             break;
         }
@@ -193,12 +193,12 @@ pub async fn crawl(
                 Ok(t) => t,
                 Err(_) => continue, // join error (panic/cancel): skip
             };
-            frontier.record_page(&page.result, depth)?;
+            frontier.record_page(&page.result, depth).await?;
             if page.result.error.is_some() {
                 report.errors += 1;
-                frontier.mark(&url, "error")?;
+                frontier.mark(&url, "error").await?;
             } else {
-                frontier.mark(&url, "done")?;
+                frontier.mark(&url, "done").await?;
             }
             report.fetched += 1;
             on_page(&page.result, depth);
@@ -222,7 +222,7 @@ pub async fn crawl(
                             continue;
                         }
                         let lh = url_host(&link).unwrap_or_default().to_string();
-                        if frontier.enqueue(&link, depth + 1, Some(&lh))? {
+                        if frontier.enqueue(&link, depth + 1, Some(&lh)).await? {
                             report.discovered += 1;
                         }
                     }
@@ -296,7 +296,7 @@ mod tests {
         ]);
         let seed = format!("{base}/");
 
-        let frontier = SqliteFrontier::open_in_memory().unwrap();
+        let frontier = Frontier::Sqlite(SqliteFrontier::open_in_memory().unwrap());
         let opts = CrawlOpts::new(50, 1); // seed + one hop
         let fetcher = Arc::new(Fetcher::http(&opts.fetch, None).unwrap());
 
@@ -316,7 +316,7 @@ mod tests {
         assert!(!seen.iter().any(|u| u.ends_with("/c")));
         assert!(!seen.iter().any(|u| u.contains("external.invalid")));
 
-        let (pages, _queued) = frontier.counts().unwrap();
+        let (pages, _queued) = frontier.counts().await.unwrap();
         assert_eq!(pages, 3);
     }
 
@@ -332,7 +332,7 @@ mod tests {
             ("/c", "c"),
         ]);
         let seed = format!("{base}/");
-        let frontier = SqliteFrontier::open_in_memory().unwrap();
+        let frontier = Frontier::Sqlite(SqliteFrontier::open_in_memory().unwrap());
         let opts = CrawlOpts::new(2, 5); // cap at 2 pages
         let fetcher = Arc::new(Fetcher::http(&opts.fetch, None).unwrap());
         let report = crawl(&seed, &opts, &frontier, fetcher, |_, _| {})
@@ -362,7 +362,7 @@ mod tests {
         ]);
         let seed = format!("{base}/old");
 
-        let frontier = SqliteFrontier::open_in_memory().unwrap();
+        let frontier = Frontier::Sqlite(SqliteFrontier::open_in_memory().unwrap());
         let opts = CrawlOpts::new(50, 1);
         let fetcher = Arc::new(Fetcher::http(&opts.fetch, None).unwrap());
 
@@ -386,7 +386,7 @@ mod tests {
     async fn ssrf_guard_blocks_private_seed_in_ingest_posture() {
         // No server: the guard must reject the seed *before* any request,
         // so a private/metadata address can't be hit even as the seed.
-        let frontier = SqliteFrontier::open_in_memory().unwrap();
+        let frontier = Frontier::Sqlite(SqliteFrontier::open_in_memory().unwrap());
         let mut opts = CrawlOpts::new(5, 1);
         opts.fetch = crate::FetchOpts::ingest(); // enforce_ssrf = true
         let fetcher = Arc::new(Fetcher::http(&opts.fetch, None).unwrap());
