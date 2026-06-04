@@ -20,6 +20,7 @@
 //! for one element.
 
 use anyhow::Result;
+use std::fmt::Write as _;
 use crabcc_memory::Palace;
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
