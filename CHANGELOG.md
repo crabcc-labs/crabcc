@@ -6,7 +6,25 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+## [6.1.0] — 2026-06-04
+
 ### Added
+
+- **Agent token-optimization commands.** `crabcc edit FILE#SYMBOL` (AST-targeted
+  symbol rewrite — `--replace` verbatim splice or `--lazy` Morph Fast Apply;
+  reindexes the touched file after `--write`; CRLF-preserving), `crabcc csv
+  stats|sample|count` (qsv-backed CSV summaries; explicit + opt-in, never drops
+  rows), and `crabcc squeeze` (collapse carriage-return/progress redraws +
+  repeated lines from stdin, surfacing errors/warnings, with a self-describing
+  stderr disclosure). `crabcc read` gains **diff-on-re-read**: re-reading a file
+  edited in-session returns a unified diff vs the last-seen version (additive
+  `session_reads.content`).
+- **Nix dev shell.** `flake.nix` devShell (Rust toolchain + the `.tools` CLI
+  fleet + `rtk` from numtide/llm-agents.nix), `.envrc` for nix-direnv, and a
+  `nix flake check` CI job that verifies it on GitHub-hosted runners.
+- **superpowers plugin enabled repo-wide** via project `.claude/settings.json`
+  (official Claude plugin marketplace), activating after the workspace-trust
+  prompt.
 
 - **`ucracc-lsp` 0.4.0 + signed Docker/release pipeline.** The LSP crate is
   bumped to 0.4.0 (Zed integration + `indexPath`). New
