@@ -4746,6 +4746,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "sshq"
+version = "6.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
