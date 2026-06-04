@@ -5,10 +5,13 @@ use std::path::Path;
 
 const SCHEMA: &str = include_str!("../../../schema/001_init.sql");
 
-/// Bumped each time a new migration is added. Stored in SQLite's
-/// built-in `PRAGMA user_version` so we can skip all migration probes
+/// Bumped each time a new migration is added. Stored in the `meta` table
+/// under the key `migration_level` so we can skip all migration probes
 /// on DBs that are already fully migrated (the common case).
-const STORE_SCHEMA_VERSION: i32 = 3;
+/// We intentionally do NOT use `PRAGMA user_version` here — that pragma
+/// is read by `tools/index-publish/build-manifest.sh` as the public
+/// schema version and must stay aligned with `meta.schema_version`.
+const STORE_MIGRATION_LEVEL: i32 = 3;
 
 /// Sentinel `files` row path used to anchor unresolved-name `symbols` rows.
 /// The v4 `symbols.file_id` column is `NOT NULL REFERENCES files(id)`, so
@@ -82,12 +85,20 @@ impl Store {
         conn.busy_timeout(std::time::Duration::from_millis(2_000))?;
         conn.execute_batch(SCHEMA).context("apply schema")?;
 
-        // Fast-path: if user_version is already at STORE_SCHEMA_VERSION, all
-        // migrations have been applied — skip every PRAGMA table_info probe.
-        let db_ver: i32 = conn
-            .pragma_query_value(None, "user_version", |r| r.get(0))
+        // Fast-path: if migration_level is already at STORE_MIGRATION_LEVEL,
+        // all migrations have been applied — skip every PRAGMA table_info probe.
+        // NOTE: we use a meta key, not PRAGMA user_version, because the publish
+        // tooling reads user_version as the public schema version.
+        let migrated_level: i32 = conn
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'migration_level'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()
+            .unwrap_or(None)
             .unwrap_or(0);
-        if db_ver < STORE_SCHEMA_VERSION {
+        if migrated_level < STORE_MIGRATION_LEVEL {
             // Idempotent migration: pre-FSST DBs lack `symbols.signature_enc`.
             let has_enc: bool = conn
                 .query_row(
@@ -110,8 +121,12 @@ impl Store {
             // v5.0.5: WITHOUT ROWID edges migration.
             migrate_edges_without_rowid(&conn).context("migrate edges WITHOUT ROWID")?;
             // Mark as fully migrated — skips all probes on next open.
-            conn.pragma_update(None, "user_version", STORE_SCHEMA_VERSION)
-                .context("set user_version")?;
+            conn.execute(
+                "INSERT INTO meta(key, value) VALUES('migration_level', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![STORE_MIGRATION_LEVEL.to_string()],
+            )
+            .context("set migration_level")?;
         }
         // PRAGMA optimize is cheap when nothing changed; run it on every open.
         let _ = conn.execute_batch("PRAGMA optimize;");
