@@ -14,15 +14,19 @@
 #
 # Secrets required (Settings -> Secrets and variables -> Actions):
 #   APERTURE_HOSTNAME    Aperture MagicDNS name on our tailnet (e.g. `aperture`)
-#   TS_OAUTH_CLIENT_ID   Tailscale OAuth client id (skip if runner is already
-#   TS_OAUTH_SECRET      joined to the tailnet; delete the Tailscale step too)
 #   GITHUB_TOKEN         auto-provisioned, no setup needed
+#
+# Runner topology assumption: the Hetzner self-hosted runners are already
+# joined to the tailnet (otherwise the http://$APERTURE_HOSTNAME hostname
+# wouldn't resolve). If you ever onboard a runner that isn't on the tailnet,
+# add a `tailscale/github-action@v3` step before the Codex config step with
+# `TS_OAUTH_CLIENT_ID` / `TS_OAUTH_SECRET` repo secrets.
 #
 # Per-run behavior:
 #   1. Resolve target PR(s) -- mention/dispatch input/scan of open PRs.
 #   2. Loop guard: skip if HEAD commit subject already begins `[codex-fix]`.
-#   3. Checkout PR head, join tailnet, install Codex CLI, write
-#      `~/.codex/config.toml` pointing at `http://$APERTURE_HOSTNAME/v1`.
+#   3. Checkout PR head, install Codex CLI, write `~/.codex/config.toml`
+#      pointing at `http://$APERTURE_HOSTNAME/v1`.
 #   4. Run `codex exec` with a structured prompt -- it commits each fix
 #      atomically with `[codex-fix] <subject>` + bot Co-Authored-By trailer.
 #   5. Push commits back to the PR head ref.
@@ -140,14 +144,6 @@ jobs:
           echo "head_ref=$HEAD_REF" >> "$GITHUB_OUTPUT"
           echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
           echo "skip=false" >> "$GITHUB_OUTPUT"
-
-      - name: Join tailnet
-        if: steps.meta.outputs.skip != 'true'
-        uses: tailscale/github-action@v3
-        with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          tags: tag:ci-codex
 
       - name: Checkout PR head
         if: steps.meta.outputs.skip != 'true'
