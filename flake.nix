@@ -25,7 +25,7 @@
         agents = llm-agents.packages.${system} or { };
 
         # The .tools fleet, sourced from nixpkgs (a few attrs differ from the
-        # binary name: dust -> du-dust, task -> go-task, yq -> yq-go).
+        # binary name: task -> go-task, yq -> yq-go).
         toolFleet = with pkgs; [
           ripgrep
           fd
@@ -34,7 +34,7 @@
           delta
           sd
           choose
-          du-dust
+          dust
           procs
           bottom
           zoxide

@@ -18,7 +18,14 @@ All notable changes to crabcc are documented here. Format follows
   repeated lines from stdin, surfacing errors/warnings, with a self-describing
   stderr disclosure). `crabcc read` gains **diff-on-re-read**: re-reading a file
   edited in-session returns a unified diff vs the last-seen version (additive
-  `session_reads.content`).
+  `session_reads.content`). `crabcc run -- <cmd>` captures+squeezes a command's
+  output and **detaches long/blocking commands to the background instead of
+  killing them** (own session, output to `~/.crabcc/runs/<id>/log`), returning
+  an instant snapshot + a `run <id>` handle; `--follow`/`--list`/`--kill`
+  manage background runs. The PreToolUse rewrite hook routes blocking follows
+  (`tail -f`, `watch`, `journalctl -f`) through `crabcc run --timeout` so they
+  bound + detach instead of hanging, and pagers (`less`/`more <file>`) through
+  the `cat` path.
 - **Nix dev shell.** `flake.nix` devShell (Rust toolchain + the `.tools` CLI
   fleet + `rtk` from numtide/llm-agents.nix), `.envrc` for nix-direnv, and a
   `nix flake check` CI job that verifies it on GitHub-hosted runners.

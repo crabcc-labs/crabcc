@@ -155,7 +155,63 @@ pub fn plan(cmd: &str, is_symbol: &dyn Fn(&str) -> bool, cwd: Option<&Path>) -> 
         "rg" => plan_rg(rest, is_symbol),
         "find" => plan_find(rest),
         "cat" => plan_cat(rest, cwd),
+        // Blocking follows -> `crabcc run --timeout` so they bound + detach to
+        // the background (snapshot now, keep running) instead of pinning the
+        // agent. A pager of a file is just that file, so route it like `cat`.
+        "tail" => plan_follow(prog, rest, "tail-f->crabcc-run"),
+        "journalctl" => plan_follow(prog, rest, "journalctl-f->crabcc-run"),
+        "watch" => plan_watch(prog, rest),
+        "less" | "more" => plan_cat(rest, cwd),
         _ => None,
+    }
+}
+
+/// `crabcc run --timeout` wrap horizon for a bounded blocking follow.
+const RUN_TIMEOUT_SECS: u64 = 30;
+
+/// A `tail`/`journalctl` follow flag: `-f`, `-F`, `--follow`, or a combined
+/// short flag containing f/F (e.g. `-fn`).
+fn is_follow_flag(a: &str) -> bool {
+    a == "--follow"
+        || (a.starts_with('-')
+            && !a.starts_with("--")
+            && a.len() > 1
+            && (a.contains('f') || a.contains('F')))
+}
+
+/// Wrap a follow command in `crabcc run --timeout N -- <cmd>` so it captures a
+/// bounded snapshot, squeezes it, then detaches to the background. Fires only
+/// when a follow flag is present; `tail -n 100` and friends pass through.
+fn plan_follow(prog: &str, rest: &[String], rule: &'static str) -> Option<Rewrite> {
+    if !rest.iter().any(|a| is_follow_flag(a)) {
+        return None;
+    }
+    Some(run_wrap(prog, rest, rule))
+}
+
+/// `watch` repeats forever, so it always blocks; wrap it when it has a command.
+fn plan_watch(prog: &str, rest: &[String]) -> Option<Rewrite> {
+    if rest.is_empty() {
+        return None;
+    }
+    Some(run_wrap(prog, rest, "watch->crabcc-run"))
+}
+
+fn run_wrap(prog: &str, rest: &[String], rule: &'static str) -> Rewrite {
+    let mut argv = vec![shq(prog)];
+    argv.extend(rest.iter().map(|a| shq(a)));
+    Rewrite {
+        inner: format!(
+            "crabcc run --timeout {RUN_TIMEOUT_SECS} -- {}",
+            argv.join(" ")
+        ),
+        rule,
+        key: prog.to_string(),
+        note: Some(format!(
+            "blocking follow bounded to ~{RUN_TIMEOUT_SECS}s then detached to the background; \
+             `crabcc run --follow <id>` for more output, `--kill <id>` to stop"
+        )),
+        track_op: "rewrite",
     }
 }
 
@@ -872,6 +928,53 @@ mod tests {
             plan("cat src/missing_zzz.go", &never, None).unwrap().rule,
             "cat->crabcc-read"
         );
+    }
+
+    #[test]
+    fn blocking_follows_route_to_crabcc_run() {
+        // tail -f / -F / --follow -> bounded, detached `crabcc run`.
+        let r = plan("tail -f /var/log/app.log", &never, None).unwrap();
+        assert_eq!(
+            r.inner,
+            "crabcc run --timeout 30 -- tail -f /var/log/app.log"
+        );
+        assert_eq!(r.rule, "tail-f->crabcc-run");
+        assert_eq!(
+            plan("tail -F app.log", &never, None).unwrap().rule,
+            "tail-f->crabcc-run"
+        );
+        // Non-follow tail passes through (it terminates on its own).
+        assert_eq!(plan("tail -n 100 app.log", &never, None), None);
+        assert_eq!(plan("tail app.log", &never, None), None);
+
+        // watch always blocks -> wrap (when it has a command).
+        assert_eq!(
+            plan("watch ls", &never, None).unwrap().inner,
+            "crabcc run --timeout 30 -- watch ls"
+        );
+        assert_eq!(plan("watch", &never, None), None);
+
+        // journalctl follow -> wrap; non-follow passes through.
+        assert_eq!(
+            plan("journalctl -f", &never, None).unwrap().rule,
+            "journalctl-f->crabcc-run"
+        );
+        assert_eq!(plan("journalctl -u nginx", &never, None), None);
+    }
+
+    #[test]
+    fn pager_of_a_file_routes_like_cat() {
+        // `less FILE` / `more FILE` == viewing that file -> the cat path.
+        assert_eq!(
+            plan("less nope_xyz.rs", &never, None).unwrap().rule,
+            "cat->crabcc-read"
+        );
+        assert_eq!(
+            plan("more config.json", &never, None).unwrap().rule,
+            "cat-json->jq"
+        );
+        // Flags / multiple args pass through (same guard as cat).
+        assert_eq!(plan("less -N a.rs", &never, None), None);
     }
 
     #[test]
