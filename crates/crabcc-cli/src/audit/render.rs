@@ -1,4 +1,5 @@
 use crate::audit::model::AuditReport;
+use std::fmt::Write;
 
 pub fn render_json(report: &AuditReport) -> anyhow::Result<String> {
     Ok(sonic_rs::to_string_pretty(report)?)
@@ -6,35 +7,23 @@ pub fn render_json(report: &AuditReport) -> anyhow::Result<String> {
 
 pub fn render_human(report: &AuditReport) -> String {
     let mut output = String::new();
-
-    // Summary
-    output.push_str(&format!("Sessions scanned: {}\n", report.sessions_scanned));
-    output.push_str(&format!("Total tokens: {}\n", report.total_tokens));
-    output.push_str(&format!("Wasted tokens: {}\n", report.wasted_tokens));
+    writeln!(output, "Sessions scanned: {}", report.sessions_scanned).unwrap();
+    writeln!(output, "Total tokens: {}", report.total_tokens).unwrap();
+    writeln!(output, "Wasted tokens: {}", report.wasted_tokens).unwrap();
 
     if !report.findings.is_empty() {
-        output.push_str("\nTop waste findings:\n");
+        writeln!(output, "\nTop waste findings:").unwrap();
+        writeln!(output, "{:.<20} {:>10} {:<50}", "Kind", "Tokens", "Detail").unwrap();
+        writeln!(output, "{}", "-".repeat(80)).unwrap();
 
-        // Header
-        output.push_str(&format!(
-            "{:.<20} {:>10} {:<50}\n",
-            "Kind", "Tokens", "Detail"
-        ));
-        output.push_str(&"-".repeat(80));
-        output.push('\n');
-
-        // Top findings (up to 10)
         for finding in report.findings.iter().take(10) {
             let detail = if finding.detail.len() > 47 {
                 format!("{}...", &finding.detail[..47])
             } else {
                 finding.detail.clone()
             };
-
-            output.push_str(&format!(
-                "{:.<20} {:>10} {:<50}\n",
-                finding.kind, finding.tokens, detail
-            ));
+            writeln!(output, "{:.<20} {:>10} {:<50}", finding.kind, finding.tokens, detail)
+                .unwrap();
         }
     }
 

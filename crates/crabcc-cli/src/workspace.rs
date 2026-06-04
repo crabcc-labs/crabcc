@@ -162,30 +162,25 @@ where
     F: FnMut(&WorkspaceRepo) -> Result<(usize, T)>,
     T: Default,
 {
-    let mut out = Vec::with_capacity(repos.len());
-    for repo in repos {
-        match query(repo) {
-            Ok((count, hits)) => out.push(RepoHits {
-                repo: repo.key.clone(),
-                count,
-                hits,
-            }),
-            Err(e) => {
+    repos
+        .iter()
+        .map(|repo| {
+            let (count, hits) = query(repo).unwrap_or_else(|e| {
                 eprintln!(
                     "workspace: skipping {} ({}): {:#}",
                     repo.key,
                     repo.data_dir.display(),
                     e
                 );
-                out.push(RepoHits {
-                    repo: repo.key.clone(),
-                    count: 0,
-                    hits: T::default(),
-                });
+                (0, T::default())
+            });
+            RepoHits {
+                repo: repo.key.clone(),
+                count,
+                hits,
             }
-        }
-    }
-    out
+        })
+        .collect()
 }
 
 #[cfg(test)]

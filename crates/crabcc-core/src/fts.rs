@@ -133,11 +133,7 @@ impl Fts {
             kind: s(d.get_first(self.f_kind)),
             file: s(d.get_first(self.f_file)),
             line: u(d.get_first(self.f_line)),
-            parent: if parent.is_empty() {
-                None
-            } else {
-                Some(parent)
-            },
+            parent: (!parent.is_empty()).then_some(parent),
             score,
         }
     }
