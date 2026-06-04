@@ -71,12 +71,13 @@ const REPOMIX_IGNORE: &str = concat!(
 pub fn extract_urls(prompt: &str) -> Vec<String> {
     let mut finder = linkify::LinkFinder::new();
     finder.kinds(&[linkify::LinkKind::Url]);
-    let mut seen = std::collections::HashSet::new();
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
     finder
         .links(prompt)
-        .map(|l| l.as_str().to_string())
+        .map(|l| l.as_str())
         .filter(|u| u.starts_with("http://") || u.starts_with("https://"))
-        .filter(|u| seen.insert(u.clone()))
+        .filter(|u| seen.insert(u))
+        .map(str::to_string)
         .collect()
 }
 
