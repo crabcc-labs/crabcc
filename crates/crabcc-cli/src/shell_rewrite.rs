@@ -364,19 +364,38 @@ fn compactable_program(cmd: &str) -> Option<String> {
     COMPACTABLE.contains(&prog.as_str()).then_some(prog)
 }
 
-/// Morph Compact is enabled iff a key is present (privacy gate).
+/// Morph Compact is enabled iff a key is present (privacy gate) and not
+/// explicitly disabled. The network cost (~1s+ on large inputs) is opt-in
+/// via the key; RTK does the bulk, local, free reduction below it.
 fn morph_enabled() -> bool {
-    std::env::var_os("MORPH_API_KEY").is_some()
+    std::env::var_os("MORPH_API_KEY").is_some() && std::env::var_os("CRABCC_NO_MORPH").is_none()
 }
 
-/// An `rtk pipe <filter>` stage, iff the user opted in
-/// (`CRABCC_RTK_PIPE=<filter>`) and `rtk` is on PATH. The filter is the
-/// user's choice — rtk filters vary in aggressiveness, so we never guess.
-fn rtk_pipe_stage() -> Option<String> {
+/// The rtk filter matching a command's output format, if rtk ships one
+/// (rtk's filters are command-aware + roughly lossless, not summarisers).
+fn rtk_filter_for(prog: &str) -> Option<&'static str> {
+    match prog {
+        "grep" | "rg" => Some("grep"),
+        "find" => Some("find"),
+        "cargo" => Some("cargo-test"),
+        "pytest" => Some("pytest"),
+        _ => None,
+    }
+}
+
+/// An `rtk pipe --filter <f>` stage. **Auto-engages** (part of the default
+/// chain) when `rtk` is on PATH and ships a filter for `prog` — it's local,
+/// fast and free. `CRABCC_RTK_PIPE=<filter>` overrides the filter choice;
+/// `CRABCC_NO_RTK` disables the stage.
+fn rtk_stage(prog: &str) -> Option<String> {
+    if std::env::var_os("CRABCC_NO_RTK").is_some() || !on_path("rtk") {
+        return None;
+    }
     let filter = std::env::var("CRABCC_RTK_PIPE")
         .ok()
-        .filter(|f| !f.trim().is_empty())?;
-    on_path("rtk").then(|| format!("rtk pipe {}", shq(&filter)))
+        .filter(|f| !f.trim().is_empty())
+        .or_else(|| rtk_filter_for(prog).map(String::from))?;
+    Some(format!("rtk pipe --filter {}", shq(&filter)))
 }
 
 /// Build the one-line provenance header prepended to the rewritten
@@ -462,10 +481,13 @@ pub fn run(root: &Path, db: &Path, command: &str, session_id: Option<&str>) -> R
     // ── Stages 2-3: optional RTK filter, then Morph compact. Each is
     // opt-in (CRABCC_RTK_PIPE + rtk on PATH; MORPH_API_KEY) and a stdin
     // filter that degrades to passthrough, so the chain never loses output.
+    let orig_prog = tokenize(command)
+        .and_then(|t| t.into_iter().next())
+        .unwrap_or_default();
     let mut stages: Vec<String> = vec![base];
     let mut chain: Vec<&str> = Vec::new();
     if compact_worthy {
-        if let Some(rtk) = rtk_pipe_stage() {
+        if let Some(rtk) = rtk_stage(&orig_prog) {
             stages.push(rtk);
             chain.push("rtk");
         }

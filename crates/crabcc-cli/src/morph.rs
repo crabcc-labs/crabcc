@@ -17,9 +17,79 @@
 //! agent always gets the full output; Morph only ever makes it smaller.
 
 use anyhow::{Context, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const BASE: &str = "https://api.morphllm.com/v1";
+
+/// Compact-result cache (content-addressed) — turns a repeated identical
+/// compaction (agents re-run the same command a lot) from a ~1s network
+/// round-trip into a local file read. Separate dir from the index / read
+/// / prompt caches; bounded by age + total size.
+const CACHE_TTL_SECS: u64 = 24 * 60 * 60;
+const CACHE_CAP_BYTES: u64 = 16 * 1024 * 1024;
+
+fn cache_path(key: &str) -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    let dir = home.join(".crabcc").join("morph-cache");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir.join(key))
+}
+
+/// Cache key = sha256(ratio + query + input). Exact 1:1 — any change in
+/// input/query/ratio is a miss.
+fn cache_key(input: &str, query: Option<&str>, ratio: f64) -> String {
+    crabcc_core::hash::sha256_hex(format!("{ratio}\0{}\0{input}", query.unwrap_or("")).as_bytes())
+}
+
+fn cache_get(key: &str) -> Option<String> {
+    let p = cache_path(key)?;
+    let age = std::fs::metadata(&p)
+        .ok()?
+        .modified()
+        .ok()?
+        .elapsed()
+        .ok()?;
+    (age.as_secs() <= CACHE_TTL_SECS)
+        .then(|| std::fs::read_to_string(&p).ok())
+        .flatten()
+}
+
+fn cache_put(key: &str, val: &str) {
+    let Some(p) = cache_path(key) else { return };
+    if std::fs::write(&p, val).is_ok() {
+        if let Some(dir) = p.parent() {
+            prune_cache(dir);
+        }
+    }
+}
+
+/// Evict oldest entries (by mtime) once the cache exceeds the cap.
+fn prune_cache(dir: &Path) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut entries: Vec<(std::time::SystemTime, u64, PathBuf)> = rd
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let m = e.metadata().ok()?;
+            Some((m.modified().ok()?, m.len(), e.path()))
+        })
+        .collect();
+    let total: u64 = entries.iter().map(|(_, len, _)| len).sum();
+    if total <= CACHE_CAP_BYTES {
+        return;
+    }
+    entries.sort_by_key(|(mtime, _, _)| *mtime); // oldest first
+    let mut over = total - CACHE_CAP_BYTES;
+    for (_, len, path) in entries {
+        if over == 0 {
+            break;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            over = over.saturating_sub(len);
+        }
+    }
+}
 
 /// The Morph API key, or `None` (integration disabled).
 pub fn api_key() -> Option<String> {
@@ -54,8 +124,16 @@ pub fn compact(input: &str, query: Option<&str>, ratio: f64) -> String {
     let Some(key) = api_key() else {
         return input.to_string();
     };
+    // Recent identical input -> serve from cache, skip the network round-trip.
+    let ck = cache_key(input, query, ratio);
+    if let Some(hit) = cache_get(&ck) {
+        return hit;
+    }
     match try_compact(&key, input, query, ratio) {
-        Ok(out) => out,
+        Ok(out) => {
+            cache_put(&ck, &out);
+            out
+        }
         Err(e) => {
             tracing::warn!(target: "crabcc::morph", error = %e, "compact failed; passthrough");
             input.to_string()
