@@ -22,7 +22,10 @@ All notable changes to crabcc are documented here. Format follows
   output and **detaches long/blocking commands to the background instead of
   killing them** (own session, output to `~/.crabcc/runs/<id>/log`), returning
   an instant snapshot + a `run <id>` handle; `--follow`/`--list`/`--kill`
-  manage background runs.
+  manage background runs. The PreToolUse rewrite hook routes blocking follows
+  (`tail -f`, `watch`, `journalctl -f`) through `crabcc run --timeout` so they
+  bound + detach instead of hanging, and pagers (`less`/`more <file>`) through
+  the `cat` path.
 - **Nix dev shell.** `flake.nix` devShell (Rust toolchain + the `.tools` CLI
   fleet + `rtk` from numtide/llm-agents.nix), `.envrc` for nix-direnv, and a
   `nix flake check` CI job that verifies it on GitHub-hosted runners.

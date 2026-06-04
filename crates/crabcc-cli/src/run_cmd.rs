@@ -140,14 +140,27 @@ fn start(
     let mut last = Instant::now();
     let mut chunk = [0u8; 8192];
     loop {
+        // Evaluate detach FIRST, every iteration — so a command that produces
+        // output without pause (`yes`, a chatty build) still detaches on --bg /
+        // --timeout / --idle instead of being pinned in the foreground while it
+        // drains. Detaching does NOT kill or wait: dropping `child` doesn't kill
+        // it (std) and it owns the log file, so it keeps running + writing.
+        let now = Instant::now();
+        let hit = bg
+            || (timeout > 0 && now.duration_since(start) >= Duration::from_secs(timeout))
+            || (idle > 0 && now.duration_since(last) >= Duration::from_secs(idle));
+        if hit {
+            return detach(&captured, max_lines, &id, pid, &joined, &log_path, start);
+        }
+
         let n = rf.read(&mut chunk).unwrap_or(0);
         if n > 0 {
             last = Instant::now();
             append_capped(&mut captured, &chunk[..n], max_bytes);
-            continue;
+            continue; // drain fast; the detach check above runs every iteration
         }
+        // No new output right now: check for exit, else back off briefly.
         if let Some(status) = child.try_wait()? {
-            // Drain anything written between the last read and exit.
             loop {
                 let n = rf.read(&mut chunk).unwrap_or(0);
                 if n == 0 {
@@ -163,15 +176,6 @@ fn start(
                 &log_path,
                 start,
             );
-        }
-        let now = Instant::now();
-        let hit = bg
-            || (timeout > 0 && now.duration_since(start) >= Duration::from_secs(timeout))
-            || (idle > 0 && now.duration_since(last) >= Duration::from_secs(idle));
-        if hit {
-            // Detach: do NOT kill or wait. Dropping `child` does not kill it
-            // (std), and it owns the log file, so it keeps running + writing.
-            return detach(&captured, max_lines, &id, pid, &joined, &log_path, start);
         }
         std::thread::sleep(Duration::from_millis(100));
     }
