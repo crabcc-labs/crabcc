@@ -20,3 +20,5 @@ mod auto_index;
 mod e2e_walkdir;
 #[path = "integration/graph_v4.rs"]
 mod graph_v4;
+#[path = "integration/shell_rewrite_e2e.rs"]
+mod shell_rewrite_e2e;
