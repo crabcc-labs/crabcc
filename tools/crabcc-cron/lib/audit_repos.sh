@@ -15,10 +15,12 @@
 # Returns 0 always; caller checks stdout for emptiness.
 enumerate_audit_repos() {
   local repos name denied ex
+  # Include primaryLanguage to filter Rust repos in jq instead of making a
+  # per-repo `gh api .../Cargo.toml` existence check (N+1 calls → 1 call).
   repos="$(gh repo list peterlodri-sec \
     --no-archived \
     --limit 200 \
-    --json name,defaultBranch 2>/dev/null \
+    --json name,defaultBranch,primaryLanguage 2>/dev/null \
     || echo '[]')"
 
   while IFS= read -r name; do
@@ -31,10 +33,7 @@ enumerate_audit_repos() {
     done
     (( denied == 1 )) && continue
 
-    # Rust repo check: does Cargo.toml exist at root?
-    if gh api "/repos/peterlodri-sec/${name}/contents/Cargo.toml" >/dev/null 2>&1; then
-      printf '%s\n' "$name"
-    fi
-  done < <(jq -r '.[].name' <<<"$repos")
+    printf '%s\n' "$name"
+  done < <(jq -r '.[] | select(.primaryLanguage.name == "Rust") | .name' <<<"$repos")
   return 0
 }

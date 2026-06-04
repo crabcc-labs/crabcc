@@ -12,16 +12,42 @@
 # Print JSON object {repo:"owner/name", issue:{...}, stars: N} on stdout,
 # or empty string if no eligible issue exists.
 pick_issue() {
-  local r issues issue n stars best_stars="" best_payload=""
+  local r owner repo issues issue n stars best_stars="" best_payload="" gql_result
   while IFS= read -r r; do
     [[ -z "$r" ]] && continue
-    issues="$(gh issue list \
-      --repo "$r" \
-      --label "good first issue,help wanted,E-easy,D-easy" \
-      --state open \
-      --json number,title,labels,assignees,linkedBranches,createdAt,updatedAt,comments 2>/dev/null \
-      || echo '[]')"
-    stars="$(gh repo view "$r" --json stargazerCount 2>/dev/null | jq -r '.stargazerCount // 0')"
+    owner="${r%%/*}"
+    repo="${r#*/}"
+    # Single GraphQL query replaces two REST calls per repo:
+    # `gh issue list` + `gh repo view --json stargazerCount` → one round-trip.
+    # Issues are filtered by label (OR) and sorted by number ascending server-side.
+    gql_result="$(gh api graphql \
+      -f query='query($owner:String!,$repo:String!){
+        repository(owner:$owner,name:$repo){
+          stargazerCount
+          issues(states:[OPEN],
+                 labels:["good first issue","help wanted","E-easy","D-easy"],
+                 first:30,orderBy:{field:NUMBER,direction:ASC}){
+            nodes{
+              number title createdAt updatedAt
+              labels{nodes{name}}
+              assignees{nodes{login}}
+              comments{totalCount}
+              linkedBranches{nodes{ref{name}}}
+            }
+          }
+        }
+      }' \
+      -f owner="$owner" -f repo="$repo" 2>/dev/null || echo '{}')"
+    stars="$(echo "$gql_result" | jq -r '.data.repository.stargazerCount // 0')"
+    # Reshape GraphQL nodes to match the JSON shape expected by eligibility.sh.
+    issues="$(echo "$gql_result" | jq -c '
+      [.data.repository.issues.nodes // [] | .[] | {
+        number, title, createdAt, updatedAt,
+        labels:        [.labels.nodes[]       | {name}],
+        assignees:     [.assignees.nodes[]    | {login}],
+        comments:      {totalCount: .comments.totalCount},
+        linkedBranches:[.linkedBranches.nodes[] | {ref:{name:.ref.name}}]
+      }]')"
 
     # Filter to eligible issues, sort ascending by number, take first.
     while IFS= read -r issue; do

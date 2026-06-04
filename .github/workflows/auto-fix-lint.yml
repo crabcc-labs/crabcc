@@ -52,9 +52,9 @@ jobs:
           PR: ${{ github.event.inputs.pr }}
         run: |
           set -euo pipefail
-          # Manually triggered for a specific PR number — workflow_dispatch does
-          # not carry PR context, so resolve the head branch + SHA from the API.
-          meta=$(gh pr view "$PR" --json headRefName,headRefOid 2>/dev/null || echo '{}')
+          # Manually triggered for a specific PR number — fetch head branch,
+          # SHA, and commits in one call so loop-guard needs no extra API hit.
+          meta=$(gh pr view "$PR" --json headRefName,headRefOid,commits 2>/dev/null || echo '{}')
           HEAD_BRANCH=$(echo "$meta" | jq -r '.headRefName // empty')
           HEAD_SHA=$(echo "$meta" | jq -r '.headRefOid // empty')
           if [ -z "$HEAD_BRANCH" ] || [ -z "$HEAD_SHA" ]; then
@@ -66,9 +66,9 @@ jobs:
           echo "head_ref=$HEAD_BRANCH" >> "$GITHUB_OUTPUT"
           echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
 
-          # Stop infinite loops — if the PR head is itself an auto-fix commit
-          # (message starts with [auto-fix]), bail.
-          last_msg=$(gh api "/repos/${{ github.repository }}/commits/$HEAD_SHA" --jq '.commit.message')
+          # Stop infinite loops — commit message already in the pr view response.
+          last_msg=$(echo "$meta" | jq -r --arg sha "$HEAD_SHA" \
+            '.commits // [] | map(select(.oid == $sha)) | .[0].messageHeadline // empty')
           if echo "$last_msg" | head -1 | grep -q '^\[auto-fix\]'; then
             echo "head commit already auto-fixed; not retrying"
             echo "should_fix=false" >> "$GITHUB_OUTPUT"

@@ -284,30 +284,27 @@ elif [ "$DRY_RUN" = "1" ]; then
     echo "  [dry-run] gh pr create --base $BASE --title \"$MSG\""
     step_ok 5 "dry-run"
 else
-    EXISTING="$(gh pr view "$BRANCH" --json number,url \
-        --jq '"#\(.number)  \(.url)"' 2>/dev/null || true)"
-    if [ -n "$EXISTING" ]; then
+    bash scripts/gen-summary.sh --quiet >> "$LOG" 2>&1 || true
+    BODY_ARG=""
+    [ -f ".summary/gen-summary.md" ] && BODY_ARG="--body-file .summary/gen-summary.md"
+    # Optimistic create: skip the pre-flight gh pr view (saves 1 API call in
+    # the common new-PR case). Detect "already exists" from stderr on failure,
+    # then fetch the URL only on that slower path.
+    # shellcheck disable=SC2086
+    PR_STDERR="$(mktemp)"
+    PR_OUT="$(gh pr create --base "$BASE" --title "$MSG" $BODY_ARG 2>"$PR_STDERR" || true)"
+    PR_URL="$(echo "$PR_OUT" | grep -oE 'https://github\.com/[^[:space:]]+' | tail -1 || true)"
+    if [ -n "$PR_URL" ]; then
+        step_ok 5 "$PR_URL"
+    elif grep -qiE 'already exists|already has a pull request' "$PR_STDERR" 2>/dev/null; then
+        EXISTING="$(gh pr view "$BRANCH" --json url --jq '.url' 2>/dev/null || true)"
         step_ok 5 "already open  $EXISTING"
     else
-        bash scripts/gen-summary.sh --quiet >> "$LOG" 2>&1 || true
-        BODY_ARG=""
-        [ -f ".summary/gen-summary.md" ] && BODY_ARG="--body-file .summary/gen-summary.md"
-        # Capture stdout only; send stderr to log so error messages don't
-        # corrupt the URL. Extract the https URL explicitly rather than
-        # relying on tail -1 which breaks if gh emits warnings.
-        # shellcheck disable=SC2086
-        PR_OUT="$(gh pr create \
-            --base "$BASE" \
-            --title "$MSG" \
-            $BODY_ARG 2>>"$LOG" || true)"
-        PR_URL="$(echo "$PR_OUT" | grep -oE 'https://github\.com/[^[:space:]]+' | tail -1 || true)"
-        if [ -n "$PR_URL" ]; then
-            step_ok 5 "$PR_URL"
-        else
-            step_fail 5 "gh pr create failed — see $LOG"
-            print_report 1; exit 1
-        fi
+        cat "$PR_STDERR" >> "$LOG"
+        step_fail 5 "gh pr create failed — see $LOG"
+        print_report 1; exit 1
     fi
+    rm -f "$PR_STDERR"
 fi
 
 print_report 0
