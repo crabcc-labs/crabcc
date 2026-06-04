@@ -92,16 +92,14 @@ fn extra_b() {}
 "#;
 
 /// Build an on-disk index so definition/references/workspaceSymbol have
-/// real rows to return, mirroring the production `crabcc index` sequence
-/// (symbol DB + tantivy sidecar).
+/// real rows to return. Fuzzy/prefix read the live SQLite index, so a plain
+/// `full_index` is the whole setup.
 fn build_index(root: &Path, primary: &str) {
     std::fs::write(root.join("conc.rs"), primary).expect("write fixture");
     let db_path = root.join(".crabcc/index.db");
     std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
     let store = crabcc_core::store::Store::open(&db_path).expect("open store");
     crabcc_core::index::full_index(root, &store).expect("full_index");
-    let fts = crabcc_core::fts::Fts::open(&root.join(".crabcc/tantivy")).expect("open fts");
-    fts.rebuild(&store).expect("fts rebuild");
 }
 
 async fn boot(root: &Path) -> Arc<Shared> {

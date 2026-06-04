@@ -38,7 +38,6 @@ serde_json = { workspace = true }
 ignore = { workspace = true }
 memchr = { workspace = true }
 rayon = { workspace = true }
-tantivy = { workspace = true }
 tree-sitter = { workspace = true }
 tree-sitter-typescript = { workspace = true }
 tree-sitter-javascript = { workspace = true }
@@ -77,5 +76,12 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 # doesn't fail (the file doesn't exist yet) and CI's `--all-targets` skips it.
 [[bench]]
 name = "symbols"
+harness = false
+required-features = ["bench"]
+
+# Native fuzzy/prefix search matrix (corpus size × query shape). Replaced the
+# Tantivy sidecar in v6.x; this quantifies the brute-force scan's scaling.
+[[bench]]
+name = "fts_search"
 harness = false
 required-features = ["bench"]

@@ -28,6 +28,18 @@ pub struct Symbol {
     pub visibility: Option<String>,
 }
 
+/// Name-only symbol projection for consumers that never read `signature`
+/// (fuzzy/prefix FTS). Omitting the `signature` column means the FSST-encoded
+/// blob is never fetched or decompressed — see `Store::iter_symbol_names`.
+#[derive(Debug, Clone)]
+pub struct SymbolName {
+    pub name: String,
+    pub kind: SymbolKind,
+    pub parent: Option<String>,
+    pub file: String,
+    pub line_start: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Edge {
     pub src_file: String,

@@ -1519,7 +1519,6 @@ fn main() -> Result<()> {
         .parent()
         .with_context(|| format!("db path {} has no parent directory", db.display()))?;
     std::fs::create_dir_all(db_parent)?;
-    let fts_dir = resolved.fts_dir();
     let store = {
         let s = Store::open_with_compress(&db, cli.compress)?;
         if s.needs_reindex {
@@ -1531,9 +1530,6 @@ fn main() -> Result<()> {
             let fresh = Store::open_with_compress(&db, cli.compress)?;
             crabcc_core::index::full_index(&root, &fresh)?;
             fresh.mark_schema_v4_built()?;
-            if let Ok(fts) = crabcc_core::fts::Fts::open(&fts_dir) {
-                let _ = fts.rebuild(&fresh);
-            }
             fresh
         } else {
             s
@@ -1560,9 +1556,6 @@ fn main() -> Result<()> {
             IndexOp::Build => {
                 let stats = crabcc_core::index::full_index(&root, &store)?;
                 store.mark_schema_v4_built()?;
-                if let Ok(fts) = crabcc_core::fts::Fts::open(&fts_dir) {
-                    let _ = fts.rebuild(&store);
-                }
                 println!("{}", sonic_rs::to_string(&stats)?);
                 if std::env::var_os("CRABCC_BACKUP_DISABLE").is_none() {
                     backup::auto_snapshot_after_index(&root);
@@ -1581,8 +1574,10 @@ fn main() -> Result<()> {
                 }
             }
             IndexOp::FtsRebuild => {
-                let fts = crabcc_core::fts::Fts::open(&fts_dir)?;
-                let n = fts.rebuild(&store)?;
+                // Retained for backward compatibility. Fuzzy/prefix now query
+                // the live SQLite index directly, so there is no sidecar to
+                // rebuild — this just reports the searchable symbol count.
+                let n = crabcc_core::fts::Fts::from_store(&store)?.len();
                 println!("{{\"indexed\":{n}}}");
             }
             IndexOp::Watch { debounce } => {
@@ -1710,7 +1705,7 @@ fn main() -> Result<()> {
                 println!("{{\"status\":\"todo\",\"op\":\"grep\",\"pattern\":\"{pattern}\"}}");
             }
             LookupOp::Fuzzy { query, limit } => {
-                let fts = crabcc_core::fts::Fts::open(&fts_dir)?;
+                let fts = crabcc_core::fts::Fts::from_store(&store)?;
                 let hits = fts.fuzzy(&query, limit)?;
                 let body = sonic_rs::to_string(&hits)?;
                 crabcc_core::track::record(
@@ -1724,7 +1719,7 @@ fn main() -> Result<()> {
                 println!("{body}");
             }
             LookupOp::Prefix { query, limit } => {
-                let fts = crabcc_core::fts::Fts::open(&fts_dir)?;
+                let fts = crabcc_core::fts::Fts::from_store(&store)?;
                 let hits = fts.prefix(&query, limit)?;
                 let body = sonic_rs::to_string(&hits)?;
                 crabcc_core::track::record(
@@ -2172,7 +2167,8 @@ fn run_workspace(cli: Cli) -> Result<()> {
             let query = query.clone();
             let limit = *limit;
             let by_repo = workspace::map_each(&repos, |r| {
-                let fts = crabcc_core::fts::Fts::open(&r.fts_dir())?;
+                let store = Store::open_with_compress(&r.db(), cli.compress)?;
+                let fts = crabcc_core::fts::Fts::from_store(&store)?;
                 let hits = fts.fuzzy(&query, limit)?;
                 Ok((hits.len(), hits))
             });
@@ -2187,7 +2183,8 @@ fn run_workspace(cli: Cli) -> Result<()> {
             let query = query.clone();
             let limit = *limit;
             let by_repo = workspace::map_each(&repos, |r| {
-                let fts = crabcc_core::fts::Fts::open(&r.fts_dir())?;
+                let store = Store::open_with_compress(&r.db(), cli.compress)?;
+                let fts = crabcc_core::fts::Fts::from_store(&store)?;
                 let hits = fts.prefix(&query, limit)?;
                 Ok((hits.len(), hits))
             });

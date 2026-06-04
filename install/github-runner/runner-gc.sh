@@ -140,6 +140,26 @@ if [ -d "$TOOL_CACHE_PATH" ] && ! runner_busy; then
   log "tool-cache: pruned entries older than 30d from ${TOOL_CACHE_PATH}"
 fi
 
+# ── Cargo target dirs on the cache volume ─────────────────────────────────
+# CARGO_TARGET_DIR is relocated onto the data volume (see install.sh) and
+# namespaced per runner under ${CACHE_BASE}/target/<runner>. Build artifacts
+# are fully regenerable, so prune per-runner trees not touched in 7 days.
+# Skipped mid-build — the live target dir would be deleted out from under cargo.
+TARGET_BASE="${RUNNER_TARGET_BASE:-${CACHE_BASE}/target}"
+if [ -d "$TARGET_BASE" ] && ! runner_busy; then
+  # Prune a per-runner target dir only when its WHOLE subtree is cold (no file
+  # touched in 7d). Keying on the top-level dir's own mtime would wrongly evict
+  # a steadily-built cache whose layout (debug/, release/) rarely changes, which
+  # only updates the parent dir's mtime when entries are added/removed.
+  for d in "$TARGET_BASE"/*/; do
+    [ -d "$d" ] || continue
+    if [ -z "$(find "$d" -type f -newermt '7 days ago' -print -quit 2>/dev/null)" ]; then
+      rm -rf "$d" 2>/dev/null || true
+      log "cargo target: pruned cold dir ${d}"
+    fi
+  done
+fi
+
 # ── System caches: apt + journald ─────────────────────────────────────────
 sudo apt-get clean 2>/dev/null || true
 command -v journalctl >/dev/null 2>&1 && sudo journalctl --vacuum-time=2d 2>/dev/null || true
