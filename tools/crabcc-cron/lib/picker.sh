@@ -29,10 +29,10 @@ pick_issue() {
                  first:30,orderBy:{field:NUMBER,direction:ASC}){
             nodes{
               number title createdAt updatedAt
-              labels{nodes{name}}
-              assignees{nodes{login}}
+              labels(first:20){nodes{name}}
+              assignees(first:10){nodes{login}}
               comments{totalCount}
-              linkedBranches{nodes{ref{name}}}
+              linkedBranches(first:5){nodes{ref{name}}}
             }
           }
         }
