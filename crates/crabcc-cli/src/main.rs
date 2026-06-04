@@ -164,6 +164,12 @@ enum LookupOp {
         ext: Option<String>,
         #[arg(long, default_value_t = 0)]
         limit: usize,
+        /// Group basenames under their directory
+        /// (`{"<dir>":["a.rs","b.rs"],…}`) instead of a flat array of full
+        /// paths. Eliminates the repeated directory prefixes — far fewer
+        /// tokens for a large file list.
+        #[arg(long)]
+        group: bool,
     },
     /// Symbol-aware grep wrapper.
     Grep { pattern: String },
@@ -1305,6 +1311,7 @@ fn main() -> Result<()> {
                 lang,
                 ext,
                 limit,
+                group,
             } => {
                 let files = list_files(
                     &store,
@@ -1313,7 +1320,11 @@ fn main() -> Result<()> {
                     ext.as_deref(),
                     limit,
                 )?;
-                let body = sonic_rs::to_string(&files)?;
+                let body = if group {
+                    sonic_rs::to_string(&group_by_dir(&files))?
+                } else {
+                    sonic_rs::to_string(&files)?
+                };
                 crabcc_core::track::record(
                     "files",
                     "list",
@@ -1972,6 +1983,21 @@ fn list_files(
         out.truncate(limit);
     }
     Ok(out)
+}
+
+/// Fold a flat list of repo-relative paths into `{ "<dir>": ["base", …] }`,
+/// eliminating the directory prefix repeated on every path. Root-level
+/// files group under ".". `BTreeMap` keeps the output deterministic.
+fn group_by_dir(paths: &[String]) -> std::collections::BTreeMap<&str, Vec<&str>> {
+    let mut map: std::collections::BTreeMap<&str, Vec<&str>> = std::collections::BTreeMap::new();
+    for p in paths {
+        let (dir, base) = match p.rfind('/') {
+            Some(i) => (&p[..i], &p[i + 1..]),
+            None => (".", p.as_str()),
+        };
+        map.entry(dir).or_default().push(base);
+    }
+    map
 }
 
 /// True for commands that read the symbol index but don't build it
