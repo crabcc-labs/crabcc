@@ -270,7 +270,11 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: install mold linker
-        run: command -v mold >/dev/null 2>&1 || sudo apt-get install -y --no-install-recommends mold
+        run: |
+          command -v mold >/dev/null 2>&1 || sudo apt-get install -y --no-install-recommends mold
+          # ripgrep must be on PATH for shell_rewrite_e2e::find_swaps_to_ripgrep —
+          # the rewriter only emits the find→rg swap when `rg` is found on PATH.
+          command -v rg >/dev/null 2>&1 || sudo apt-get install -y --no-install-recommends ripgrep
 
       # See lint-job comment above for why this is the only cache
       # layer needed at the dependency-blob level. The `ci-ubuntu`
