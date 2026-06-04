@@ -76,3 +76,7 @@ harness = false
 name = "extractor_cost"
 harness = false
 
+[[bench]]
+name = "fixture_scale"
+harness = false
+

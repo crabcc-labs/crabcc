@@ -1071,6 +1071,14 @@ fn signature_for(node: &Node, src: &[u8], lang: &str) -> Option<String> {
         .child_by_field_name("body")
         .or_else(|| node.child_by_field_name("value"));
     let start = node.start_byte();
+    // Tree-sitter byte offsets are normally in-bounds for `src`, but a tree
+    // reused as an incremental-parse hint whose `InputEdit`s don't match the
+    // text it's reparsed against (e.g. concurrent edits to the same document
+    // upstream of the LSP indexer) can hand back stale ranges with end < start
+    // or past the buffer. Slice through `get()` so a bad range degrades to
+    // "no signature" instead of panicking — a panic here would poison the
+    // caller's store mutex and wedge all further indexing.
+    let tail = src.get(start..)?;
     let end = body.map(|b| b.start_byte()).unwrap_or_else(|| {
         // No body — take just the first line.
         let nl = src[start..]
@@ -1079,7 +1087,7 @@ fn signature_for(node: &Node, src: &[u8], lang: &str) -> Option<String> {
             .unwrap_or_default();
         start + nl
     });
-    let raw = std::str::from_utf8(&src[start..end]).ok()?;
+    let raw = std::str::from_utf8(src.get(start..end)?).ok()?;
     Some(compact(raw, lang))
 }
 

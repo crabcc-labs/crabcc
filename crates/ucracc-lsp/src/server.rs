@@ -34,9 +34,6 @@ pub struct Backend {
     /// (moka::sync) — cache hits never touch store/fts locks.
     pub cache: Arc<LruCache>,
     pub open_docs: Arc<DashMap<Url, Arc<String>>>,
-    /// Per-document parsed `Tree`. Per-key DashMap locking so reparse
-    /// in `did_change` doesn't block concurrent readers.
-    pub trees: Arc<DashMap<Url, tree_sitter::Tree>>,
     /// SQLite store. `Arc<Mutex<…>>` so `spawn_blocking` can clone a
     /// handle without the old `RwLock<State>` read guard.
     pub store: Arc<std::sync::Mutex<Option<Store>>>,
@@ -97,7 +94,6 @@ impl Backend {
             })),
             cache: Arc::new(LruCache::new()),
             open_docs: Arc::new(DashMap::new()),
-            trees: Arc::new(DashMap::new()),
             store: Arc::new(std::sync::Mutex::new(None)),
             fts: Arc::new(std::sync::Mutex::new(None)),
             graph: Arc::new(std::sync::Mutex::new(None)),
@@ -248,9 +244,10 @@ impl LanguageServer for Backend {
     }
 
     async fn did_change(&self, p: DidChangeTextDocumentParams) {
-        // INCREMENTAL sync — each event has a `range`. We apply changes
-        // to the in-memory mirror AND to the cached parse tree so the
-        // next parse can reuse subtrees outside the touched region.
+        // INCREMENTAL sync — each event carries a `range`. We fold the
+        // edits into the in-memory text mirror; re-indexing reparses that
+        // text from scratch (see `index_uri` for why we no longer keep a
+        // per-document tree to reuse as an incremental hint).
         let cfg = self.root_config.lock().await.clone();
         let uri = p.text_document.uri.clone();
         let mut text = self
@@ -259,38 +256,21 @@ impl LanguageServer for Backend {
             .map(|e| e.value().clone())
             .unwrap_or_default();
 
-        // Apply each change to the in-memory text and accumulate edits
-        // to apply to the cached tree.
-        let mut tree_edits = Vec::with_capacity(p.content_changes.len());
-        let mut had_full_replace = false;
         for change in p.content_changes {
             if change.range.is_none() {
-                // Full replace event — drop the tree, replace the text.
+                // Full-replace event — swap the whole buffer.
                 text = Arc::new(change.text);
-                had_full_replace = true;
-                tree_edits.clear();
-            } else if let Some(edit) =
-                crate::incremental::apply_change(Arc::make_mut(&mut text), &change)
-            {
-                tree_edits.push(edit);
+            } else {
+                // Range edit — mutate the in-memory mirror in place. The
+                // `InputEdit` `apply_change` returns is unused now that the
+                // reindex does a full parse.
+                let _ = crate::incremental::apply_change(Arc::make_mut(&mut text), &change);
             }
         }
 
         let final_text = text.clone();
         self.open_docs.insert(uri.clone(), final_text.clone());
         self.cache.invalidate_all();
-
-        if had_full_replace {
-            self.trees.remove(&uri);
-        } else if !tree_edits.is_empty() {
-            // Apply the edits to the cached tree so the next reparse
-            // can pick up subtrees outside the changed range.
-            if let Some(mut t) = self.trees.get_mut(&uri) {
-                for edit in &tree_edits {
-                    t.edit(edit);
-                }
-            }
-        }
         self.index_uri(&uri, &final_text, &cfg.repo_root).await;
     }
 
@@ -315,7 +295,6 @@ impl LanguageServer for Backend {
 
     async fn did_close(&self, p: DidCloseTextDocumentParams) {
         self.open_docs.remove(&p.text_document.uri);
-        self.trees.remove(&p.text_document.uri);
     }
 
     async fn document_symbol(
@@ -660,13 +639,10 @@ impl Backend {
         };
 
         let cfg = self.root_config.lock().await.clone();
-        let uri_owned = uri.clone();
         let result: AResult<()> = tokio::task::spawn_blocking({
             let rel = rel.clone();
             let src = src.to_string();
             let store = self.store.clone();
-            let trees = self.trees.clone();
-            let uri = uri_owned;
             move || -> AResult<()> {
                 ensure_store(&store, &cfg.db_path);
                 let store_guard = store.lock().unwrap();
@@ -707,11 +683,16 @@ impl Backend {
                 }
 
                 // crabcc-core languages (now including Swift and Bash):
-                // delegate to its extractor. We drive the parser
-                // ourselves so we can reuse the cached `Tree` from the
-                // last edit — `parser.parse(src, Some(&old_tree))` lets
-                // tree-sitter skip subtrees outside the InputEdit
-                // ranges that `did_change` already applied to that tree.
+                // delegate to its extractor. We always do a FULL parse of
+                // `src` (`old_tree = None`). Reusing a cached per-document
+                // tree as an incremental hint is unsound here: tower-lsp
+                // dispatches notifications concurrently, so a racing
+                // `did_change` for the same uri can leave the cached tree's
+                // `InputEdit`s inconsistent with `src` — feeding that to
+                // `parser.parse` makes tree-sitter panic, which under the
+                // release `panic = "abort"` profile takes down the whole
+                // server. A single-file full parse is cheap; correctness
+                // wins. (See tests/concurrency.rs, which reproduces this.)
                 if let Some(detected) =
                     crabcc_core::extract::detect_lang(std::path::Path::new(&rel))
                 {
@@ -721,9 +702,8 @@ impl Backend {
                         .set_language(&ts_lang)
                         .map_err(|e| anyhow::anyhow!("set_language({detected}): {e}"))?;
 
-                    let old_tree = trees.remove(&uri).map(|(_, t)| t);
                     let new_tree = parser
-                        .parse(&src, old_tree.as_ref())
+                        .parse(&src, None)
                         .ok_or_else(|| anyhow::anyhow!("parse failed for {rel}"))?;
 
                     let (syms, edges) = crabcc_core::extract::extract_from_root(
@@ -735,8 +715,6 @@ impl Backend {
                     let fid = store.upsert_file(&rel, &sha, mtime, detected)?;
                     store.replace_symbols(fid, &syms)?;
                     store.replace_edges(fid, &edges)?;
-                    // Re-cache the freshly-parsed tree.
-                    trees.insert(uri.clone(), new_tree);
                 }
                 Ok(())
             }

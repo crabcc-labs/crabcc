@@ -193,6 +193,17 @@ tasks:
     cmds:
       - "(cd crates/crabcc-core/fuzz && {{.CARGO}} check)"
 
+  lsp-race:
+    desc: Run the ucracc-lsp concurrency suite under ThreadSanitizer (nightly + rust-src)
+    summary: |
+      Data-race (UB) detection for the LSP's shared Backend state
+      (open_docs / store / fts / cache). Opt-in: needs a nightly toolchain
+      with the rust-src component (TSan rebuilds std), so it is NOT part of
+      CI — the same tests also run race-free under the normal `task test`.
+      See scripts/lsp-race-tsan.sh. Override the target with TARGET=...
+    cmds:
+      - bash scripts/lsp-race-tsan.sh
+
   coverage:
     desc: Generate code-coverage report (cargo-llvm-cov). FORMAT=html (default), lcov, text, or json
     summary: |
