@@ -51,7 +51,8 @@ use notify_debouncer_mini::{
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, RecvTimeoutError};
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// Returned by `spawn`. Holds the worker thread join handle and a stop flag
@@ -179,10 +180,7 @@ fn directory_event(path: &Path) -> bool {
 }
 
 fn run_refresh(root: &Path, store: &Arc<Mutex<Store>>) {
-    let store = match store.lock() {
-        Ok(s) => s,
-        Err(p) => p.into_inner(),
-    };
+    let store = store.lock();
     match index::refresh(root, &store) {
         Ok(stats) => {
             // Compact one-line summary — JSON for any harness piping us.
@@ -311,7 +309,7 @@ mod tests {
         h.block_until_done().unwrap();
 
         // The new symbol should now be in the index.
-        let store = store.lock().unwrap();
+        let store = store.lock();
         let hits = store.find_by_name("added").unwrap();
         assert!(
             !hits.is_empty(),

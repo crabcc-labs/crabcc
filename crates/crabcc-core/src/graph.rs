@@ -109,9 +109,9 @@ impl CallGraph {
         let mut sccs = tarjan_scc(&self.callees);
         sccs.retain(|c| c.len() >= 2);
         for c in &mut sccs {
-            c.sort();
+            c.sort_unstable();
         }
-        sccs.sort_by(|a, b| a[0].cmp(&b[0]));
+        sccs.sort_unstable_by(|a, b| a[0].cmp(&b[0]));
         tracing::info!(
             target: "crabcc_core::graph",
             kpi = "graph.cycles",
@@ -132,7 +132,7 @@ impl CallGraph {
             .copied()
             .filter(|k| !self.callers.contains_key(k))
             .collect();
-        out.sort();
+        out.sort_unstable();
         tracing::info!(
             target: "crabcc_core::graph",
             kpi = "graph.orphans",
@@ -214,7 +214,7 @@ fn tarjan_scc(adj: &BTreeMap<i64, BTreeSet<i64>>) -> Vec<Vec<i64>> {
     }
 
     let mut nodes: Vec<i64> = adj.keys().copied().collect();
-    nodes.sort();
+    nodes.sort_unstable();
     for start in nodes {
         if idx.contains_key(&start) {
             continue;

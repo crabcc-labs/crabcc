@@ -133,7 +133,7 @@ pub(crate) fn list_indexed_files(
         })
         .map(|(p, _)| p)
         .collect();
-    out.sort();
+    out.sort_unstable();
     if limit > 0 && out.len() > limit {
         out.truncate(limit);
     }

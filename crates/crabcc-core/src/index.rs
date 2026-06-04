@@ -269,9 +269,9 @@ pub fn refresh_delta(root: &Path, store: &Store) -> Result<RefreshDelta> {
 
     // Sort each bucket so the JSON output is deterministic — matters for
     // the fingerprint feature and for diffing across calls.
-    delta.added.sort();
-    delta.modified.sort();
-    delta.removed.sort();
+    delta.added.sort_unstable();
+    delta.modified.sort_unstable();
+    delta.removed.sort_unstable();
 
     tracing::info!(
         target: "crabcc_core::index",
@@ -478,7 +478,7 @@ mod tests {
         let d = refresh_delta(dir.path(), &store).unwrap();
         let sorted: Vec<String> = {
             let mut v = d.added.clone();
-            v.sort();
+            v.sort_unstable();
             v
         };
         assert_eq!(d.added, sorted, "added must be sorted: {:?}", d.added);

@@ -1242,7 +1242,7 @@ fn main() -> Result<()> {
                 println!("{{\"indexed\":{n}}}");
             }
             IndexOp::Watch { debounce } => {
-                let store = std::sync::Arc::new(std::sync::Mutex::new(store));
+                let store = std::sync::Arc::new(parking_lot::Mutex::new(store));
                 crabcc_core::watch::watch(
                     &root,
                     store,
@@ -1677,7 +1677,7 @@ fn run_model_info(op: &ModelInfoOp) -> Result<()> {
                     (n.starts_with(".model.") && n.ends_with(".info")).then_some(n)
                 })
                 .collect();
-            rows.sort();
+            rows.sort_unstable();
             if *json {
                 let dir_s = dir.display().to_string();
                 let arr: Vec<String> = rows.iter().map(|n| format!("\"{n}\"")).collect();
@@ -1995,7 +1995,7 @@ fn list_files(
         })
         .map(|(p, _)| p)
         .collect();
-    out.sort();
+    out.sort_unstable();
     if limit > 0 && out.len() > limit {
         out.truncate(limit);
     }
