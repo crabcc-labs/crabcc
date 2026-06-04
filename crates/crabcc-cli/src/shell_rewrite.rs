@@ -468,31 +468,11 @@ const COMPACTABLE: &[&str] = &[
     "cat", "gh", "git", "rg", "grep", "find", "curl", "jq", "tree",
 ];
 
-/// First token of a simple (no-metacharacter) command, if it's worth
-/// piping through a compaction stage.
-fn compactable_program(cmd: &str) -> Option<String> {
-    let toks = tokenize(cmd)?;
-    let prog = toks.into_iter().next()?;
-    COMPACTABLE.contains(&prog.as_str()).then_some(prog)
-}
-
 /// Morph Compact is enabled iff a key is present (privacy gate) and not
 /// explicitly disabled. The network cost (~1s+ on large inputs) is opt-in
 /// via the key; RTK does the bulk, local, free reduction below it.
 fn morph_enabled() -> bool {
     std::env::var_os("MORPH_API_KEY").is_some() && std::env::var_os("CRABCC_NO_MORPH").is_none()
-}
-
-/// The rtk filter matching a command's output format, if rtk ships one
-/// (rtk's filters are command-aware + roughly lossless, not summarisers).
-fn rtk_filter_for(prog: &str) -> Option<&'static str> {
-    match prog {
-        "grep" | "rg" => Some("grep"),
-        "find" => Some("find"),
-        "cargo" => Some("cargo-test"),
-        "pytest" => Some("pytest"),
-        _ => None,
-    }
 }
 
 /// An `rtk pipe --filter <f>` stage. **Auto-engages** (part of the default
@@ -506,7 +486,16 @@ fn rtk_stage(prog: &str) -> Option<String> {
     let filter = std::env::var("CRABCC_RTK_PIPE")
         .ok()
         .filter(|f| !f.trim().is_empty())
-        .or_else(|| rtk_filter_for(prog).map(String::from))?;
+        .or_else(|| {
+            let f: Option<&str> = match prog {
+                "grep" | "rg" => Some("grep"),
+                "find" => Some("find"),
+                "cargo" => Some("cargo-test"),
+                "pytest" => Some("pytest"),
+                _ => None,
+            };
+            f.map(String::from)
+        })?;
     Some(format!("rtk pipe --filter {}", shq(&filter)))
 }
 
@@ -613,7 +602,9 @@ pub fn run(
         None => (
             command.to_string(),
             None,
-            compactable_program(command).is_some(),
+            tokenize(command)
+                .and_then(|t| t.into_iter().next())
+                .is_some_and(|p| COMPACTABLE.contains(&p.as_str())),
         ),
     };
 
