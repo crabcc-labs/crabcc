@@ -73,6 +73,10 @@ pub fn run(
 
     let payload = if write {
         std::fs::write(&abs, &new_content).with_context(|| format!("write {}", abs.display()))?;
+        // Refresh the index for the touched file: the write shifted line
+        // numbers, so without this a later edit in the same file would resolve
+        // against stale `line_start`/`line_end` and splice into the wrong span.
+        let reindexed = reindex_file(store, &file, &abs).is_ok();
         json!({
             "file": file,
             "symbol": selector,
@@ -81,6 +85,7 @@ pub fn run(
             "mode": used_mode,
             "written": true,
             "bytes": new_content.len(),
+            "reindexed": reindexed,
         })
     } else {
         json!({
@@ -200,13 +205,24 @@ fn extract_span(src: &str, start: u32, end: u32) -> Result<String> {
 pub fn splice_span(src: &str, start: u32, end: u32, new_span: &str) -> Result<String> {
     let lines: Vec<&str> = src.split('\n').collect();
     let (s, e) = span_bounds(lines.len(), start, end)?;
-    // The new span may itself be multi-line; drop a single trailing newline so
-    // we don't introduce a blank line where the old span had none.
+    // `split('\n')` keeps each line's trailing `\r`, so the unchanged lines are
+    // preserved byte-for-byte (CRLF stays CRLF after `join("\n")`). The only
+    // gap is the update, which arrives as LF: give its lines the file's `\r`
+    // when the file is CRLF so we don't inject mixed endings.
+    let crlf = src.contains("\r\n");
+    // Drop a single trailing newline on the update so we don't add a blank line.
     let new_trimmed = new_span.strip_suffix('\n').unwrap_or(new_span);
-    let mut out: Vec<&str> = Vec::with_capacity(lines.len());
-    out.extend_from_slice(&lines[..s]);
-    out.extend(new_trimmed.split('\n'));
-    out.extend_from_slice(&lines[e..]);
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    out.extend(lines[..s].iter().map(|l| l.to_string()));
+    for line in new_trimmed.split('\n') {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        out.push(if crlf {
+            format!("{line}\r")
+        } else {
+            line.to_string()
+        });
+    }
+    out.extend(lines[e..].iter().map(|l| l.to_string()));
     Ok(out.join("\n"))
 }
 
@@ -235,6 +251,36 @@ fn read_stdin() -> Result<String> {
         bail!("no update provided (pass --update or pipe the new symbol body on stdin)");
     }
     Ok(buf)
+}
+
+/// Re-extract `rel` from disk and replace its index rows, so a later edit in
+/// the same file resolves against the new spans. Mirrors the per-file path of
+/// `crabcc_core::index::build_index`; best-effort (an unsupported language,
+/// unreadable bytes, or a parse error leaves the file written but the index
+/// untouched, exactly as a full index would skip it).
+fn reindex_file(store: &Store, rel: &str, abs: &Path) -> Result<()> {
+    use crabcc_core::{extract, hash};
+    let Some(lang) = extract::detect_lang(abs) else {
+        return Ok(());
+    };
+    let bytes = std::fs::read(abs).with_context(|| format!("reindex read {}", abs.display()))?;
+    let Ok(src) = std::str::from_utf8(&bytes) else {
+        return Ok(());
+    };
+    let Ok((symbols, edges)) = extract::extract_file_with_edges(rel, src, lang) else {
+        return Ok(());
+    };
+    let sha = hash::sha256_hex(&bytes);
+    let mtime = std::fs::metadata(abs)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or_default();
+    let file_id = store.upsert_file(rel, &sha, mtime, lang)?;
+    store.replace_symbols(file_id, &symbols)?;
+    store.replace_edges(file_id, &edges)?;
+    Ok(())
 }
 
 fn repo_label(root: &Path) -> String {
@@ -330,5 +376,22 @@ mod tests {
     fn extract_span_returns_symbol_lines() {
         let src = "a\nb\nc\nd\n";
         assert_eq!(extract_span(src, 2, 3).unwrap(), "b\nc");
+    }
+
+    #[test]
+    fn splice_preserves_crlf_endings_including_the_new_span() {
+        // CRLF file; the update arrives LF-only. Unchanged lines must keep
+        // CRLF and the spliced span must adopt CRLF too (no mixed endings).
+        let src = "fn a() {}\r\nfn b() {\r\n    old();\r\n}\r\nfn c() {}\r\n";
+        let out = splice_span(src, 2, 4, "fn b() {\n    new();\n}").unwrap();
+        assert_eq!(
+            out,
+            "fn a() {}\r\nfn b() {\r\n    new();\r\n}\r\nfn c() {}\r\n"
+        );
+        // After removing every CRLF pair, no lone LF should remain.
+        assert!(
+            !out.replace("\r\n", "").contains('\n'),
+            "bare LF leaked in: {out:?}"
+        );
     }
 }
