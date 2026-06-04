@@ -37,6 +37,31 @@ All notable changes to crabcc are documented here. Format follows
   the single Zed palette action (or an opt-in experimental `--headless`
   drop-in that compiles the wasm component and places it in Zed's
   installed-extensions dir).
+- **`ucracc-lsp` concurrency + scaling test coverage.** New
+  `tests/concurrency.rs` drives one shared `Backend` from many parallel
+  Tokio tasks (interleaved `did_open`/`did_change`/`did_save`/`did_close`
+  against `hover`/`definition`/`references`/`documentSymbol`/
+  `workspaceSymbol` on overlapping URIs) and asserts no panic, no deadlock
+  (timeout-bounded), and last-write-wins consistency. New
+  `benches/fixture_scale.rs` (criterion) parameterizes the fixture size
+  (64/256/1024 symbols) across the read and write paths. A
+  `scripts/lsp-race-tsan.sh` / `task lsp-race` runner re-runs the
+  concurrency suite under ThreadSanitizer (opt-in; nightly + rust-src).
+
+### Fixed
+
+- **`ucracc-lsp`: data race / potential server abort on concurrent edits.**
+  `index_uri` reused a cached per-document tree-sitter `Tree` as an
+  incremental-parse hint, but tower-lsp dispatches notifications
+  concurrently, so a racing `did_change` could leave that tree's
+  `InputEdit`s inconsistent with the text being reparsed. Feeding such a
+  tree to `Parser::parse` makes tree-sitter panic — fatal under the release
+  `panic = "abort"` profile. The LSP now always does a full parse on
+  re-index (the cheap, sound choice) and drops the per-document tree cache.
+  `crabcc-core`'s `signature_for` extractor also slices defensively so a
+  malformed/mismatched tree degrades to "no signature" instead of
+  panicking (which had been poisoning the shared store mutex). Surfaced by
+  the new `tests/concurrency.rs`.
 
 ## [5.0.0] — 2026-06-01 — *stable baseline*
 
