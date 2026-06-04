@@ -38,6 +38,7 @@ mod fetch_cmd;
 mod go;
 mod install;
 mod install_integrations;
+mod media;
 mod memory;
 mod model_info;
 mod morph;
@@ -409,6 +410,14 @@ enum Cmd {
         #[command(subcommand)]
         op: MorphOp,
     },
+    /// Media helpers for the `Read` hook. `downscale` bounds an oversized
+    /// image to Anthropic's effective vision resolution before the model
+    /// reads it (vision tokens scale with area). On by default; set
+    /// `CRABCC_NO_MEDIA=1` to disable.
+    Media {
+        #[command(subcommand)]
+        op: MediaOp,
+    },
     /// Loop detector (lean-ctx integration #5). Surfaces
     /// `(path, session_id)` / `(command, cwd, session_id)` pairs
     /// whose `read_count` / `run_count` cross a threshold (default
@@ -595,6 +604,20 @@ enum LoopOp {
         session_id: Option<String>,
         #[arg(long, default_value_t = crabcc_memory::loop_detect::DEFAULT_THRESHOLD)]
         threshold: i64,
+    },
+}
+
+#[derive(Subcommand)]
+enum MediaOp {
+    /// Print the path the `Read` tool should open: a bounded copy when
+    /// `<path>` is an oversized png/jpg, else the original path unchanged.
+    /// Never fails the read — any error falls back to the original.
+    Downscale {
+        path: PathBuf,
+        /// Longest-edge cap in pixels (default 1568, Anthropic's effective
+        /// vision resolution).
+        #[arg(long)]
+        max_edge: Option<u32>,
     },
 }
 
@@ -895,6 +918,14 @@ fn main() -> Result<()> {
                 instruction,
                 write,
             } => morph::run_apply(file, instruction, update, *write),
+        };
+    }
+
+    // media group — pure file -> file transform for the Read hook; needs
+    // neither a repo root nor the Store, so dispatch before resolution.
+    if let Some(Cmd::Media { op }) = &cli.cmd {
+        return match op {
+            MediaOp::Downscale { path, max_edge } => media::run_downscale(path, *max_edge),
         };
     }
 
@@ -1603,6 +1634,7 @@ fn main() -> Result<()> {
         Cmd::Memory { .. } => unreachable!("memory handled before store init"),
         Cmd::Shell { .. } => unreachable!("shell handled before store init"),
         Cmd::Morph { .. } => unreachable!("morph handled before store init"),
+        Cmd::Media { .. } => unreachable!("media handled before store init"),
         Cmd::Audit { .. } => unreachable!("audit handled before store init"),
         Cmd::Loop { .. } => unreachable!("loop handled before store init"),
     }
@@ -2182,6 +2214,7 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::Memory { .. } => "memory",
         Cmd::Shell { .. } => "shell",
         Cmd::Morph { .. } => "morph",
+        Cmd::Media { .. } => "media",
         Cmd::Loop { .. } => "loop",
         Cmd::Backup { .. } => "backup",
         Cmd::Doctor { .. } => "doctor",

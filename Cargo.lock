@@ -984,6 +984,7 @@ dependencies = [
  "crabcc-memory",
  "crabcc-viz",
  "htmd",
+ "image",
  "libc",
  "linkify",
  "reqwest 0.13.1",
