@@ -135,19 +135,30 @@ EXT_SRC="$REPO/editors/zed"
 [ -d "$EXT_SRC" ] || die "Zed extension source not found at $EXT_SRC (old checkout?)."
 
 # --- 2. install the ucracc-lsp binary -------------------------------------
-say "installing ${SERVER_BIN} → $BIN_DIR"
-INSTALL_ARGS=(install --path "$REPO/crates/ucracc-lsp" --root "${BIN_DIR%/bin}" --locked)
-[ "$BIN_DIR" = "$HOME/.cargo/bin" ] && INSTALL_ARGS=(install --path "$REPO/crates/ucracc-lsp" --locked)
+# `cargo install --root R` always writes the executable to `R/bin/`. We
+# treat --bin-dir as the *final* directory the binary should land in, so we
+# derive the root by stripping a trailing `/bin` and report the real
+# `R/bin` location — that way the PATH advice never points at the wrong dir
+# (e.g. --bin-dir /opt/tools would otherwise install to /opt/tools/bin but
+# tell the user to add /opt/tools).
+INSTALL_ARGS=(install --path "$REPO/crates/ucracc-lsp" --locked)
+EFFECTIVE_BIN_DIR="$BIN_DIR"
+if [ "$BIN_DIR" != "$HOME/.cargo/bin" ]; then
+    INSTALL_ROOT="${BIN_DIR%/bin}"
+    INSTALL_ARGS+=(--root "$INSTALL_ROOT")
+    EFFECTIVE_BIN_DIR="$INSTALL_ROOT/bin"
+fi
 [ "$FORCE" = 1 ] && INSTALL_ARGS+=(--force)
 [ -n "$FEATURES" ] && INSTALL_ARGS+=(--features "$FEATURES")
+say "installing ${SERVER_BIN} → $EFFECTIVE_BIN_DIR"
 if ! cargo "${INSTALL_ARGS[@]}"; then
     die "cargo install of ${SERVER_BIN} failed."
 fi
 if command -v "$SERVER_BIN" >/dev/null 2>&1; then
     ok "${SERVER_BIN} on \$PATH: $(command -v "$SERVER_BIN")"
 else
-    warn "${SERVER_BIN} installed but $BIN_DIR is not on \$PATH."
-    warn "add it:  ${BOLD}export PATH=\"$BIN_DIR:\$PATH\"${RESET}  (in your shell rc)"
+    warn "${SERVER_BIN} installed to $EFFECTIVE_BIN_DIR but it's not on \$PATH."
+    warn "add it:  ${BOLD}export PATH=\"$EFFECTIVE_BIN_DIR:\$PATH\"${RESET}  (in your shell rc)"
 fi
 
 # --- 3. build the index ----------------------------------------------------
