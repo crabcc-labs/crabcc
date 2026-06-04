@@ -68,7 +68,7 @@ fn is_identifier_kind(lang: &str, kind: &str) -> bool {
 }
 
 fn line_at(src: &str, row: usize) -> String {
-    let raw = src.lines().nth(row).unwrap_or("").trim();
+    let raw = src.lines().nth(row).unwrap_or_default().trim();
     if raw.len() > 80 {
         format!("{}…", &raw[..80])
     } else {

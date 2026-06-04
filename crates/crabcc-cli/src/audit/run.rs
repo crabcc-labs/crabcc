@@ -17,7 +17,7 @@ pub fn run_audit(path: Option<&Path>, json: bool) -> Result<()> {
 
     for log_path in log_paths {
         let content = std::fs::read_to_string(&log_path)?;
-        let lines: Vec<String> = content.lines().map(|s| s.to_string()).collect();
+        let lines: Vec<String> = content.lines().map(str::to_string).collect();
         let session = parse::parse_session(&log_path)?;
         let findings = waste::analyze(&session, &lines);
 

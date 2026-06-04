@@ -279,7 +279,7 @@ fn centralised_layout_is_keyed_and_stable() {
         .collect();
     assert_eq!(repos.len(), 1, "expected exactly one repo cache entry");
     let key_dir = &repos[0];
-    let key = key_dir.file_name().unwrap().to_string_lossy().to_string();
+    let key = key_dir.file_name().unwrap().to_string_lossy().into_owned();
     assert_eq!(
         key.len(),
         16,
