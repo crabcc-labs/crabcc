@@ -2003,7 +2003,11 @@ fn run_shell(root: &Path, db: &Path, op: &ShellOp) -> Result<()> {
                 let resolved = root_resolver::resolve(Some(hook_cwd.as_path()))?;
                 eff_root = resolved.source_dir.clone();
                 eff_db = resolved.db();
-                (eff_root.as_path(), eff_db.as_path(), Some(hook_cwd.as_path()))
+                (
+                    eff_root.as_path(),
+                    eff_db.as_path(),
+                    Some(hook_cwd.as_path()),
+                )
             } else {
                 (root, db, None)
             };
