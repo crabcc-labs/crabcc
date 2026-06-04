@@ -49,19 +49,37 @@ runner_busy() { pgrep -f 'Runner\.Worker' >/dev/null 2>&1; }
 # Current root-fs fill percentage as an integer (empty string on failure).
 root_pct() { df --output=pcent / 2>/dev/null | tail -1 | tr -dc '0-9'; }
 
+# Current root-fs INODE fill percentage. The block-% checks below were blind
+# to inode exhaustion: a host at 17% by blocks still ENOSPCs at `apt-get
+# install` once inodes hit 100% (millions of tiny cargo registry/src +
+# sccache files). Every escalation/warning now considers blocks OR inodes.
+root_ipct() { df --output=ipcent / 2>/dev/null | tail -1 | tr -dc '0-9'; }
+
+# Fullest of ALL real mounts (block / inode %), excluding pseudo fs + /dev/shm
+# + /run. `df /` only sees the root fs, so a full /tmp or separate /var — the
+# exact mount apt ENOSPCs on — is invisible to it. Threshold decisions key off
+# these so the watchdog never skips a host whose non-root mount is full.
+worst_pct()  { df -P  2>/dev/null | awk 'NR>1 && $6!~"^/(dev|proc|sys|run)"{gsub("%","",$5); if($5+0>m)m=$5+0} END{print m+0}'; }
+worst_ipct() { df -Pi 2>/dev/null | awk 'NR>1 && $6!~"^/(dev|proc|sys|run)" && $5!="-"{gsub("%","",$5); if($5+0>m)m=$5+0} END{print m+0}'; }
+
 # Early exit when called by the disk-watchdog timer and disk is healthy.
 # The 15-min watchdog uses --if-above 75; the 4h full-GC timer omits it.
 if [ -n "${THRESHOLD:-}" ]; then
-  THRESHOLD_CHECK="$(root_pct)"
-  if [ -n "${THRESHOLD_CHECK:-}" ] && [ "$THRESHOLD_CHECK" -lt "$THRESHOLD" ]; then
-    log "disk at ${THRESHOLD_CHECK}% — below threshold ${THRESHOLD}%, nothing to do"
+  TC_BLK="$(worst_pct)"; TC_INO="$(worst_ipct)"
+  # Skip only when BOTH blocks AND inodes are below threshold. The 15-min
+  # watchdog runs `--if-above 75`; a host at 17% blocks / 96% inodes must
+  # still GC, or inode-only ENOSPC goes unhandled until a full/manual run.
+  if [ -n "${TC_BLK:-}" ] && [ "$TC_BLK" -lt "$THRESHOLD" ] && \
+     { [ -z "${TC_INO:-}" ] || [ "$TC_INO" -lt "$THRESHOLD" ]; }; then
+    log "disk at ${TC_BLK}% blocks / ${TC_INO:-?}% inodes — both below ${THRESHOLD}%, nothing to do"
     exit 0
   fi
-  log "disk at ${THRESHOLD_CHECK}% ≥ threshold ${THRESHOLD}% — running GC"
+  log "disk at ${TC_BLK}% blocks / ${TC_INO:-?}% inodes — at/above ${THRESHOLD}% — running GC"
 fi
 
-log "host $(hostname) — disk before:"
-df -h / "${CACHE_BASE}" 2>/dev/null || df -h / 2>/dev/null || true
+log "host $(hostname) — disk before (ALL mounts: a full tmpfs/var is otherwise invisible):"
+df -h  2>/dev/null || true
+df -ih 2>/dev/null || true   # inodes for every mount too
 
 # ── Docker: unused images / build cache / stopped containers ─────────────
 prune_docker() {
@@ -93,13 +111,15 @@ prune_docker "$DEEP"
 # eligible, so a later step's `docker run` can fail.
 # Skipped when --deep was already passed (prune_docker already ran deep).
 if [ "$DEEP" = 0 ]; then
-  USE_MID="$(root_pct)"
-  if [ -n "${USE_MID:-}" ] && [ "$USE_MID" -ge 80 ]; then
+  USE_MID="$(root_pct)"; IUSE_MID="$(root_ipct)"
+  if { [ -n "${USE_MID:-}" ] && [ "$USE_MID" -ge 80 ]; } || \
+     { [ -n "${IUSE_MID:-}" ] && [ "$IUSE_MID" -ge 80 ]; }; then
     if runner_busy; then
-      log "root fs at ${USE_MID}% but runner busy — deferring deep Docker prune until idle"
+      log "root fs at ${USE_MID}% blocks / ${IUSE_MID}% inodes but runner busy — deferring deep prune until idle"
     else
-      log "root fs at ${USE_MID}% after normal Docker prune — auto-escalating to deep"
+      log "root fs at ${USE_MID}% blocks / ${IUSE_MID}% inodes after normal prune — auto-escalating to deep"
       prune_docker 1
+      DEEP=1   # also trigger the aggressive inode sweep below
     fi
   fi
 fi
@@ -130,6 +150,17 @@ if [ -d "$SCCACHE_DIR_PATH" ] && ! runner_busy; then
   find "${SCCACHE_DIR_PATH}" -mindepth 1 -atime +14 -delete 2>/dev/null || true
   log "sccache: pruned objects not accessed in 14d from ${SCCACHE_DIR_PATH}"
 fi
+
+# ── apt + /tmp on small/separate mounts ───────────────────────────────────
+# CI's `apt-get install mold` has ENOSPC'd while `/` and the cache volume show
+# plenty free — meaning apt is writing to a SMALL mount neither check covers
+# (a tmpfs /tmp, a separate /var, apt's own cache dir). Reclaim those targets
+# directly: the apt package cache + partial downloads, and temp files >1d.
+# (>1d so a sibling job's live /tmp data on a shared host is never touched.)
+sudo rm -rf /var/cache/apt/archives/partial/* 2>/dev/null || true
+for tdir in /tmp /var/tmp; do
+  [ -d "$tdir" ] && find "$tdir" -mindepth 1 -maxdepth 1 -mtime +1 -exec rm -rf {} + 2>/dev/null || true
+done
 
 # ── tool-cache: prune downloaded toolchain entries older than 30 days ──────
 # Guard with runner_busy: setup-* actions resolve toolchains from this dir
@@ -187,13 +218,14 @@ if ! runner_busy; then
   fi
 fi
 
-log "disk after:"
-df -h / "${CACHE_BASE}" 2>/dev/null || df -h / 2>/dev/null || true
+log "disk after (ALL mounts):"
+df -h  2>/dev/null || true
+df -ih 2>/dev/null || true
 
-USE="$(root_pct)"
-log "root filesystem usage after GC: ${USE:-?}%"
-if [ -n "${USE:-}" ] && [ "$USE" -ge 85 ]; then
-  log "WARNING: root fs still ${USE}% full after GC — manual intervention may be needed (try --deep or add disk)"
+USE="$(root_pct)"; IUSE="$(root_ipct)"
+log "root filesystem usage after GC: ${USE:-?}% blocks / ${IUSE:-?}% inodes"
+if { [ -n "${USE:-}" ] && [ "$USE" -ge 85 ]; } || { [ -n "${IUSE:-}" ] && [ "$IUSE" -ge 85 ]; }; then
+  log "WARNING: root fs still ${USE}% blocks / ${IUSE}% inodes after GC — manual intervention may be needed (try --deep, add disk, or hunt small-file hoards: 'du --inodes -xd1 / | sort -n')"
 fi
 
 # Report cache volume usage if it's a separate mount.

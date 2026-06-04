@@ -40,7 +40,12 @@ jobs:
       - name: machine metrics
         shell: bash
         run: |
-          HOST="$(hostname)"
+          # Heterogeneous fleet: the Ubuntu Hetzner runners AND the NixOS
+          # bench-node carry these labels, and NixOS lacks `hostname` (+ maybe
+          # other tools) on PATH. Don't let one missing optional command abort
+          # the whole probe under `bash -e`.
+          set +e
+          HOST="$(hostname 2>/dev/null || uname -n 2>/dev/null || echo "${HOSTNAME:-unknown}")"
 
           # Disk — root filesystem
           ROOT_USE=$(df --output=pcent /   2>/dev/null | tail -1 | tr -dc '0-9')
@@ -58,6 +63,17 @@ jobs:
             CACHE_USE=0
             CACHE_ROW="| Cache volume | **not mounted** — run \`install.sh --gc-only --cache-volume /dev/sdb\` |"
           fi
+
+          # ── ALL mounts ─────────────────────────────────────────────────
+          # The / and cache checks above miss a full *other* mount — e.g. a
+          # small tmpfs /tmp or a separate /var that apt ENOSPCs on while
+          # `df /` reads healthy. Find the fullest real mount by BOTH blocks
+          # and inodes, and dump the complete table into the summary so the
+          # culprit is visible without anyone SSHing in.
+          WB=$(df -P  2>/dev/null | awk 'NR>1 && $6!~"^/(dev|proc|sys)"      {gsub("%","",$5); if($5+0>m){m=$5+0;t=$6}} END{print (m+0)"|"t}')
+          WI=$(df -Pi 2>/dev/null | awk 'NR>1 && $6!~"^/(dev|proc|sys)" && $5!="-"{gsub("%","",$5); if($5+0>m){m=$5+0;t=$6}} END{print (m+0)"|"t}')
+          WB_PCT=${WB%%|*}; WB_MNT=${WB##*|}
+          WI_PCT=${WI%%|*}; WI_MNT=${WI##*|}
 
           # RAM
           MEM_TOTAL=$(free -h | awk '/^Mem:/{print $2}')
@@ -79,10 +95,20 @@ jobs:
             echo "|--------|-------|"
             echo "| Root fs | ${ROOT_USE}% used — ${ROOT_AVAIL} free / ${ROOT_SIZE} |"
             echo "${CACHE_ROW}"
+            echo "| **Fullest mount (blocks)** | \`${WB_MNT}\` at **${WB_PCT}%** |"
+            echo "| **Fullest mount (inodes)** | \`${WI_MNT}\` at **${WI_PCT}%** |"
             echo "| RAM | ${MEM_PCT}% used — ${MEM_USED} used, ${MEM_FREE} free / ${MEM_TOTAL} |"
             echo "| Load avg (1m / 5m / 15m) | ${LOAD1} / ${LOAD5} / ${LOAD15} across ${NCPU} CPUs |"
             echo "| Worker processes (active jobs) | ${WORKERS} |"
             echo "| Measured at | $(date -u '+%Y-%m-%d %H:%M UTC') |"
+            echo ""
+            echo "<details><summary>all mounts — df -h · df -i · mount</summary>"
+            echo ""; echo '```'
+            df -h  2>/dev/null
+            echo; df -i 2>/dev/null
+            echo; mount 2>/dev/null | grep -vE ' (proc|sysfs|cgroup[0-9]?|devpts|mqueue|debugfs|tracefs|securityfs|pstore|bpf|configfs|fusectl) '
+            echo '```'
+            echo "</details>"
           } >> "$GITHUB_STEP_SUMMARY"
 
           # Emit GitHub annotations so the job turns red/yellow and
@@ -101,6 +127,16 @@ jobs:
           elif [ -n "${CACHE_USE:-}" ] && [ "$CACHE_USE" -ge 80 ]; then
             echo "::warning::${HOST} cache volume at ${CACHE_USE}% — monitor sccache growth"
           fi
+          # Any OTHER mount running hot is the prime `apt-get ... ENOSPC` suspect
+          # (a full tmpfs/var that the / and cache checks never see). Warn rather
+          # than fail — these include swap-backed tmpfs that can spike benignly —
+          # but name the mount so the culprit is obvious in the annotation.
+          case "$WB_MNT" in /|"$CACHE_BASE") ;; *)
+            [ "${WB_PCT:-0}" -ge 85 ] && echo "::warning::${HOST} mount ${WB_MNT} at ${WB_PCT}% blocks — apt/build writes here can ENOSPC" ;;
+          esac
+          case "$WI_MNT" in /|"$CACHE_BASE") ;; *)
+            [ "${WI_PCT:-0}" -ge 85 ] && echo "::warning::${HOST} mount ${WI_MNT} at ${WI_PCT}% inodes" ;;
+          esac
           [ "$ALERT" = 1 ] && exit 1 || true
 
   fleet:
