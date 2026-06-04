@@ -66,11 +66,27 @@ candidates; beyond that the cross-encoder stops paying for itself.
 ## Install / wire up
 
 ```bash
-# build
+# build from source
 cargo build --release -p ucracc-lsp
-
 # the binary lives at target/release/ucracc-lsp; it speaks LSP over stdio
+
+# or install onto $PATH
+cargo install --path crates/ucracc-lsp
 ```
+
+### Prebuilt releases
+
+Each `ucracc-lsp-v*` tag publishes a [GitHub release](https://github.com/crabcc-labs/crabcc/releases)
+with per-target tarballs (linux x86_64 / aarch64, macOS aarch64), each
+accompanied by a `.sha256` checksum — and, once signing is enabled, a cosign
+`.sig` + `.pem`. A multi-arch **Docker image** is also published:
+
+```bash
+docker pull crabcc-labs/ucracc-lsp:0.4.0     # or :latest
+```
+
+Verifying downloads (checksums always; cosign once keys/secrets are wired) is
+documented in [`docs/COSIGN-SETUP.md`](../../docs/COSIGN-SETUP.md).
 
 **Zed** — install the [`editors/zed/crabcc`](../../editors/zed/crabcc) extension
 (`zed: install dev extension` → pick that dir). Zed can't bind a new LSP

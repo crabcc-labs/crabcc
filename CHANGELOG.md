@@ -8,6 +8,13 @@ All notable changes to crabcc are documented here. Format follows
 
 ### Added
 
+- **`ucracc-lsp` 0.4.0 + signed Docker/release pipeline.** The LSP crate is
+  bumped to 0.4.0 (Zed integration + `indexPath`). New
+  `release-ucracc-lsp-image.yml` builds a multi-arch Docker image
+  (`install/Dockerfile.ucracc-lsp`), pushes it to Docker Hub, and
+  cosign-signs it; `release-ucracc-lsp.yml` gains opt-in cosign signing of
+  the release tarballs. Both are inert until the `DOCKERHUB_*` /
+  `COSIGN_*` secrets are set. Setup: `docs/COSIGN-SETUP.md`.
 - **Zed editor integration.** A new `editors/zed/crabcc` extension registers
   `ucracc-lsp` as an additional language server for Rust, the TS/JS
   family, Python, Ruby, Go, Swift, Java, YAML, and Markdown — running

@@ -135,18 +135,25 @@ EXT_SRC="$REPO/editors/zed/crabcc"
 [ -d "$EXT_SRC" ] || die "Zed extension source not found at $EXT_SRC (old checkout?)."
 
 # --- 2. install the ucracc-lsp binary -------------------------------------
-# `cargo install --root R` always writes the executable to `R/bin/`. We
-# treat --bin-dir as the *final* directory the binary should land in, so we
-# derive the root by stripping a trailing `/bin` and report the real
-# `R/bin` location — that way the PATH advice never points at the wrong dir
-# (e.g. --bin-dir /opt/tools would otherwise install to /opt/tools/bin but
-# tell the user to add /opt/tools).
+# `cargo install --root R` always writes the executable to `R/bin/`. The
+# reported `EFFECTIVE_BIN_DIR` must match where the binary actually lands, or
+# the PATH advice points at the wrong place and Zed's
+# `worktree.which("ucracc-lsp")` keeps missing it.
 INSTALL_ARGS=(install --path "$REPO/crates/ucracc-lsp" --locked)
-EFFECTIVE_BIN_DIR="$BIN_DIR"
 if [ "$BIN_DIR" != "$HOME/.cargo/bin" ]; then
+    # User picked the dir explicitly (--bin-dir / CRABCC_INSTALL_DIR): treat
+    # it as the final bin dir and pass its parent as --root (cargo appends
+    # /bin), e.g. --bin-dir /opt/tools → install to /opt/tools/bin.
     INSTALL_ROOT="${BIN_DIR%/bin}"
     INSTALL_ARGS+=(--root "$INSTALL_ROOT")
     EFFECTIVE_BIN_DIR="$INSTALL_ROOT/bin"
+else
+    # Default path: do NOT override cargo's configured root — just predict
+    # where it lands for the report, mirroring cargo's precedence
+    # (CARGO_INSTALL_ROOT → CARGO_HOME → ~/.cargo; binaries under <root>/bin).
+    # A cargo-config `install.root` isn't readable here, so the `command -v`
+    # check below is the source of truth for the success message regardless.
+    EFFECTIVE_BIN_DIR="${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}/bin"
 fi
 [ "$FORCE" = 1 ] && INSTALL_ARGS+=(--force)
 [ -n "$FEATURES" ] && INSTALL_ARGS+=(--features "$FEATURES")

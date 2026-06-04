@@ -82,6 +82,11 @@ jobs:
     name: release
     needs: build
     runs-on: [self-hosted, linux, hetzner]
+    # Job-level env so the `if:` gates below can read it — the `secrets`
+    # context isn't available directly in step `if:` conditions, but `env` is.
+    env:
+      COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+      COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/download-artifact@v4
@@ -92,11 +97,37 @@ jobs:
       - name: list artifacts
         run: ls -la dist
 
+      # Optional cosign signing of the release tarballs (key-based). Inert
+      # until COSIGN_PRIVATE_KEY (+ COSIGN_PASSWORD) repo secrets are set, so
+      # the default release still ships tarballs + SHA-256 only. Produces a
+      # detached `.sig` + `.pem` (cert) per tarball, bundled into the release.
+      # Verify: cosign verify-blob --key cosign.pub --signature X.sig X.tar.gz
+      # (full setup in docs/COSIGN-SETUP.md).
+      - name: install cosign
+        if: env.COSIGN_PRIVATE_KEY != ''
+        uses: sigstore/cosign-installer@v3
+
+      - name: cosign sign tarballs
+        if: env.COSIGN_PRIVATE_KEY != ''
+        run: |
+          set -euo pipefail
+          printf '%s' "$COSIGN_PRIVATE_KEY" > cosign.key
+          for f in dist/*.tar.gz; do
+            cosign sign-blob --yes --key cosign.key \
+              --output-signature "$f.sig" \
+              --output-certificate "$f.pem" \
+              "$f"
+          done
+          rm -f cosign.key
+          ls -la dist
+
       - uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/*.tar.gz
             dist/*.sha256
+            dist/*.sig
+            dist/*.pem
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
