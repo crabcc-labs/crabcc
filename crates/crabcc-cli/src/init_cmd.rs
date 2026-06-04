@@ -58,17 +58,34 @@ pub fn run(root: &Path) -> Result<()> {
         }
         match try_acquire(&lock)? {
             true => {
-                // Leader: onboard exactly once, then publish `done` so
-                // waiting agents can reuse it.
-                let r = lead(root, &onboard_dir);
-                let _ = std::fs::write(&done, unix_now().to_string());
-                return r;
+                // Leader: onboard exactly once. Publish `done` ONLY on
+                // success — a failed lead() must not mark the repo
+                // "onboarded". On failure, release the lock so another agent
+                // retries instead of waiting out the stale TTL.
+                return match lead(root, &onboard_dir) {
+                    Ok(()) => {
+                        let _ = std::fs::write(&done, unix_now().to_string());
+                        Ok(())
+                    }
+                    Err(e) => {
+                        let _ = std::fs::remove_file(&lock);
+                        Err(e)
+                    }
+                };
             }
             false => {
                 // Another agent holds the lock. If it looks crashed (stale,
-                // no done marker), take over; else wait briefly then reuse.
-                if lock_age_secs(&lock).is_some_and(|a| a > LOCK_STALE_SECS) {
-                    let _ = std::fs::remove_file(&lock);
+                // no done marker), take it over — but only if it's still the
+                // *same* stale lock we inspected, so we never unlink a fresh
+                // leader's lock that just replaced it (which would split
+                // leadership). `create_new` remains the real election, so
+                // even a lost race here resolves to a single leader.
+                if let Some(mtime) = stale_lock_mtime(&lock, LOCK_STALE_SECS) {
+                    let unchanged =
+                        std::fs::metadata(&lock).and_then(|m| m.modified()).ok() == Some(mtime);
+                    if unchanged {
+                        let _ = std::fs::remove_file(&lock);
+                    }
                     continue;
                 }
                 let finished = wait_for(&done, WAIT_TIMEOUT);
@@ -142,10 +159,16 @@ fn try_acquire(lock: &Path) -> Result<bool> {
     }
 }
 
-/// Age of the lock file in seconds (from its mtime), if it exists.
-fn lock_age_secs(lock: &Path) -> Option<u64> {
-    let modified = std::fs::metadata(lock).ok()?.modified().ok()?;
-    modified.elapsed().ok().map(|d| d.as_secs())
+/// If `lock` exists and is older than `ttl` seconds, return its mtime — so a
+/// takeover can confirm the lock is unchanged before unlinking it. `None`
+/// when the lock is missing or still fresh.
+fn stale_lock_mtime(lock: &Path, ttl: u64) -> Option<std::time::SystemTime> {
+    let mtime = std::fs::metadata(lock).ok()?.modified().ok()?;
+    if mtime.elapsed().ok()?.as_secs() > ttl {
+        Some(mtime)
+    } else {
+        None
+    }
 }
 
 /// Block until `path` exists or `timeout` elapses; returns whether it
