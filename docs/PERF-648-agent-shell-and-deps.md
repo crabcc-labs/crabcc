@@ -2,7 +2,7 @@
 
 > Branch `perf/profiling-and-deps-upgrade`. Measurements taken
 > **2026-06-04**. Methodology: **measure → optimize → re-bench, never
-> blind.** Raw artifacts under [`bench/results-648/`](../bench/results-648/).
+> blind.** Raw hyperfine artifacts under [`docs/perf-648/`](./perf-648/).
 
 ## Bench environment
 

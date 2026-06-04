@@ -427,7 +427,7 @@ cd bench && python3 raw-bench.py /path/to/your/repo && python3 visualize.py
 ### #648 perf campaign + agent-shell protector
 
 Full results + methodology: [`docs/PERF-648-agent-shell-and-deps.md`](./docs/PERF-648-agent-shell-and-deps.md)
-(raw artifacts in [`bench/results-648/`](./bench/results-648/)). Headlines (measured 2026-06-04, bench-node):
+(raw artifacts in [`docs/perf-648/`](./docs/perf-648/)). Headlines (measured 2026-06-04, bench-node):
 
 - **Agent MCP latency ~39–56× lower** — per-session `Store` reuse removes the
   ~680 µs per-call DB-open floor in `serve_io`.
