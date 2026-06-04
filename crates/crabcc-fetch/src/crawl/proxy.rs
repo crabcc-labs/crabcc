@@ -17,6 +17,7 @@
 //! [proxifly]: https://github.com/proxifly/free-proxy-list
 
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::RwLock;
 
 /// A proxy endpoint in reqwest's `scheme://host:port` form.
 pub type ProxyUrl = String;
@@ -98,10 +99,15 @@ impl ProxySource for ProxiflySource {
 }
 
 /// A rotating pool of proxy URLs. Round-robins via an atomic cursor;
-/// dead entries can be evicted as health-checking finds them (a
-/// follow-up — free proxies churn fast).
+/// dead entries are evicted by [`ProxyPool::evict`] as health-checking
+/// finds them (free proxies churn fast).
+///
+/// The list is behind an `RwLock` so [`pick`](Self::pick) (read) and
+/// [`evict`](Self::evict) (write) are safe to call concurrently from the
+/// worker tasks. `pick` therefore returns an owned `String` rather than a
+/// borrow into the list, since the lock can't outlive the call.
 pub struct ProxyPool {
-    proxies: Vec<ProxyUrl>,
+    proxies: RwLock<Vec<ProxyUrl>>,
     cursor: AtomicUsize,
 }
 
@@ -121,26 +127,33 @@ impl ProxyPool {
 
     pub fn from_list(proxies: Vec<ProxyUrl>) -> Self {
         Self {
-            proxies,
+            proxies: RwLock::new(proxies),
             cursor: AtomicUsize::new(0),
         }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.proxies.is_empty()
+        self.proxies.read().unwrap().is_empty()
     }
 
     pub fn len(&self) -> usize {
-        self.proxies.len()
+        self.proxies.read().unwrap().len()
     }
 
     /// Next proxy in round-robin order, or `None` when the pool is empty.
-    pub fn pick(&self) -> Option<&str> {
-        if self.proxies.is_empty() {
+    pub fn pick(&self) -> Option<ProxyUrl> {
+        let proxies = self.proxies.read().unwrap();
+        if proxies.is_empty() {
             return None;
         }
-        let i = self.cursor.fetch_add(1, Ordering::Relaxed) % self.proxies.len();
-        Some(&self.proxies[i])
+        let i = self.cursor.fetch_add(1, Ordering::Relaxed) % proxies.len();
+        Some(proxies[i].clone())
+    }
+
+    /// Drop a dead proxy from rotation. Safe to call while other tasks are
+    /// `pick`ing — the `RwLock` serialises the mutation.
+    pub fn evict(&self, proxy: &str) {
+        self.proxies.write().unwrap().retain(|p| p != proxy);
     }
 }
 
@@ -172,9 +185,20 @@ mod tests {
     #[test]
     fn pool_round_robins_and_handles_empty() {
         let pool = ProxyPool::from_list(vec!["http://a:1".into(), "http://b:2".into()]);
-        assert_eq!(pool.pick(), Some("http://a:1"));
-        assert_eq!(pool.pick(), Some("http://b:2"));
-        assert_eq!(pool.pick(), Some("http://a:1"));
+        assert_eq!(pool.pick().as_deref(), Some("http://a:1"));
+        assert_eq!(pool.pick().as_deref(), Some("http://b:2"));
+        assert_eq!(pool.pick().as_deref(), Some("http://a:1"));
         assert!(ProxyPool::from_list(vec![]).pick().is_none());
+    }
+
+    #[test]
+    fn evict_removes_dead_proxy() {
+        let pool = ProxyPool::from_list(vec!["http://a:1".into(), "http://b:2".into()]);
+        pool.evict("http://a:1");
+        assert_eq!(pool.len(), 1);
+        assert_eq!(pool.pick().as_deref(), Some("http://b:2"));
+        pool.evict("http://b:2");
+        assert!(pool.is_empty());
+        assert!(pool.pick().is_none());
     }
 }

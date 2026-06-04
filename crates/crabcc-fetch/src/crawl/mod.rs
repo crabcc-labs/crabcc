@@ -50,17 +50,27 @@ pub struct CrawlOpts {
     pub fetch: FetchOpts,
 }
 
+/// Default per-page response body cap for crawls. `FetchOpts::cli()`
+/// leaves the body uncapped — fine for a single user-driven fetch, but a
+/// crawl pulls many pages from untrusted hosts, so a hostile/huge response
+/// must not be able to stream the process into OOM. Generous enough for
+/// real article HTML; override `opts.fetch.max_body_bytes` to change it.
+pub const CRAWL_MAX_BODY_BYTES: usize = 10 * 1024 * 1024;
+
 impl CrawlOpts {
     /// Defaults: same-host, polite (1 request per host at a time), 4-way
-    /// global concurrency, CLI fetch posture (SSRF off).
+    /// global concurrency, CLI fetch posture (SSRF off) but with a
+    /// [`CRAWL_MAX_BODY_BYTES`] body cap applied (crawls are untrusted).
     pub fn new(max_pages: usize, max_depth: usize) -> Self {
+        let mut fetch = FetchOpts::cli();
+        fetch.max_body_bytes = Some(CRAWL_MAX_BODY_BYTES);
         Self {
             max_pages,
             max_depth,
             same_host: true,
             concurrency: 4,
             per_host_concurrency: 1,
-            fetch: FetchOpts::cli(),
+            fetch,
         }
     }
 }
@@ -74,6 +84,30 @@ pub struct CrawlReport {
     pub errors: usize,
     /// Newly discovered URLs enqueued into the frontier.
     pub discovered: usize,
+}
+
+const SHUTDOWN_REASON: &str = "crawl shutting down (semaphore closed)";
+
+/// Build the `(url, depth, page)` tuple the dispatch loop expects for a
+/// URL rejected before any fetch — the SSRF guard, or a torn-down crawl.
+fn rejected(url: String, depth: usize, reason: String) -> (String, usize, FetchedPage) {
+    let result = FetchResult {
+        url: url.clone(),
+        status: 0,
+        title: None,
+        content_markdown: None,
+        via: crate::Transport::Direct,
+        error: Some(reason),
+    };
+    (
+        url.clone(),
+        depth,
+        FetchedPage {
+            result,
+            raw_html: None,
+            final_url: url,
+        },
+    )
 }
 
 /// Crawl from `seed`, persisting each page into `frontier` and invoking
@@ -131,27 +165,21 @@ pub async fn crawl(
                 // an ingest-posture crawl could hit `169.254.169.254` etc.
                 if enforce_ssrf {
                     if let Err(reason) = is_ingest_safe_url(&url) {
-                        let result = FetchResult {
-                            url: url.clone(),
-                            status: 0,
-                            title: None,
-                            content_markdown: None,
-                            via: crate::Transport::Direct,
-                            error: Some(reason),
-                        };
-                        return (
-                            url.clone(),
-                            depth,
-                            FetchedPage {
-                                result,
-                                raw_html: None,
-                                final_url: url,
-                            },
-                        );
+                        return rejected(url, depth, reason);
                     }
                 }
-                let _g = gsem.acquire_owned().await.ok();
-                let _h = hsem.acquire_owned().await.ok();
+                // Hold both permits (global + per-host politeness) for the
+                // fetch. A closed semaphore means the crawl is tearing
+                // down — bail out instead of fetching unthrottled, which is
+                // what `.ok()` (discarding the permit) would have done.
+                let _g = match gsem.acquire_owned().await {
+                    Ok(p) => p,
+                    Err(_) => return rejected(url, depth, SHUTDOWN_REASON.into()),
+                };
+                let _h = match hsem.acquire_owned().await {
+                    Ok(p) => p,
+                    Err(_) => return rejected(url, depth, SHUTDOWN_REASON.into()),
+                };
                 let page = f.fetch(&url).await;
                 (url, depth, page)
             });
@@ -309,6 +337,16 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(report.fetched, 2);
+    }
+
+    #[test]
+    fn crawl_defaults_cap_response_body() {
+        // Crawls are untrusted: a body cap must be set even though the
+        // underlying cli() posture leaves it open.
+        assert_eq!(
+            CrawlOpts::new(1, 0).fetch.max_body_bytes,
+            Some(CRAWL_MAX_BODY_BYTES)
+        );
     }
 
     #[tokio::test]
