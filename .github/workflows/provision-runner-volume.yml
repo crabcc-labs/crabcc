@@ -46,6 +46,15 @@ jobs:
             sudo umount "$DEVICE"
           fi
 
+          echo "=== quick root-fs cleanup (root fs may be near-full) ==="
+          # Reclaim space before patching so mktemp / awk don't hit ENOSPC.
+          # These are all safe during a live build — only unused data removed.
+          sudo docker container prune -f 2>/dev/null || true
+          sudo docker image prune -f --filter "until=24h" 2>/dev/null || true
+          sudo apt-get clean 2>/dev/null || true
+          sudo journalctl --vacuum-size=50M 2>/dev/null || true
+          df -h /
+
           echo "=== running install.sh --gc-only --cache-volume ==="
           sudo bash install/github-runner/install.sh \
             --gc-only \

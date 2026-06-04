@@ -63,15 +63,17 @@ fi
 
 RUNNER_UNIT=/etc/systemd/system/actions-runner.service
 
-# Locate the live runner service unit. Our own install.sh writes it at
-# RUNNER_UNIT above; GitHub's own svc.sh uses the naming convention
-# actions.runner.<owner>-<repo>.<runner-name>.service. Try ours first,
-# then fall back to the first matching actions.runner.*.service unit.
+# Locate all runner service units on this host. Our own install.sh writes
+# one unit at RUNNER_UNIT; GitHub's own svc.sh uses the naming convention
+# actions.runner.<owner>-<repo>.<runner-name>.service (one per runner
+# process, e.g. runner-01 and runner-01b on the same machine).
+find_all_runner_units() {
+  [ -f "$RUNNER_UNIT" ] && echo "$RUNNER_UNIT"
+  find /etc/systemd/system -maxdepth 1 -name 'actions.runner.*.service' 2>/dev/null
+}
+
 find_runner_unit() {
-  if [ -f "$RUNNER_UNIT" ]; then echo "$RUNNER_UNIT"; return 0; fi
-  local f
-  f=$(find /etc/systemd/system -maxdepth 1 -name 'actions.runner.*.service' 2>/dev/null | head -1)
-  [ -n "$f" ] && echo "$f"
+  find_all_runner_units | head -1
 }
 
 # In --gc-only mode, a `sudo ... --gc-only` invoked as root would default
@@ -153,34 +155,42 @@ setup_cache_volume() {
 # the old TMPDIR/CARGO_HOME, leaving rustup/cargo writing to the root fs.
 # Idempotent: skips the rewrite if the vars are already present.
 patch_runner_unit() {
-  local unit
-  unit="$(find_runner_unit)"
-  if [ -z "$unit" ]; then
+  local units patched=0
+  units="$(find_all_runner_units)"
+  if [ -z "$units" ]; then
     echo "[runner] no runner unit found — skipping env patch (full install will write it)"
     return 0
   fi
-  if grep -q "TMPDIR=${CACHE_BASE}/tmp" "$unit"; then
-    echo "[runner] unit already has TMPDIR=${CACHE_BASE}/tmp — skipping patch"
-    return 0
+
+  while IFS= read -r unit; do
+    [ -z "$unit" ] && continue
+    if grep -q "TMPDIR=${CACHE_BASE}/tmp" "$unit"; then
+      echo "[runner] unit already patched: ${unit} — skipping"
+      continue
+    fi
+    echo "[runner] patching ${unit} with cache-volume env vars..."
+    # Write to the data volume to avoid filling the (often near-full) root fs.
+    local tmp="${CACHE_BASE}/tmp/runner-unit-patch-$$.tmp"
+    # Insert the four Environment= lines immediately before [Install] so
+    # they land inside [Service]. awk preserves the rest of the unit verbatim.
+    awk -v base="${CACHE_BASE}" '
+      /^\[Install\]/ {
+        print "Environment=TMPDIR=" base "/tmp"
+        print "Environment=CARGO_HOME=" base "/cargo"
+        print "Environment=SCCACHE_DIR=" base "/sccache"
+        print "Environment=RUNNER_TOOL_CACHE=" base "/tool-cache"
+        print ""
+      }
+      { print }
+    ' "$unit" > "$tmp"
+    mv "$tmp" "$unit"
+    patched=$((patched + 1))
+  done <<< "$units"
+
+  if [ "$patched" -gt 0 ]; then
+    systemctl daemon-reload
+    echo "[runner] patched ${patched} unit(s) — runners will pick up new env vars on next restart"
   fi
-  echo "[runner] patching ${unit} with cache-volume env vars..."
-  local tmp
-  tmp=$(mktemp)
-  # Insert the four Environment= lines immediately before [Install] so
-  # they land inside [Service].  awk preserves the rest of the unit verbatim.
-  awk -v base="${CACHE_BASE}" '
-    /^\[Install\]/ {
-      print "Environment=TMPDIR=" base "/tmp"
-      print "Environment=CARGO_HOME=" base "/cargo"
-      print "Environment=SCCACHE_DIR=" base "/sccache"
-      print "Environment=RUNNER_TOOL_CACHE=" base "/tool-cache"
-      print ""
-    }
-    { print }
-  ' "$unit" > "$tmp"
-  mv "$tmp" "$unit"
-  systemctl daemon-reload
-  echo "[runner] unit patched — run 'sudo systemctl restart actions-runner' to apply"
 }
 
 # ── Disk-GC timer ───────────────────────────────────────────────────────
