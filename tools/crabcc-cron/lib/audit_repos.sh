@@ -23,7 +23,9 @@ enumerate_audit_repos() {
     --json name,defaultBranch,primaryLanguage 2>/dev/null \
     || echo '[]')"
 
-  while IFS= read -r name; do
+  while IFS= read -r item; do
+    name="$(jq -r '.name' <<<"$item")"
+    primary="$(jq -r '.primaryLanguage.name // empty' <<<"$item")"
     [[ -z "$name" ]] && continue
 
     # Denylist check.
@@ -33,7 +35,16 @@ enumerate_audit_repos() {
     done
     (( denied == 1 )) && continue
 
-    printf '%s\n' "$name"
-  done < <(jq -r '.[] | select(.primaryLanguage.name == "Rust") | .name' <<<"$repos")
+    if [[ "$primary" == "Rust" ]]; then
+      # Fast path: GitHub detected Rust as primary — no extra API call needed.
+      printf '%s\n' "$name"
+    elif [[ -z "$primary" ]]; then
+      # Unknown primary language (new/tiny/polyglot repo) — fall back to the
+      # authoritative Cargo.toml existence check to avoid false negatives.
+      gh api "repos/peterlodri-sec/$name/contents/Cargo.toml" &>/dev/null \
+        && printf '%s\n' "$name"
+    fi
+    # Any other known primary language → not a Rust project, skip.
+  done < <(jq -c '.[]' <<<"$repos")
   return 0
 }

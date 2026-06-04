@@ -66,9 +66,15 @@ jobs:
           echo "head_ref=$HEAD_BRANCH" >> "$GITHUB_OUTPUT"
           echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
 
-          # Stop infinite loops — commit message already in the pr view response.
+          # Stop infinite loops — try the commits list already in the pr view
+          # response; fall back to direct commit API when HEAD_SHA falls outside
+          # gh's first-page window (gh CLI caps commits at 100, see cli/cli#5415).
           last_msg=$(echo "$meta" | jq -r --arg sha "$HEAD_SHA" \
             '.commits // [] | map(select(.oid == $sha)) | .[0].messageHeadline // empty')
+          if [ -z "$last_msg" ]; then
+            last_msg=$(gh api "/repos/${{ github.repository }}/commits/$HEAD_SHA" \
+              --jq '.commit.message | split("\n")[0]' 2>/dev/null || true)
+          fi
           if echo "$last_msg" | head -1 | grep -q '^\[auto-fix\]'; then
             echo "head commit already auto-fixed; not retrying"
             echo "should_fix=false" >> "$GITHUB_OUTPUT"
