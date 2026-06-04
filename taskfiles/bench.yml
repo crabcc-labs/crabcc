@@ -48,6 +48,15 @@ tasks:
       # has everything in one scroll.
       - 'echo "" && echo "── bench-e2e summary ──" && ls -la bench/results/ | head -30'
 
+  bench-flow-matrix:
+    desc: |
+      "With vs without crabcc hooks" token matrix across agent profiles
+      (claude_code / nullclaw / zeroclaw). Deterministic + network-free by
+      default; set OPENROUTER_API_KEY + MODELS for the real-tokenizer lane.
+    deps: [build]
+    cmds:
+      - 'CRABCC="target/release/crabcc" bash scripts/bench-flow-matrix.sh'
+
   compress:
     desc: Train FSST symbol table on the current index + re-encode all rows + report stats
     deps: [build]
