@@ -26,7 +26,12 @@ store-failure-output = true
 # ucracc-lsp::concurrency touches the filesystem and uses multiple threads;
 # give it more time and more retries under CI so transient scheduling jitter
 # doesn't fail the pipeline.
+# NOTE: `binary(concurrency)` matches the integration-test binary name
+# (from concurrency.rs), NOT individual test names. The binary contains three
+# tests — only one has "concurrency" in its name; the other two
+# (writers_and_readers_same_doc_stay_consistent,
+#  open_close_churn_with_concurrent_reads) need the same treatment.
 [[profile.ci.overrides]]
-filter = "test(concurrency)"
+filter = "binary(concurrency)"
 retries = { backoff = "exponential", count = 3, delay = "500ms", max-delay = "10s" }
 slow-timeout = { period = "120s", terminate-after = 2 }
