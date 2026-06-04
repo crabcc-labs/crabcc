@@ -53,6 +53,7 @@ mod rag;
 mod read;
 mod rewrite_log;
 mod root_resolver;
+mod run_cmd;
 mod shell_context;
 mod shell_rewrite;
 mod squeeze;
@@ -554,6 +555,41 @@ enum Cmd {
         /// surfaced). 0 = no window, only the lossless reductions.
         #[arg(long, default_value_t = 0)]
         max_lines: usize,
+    },
+    /// Run a command, capture its output, and squeeze the noise
+    /// (build/install/test/log). A long/blocking command (`tail -f`, a server,
+    /// a slow build) DETACHES to the background instead of being killed: you
+    /// get an instant squeezed snapshot + a `run <id>` handle, and the command
+    /// keeps running. Follow/manage with `--follow <id>` / `--list` / `--kill`.
+    Run {
+        /// Squeeze head/tail window (passed through to `squeeze`).
+        #[arg(long, default_value_t = 0)]
+        max_lines: usize,
+        /// Detach to the background after this many seconds with no output
+        /// (0 = off). The command is NOT killed; it keeps running.
+        #[arg(long, default_value_t = 0)]
+        idle: u64,
+        /// Detach to the background after this many seconds total (0 = off).
+        #[arg(long, default_value_t = 0)]
+        timeout: u64,
+        /// Cap captured output bytes (drains the rest; default 8 MiB).
+        #[arg(long, default_value_t = 8 * 1024 * 1024)]
+        max_bytes: usize,
+        /// Start detached immediately: return a run handle without waiting.
+        #[arg(long)]
+        bg: bool,
+        /// Show a squeezed snapshot of a background run's output + status.
+        #[arg(long, value_name = "ID")]
+        follow: Option<String>,
+        /// Kill a background run by id.
+        #[arg(long, value_name = "ID")]
+        kill: Option<String>,
+        /// List background runs.
+        #[arg(long)]
+        list: bool,
+        /// The command to run (everything after `--`).
+        #[arg(last = true)]
+        cmd: Vec<String>,
     },
     /// Onboard onto a fresh codebase: detect the stack from dependency
     /// manifests, crawl each dependency's docs into memory in the
@@ -1305,6 +1341,32 @@ fn main() -> Result<()> {
         return squeeze::run(*max_lines);
     }
 
+    // `run` spawns a child + captures/squeezes its output; no symbol Store.
+    if let Some(Cmd::Run {
+        max_lines,
+        idle,
+        timeout,
+        max_bytes,
+        bg,
+        follow,
+        kill,
+        list,
+        cmd,
+    }) = cli.cmd.as_ref()
+    {
+        return run_cmd::run(
+            cmd,
+            *max_lines,
+            *idle,
+            *timeout,
+            *max_bytes,
+            *bg,
+            follow.as_deref(),
+            kill.as_deref(),
+            *list,
+        );
+    }
+
     // `init` reads dependency manifests + writes onboarding artifacts +
     // spawns background crawls; no symbol Store needed.
     if let Some(Cmd::Init { inject }) = cli.cmd.as_ref() {
@@ -1791,6 +1853,7 @@ fn main() -> Result<()> {
         Cmd::Enrich { .. } => unreachable!("enrich handled before store init"),
         Cmd::Csv { .. } => unreachable!("csv handled before store init"),
         Cmd::Squeeze { .. } => unreachable!("squeeze handled before store init"),
+        Cmd::Run { .. } => unreachable!("run handled before store init"),
         Cmd::Init { .. } => unreachable!("init handled before store init"),
         Cmd::Serve { .. } => unreachable!("serve handled before store init"),
         Cmd::Agent { .. } => unreachable!("agent handled before store init"),
@@ -2416,6 +2479,7 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::Enrich { .. } => "enrich",
         Cmd::Csv { .. } => "csv",
         Cmd::Squeeze { .. } => "squeeze",
+        Cmd::Run { .. } => "run",
         Cmd::Init { .. } => "init",
         Cmd::Serve { .. } => "serve",
         Cmd::Read { .. } => "read",
