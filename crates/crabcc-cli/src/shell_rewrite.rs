@@ -177,8 +177,11 @@ fn plan_cat(args: &[String], cwd: Option<&Path>) -> Option<Rewrite> {
         return None;
     }
     if file.ends_with(".json") {
+        // Fall back to cat when the file is invalid / mid-edit so the agent
+        // always gets the raw bytes it asked for, not a jq parse error.
+        let f = shq(file);
         return Some(Rewrite {
-            inner: format!("jq -c . {}", shq(file)),
+            inner: format!("jq -c . {f} || cat {f}"),
             rule: "cat-json->jq",
             key: file.clone(),
             note: Some("minified JSON (jq -c); pipe to `jq '<filter>'` to select fields".into()),
@@ -305,6 +308,14 @@ fn plan_grep(args: &[String], is_symbol: &dyn Fn(&str) -> bool) -> Option<Rewrit
     // bare identifier that is actually indexed.
     if repo_wide && !o.ignore_case && !o.count && is_bare_ident(pattern) && is_symbol(pattern) {
         return Some(symbol_upgrade(pattern, o.files_only, "grep->crabcc-refs"));
+    }
+
+    // Without -r/-R, grep on a directory prints an error (or skips it).
+    // rg always recurses into directories, so the swap would silently add
+    // results that grep never returns. Passthrough when any explicit path
+    // is a directory and the user didn't opt into recursion.
+    if !o.recursive && paths.iter().any(|p| std::fs::metadata(p).map_or(false, |m| m.is_dir())) {
+        return None;
     }
 
     // Faithful ripgrep swap — only when the pattern is regex-compatible
@@ -839,7 +850,7 @@ mod tests {
     fn cat_json_minifies_via_jq() {
         assert_eq!(
             plan("cat config.json", &never, None).unwrap().inner,
-            "jq -c . config.json"
+            "jq -c . config.json || cat config.json"
         );
         assert_eq!(plan("cat src/a.json", &never, None).unwrap().rule, "cat-json->jq");
         // Non-source text, flags, or multiple files are left to plain `cat`.
