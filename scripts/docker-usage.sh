@@ -12,9 +12,10 @@ set -euo pipefail
 : "${DOCKER_PAT:?set DOCKER_PAT}"
 NS="${DOCKER_NAMESPACE:-$DOCKER_USER}"
 
-tok="$(curl -fsS -H 'Content-Type: application/json' \
-  -d "{\"username\":\"${DOCKER_USER}\",\"password\":\"${DOCKER_PAT}\"}" \
-  https://hub.docker.com/v2/users/login/ | jq -r '.token // empty')"
+# Build the JSON with jq so special chars in the PAT (", \, etc.) are escaped.
+tok="$(jq -n --arg u "$DOCKER_USER" --arg p "$DOCKER_PAT" '{username:$u,password:$p}' \
+  | curl -fsS -H 'Content-Type: application/json' -d @- \
+    https://hub.docker.com/v2/users/login/ | jq -r '.token // empty')"
 [ -n "$tok" ] || { echo "Docker Hub login failed (check docker_user/docker_pat)"; exit 1; }
 
 echo "## Docker Hub usage — namespace \`${NS}\` ($(date -u +%Y-%m-%dT%H:%MZ))"
