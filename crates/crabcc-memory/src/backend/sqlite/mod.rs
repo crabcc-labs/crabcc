@@ -192,8 +192,8 @@ impl SqliteBackend {
 
         // v2.5.1 (#17) + #20 — sqlite-vec virtual table for ANN search.
         // Dim is fixed at 384 (MiniLM-L6-v2 / HashEmbedder default).
-        // `drawers_vec_state` tracks one-shot backfill so subsequent opens
-        // are fast (no re-scan of `drawer_embeddings`).
+        // `drawers_vec_state` stores the embedding count at last sync so a
+        // re-open after a feature-off write detects and backfills missing rows.
         #[cfg(feature = "memory-vec")]
         {
             conn.execute_batch(
@@ -208,7 +208,10 @@ impl SqliteBackend {
             )
             .context("create drawers_vec virtual table")?;
 
-            let backfilled: i64 = conn
+            // Row count stored at last sync (0 = never synced). Storing the
+            // count (not a boolean) lets us detect rows written by a
+            // feature-off build between two memory-vec-enabled opens.
+            let synced_count: i64 = conn
                 .query_row(
                     "SELECT CAST(value AS INTEGER) FROM drawers_vec_state WHERE key = 'backfilled'",
                     [],
@@ -216,16 +219,22 @@ impl SqliteBackend {
                 )
                 .unwrap_or(0);
 
-            if backfilled == 0 {
-                // Populate drawers_vec from existing drawer_embeddings rows.
-                // Only 384-dim vectors match the virtual table schema; others
-                // (e.g. HashEmbedder::with_dim(N) in tests) are silently skipped.
+            let current_count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM drawer_embeddings WHERE dim = 384",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+
+            if synced_count != current_count {
+                // Re-sync: delete existing vec rows then re-insert all 384-dim
+                // embeddings. Handles initial backfill and recovery when
+                // feature-off writes added rows never mirrored into drawers_vec.
                 let rows: Vec<(i64, Vec<u8>)> = {
                     let mut stmt = conn
                         .prepare("SELECT drawer_id, bytes FROM drawer_embeddings WHERE dim = 384")
                         .context("prepare drawers_vec backfill")?;
-                    // Bind collected result to a local so the MappedRows
-                    // temporary (which borrows stmt) is dropped before stmt.
                     let collected = stmt
                         .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?
                         .collect::<rusqlite::Result<Vec<_>>>()
@@ -235,6 +244,9 @@ impl SqliteBackend {
                 let tx = conn
                     .transaction_with_behavior(TransactionBehavior::Immediate)
                     .context("begin drawers_vec backfill transaction")?;
+                for (id, _) in &rows {
+                    tx.execute("DELETE FROM drawers_vec WHERE drawer_id = ?1", params![id])?;
+                }
                 for (id, bytes) in &rows {
                     tx.execute(
                         "INSERT INTO drawers_vec(drawer_id, embedding) VALUES (?1, ?2)",
@@ -242,8 +254,8 @@ impl SqliteBackend {
                     )?;
                 }
                 tx.execute(
-                    "INSERT OR REPLACE INTO drawers_vec_state(key, value) VALUES ('backfilled', '1')",
-                    [],
+                    "INSERT OR REPLACE INTO drawers_vec_state(key, value) VALUES ('backfilled', ?1)",
+                    params![current_count.to_string()],
                 )?;
                 tx.commit().context("commit drawers_vec backfill")?;
             }
@@ -403,50 +415,27 @@ impl SqliteBackend {
         })
     }
 
-    /// sqlite-vec ANN path: MATCH query against the `drawers_vec` virtual
-    /// table, post-filtered by wing/room. Over-fetches by 10× when filters
-    /// are active so dropout doesn't starve the result set.
+    /// sqlite-vec ANN path for unfiltered 384-dim queries. Only reached when
+    /// `q.wing.is_none() && q.room.is_none()` — see `query()` dispatch.
     ///
     /// Distance metric: L2 (Euclidean). For unit-norm vectors
     /// (MiniLM-L6-v2, HashEmbedder), `cosine ≈ 1 − d²/2`.
     #[cfg(feature = "memory-vec")]
     fn query_vec(&self, q: &Query) -> Result<QueryResult> {
         let conn = self.conn.lock().map_err(|_| anyhow!("poisoned mutex"))?;
-
-        let fetch_k = if q.wing.is_some() || q.room.is_some() {
-            (q.limit * 10).max(50) as i64
-        } else {
-            q.limit as i64
-        };
-
         let emb_blob = vec_to_blob(&q.embedding);
-        // Columns: drawer_id(0), body(1), body_enc(2), source_id(3),
-        //          wing(4), room(5), distance(6).
-        let mut sql = String::from(
+        let limit = q.limit as i64;
+        let mut stmt = conn.prepare(
             "SELECT v.drawer_id, d.body, d.body_enc, d.source_id, \
                     w.name AS wing, r.name AS room, v.distance \
              FROM drawers_vec v \
              JOIN drawers d ON d.id = v.drawer_id \
              JOIN wings w ON w.id = d.wing_id \
              LEFT JOIN rooms r ON r.id = d.room_id \
-             WHERE v.embedding MATCH ?1 AND v.k = ?2",
-        );
-        let mut args: Vec<rusqlite::types::Value> = vec![emb_blob.into(), fetch_k.into()];
-        if let Some(w) = &q.wing {
-            args.push(w.clone().into());
-            write!(&mut sql, " AND w.name = ?{}", args.len()).ok();
-        }
-        if let Some(r) = &q.room {
-            args.push(r.clone().into());
-            write!(&mut sql, " AND r.name = ?{}", args.len()).ok();
-        }
-        args.push((q.limit as i64).into());
-        write!(&mut sql, " ORDER BY v.distance LIMIT ?{}", args.len()).ok();
-
-        let mut stmt = conn.prepare(&sql)?;
-        let refs: Vec<&dyn rusqlite::ToSql> =
-            args.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-        let rows = stmt.query_map(refs.as_slice(), |row| {
+             WHERE v.embedding MATCH ?1 AND v.k = ?2 \
+             ORDER BY v.distance LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![emb_blob, limit, limit], |row| {
             let id: i64 = row.get(0)?;
             let body = self.body_from_row(row, 1, 2)?;
             let source: String = row.get(3)?;
@@ -562,12 +551,13 @@ impl Backend for SqliteBackend {
     }
 
     fn query(&self, q: &Query) -> Result<QueryResult> {
-        // Route to the sqlite-vec ANN path when the feature is on and the
-        // query embedding is 384-dim (the only dimension drawers_vec holds).
-        // Fall back to brute-force for other dimensions or when the feature
-        // is disabled.
+        // ANN path only for unfiltered 384-dim queries. Filtered queries
+        // (wing/room) use brute-force: SQL applies the predicate before
+        // ranking, so the result set is correct regardless of total DB size.
+        // ANN can't guarantee coverage of a filtered subset from a global
+        // top-k window.
         #[cfg(feature = "memory-vec")]
-        if q.embedding.len() == 384 {
+        if q.embedding.len() == 384 && q.wing.is_none() && q.room.is_none() {
             return self.query_vec(q);
         }
         self.query_brute(q)
