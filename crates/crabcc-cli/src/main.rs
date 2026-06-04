@@ -41,6 +41,7 @@ mod install_integrations;
 mod memory;
 mod model_info;
 mod read;
+mod rewrite_log;
 mod root_resolver;
 mod shell_context;
 mod shell_rewrite;
@@ -623,6 +624,11 @@ enum ShellOp {
         #[arg(long)]
         session_id: Option<String>,
     },
+    /// PostToolUse counterpart of `rewrite`. Reads the hook payload on
+    /// stdin and records the rewritten command's actual output size into
+    /// `_internal.db`, flagging + suppressing rewrites that did not
+    /// reduce tokens (META_ERROR_OPERATOR_NEEDED). Best-effort.
+    RewriteMeasure,
     /// EXPERIMENTAL — inject standing context for the SessionStart hook.
     /// Prints a SessionStart `hookSpecificOutput.additionalContext`
     /// envelope with high-value reminders (context7 for docs, prefer
@@ -1855,6 +1861,7 @@ fn run_shell(root: &Path, db: &Path, op: &ShellOp) -> Result<()> {
             cwd: _,
             session_id,
         } => shell_rewrite::run(root, db, command, session_id.as_deref()),
+        ShellOp::RewriteMeasure => shell_rewrite::run_measure(),
         ShellOp::Context {
             exp_ctx_inject,
             session_id,
