@@ -1,20 +1,25 @@
-# Manually-triggered lint auto-fixer for an open PR.
-#
-# Run it from the Actions tab, or:
+# Lint auto-fixer for an open PR. Fires automatically when CI's `fmt` or
+# `lint (clippy)` job fails, or manually from the Actions tab / CLI:
 #   gh workflow run "Auto-fix lint" -f pr=<N>
-# against a specific PR number. It:
-#   1. Resolves the PR's head branch + SHA.
-#   2. Checks out the PR branch.
-#   3. Runs `cargo fmt --all` to fix rustfmt complaints.
-#   4. Runs `cargo clippy --fix --allow-dirty` for the fixable clippy subset.
-#   5. If the working tree changed, commits with an `[auto-fix]` prefix and
-#      pushes back to the PR branch (CI re-runs on the new commit).
-#   6. Posts a one-time PR comment summarising what got fixed.
 #
-# Previously ran automatically on every failing CI run (`workflow_run`). That
-# amplified self-hosted runner load (one extra run per CI failure, plus a
-# fix -> CI -> fix loop), so it is now manual-only. The `[auto-fix]` HEAD guard
-# below still prevents re-fixing a commit it already fixed.
+# Pipeline:
+#   1. Resolve the PR's head branch + SHA.
+#   2. Checkout the PR branch.
+#   3. Run `cargo fmt --all` to fix rustfmt complaints.
+#   4. Run `cargo clippy --fix --allow-dirty` for the fixable clippy subset.
+#   5. If the working tree changed, commit with an `[auto-fix]` prefix and
+#      push back to the PR branch (CI re-runs on the new commit).
+#   6. Post a one-time PR comment summarising what got fixed.
+#
+# History: this workflow ran on `workflow_run` originally, was switched to
+# manual-only because the fix -> CI -> fix loop risk + runner-load was high.
+# Re-enabled in claude/jolly-lamport-C35Co with two guardrails that mitigate
+# both concerns:
+#   - `[auto-fix]` HEAD prefix loop guard (unchanged) -- workflow refuses to
+#     run on a commit it already fixed.
+#   - workflow_run trigger gates on `fmt` / `lint (clippy)` job conclusions
+#     specifically, so a test-job ENOSPC or any unrelated CI flake does NOT
+#     spawn an auto-fix attempt.
 
 name: Auto-fix lint
 
@@ -25,19 +30,33 @@ on:
         description: 'PR number to fmt + clippy-fix'
         required: true
         type: string
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
 
 permissions:
   contents: write
   pull-requests: write
 
 concurrency:
-  # One auto-fix in flight per PR.
-  group: auto-fix-lint-${{ github.event.inputs.pr }}
+  # One auto-fix in flight per PR. The group key prefers the explicit input
+  # (workflow_dispatch) and falls back to the workflow_run's head SHA so
+  # parallel CI failures for the same commit collapse to one run.
+  group: auto-fix-lint-${{ github.event.inputs.pr || github.event.workflow_run.head_sha }}
   cancel-in-progress: true
 
 jobs:
   triage:
     name: Resolve PR + loop guard
+    # workflow_run fires for *every* CI completion. Drop the obvious no-ops
+    # at the job level so we don't even spin up a runner:
+    #   - skip non-failure conclusions (success / cancelled / skipped)
+    #   - skip runs that weren't triggered by a PR (pushes to main, etc.)
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'failure' &&
+       github.event.workflow_run.event == 'pull_request')
     runs-on: [self-hosted, linux, hetzner]
     outputs:
       should_fix: ${{ steps.classify.outputs.should_fix }}
@@ -49,9 +68,36 @@ jobs:
         id: classify
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR: ${{ github.event.inputs.pr }}
+          EVT: ${{ github.event_name }}
+          DISPATCH_PR: ${{ github.event.inputs.pr }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          WR_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
+
+          if [ "$EVT" = "workflow_run" ]; then
+            # Only auto-fix when fmt or lint specifically failed -- test job
+            # ENOSPC / flake / network errors are not our problem here. Match
+            # by exact job name (see .github/workflows/ci.yml).
+            fails=$(gh api "/repos/${{ github.repository }}/actions/runs/$RUN_ID/jobs" \
+              --jq '[.jobs[] | select(.conclusion=="failure") | .name] | @json')
+            if ! echo "$fails" | grep -qE '"fmt"|"lint \(clippy\)"'; then
+              echo "no fmt/lint failure in run $RUN_ID (failing jobs: $fails); skip"
+              echo "should_fix=false" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+
+            # Resolve PR from head_sha. /commits/<sha>/pulls is the supported
+            # reverse lookup; takes the first open PR for this SHA.
+            PR=$(gh api "/repos/${{ github.repository }}/commits/$WR_HEAD_SHA/pulls" \
+              --jq '[.[] | select(.state=="open")] | .[0].number // empty')
+            if [ -z "$PR" ]; then
+              echo "no open PR for $WR_HEAD_SHA; skip"
+              echo "should_fix=false" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+          else
+            PR="$DISPATCH_PR"
+          fi
+
           # Manually triggered for a specific PR number — fetch head branch,
           # SHA, and commits in one call so loop-guard needs no extra API hit.
           meta=$(gh pr view "$PR" --json headRefName,headRefOid,commits 2>/dev/null || echo '{}')
