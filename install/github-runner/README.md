@@ -109,18 +109,47 @@ The install script sets these env vars in the systemd unit automatically:
 TMPDIR=/var/runner-data/tmp
 CARGO_HOME=/var/runner-data/cargo
 SCCACHE_DIR=/var/runner-data/sccache
+SCCACHE_CACHE_SIZE=15G
 RUNNER_TOOL_CACHE=/var/runner-data/tool-cache
+CARGO_TARGET_DIR=/var/runner-data/target/<runner-name>
 ```
 
 All child processes (including `dtolnay/rust-toolchain` and cargo) inherit
-`TMPDIR` and write to the data volume instead of the root filesystem.
+these and write to the data volume instead of the root filesystem.
+
+**`CARGO_TARGET_DIR` is the important one for disk pressure.** Without it,
+every build writes a multi-GB `target/` tree into the job checkout under
+`_work` on the **root fs** — the volume would mount but barely get used, and
+the root fs fills until a later `apt-get` / toolchain download dies with
+`No space left on device`. It is namespaced per runner
+(`/var/runner-data/target/<runner-name>`) so two runner processes on one host
+don't collide on cargo's exclusive target-dir lock. The GC timer prunes
+per-runner target dirs untouched for 7 days.
+
+> **sccache backend.** In CI the workflow sets `SCCACHE_GHA_ENABLED=true`, so
+> sccache uses the GitHub Actions cache service (shared across runners), not
+> the local `SCCACHE_DIR` on the volume. `SCCACHE_DIR` is the fallback for
+> non-GHA / local runs. Both are wired; the GHA backend is what you see in the
+> per-job `sccache --show-stats` (`Cache location: ghac`).
 
 ## Verify
+
+After provisioning, confirm the runner actually uses the volume:
 
 ```bash
 systemctl status actions-runner
 # GitHub UI → Settings → Actions → Runners → should show Idle (hetzner)
+
+# Env vars present in the unit (TMPDIR, CARGO_HOME, CARGO_TARGET_DIR, …):
+systemctl show -p Environment actions-runner   # or actions.runner.*.service
+
+# Volume mounted, and target/cargo actually landing on it (not root):
+df -h /var/runner-data
+du -sh /var/runner-data/* 2>/dev/null
 ```
+
+A correctly-wired runner shows `/var/runner-data/{cargo,target,tool-cache}`
+growing during/after a build while `df -h /` (root) stays flat.
 
 Trigger **Linear sync** or any PR — jobs should queue on the Hetzner runner,
 not `ubuntu-latest`.

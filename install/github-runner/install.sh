@@ -180,25 +180,34 @@ patch_runner_unit() {
 
   while IFS= read -r unit; do
     [ -z "$unit" ] && continue
-    if grep -q "TMPDIR=${CACHE_BASE}/tmp" "$unit" && grep -q "SCCACHE_CACHE_SIZE=" "$unit"; then
+    if grep -q "TMPDIR=${CACHE_BASE}/tmp" "$unit" \
+       && grep -q "SCCACHE_CACHE_SIZE=" "$unit" \
+       && grep -q "CARGO_TARGET_DIR=" "$unit"; then
       echo "[runner] unit already patched: ${unit} — skipping"
       continue
     fi
     echo "[runner] patching ${unit} with cache-volume env vars..."
+    # Per-runner target dir: two runner processes on one host (runner-01 /
+    # runner-01b) must NOT share CARGO_TARGET_DIR, or cargo's exclusive target
+    # lock serializes their builds. Derive a unique tag from the unit name
+    # (e.g. actions.runner.<owner>-<repo>.runner-01.service → "runner-01").
+    local tag
+    tag="$(basename "$unit" .service)"; tag="${tag##*.}"
     # Write to the data volume to avoid filling the (often near-full) root fs.
     local tmp="${CACHE_BASE}/tmp/runner-unit-patch-$$.tmp"
-    # Insert the four Environment= lines immediately before [Install] so
-    # they land inside [Service]. awk preserves the rest of the unit verbatim.
-    awk -v base="${CACHE_BASE}" '
+    # Insert the Environment= lines immediately before [Install] so they land
+    # inside [Service]. awk preserves the rest of the unit verbatim.
+    awk -v base="${CACHE_BASE}" -v tag="${tag}" '
       # Strip any pre-existing cache-env lines so re-runs are idempotent
-      # even when an older patch omitted some vars (e.g. SCCACHE_CACHE_SIZE).
-      /^Environment=(TMPDIR|CARGO_HOME|SCCACHE_DIR|SCCACHE_CACHE_SIZE|RUNNER_TOOL_CACHE)=/ { next }
+      # even when an older patch omitted some vars (e.g. CARGO_TARGET_DIR).
+      /^Environment=(TMPDIR|CARGO_HOME|CARGO_TARGET_DIR|SCCACHE_DIR|SCCACHE_CACHE_SIZE|RUNNER_TOOL_CACHE)=/ { next }
       /^\[Install\]/ {
         print "Environment=TMPDIR=" base "/tmp"
         print "Environment=CARGO_HOME=" base "/cargo"
         print "Environment=SCCACHE_DIR=" base "/sccache"
         print "Environment=SCCACHE_CACHE_SIZE=15G"
         print "Environment=RUNNER_TOOL_CACHE=" base "/tool-cache"
+        print "Environment=CARGO_TARGET_DIR=" base "/target/" tag
         print ""
       }
       { print }
@@ -270,6 +279,7 @@ Environment=RUNNER_CACHE_BASE=${CACHE_BASE}
 Environment=CARGO_HOME=${CACHE_BASE}/cargo
 Environment=SCCACHE_DIR=${CACHE_BASE}/sccache
 Environment=RUNNER_TOOL_CACHE=${CACHE_BASE}/tool-cache
+Environment=RUNNER_TARGET_BASE=${CACHE_BASE}/target
 # Only prune when root fs >= 75%; exits immediately otherwise.
 ExecStart=/usr/bin/env bash ${INSTALL_DIR}/runner-gc.sh --if-above 75
 EOF
@@ -316,6 +326,7 @@ Environment=RUNNER_CACHE_BASE=${CACHE_BASE}
 Environment=CARGO_HOME=${CACHE_BASE}/cargo
 Environment=SCCACHE_DIR=${CACHE_BASE}/sccache
 Environment=RUNNER_TOOL_CACHE=${CACHE_BASE}/tool-cache
+Environment=RUNNER_TARGET_BASE=${CACHE_BASE}/target
 ExecStart=/usr/bin/env bash ${INSTALL_DIR}/runner-gc.sh
 EOF
 
@@ -434,11 +445,15 @@ Environment=HOME=${RUNNER_HOME}
 # TMPDIR is inherited by every child process, including dtolnay/rust-toolchain
 # (rustup download) and cargo build steps.  CARGO_HOME and SCCACHE_DIR keep
 # registry blobs + sccache entries on the data volume rather than home.
+# CARGO_TARGET_DIR is the big one: without it, every build writes a multi-GB
+# target/ tree into _work on the root fs.  Namespaced per runner so two
+# runner processes on one host don't collide on cargo's exclusive target lock.
 Environment=TMPDIR=${CACHE_BASE}/tmp
 Environment=CARGO_HOME=${CACHE_BASE}/cargo
 Environment=SCCACHE_DIR=${CACHE_BASE}/sccache
 Environment=SCCACHE_CACHE_SIZE=15G
 Environment=RUNNER_TOOL_CACHE=${CACHE_BASE}/tool-cache
+Environment=CARGO_TARGET_DIR=${CACHE_BASE}/target/${RUNNER_NAME}
 
 [Install]
 WantedBy=multi-user.target

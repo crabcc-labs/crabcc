@@ -140,6 +140,17 @@ if [ -d "$TOOL_CACHE_PATH" ] && ! runner_busy; then
   log "tool-cache: pruned entries older than 30d from ${TOOL_CACHE_PATH}"
 fi
 
+# ── Cargo target dirs on the cache volume ─────────────────────────────────
+# CARGO_TARGET_DIR is relocated onto the data volume (see install.sh) and
+# namespaced per runner under ${CACHE_BASE}/target/<runner>. Build artifacts
+# are fully regenerable, so prune per-runner trees not touched in 7 days.
+# Skipped mid-build — the live target dir would be deleted out from under cargo.
+TARGET_BASE="${RUNNER_TARGET_BASE:-${CACHE_BASE}/target}"
+if [ -d "$TARGET_BASE" ] && ! runner_busy; then
+  find "$TARGET_BASE" -mindepth 1 -maxdepth 1 -mtime +7 -exec rm -rf {} + 2>/dev/null || true
+  log "cargo target: pruned per-runner dirs older than 7d from ${TARGET_BASE}"
+fi
+
 # ── System caches: apt + journald ─────────────────────────────────────────
 sudo apt-get clean 2>/dev/null || true
 command -v journalctl >/dev/null 2>&1 && sudo journalctl --vacuum-time=2d 2>/dev/null || true
