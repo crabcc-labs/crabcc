@@ -1,7 +1,7 @@
 name: provision-runner-volume
 
 # One-shot workflow: mounts the attached Hetzner volume at /var/runner-data,
-# creates the cache subdirs, patches the actions-runner.service unit with the
+# creates the cache subdirs, patches the runner service unit(s) with the
 # new TMPDIR/CARGO_HOME/SCCACHE_DIR env vars, and schedules a service restart
 # 60 s after the job finishes (so the job can exit cleanly first).
 #
@@ -45,6 +45,15 @@ jobs:
             echo "=== unmounting automount at $CURRENT_MOUNT ==="
             sudo umount "$DEVICE"
           fi
+
+          echo "=== quick root-fs cleanup (root fs may be near-full) ==="
+          # Reclaim space before patching so awk doesn't hit ENOSPC.
+          # These are all safe during a live build - only unused data removed.
+          sudo docker container prune -f 2>/dev/null || true
+          sudo docker image prune -f --filter "until=24h" 2>/dev/null || true
+          sudo apt-get clean 2>/dev/null || true
+          sudo journalctl --vacuum-size=50M 2>/dev/null || true
+          df -h /
 
           echo "=== running install.sh --gc-only --cache-volume ==="
           sudo bash install/github-runner/install.sh \
