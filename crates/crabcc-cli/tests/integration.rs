@@ -22,3 +22,5 @@ mod e2e_walkdir;
 mod graph_v4;
 #[path = "integration/shell_rewrite_e2e.rs"]
 mod shell_rewrite_e2e;
+#[path = "integration/shell_context_e2e.rs"]
+mod shell_context_e2e;
