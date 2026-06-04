@@ -407,8 +407,13 @@ fn render_research_plan(topics: &[Topic]) -> String {
         "# Onboarding research plan\n\n\
          The binary crawled each dependency's docs into memory (wing=onboard).\n\
          Deepen these with the **deep-research** skill (web search across\n\
-         blogs, changelogs, and latest releases), then feed findings back in\n\
-         with `crabcc memory remember`:\n\n",
+         blogs, changelogs, and latest releases). The machine-readable handoff\n\
+         lives in `research-plan.json`; drive it with:\n\n\
+         - `crabcc research brief` — a ready-to-run brief for the deep-research skill.\n\
+         - `crabcc research ingest --topic <t>` — store each topic's findings\n\
+           (into the `research` wing, room = topic).\n\
+         - `crabcc research status` — see which topics still need findings.\n\n\
+         Topics:\n\n",
     );
     for t in topics {
         let eco = match t.ecosystem {
@@ -423,7 +428,10 @@ fn render_research_plan(topics: &[Topic]) -> String {
     if topics.is_empty() {
         s.push_str("- _(no external dependencies detected)_\n");
     }
-    s.push_str("\nThen: `crabcc enrich \"<topic>\"` pulls the cached docs as bounded context.\n");
+    s.push_str(
+        "\nThen: `crabcc enrich \"<topic>\"` pulls the cached docs + ingested\n\
+         findings as bounded context.\n",
+    );
     s
 }
 
@@ -439,8 +447,8 @@ struct ResearchTask {
 /// The machine-readable research plan the deep-research skill iterates.
 #[derive(serde::Serialize)]
 struct ResearchPlan {
-    /// Where to store findings: `crabcc memory remember --wing <result_wing>
-    /// --room <topic> …`, then retrieve via `crabcc enrich`.
+    /// Where to store findings — `crabcc research ingest --topic <topic>`
+    /// writes into this wing (room = topic); retrieve via `crabcc enrich`.
     result_wing: &'static str,
     tasks: Vec<ResearchTask>,
 }
