@@ -168,7 +168,11 @@ pub fn list(home: &Path, repo_root: &Path) -> Result<Vec<BackupEntry>> {
             let ts = e.file_name().to_string_lossy().parse::<u64>().ok()?;
             let p = e.path();
             let bytes = dir_size(&p).unwrap_or(0);
-            Some(BackupEntry { timestamp: ts, path: p, bytes })
+            Some(BackupEntry {
+                timestamp: ts,
+                path: p,
+                bytes,
+            })
         })
         .collect();
     out.sort_by_key(|a| std::cmp::Reverse(a.timestamp));

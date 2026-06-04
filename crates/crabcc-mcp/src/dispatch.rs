@@ -25,7 +25,10 @@ pub fn handle(req: &Value, root: &Path) -> Value {
 /// tests exercising the default vs. dev surfaces use this.
 pub fn handle_with(req: &Value, root: &Path, dev: bool) -> Value {
     let id = req.get("id").cloned();
-    let method = req.get("method").and_then(|m| m.as_str()).unwrap_or_default();
+    let method = req
+        .get("method")
+        .and_then(|m| m.as_str())
+        .unwrap_or_default();
 
     match method {
         "initialize" => json!({
@@ -274,7 +277,8 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
             let (after, parse_err) = crabcc_core::validate::reindex_file(&store, path, content)?;
             let diff = crabcc_core::validate::diff_symbols(path, &before, &after);
             let removed = diff.removed_names();
-            let broken: std::collections::BTreeSet<String> = removed.iter()
+            let broken: std::collections::BTreeSet<String> = removed
+                .iter()
                 .filter_map(|name| query::find_callers(&store, root, name).ok())
                 .flatten()
                 .map(|h| h.file)

@@ -18,7 +18,6 @@ mod encoding;
 mod ensure;
 
 use crate::backend::{cosine, Backend, LexicalQuery};
-use std::fmt::Write as _;
 use crate::types::*;
 use anyhow::{anyhow, Context, Result};
 use crabcc_core::hash::sha256_hex;
@@ -27,6 +26,7 @@ use encoding::{blob_to_vec, fts_match_string, now_secs, vec_to_blob};
 use ensure::register_sqlite_vec_once;
 use ensure::{ensure_room, ensure_wing};
 use rusqlite::{params, Connection, OptionalExtension};
+use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::Mutex;
 

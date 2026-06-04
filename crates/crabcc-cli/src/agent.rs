@@ -26,8 +26,8 @@
 //! shell scripts can grep + `tail -f` without a custom client.
 
 use anyhow::{anyhow, Context, Result};
-use std::fs::{File, OpenOptions};
 use std::fmt::Write as _;
+use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};

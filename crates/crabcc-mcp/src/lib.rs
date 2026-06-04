@@ -1337,7 +1337,9 @@ mod tests {
         let parsed = parse_text_content(&r);
         // Default mode is Hits; the JSON has fingerprint envelope keys
         // (data + sha) — assert one of the recognisable shapes.
-        let raw_text = r["result"]["content"][0]["text"].as_str().unwrap_or_default();
+        let raw_text = r["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
         assert!(
             raw_text.contains("hello") || parsed["data"].is_array() || parsed.is_array(),
             "refs payload should mention `hello`: {raw_text:.200}"
@@ -1355,7 +1357,9 @@ mod tests {
     fn handle_tools_call_callers_returns_envelope() {
         let dir = fixture_root();
         let r = call_tool(dir.path(), "callers", json!({"name": "hello"}));
-        let raw_text = r["result"]["content"][0]["text"].as_str().unwrap_or_default();
+        let raw_text = r["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default();
         // Either the fingerprint envelope or a streamed shape — both
         // count "hello" as a callable.
         assert!(
@@ -1527,7 +1531,10 @@ mod tests {
             if !name.starts_with("memory.") {
                 continue;
             }
-            let desc = tool["description"].as_str().unwrap_or_default().to_lowercase();
+            let desc = tool["description"]
+                .as_str()
+                .unwrap_or_default()
+                .to_lowercase();
             assert!(
                 keywords.iter().any(|kw| desc.contains(kw)),
                 "memory tool {name:?} description should mention a domain concept: {desc:?}"
