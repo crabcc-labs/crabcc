@@ -1,0 +1,81 @@
+name: provision-runner-volume
+
+# One-shot workflow: mounts the attached Hetzner volume at /var/runner-data,
+# creates the cache subdirs, patches the actions-runner.service unit with the
+# new TMPDIR/CARGO_HOME/SCCACHE_DIR env vars, and schedules a service restart
+# 60 s after the job finishes (so the job can exit cleanly first).
+#
+# Trigger once after attaching the volume; delete or disable afterwards.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: provision-runner-volume
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  provision:
+    name: provision cache volume
+    runs-on: [self-hosted, linux, hetzner]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: mount volume + patch unit
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEVICE="/dev/disk/by-id/scsi-0HC_Volume_105921366"
+          CACHE_BASE="/var/runner-data"
+
+          echo "=== block device check ==="
+          lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT,LABEL "$DEVICE" || lsblk
+
+          # If the Hetzner automount agent already mounted the volume somewhere
+          # else (typically /mnt/HC_Volume_*), unmount it first so we can
+          # re-mount at CACHE_BASE under our fstab entry.
+          CURRENT_MOUNT=$(findmnt -n -o TARGET --source "$DEVICE" 2>/dev/null || true)
+          if [ -n "$CURRENT_MOUNT" ] && [ "$CURRENT_MOUNT" != "$CACHE_BASE" ]; then
+            echo "=== unmounting automount at $CURRENT_MOUNT ==="
+            sudo umount "$DEVICE"
+          fi
+
+          echo "=== running install.sh --gc-only --cache-volume ==="
+          sudo bash install/github-runner/install.sh \
+            --gc-only \
+            --cache-volume "$DEVICE"
+
+          echo "=== verifying mount ==="
+          mountpoint -q "$CACHE_BASE" && echo "OK: $CACHE_BASE is mounted" || echo "WARN: not mounted yet"
+          df -h "$CACHE_BASE" || true
+
+          echo "=== verifying unit patch ==="
+          grep "TMPDIR" /etc/systemd/system/actions-runner.service && echo "unit patched OK"
+
+          echo "=== scheduling runner restart in 60 s ==="
+          # systemd-run creates a transient timer that fires after this job
+          # exits, so the restart happens cleanly without killing this job.
+          sudo systemd-run --on-active=60 \
+            --description="post-provision actions-runner restart" \
+            sudo systemctl restart actions-runner
+          echo "restart scheduled"
+
+      - name: summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Volume provisioning — $(hostname)"
+            echo ""
+            echo "\`\`\`"
+            df -h /var/runner-data 2>/dev/null || echo "/var/runner-data not mounted"
+            echo ""
+            grep -E "^Environment=" /etc/systemd/system/actions-runner.service 2>/dev/null || true
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
