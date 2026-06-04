@@ -202,6 +202,31 @@ the harness sends a vanilla-context vs flow-context task per model and
 reports the API's `usage.prompt_tokens`. Costs real tokens, so it is off by
 default and not run here.
 
+## 10. Code RAG — symbol-aware retrieval (`crabcc rag`)
+
+Vector/lexical retrieval over the codebase so an agent can pull the few
+snippets relevant to a prompt instead of guessing which files to read.
+Built on the existing crabcc-memory `Palace` (FTS5 BM25 ⊕ sqlite-vec ANN,
+RRF-fused) — `rag build` chunks at **symbol** granularity (one drawer per
+fn/struct/impl, body = signature + source span), which retrieves far
+sharper than `memory mine project`'s one-drawer-per-file.
+
+```
+crabcc rag build --rebuild     # chunk every indexed symbol (idempotent)
+crabcc rag query "QUERY" --limit 8
+```
+
+Smoke on this repo: `build` chunked 4,750 symbols / 448 files; `query
+"downscale an oversized image to bound vision tokens"` returns
+`media.rs::try_downscale` as the top hit. Lexical BM25 by default;
+`--features memory-embed` adds semantic MiniLM-L6-v2 hybrid ranking.
+
+**Deliberately not a silent rewrite.** Vector RAG is *fuzzy*; it
+complements but never replaces the precise `lookup sym/refs/callers`
+surface, so it stays an explicit command. Query results are recorded to
+the `crabcc track` ledger (op `rag`) and show up in the dashboard savings
+block.
+
 ## 7. Which features benefit AI agents most (measured)
 
 Per-operation token cost vs the naive baseline, on the crabcc repo
