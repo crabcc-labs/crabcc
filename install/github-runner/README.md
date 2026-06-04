@@ -41,11 +41,27 @@ unit `actions-runner.service`.
 The recurring `curl: (23) Failure writing output` failure is caused by the
 root filesystem filling up while `dtolnay/rust-toolchain` downloads a Rust
 toolchain tarball to `/tmp`.  The fix is a dedicated Hetzner volume that
-gives `TMPDIR`, `CARGO_HOME`, and `SCCACHE_DIR` their own partition (20–50 GB).
+gives `TMPDIR`, `CARGO_HOME`, and `SCCACHE_DIR` their own partition.
+
+**Sizing: provision a 100 GB volume on _each_ runner host (runner-01 and
+runner-01b).** Earlier guidance was 40 GB; in practice cargo + sccache +
+the tool-cache outgrow that and jobs start hitting `No space left on
+device`, so 100 GB is the new standard for both runners.
+
+> **Root-fs caveat.** This volume only relieves the paths it backs
+> (`/var/runner-data/{tmp,cargo,sccache,tool-cache}`). `apt-get` still
+> writes to `/var/cache/apt` and `/var/lib/apt` on the **root** filesystem,
+> so a job step like `apt-get install mold ripgrep` can still fail with
+> `E: Write error - write (28: No space left on device)` even with a large
+> cache volume. To fully prevent that, either (a) grow the server's root
+> disk (Hetzner server *resize*, which expands `/`), or (b) preinstall
+> `mold` + `ripgrep` into the runner image so no per-job `apt` write is
+> needed, or (c) point apt's cache at the data volume. Growing the root
+> disk is the simplest and is recommended alongside the 100 GB volume.
 
 ### 1 — Add a volume in the Hetzner console
 
-Cloud Console → server → **Volumes** → Create Volume → 40 GB, same DC.
+Cloud Console → server → **Volumes** → Create Volume → **100 GB**, same DC.
 Attach to `runner-01` (and separately to `runner-01b`).
 The volume appears as `/dev/disk/by-id/scsi-0HC_Volume_<id>` and `/dev/sdb`
 (or `/dev/sdc` if a second volume is already attached).

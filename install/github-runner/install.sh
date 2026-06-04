@@ -11,7 +11,8 @@
 #   --labels self-hosted,linux,hetzner
 #   --name hetzner-1
 #   --cache-volume /dev/sdb         # format + mount a dedicated block device for
-#                                   # TMPDIR / CARGO_HOME / SCCACHE_DIR (20–50 GB).
+#                                   # TMPDIR / CARGO_HOME / SCCACHE_DIR (100 GB
+#                                   # standard on runner-01 / runner-01b).
 #                                   # Fixes "curl: (23) Failure writing output" when
 #                                   # the root filesystem fills up during toolchain
 #                                   # downloads.  Safely skipped if the device is
