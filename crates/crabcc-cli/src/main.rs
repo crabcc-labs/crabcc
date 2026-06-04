@@ -30,6 +30,7 @@ mod agent_guard;
 mod agent_profile;
 mod agent_runs_db;
 mod audit;
+mod cli_config;
 mod auto_index;
 mod backup;
 mod compress_cmd;
