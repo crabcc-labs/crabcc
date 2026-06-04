@@ -3,10 +3,16 @@
 //! points at the root (directly or via intermediates) up to `max_depth`,
 //! plus the smallest depth at which each was reached.
 //!
-//! v4 edge schema:
-//!   edges(id, src_symbol_id, dst_symbol_id, kind, line)
-//!   indexed by (dst_symbol_id, kind) — the BFS frontier picks up the
-//!   index automatically.
+//! v5 edge schema:
+//!   edges(src_symbol_id, dst_symbol_id, kind, line) WITHOUT ROWID
+//!   PRIMARY KEY (src_symbol_id, dst_symbol_id, kind, line)
+//!   secondary indices: (dst_symbol_id), (dst_symbol_id, kind)
+//!
+//! Implementation: a single `WITH RECURSIVE` CTE replaces the old
+//! Rust-side BFS loop. SQLite walks the graph entirely at the C layer;
+//! `UNION` (not `UNION ALL`) deduplicates by (node_id, depth), which
+//! prevents re-visiting on cycles and makes the `depth < max_depth` guard
+//! reliable. One round-trip instead of N×frontier_size round-trips.
 //!
 //! `kinds` filters edges by kind (`call`, `ref`, `import`, `inherit`,
 //! `impl`). An empty `kinds` slice means "all kinds" — the caller is
@@ -18,7 +24,7 @@ use crate::types::{Symbol, SymbolKind};
 use anyhow::Result;
 use rusqlite::params_from_iter;
 use serde::Serialize;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::HashMap;
 
 #[derive(Debug, Serialize)]
 pub struct BlastRadiusResult {
@@ -34,7 +40,10 @@ pub struct BlastRadiusResult {
     pub kinds_used: Vec<String>,
 }
 
-/// BFS over reverse edges from `root_symbol_id`, capped at `max_depth`.
+/// Transitive reverse-edge walk from `root_symbol_id`, capped at `max_depth`.
+/// Implemented as a single `WITH RECURSIVE` CTE — one SQL round-trip instead
+/// of the old N×frontier_size loop. `UNION` (not `UNION ALL`) deduplicates
+/// visited nodes, making cycles safe and the depth cap reliable.
 /// `kinds` empty means "no kind filter".
 pub fn blast_radius(
     store: &Store,
@@ -43,60 +52,59 @@ pub fn blast_radius(
     kinds: &[&str],
 ) -> Result<BlastRadiusResult> {
     let kinds_used: Vec<String> = kinds.iter().copied().map(str::to_string).collect();
-    let mut depth_map: HashMap<i64, usize> = HashMap::new();
-    let mut seen: HashSet<i64> = HashSet::new();
-    seen.insert(root_symbol_id);
 
     if max_depth == 0 {
         return Ok(BlastRadiusResult {
             affected: Vec::new(),
-            depth_map,
+            depth_map: HashMap::new(),
             kinds_used,
         });
     }
 
     let conn = store.conn();
-    // We build the SQL once and bind the dst id per frontier hop. With kinds
-    // filtering we emit `kind IN (?, ?, ...)`; without, we drop the clause.
-    let sql = if kinds.is_empty() {
-        "SELECT DISTINCT src_symbol_id FROM edges WHERE dst_symbol_id = ?1".to_string()
+
+    // Optional kind-filter clause: `?3`, `?4`, … for each kind string.
+    let kind_clause = if kinds.is_empty() {
+        String::new()
     } else {
-        let placeholders: Vec<String> = (0..kinds.len()).map(|i| format!("?{}", i + 2)).collect();
-        format!(
-            "SELECT DISTINCT src_symbol_id FROM edges \
-             WHERE dst_symbol_id = ?1 AND kind IN ({})",
-            placeholders.join(",")
-        )
+        let placeholders: Vec<String> = (0..kinds.len()).map(|i| format!("?{}", i + 3)).collect();
+        format!(" AND e.kind IN ({})", placeholders.join(","))
     };
-    let mut stmt = conn.prepare(&sql)?;
 
-    let mut frontier: VecDeque<(i64, usize)> = VecDeque::new();
-    frontier.push_back((root_symbol_id, 0));
+    // Single recursive CTE. `UNION` deduplicates (node_id, depth) pairs so
+    // each node is visited at its shortest depth only, and cycles terminate
+    // naturally. The `depth < ?2` guard enforces the caller's max_depth cap.
+    let sql = format!(
+        "WITH RECURSIVE blast(node_id, depth) AS (\
+             SELECT ?1, 0 \
+             UNION \
+             SELECT e.src_symbol_id, b.depth + 1 \
+             FROM edges e \
+             JOIN blast b ON e.dst_symbol_id = b.node_id \
+             WHERE b.depth < ?2{kind_clause}\
+         ) \
+         SELECT node_id, MIN(depth) AS min_depth \
+         FROM blast \
+         WHERE node_id != ?1 \
+         GROUP BY node_id"
+    );
 
-    while let Some((node, depth)) = frontier.pop_front() {
-        if depth >= max_depth {
-            continue;
-        }
-        let next_depth = depth + 1;
-
-        let mut params: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(node)];
-        for k in kinds {
-            params.push(Box::new(k.to_string()));
-        }
-        let rows = stmt.query_map(params_from_iter(params.iter().map(|b| b.as_ref())), |row| {
-            row.get::<_, i64>(0)
-        })?;
-        for r in rows {
-            let src = r?;
-            if seen.insert(src) {
-                depth_map.insert(src, next_depth);
-                frontier.push_back((src, next_depth));
-            }
-        }
+    let mut params: Vec<Box<dyn rusqlite::ToSql>> =
+        vec![Box::new(root_symbol_id), Box::new(max_depth as i64)];
+    for k in kinds {
+        params.push(Box::new(k.to_string()));
     }
 
-    // Hydrate affected symbol records in a single SQL call. The ids vec is
-    // bounded by `max_depth` × fan-in, in practice well under thousands.
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt
+        .query_map(params_from_iter(params.iter().map(|b| b.as_ref())), |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        })?
+        .collect::<rusqlite::Result<Vec<(i64, i64)>>>()?;
+
+    let depth_map: HashMap<i64, usize> = rows.into_iter().map(|(id, d)| (id, d as usize)).collect();
+
+    // Hydrate affected symbol records in a single SQL call.
     let affected = hydrate_symbols(store, depth_map.keys().copied().collect())?;
 
     Ok(BlastRadiusResult {
@@ -159,6 +167,7 @@ fn kind_from_str(s: &str) -> SymbolKind {
 mod tests {
     use super::*;
     use crate::store::Store;
+    use std::collections::HashSet;
 
     /// Build a minimal v4 fixture by hand: 3 files, 4 symbols, edges
     /// shaped as `c -> b -> a` (a is the root; b is depth 1 from a; c

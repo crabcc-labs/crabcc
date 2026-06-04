@@ -283,6 +283,15 @@ impl Palace {
         crate::mine::project::mine_project(self, path, opts)
     }
 
+    /// Write a transactionally consistent snapshot of the memory DB to
+    /// `dest` using SQLite's `VACUUM INTO`. Safe to call on a live,
+    /// WAL-mode database — readers and writers are not blocked, and the
+    /// output is a single self-contained file with no WAL sidecar.
+    /// Prefer this over `std::fs::copy` for backups.
+    pub fn vacuum_into(&self, dest: &Path) -> Result<()> {
+        self.backend.vacuum_into(dest)
+    }
+
     /// Walk a directory of Claude Code JSONL transcripts and ingest one
     /// drawer per `(user, assistant)` turn pair. See
     /// [`crate::mine::sessions::mine_sessions`].

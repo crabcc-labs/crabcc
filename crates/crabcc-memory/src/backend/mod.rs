@@ -11,6 +11,7 @@
 
 use crate::types::*;
 use anyhow::Result;
+use std::path::Path;
 
 pub mod in_memory;
 pub mod sqlite;
@@ -32,6 +33,12 @@ pub trait Backend: Send + Sync {
     /// `vacuum` calls rather than vacuum-per-row.
     fn vacuum(&self) -> Result<()> {
         Ok(())
+    }
+    /// Write a transactionally consistent snapshot to `dest` via
+    /// `VACUUM INTO`. Default impl returns an error so non-SQLite backends
+    /// surface an explicit "not supported" rather than silently no-oping.
+    fn vacuum_into(&self, _dest: &Path) -> Result<()> {
+        anyhow::bail!("vacuum_into not supported by this backend")
     }
     fn count(&self) -> Result<usize>;
     fn health(&self) -> HealthStatus;

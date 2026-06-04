@@ -25,7 +25,7 @@ use encoding::{blob_to_vec, fts_match_string, now_secs, vec_to_blob};
 #[cfg(feature = "memory-vec")]
 use ensure::register_sqlite_vec_once;
 use ensure::{ensure_room, ensure_wing};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::Mutex;
@@ -301,7 +301,7 @@ impl SqliteBackend {
 impl Backend for SqliteBackend {
     fn add(&self, drawers: &[DrawerInsert]) -> Result<Vec<DrawerId>> {
         let mut conn = self.conn.lock().map_err(|_| anyhow!("poisoned mutex"))?;
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut ids = Vec::with_capacity(drawers.len());
         let now = now_secs();
         for d in drawers {
@@ -484,7 +484,7 @@ impl Backend for SqliteBackend {
         // delete from drawers (which cascades drawer_embeddings), then
         // emit one FTS delete per id under the same transaction so the
         // pair is atomic.
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let ids: Vec<DrawerId> = match sel {
             DeleteSel::All => {
                 let mut stmt = tx.prepare("SELECT id FROM drawers")?;
@@ -620,6 +620,15 @@ impl Backend for SqliteBackend {
         // is preserved (sqlite restores pragmas across the rewrite).
         let conn = self.conn.lock().map_err(|_| anyhow!("poisoned mutex"))?;
         conn.execute("VACUUM", [])?;
+        Ok(())
+    }
+
+    fn vacuum_into(&self, dest: &Path) -> Result<()> {
+        let dest_str = dest
+            .to_str()
+            .ok_or_else(|| anyhow!("vacuum_into: dest path is not valid UTF-8"))?;
+        let conn = self.conn.lock().map_err(|_| anyhow!("poisoned mutex"))?;
+        conn.execute("VACUUM INTO ?1", rusqlite::params![dest_str])?;
         Ok(())
     }
 
