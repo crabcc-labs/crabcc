@@ -18,7 +18,7 @@
 //! tested; the spawn + file writes are the integration glue.
 
 use anyhow::{Context, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -156,7 +156,12 @@ fn lead(root: &Path, onboard_dir: &Path) -> Result<()> {
 /// silent so it tapers off after the agent is oriented. Cheap — reads the
 /// overview the leader wrote; never crawls, locks, or blocks.
 pub fn run_inject(root: &Path) -> Result<()> {
-    let onboard = root.join(".crabcc").join("onboard");
+    // The hook may launch from a workspace subdirectory (root resolves to
+    // the cwd, which doesn't walk up), so search ancestors for the onboarded
+    // dir. None up-tree → not onboarded here → stay silent.
+    let Some(onboard) = find_onboard_dir(root) else {
+        return Ok(());
+    };
     let counter = onboard.join(".injected");
     let count = std::fs::read_to_string(&counter)
         .ok()
@@ -165,13 +170,28 @@ pub fn run_inject(root: &Path) -> Result<()> {
     if count >= INJECT_LIMIT {
         return Ok(()); // oriented — stay silent
     }
-    // Only count an injection we actually emitted: if onboarding hasn't
-    // produced the overview yet, stay silent without consuming a slot.
+    // The overview always exists here (find_onboard_dir requires it), but
+    // guard anyway and only consume a slot when we actually emit.
     if let Ok(text) = std::fs::read_to_string(onboard.join("overview.md")) {
         print!("{text}");
         let _ = std::fs::write(&counter, (count + 1).to_string());
     }
     Ok(())
+}
+
+/// Walk up from `start` to the nearest ancestor whose
+/// `.crabcc/onboard/overview.md` exists, returning that onboard dir. Lets
+/// `--inject` find onboarding even when launched from a subdirectory.
+fn find_onboard_dir(start: &Path) -> Option<PathBuf> {
+    let mut dir = Some(start);
+    while let Some(d) = dir {
+        let onboard = d.join(".crabcc").join("onboard");
+        if onboard.join("overview.md").is_file() {
+            return Some(onboard);
+        }
+        dir = d.parent();
+    }
+    None
 }
 
 /// Atomically try to become the onboarding leader. `Ok(true)` = we created
@@ -767,6 +787,24 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         run_inject(dir.path()).unwrap(); // no onboarding artifacts yet
         assert!(!dir.path().join(".crabcc/onboard/.injected").exists());
+    }
+
+    #[test]
+    fn inject_finds_onboarding_from_a_subdirectory() {
+        let dir = tempfile::tempdir().unwrap();
+        let onboard = dir.path().join(".crabcc").join("onboard");
+        std::fs::create_dir_all(&onboard).unwrap();
+        std::fs::write(onboard.join("overview.md"), "ctx").unwrap();
+        let subdir = dir.path().join("crates").join("foo");
+        std::fs::create_dir_all(&subdir).unwrap();
+        // Launched from a subdir, inject still finds the ancestor onboarding.
+        run_inject(&subdir).unwrap();
+        let count: u32 = std::fs::read_to_string(onboard.join(".injected"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(count, 1);
     }
 
     #[test]
