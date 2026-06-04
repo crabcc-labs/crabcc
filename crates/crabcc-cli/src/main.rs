@@ -2308,7 +2308,7 @@ fn print_upgrade_human(r: &crabcc_core::upgrade::UpgradeReport, repo: &str) {
     println!("crabcc upgrade — {repo}");
     println!("  installed: {}", r.installed);
     if let Some(rel) = &r.latest {
-        let when = rel.published_at.as_deref().unwrap_or("");
+        let when = rel.published_at.as_deref().unwrap_or_default();
         println!("  latest:    {} ({})", rel.tag, when.trim());
     } else {
         println!("  latest:    <unknown>");

@@ -263,7 +263,7 @@ pub async fn submit_async(opts: &Options, spec: JobSpec) -> Result<JobReceipt> {
             ("agentName", agent_name_s.as_str()),
             ("repoPath", repo_path_s.as_str()),
             ("githubUrl", github_url_s.as_str()),
-            ("agentFolder", spec.agent_folder.as_deref().unwrap_or("")),
+            ("agentFolder", spec.agent_folder.as_deref().unwrap_or_default()),
         ],
     );
 

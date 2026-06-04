@@ -26,6 +26,7 @@ use encoding::{blob_to_vec, fts_match_string, now_secs, vec_to_blob};
 use ensure::register_sqlite_vec_once;
 use ensure::{ensure_room, ensure_wing};
 use rusqlite::{params, Connection, OptionalExtension};
+use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -647,7 +648,7 @@ impl Backend for SqliteBackend {
         }
         sql.push_str(" ORDER BY d.id ASC");
         if limit > 0 {
-            sql.push_str(&format!(" LIMIT {limit}"));
+            write!(sql, " LIMIT {limit}").unwrap();
         }
         let mut stmt = conn.prepare(&sql)?;
         let refs: Vec<&dyn rusqlite::ToSql> =
