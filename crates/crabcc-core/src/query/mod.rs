@@ -178,8 +178,9 @@ fn build_summary(store: &Store, hits: &[(String, u32)], limit: Option<usize>) ->
     top_symbols.truncate(DEFAULT_TOP_N);
 
     if let Some(l) = limit {
-        let keep: Vec<String> = by_file.keys().take(l).cloned().collect();
-        by_file.retain(|k, _| keep.contains(k));
+        while by_file.len() > l {
+            by_file.pop_last();
+        }
     }
 
     Ok(Output::Summary {
@@ -327,10 +328,10 @@ fn edge_hits_to_output(
             count: edge_hits.len(),
         }),
         Mode::FilesOnly { limit } => {
-            let mut seen: HashSet<String> = HashSet::new();
+            let mut seen: HashSet<&str> = HashSet::new();
             let mut files: Vec<String> = Vec::new();
             for h in &edge_hits {
-                if seen.insert(h.file.clone()) {
+                if seen.insert(h.file.as_str()) {
                     files.push(h.file.clone());
                     if let Some(l) = limit {
                         if files.len() >= l {
@@ -402,7 +403,7 @@ fn empty_for(mode: Mode) -> Output {
 fn is_safe_identifier(s: &str) -> bool {
     !s.is_empty()
         && s.chars().all(|c| c.is_alphanumeric() || c == '_')
-        && !s.chars().next().unwrap().is_ascii_digit()
+        && !s.starts_with(|c: char| c.is_ascii_digit())
 }
 
 /// Strip a Rust path qualifier — `Store::open` → `open`. The edges table
