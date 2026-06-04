@@ -30,6 +30,11 @@ struct Meta {
     started_at: u64,
     #[serde(default)]
     session_id: String,
+    /// Process start-time (Linux `/proc/<pid>/stat` field 22, in clock ticks
+    /// since boot), recorded so a later `--kill`/liveness check can prove the
+    /// pid still belongs to *this* run and not a reused pid. 0 = unknown.
+    #[serde(default)]
+    start_tick: u64,
 }
 
 /// Dispatch the `crabcc run` flag surface. Exactly one of start / follow / list
@@ -71,9 +76,20 @@ fn start(
         bail!("usage: crabcc run [--bg] [--idle S] [--timeout S] -- <command>");
     }
     let joined = cmd.join(" ");
-    let id = new_id();
-    let dir = runs_dir().join(&id);
-    std::fs::create_dir_all(&dir).with_context(|| format!("create run dir {}", dir.display()))?;
+    std::fs::create_dir_all(runs_dir())
+        .with_context(|| format!("create runs dir {}", runs_dir().display()))?;
+    // Exclusive create so two runs that collide on an id can't truncate each
+    // other's dir/log; retry with a fresh id on the (now astronomically
+    // unlikely) AlreadyExists.
+    let (id, dir) = loop {
+        let id = new_id();
+        let dir = runs_dir().join(&id);
+        match std::fs::create_dir(&dir) {
+            Ok(()) => break (id, dir),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(anyhow!("create run dir {}: {e}", dir.display())),
+        }
+    };
     let log_path = dir.join("log");
     let log = File::create(&log_path).with_context(|| format!("create {}", log_path.display()))?;
     let log_err = log.try_clone()?;
@@ -113,6 +129,7 @@ fn start(
             pid,
             started_at: now_secs(),
             session_id: std::env::var("CRABCC_SESSION_ID").unwrap_or_default(),
+            start_tick: proc_starttime(pid).unwrap_or(0),
         },
     )?;
 
@@ -226,7 +243,7 @@ fn follow_run(id: &str, max_lines: usize, max_bytes: usize) -> Result<()> {
     let (out, stats) = crate::squeeze::squeeze(&text, max_lines);
     print!("{out}");
     eprintln!("{}", crate::squeeze::disclosure(&stats));
-    if alive(meta.pid) {
+    if alive(&meta) {
         eprintln!(
             "[crabcc run] run {id} STILL RUNNING (pid {}) — snapshot above; re-run \
              `crabcc run --follow {id}` for more, or `crabcc run --kill {id}` to stop. cmd: `{}`",
@@ -259,7 +276,7 @@ fn list_runs() -> Result<()> {
     let (c_id, c_pid, c_state, c_cmd) = ("id", "pid", "state", "cmd");
     println!("{c_id:<20}  {c_pid:<7}  {c_state:<8}  {c_cmd}");
     for m in rows {
-        let state = if alive(m.pid) { "running" } else { "done" };
+        let state = if alive(&m) { "running" } else { "done" };
         println!("{:<20}  {:<7}  {:<8}  {}", m.id, m.pid, state, m.cmd);
     }
     Ok(())
@@ -271,7 +288,7 @@ fn kill_run(id: &str) -> Result<()> {
     }
     let dir = runs_dir().join(id);
     let meta = read_meta(&dir).with_context(|| format!("no run {id}"))?;
-    if !alive(meta.pid) {
+    if !alive(&meta) {
         eprintln!("[crabcc run] run {id} already finished (pid {})", meta.pid);
         return Ok(());
     }
@@ -302,14 +319,16 @@ fn runs_dir() -> PathBuf {
 }
 
 fn new_id() -> String {
-    // sortable timestamp + a little entropy from the pid + nanos.
+    // Sortable (secs, then zero-padded nanos) + pid for collision resistance
+    // across concurrent runs; the exclusive create_dir loop covers the rest.
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
     format!(
-        "{}-{:04x}",
+        "{}-{:09}-{:x}",
         now.as_secs(),
-        (now.subsec_nanos() ^ std::process::id()) & 0xffff
+        now.subsec_nanos(),
+        std::process::id()
     )
 }
 
@@ -336,29 +355,56 @@ fn read_meta(dir: &Path) -> Result<Meta> {
 /// read `/proc/<pid>/stat` and treat state `Z` as dead so a just-killed run
 /// reads as finished.
 #[cfg(target_os = "linux")]
-fn alive(pid: u32) -> bool {
-    if pid == 0 || unsafe { libc::kill(pid as i32, 0) } != 0 {
+fn alive(m: &Meta) -> bool {
+    if m.pid == 0 || unsafe { libc::kill(m.pid as i32, 0) } != 0 {
         return false;
     }
-    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-        // state is the first token after the `)` that closes `(comm)`.
-        Ok(s) => s
-            .rsplit_once(')')
-            .and_then(|(_, rest)| rest.split_whitespace().next())
-            .map(|st| st != "Z")
-            .unwrap_or(true),
-        Err(_) => false,
+    let Ok(s) = std::fs::read_to_string(format!("/proc/{}/stat", m.pid)) else {
+        return false;
+    };
+    // Fields after the `)` that closes `(comm)`: [0]=state ... [19]=starttime.
+    let Some(after) = s.rsplit_once(')').map(|x| x.1) else {
+        return true;
+    };
+    let toks: Vec<&str> = after.split_whitespace().collect();
+    if toks.first() == Some(&"Z") {
+        return false; // zombie: exists but reaped-pending, treat as done
     }
+    // PID-reuse guard: the start-time must match what we recorded. A mismatch
+    // means the OS recycled the pid onto a different process — NOT our run, so
+    // we must never signal it.
+    if m.start_tick != 0 {
+        match toks.get(19).and_then(|t| t.parse::<u64>().ok()) {
+            Some(st) if st == m.start_tick => {}
+            _ => return false,
+        }
+    }
+    true
 }
 
 #[cfg(all(unix, not(target_os = "linux")))]
-fn alive(pid: u32) -> bool {
-    pid != 0 && unsafe { libc::kill(pid as i32, 0) } == 0
+fn alive(m: &Meta) -> bool {
+    m.pid != 0 && unsafe { libc::kill(m.pid as i32, 0) } == 0
 }
 
 #[cfg(not(unix))]
-fn alive(_pid: u32) -> bool {
+fn alive(_m: &Meta) -> bool {
     false
+}
+
+/// Process start-time from `/proc/<pid>/stat` field 22 (clock ticks since
+/// boot) — field 22 is index 19 in the tokens after the `)` closing `(comm)`.
+/// Recorded at spawn and re-checked to prove a pid hasn't been recycled.
+#[cfg(target_os = "linux")]
+fn proc_starttime(pid: u32) -> Option<u64> {
+    let s = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let after = s.rsplit_once(')')?.1;
+    after.split_whitespace().nth(19)?.parse().ok()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn proc_starttime(_pid: u32) -> Option<u64> {
+    None
 }
 
 /// Kill the whole session/group led by `pid` (we `setsid` the child, so its
@@ -384,7 +430,7 @@ fn prune_old_runs() {
     };
     for e in rd.flatten() {
         if let Ok(m) = read_meta(&e.path()) {
-            if m.started_at < cutoff && !alive(m.pid) {
+            if m.started_at < cutoff && !alive(&m) {
                 let _ = std::fs::remove_dir_all(e.path());
             }
         }
