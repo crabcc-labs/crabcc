@@ -61,6 +61,24 @@ jobs:
     env:
       RUSTC_WRAPPER: ""  # override global; cargo fmt never invokes rustc
     steps:
+      - name: disk guard
+        shell: bash
+        run: |
+          root_pct() { df --output=pcent / 2>/dev/null | tail -1 | tr -dc '0-9'; }
+          USE="$(root_pct)"
+          if [ "${USE:-0}" -ge 75 ]; then
+            echo "::warning::root fs at ${USE}% before job — running emergency Docker prune"
+            docker system prune -af 2>/dev/null || true
+            docker builder prune -af 2>/dev/null || true
+            sudo apt-get clean 2>/dev/null || true
+            sudo journalctl --vacuum-time=1d 2>/dev/null || true
+            USE="$(root_pct)"
+          fi
+          if [ "${USE:-0}" -ge 90 ]; then
+            echo "::error::root fs still ${USE}% after emergency prune — aborting to avoid mid-job failures (curl: (23))"
+            exit 1
+          fi
+          echo "disk: ${USE}% — OK"
       - uses: actions/checkout@v6
         with:
           fetch-depth: 1
@@ -77,6 +95,24 @@ jobs:
     name: lint (clippy)
     runs-on: [self-hosted, linux, hetzner, gh-runner]
     steps:
+      - name: disk guard
+        shell: bash
+        run: |
+          root_pct() { df --output=pcent / 2>/dev/null | tail -1 | tr -dc '0-9'; }
+          USE="$(root_pct)"
+          if [ "${USE:-0}" -ge 75 ]; then
+            echo "::warning::root fs at ${USE}% before job — running emergency Docker prune"
+            docker system prune -af 2>/dev/null || true
+            docker builder prune -af 2>/dev/null || true
+            sudo apt-get clean 2>/dev/null || true
+            sudo journalctl --vacuum-time=1d 2>/dev/null || true
+            USE="$(root_pct)"
+          fi
+          if [ "${USE:-0}" -ge 90 ]; then
+            echo "::error::root fs still ${USE}% after emergency prune — aborting to avoid mid-job failures (curl: (23))"
+            exit 1
+          fi
+          echo "disk: ${USE}% — OK"
       - uses: actions/checkout@v6
         with:
           # Full history so the PR diff (base..head) resolves. Must be a literal
@@ -191,6 +227,24 @@ jobs:
     name: test (ubuntu, scoped)
     runs-on: [self-hosted, linux, hetzner, gh-runner]
     steps:
+      - name: disk guard
+        shell: bash
+        run: |
+          root_pct() { df --output=pcent / 2>/dev/null | tail -1 | tr -dc '0-9'; }
+          USE="$(root_pct)"
+          if [ "${USE:-0}" -ge 75 ]; then
+            echo "::warning::root fs at ${USE}% before job — running emergency Docker prune"
+            docker system prune -af 2>/dev/null || true
+            docker builder prune -af 2>/dev/null || true
+            sudo apt-get clean 2>/dev/null || true
+            sudo journalctl --vacuum-time=1d 2>/dev/null || true
+            USE="$(root_pct)"
+          fi
+          if [ "${USE:-0}" -ge 90 ]; then
+            echo "::error::root fs still ${USE}% after emergency prune — aborting to avoid mid-job failures (curl: (23))"
+            exit 1
+          fi
+          echo "disk: ${USE}% — OK"
       - uses: actions/checkout@v6
         with:
           # Full history so the PR diff (base..head) resolves. Must be a literal

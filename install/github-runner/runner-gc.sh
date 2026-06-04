@@ -23,7 +23,14 @@
 set -uo pipefail
 
 DEEP=0
-[ "${1:-}" = "--deep" ] && DEEP=1
+THRESHOLD=""  # empty = always run; set via --if-above N to skip when disk is low
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --deep)     DEEP=1;           shift   ;;
+    --if-above) THRESHOLD="$2";   shift 2 ;;
+    *) echo "[runner-gc] unknown arg: $1" >&2; exit 1 ;;
+  esac
+done
 log() { echo "[runner-gc] $*"; }
 
 # Where install.sh placed the dedicated cache volume (or plain directory).
@@ -41,6 +48,17 @@ runner_busy() { pgrep -f 'Runner\.Worker' >/dev/null 2>&1; }
 
 # Current root-fs fill percentage as an integer (empty string on failure).
 root_pct() { df --output=pcent / 2>/dev/null | tail -1 | tr -dc '0-9'; }
+
+# Early exit when called by the disk-watchdog timer and disk is healthy.
+# The 15-min watchdog uses --if-above 75; the 4h full-GC timer omits it.
+if [ -n "${THRESHOLD:-}" ]; then
+  THRESHOLD_CHECK="$(root_pct)"
+  if [ -n "${THRESHOLD_CHECK:-}" ] && [ "$THRESHOLD_CHECK" -lt "$THRESHOLD" ]; then
+    log "disk at ${THRESHOLD_CHECK}% — below threshold ${THRESHOLD}%, nothing to do"
+    exit 0
+  fi
+  log "disk at ${THRESHOLD_CHECK}% ≥ threshold ${THRESHOLD}% — running GC"
+fi
 
 log "host $(hostname) — disk before:"
 df -h / "${CACHE_BASE}" 2>/dev/null || df -h / 2>/dev/null || true

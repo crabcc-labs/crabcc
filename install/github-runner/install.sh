@@ -212,6 +212,85 @@ patch_runner_unit() {
   fi
 }
 
+# ── Docker log rotation ─────────────────────────────────────────────────
+# Without log limits, containers that emit continuous output fill
+# /var/lib/docker/containers/*/...log on the root filesystem unboundedly.
+# Caps each container at 10 MB × 3 files (~30 MB worst-case per container).
+# Idempotent: skips if the setting is already present.
+configure_docker_logging() {
+  if ! command -v docker >/dev/null 2>&1; then
+    echo "[runner] docker not found — skipping log-rotation config"
+    return 0
+  fi
+  local cfg=/etc/docker/daemon.json
+  if [ -f "$cfg" ] && grep -q '"max-size"' "$cfg"; then
+    echo "[runner] docker log rotation already configured"
+    return 0
+  fi
+  if [ -f "$cfg" ]; then
+    # Merge into existing daemon.json (requires jq, which we installed above).
+    jq '. + {"log-driver":"json-file","log-opts":{"max-size":"10m","max-file":"3"}}' \
+      "$cfg" > "${cfg}.tmp" && mv "${cfg}.tmp" "$cfg"
+  else
+    mkdir -p /etc/docker
+    cat > "$cfg" <<'DOCKEREOF'
+{
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  }
+}
+DOCKEREOF
+  fi
+  echo "[runner] docker log rotation configured (10 MB × 3 files per container)"
+  # HUP reloads the config without restarting existing containers.
+  systemctl reload docker 2>/dev/null || true
+}
+
+# ── Disk-watchdog timer (15 min, threshold-guarded) ──────────────────────
+# The 4h full-GC timer is too slow to catch a disk spike during a heavy
+# build. This watchdog fires every 15 minutes but exits immediately when
+# root fs is below 75% (runner-gc.sh --if-above), so it's near-zero-cost
+# on a healthy host and aggressive when the disk is actually in trouble.
+install_disk_watch_timer() {
+  echo "[runner] installing disk-watchdog timer..."
+
+  cat > /etc/systemd/system/actions-runner-disk-watch.service <<EOF
+[Unit]
+Description=GitHub Actions runner disk watchdog (${RUNNER_NAME})
+After=actions-runner-gc.service
+
+[Service]
+Type=oneshot
+User=${RUNNER_USER}
+Environment=HOME=${RUNNER_HOME}
+Environment=RUNNER_CACHE_BASE=${CACHE_BASE}
+Environment=CARGO_HOME=${CACHE_BASE}/cargo
+Environment=SCCACHE_DIR=${CACHE_BASE}/sccache
+Environment=RUNNER_TOOL_CACHE=${CACHE_BASE}/tool-cache
+# Only prune when root fs >= 75%; exits immediately otherwise.
+ExecStart=/usr/bin/env bash ${INSTALL_DIR}/runner-gc.sh --if-above 75
+EOF
+
+  cat > /etc/systemd/system/actions-runner-disk-watch.timer <<EOF
+[Unit]
+Description=15-min disk watchdog for the GitHub Actions runner
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=15min
+Persistent=false
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable --now actions-runner-disk-watch.timer
+  echo "[runner] disk-watchdog timer installed (15 min, threshold 75%)"
+}
+
 # ── Disk-GC timer ───────────────────────────────────────────────────────
 # A single GitHub Actions cron only ever lands on one runner, so it can't
 # keep the whole fleet clean. A host-local systemd timer makes every box
@@ -278,7 +357,9 @@ if [ "$GC_ONLY" = 1 ]; then
   # Patch the existing runner unit so TMPDIR/CARGO_HOME/etc. take effect
   # after the operator runs `sudo systemctl restart actions-runner`.
   patch_runner_unit
+  configure_docker_logging
   install_gc_timer
+  install_disk_watch_timer
   exit 0
 fi
 
@@ -367,4 +448,6 @@ systemctl enable --now actions-runner
 echo "[runner] installed — systemctl status actions-runner"
 systemctl --no-pager status actions-runner || true
 
+configure_docker_logging
 install_gc_timer
+install_disk_watch_timer
