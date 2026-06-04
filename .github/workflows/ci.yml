@@ -269,12 +269,37 @@ jobs:
 
       - uses: mozilla-actions/sccache-action@v0.0.10
 
-      - name: install mold linker
+      - name: install mold + ripgrep (apt-fast — parallel downloads)
+        env:
+          DEBIAN_FRONTEND: noninteractive
         run: |
-          command -v mold >/dev/null 2>&1 || sudo apt-get install -y --no-install-recommends mold
+          if command -v mold >/dev/null 2>&1 && command -v rg >/dev/null 2>&1; then
+            echo "mold + ripgrep already present — skip"; exit 0
+          fi
+          # apt-fast = aria2-backed parallel apt downloads. Pinned to a release
+          # tag (not master) since we curl + sudo-run it. Best-effort: ANY
+          # bootstrap failure falls back to plain apt-get, so this can never
+          # hard-block CI worse than the prior apt-get path.
+          AF_REF="v1.7.6"
+          if ! command -v apt-fast >/dev/null 2>&1; then
+            if sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends aria2; then
+              sudo curl -fsSL "https://raw.githubusercontent.com/ilikenwf/apt-fast/${AF_REF}/apt-fast" -o /usr/local/sbin/apt-fast \
+                && sudo chmod +x /usr/local/sbin/apt-fast \
+                && sudo curl -fsSL "https://raw.githubusercontent.com/ilikenwf/apt-fast/${AF_REF}/apt-fast.conf" -o /etc/apt-fast.conf \
+                || echo "::warning::apt-fast fetch failed — falling back to apt-get"
+            else
+              echo "::warning::aria2 install failed — falling back to apt-get"
+            fi
+          fi
+          if command -v apt-fast >/dev/null 2>&1; then
+            INST="sudo apt-fast -y install --no-install-recommends"
+          else
+            INST="sudo apt-get install -y --no-install-recommends"
+          fi
+          command -v mold >/dev/null 2>&1 || $INST mold
           # ripgrep must be on PATH for shell_rewrite_e2e::find_swaps_to_ripgrep —
           # the rewriter only emits the find→rg swap when `rg` is found on PATH.
-          command -v rg >/dev/null 2>&1 || sudo apt-get install -y --no-install-recommends ripgrep
+          command -v rg >/dev/null 2>&1 || $INST ripgrep
 
       # See lint-job comment above for why this is the only cache
       # layer needed at the dependency-blob level. The `ci-ubuntu`
