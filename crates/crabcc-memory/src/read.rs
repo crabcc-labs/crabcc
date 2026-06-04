@@ -13,7 +13,7 @@ use anyhow::{anyhow, Context, Result};
 use crabcc_core::{hash::sha256_hex, outline, store::Store};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -274,10 +274,31 @@ fn relative_to_root(path: &Path, root: &Path) -> String {
         .unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
 
+/// Run `f` with a process-cached connection to the memory db at `db`. The
+/// `read` tool's session-read lookup + upsert each ran a fresh
+/// `Connection::open` (a few ms apiece on a WAL db), so an agent reading many
+/// files paid it twice per read. One cached connection per db (Mutex-guarded
+/// for the concurrent serve_http transport) removes the per-call open.
+fn with_session_conn<R>(
+    db: &Path,
+    f: impl FnOnce(&Connection) -> rusqlite::Result<R>,
+) -> Result<R> {
+    static CONNS: OnceLock<Mutex<HashMap<PathBuf, Connection>>> = OnceLock::new();
+    let map = CONNS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut map = map
+        .lock()
+        .map_err(|_| anyhow!("poisoned session-conn mutex"))?;
+    if !map.contains_key(db) {
+        let conn = Connection::open(db).with_context(|| format!("open {}", db.display()))?;
+        map.insert(db.to_path_buf(), conn);
+    }
+    let conn = map.get(db).expect("connection just inserted");
+    f(conn).map_err(Into::into)
+}
+
 fn lookup_session_read(db: &Path, path: &Path, session_id: &str) -> Result<Option<CachedRead>> {
-    let conn = Connection::open(db).with_context(|| format!("open {}", db.display()))?;
-    let row = conn
-        .query_row(
+    with_session_conn(db, |conn| {
+        conn.query_row(
             "SELECT mtime_ns, content_hash FROM session_reads
              WHERE path = ?1 AND session_id = ?2",
             params![path.to_string_lossy(), session_id],
@@ -288,8 +309,8 @@ fn lookup_session_read(db: &Path, path: &Path, session_id: &str) -> Result<Optio
                 })
             },
         )
-        .optional()?;
-    Ok(row)
+        .optional()
+    })
 }
 
 fn upsert_session_read(
@@ -305,9 +326,9 @@ fn upsert_session_read(
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or_default();
-    let conn = Connection::open(db).with_context(|| format!("open {}", db.display()))?;
-    conn.execute(
-        "INSERT INTO session_reads
+    with_session_conn(db, |conn| {
+        conn.execute(
+            "INSERT INTO session_reads
             (path, session_id, mtime_ns, content_hash, served_mode, served_at, bytes_returned, read_count)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1)
          ON CONFLICT(path, session_id) DO UPDATE SET
@@ -317,9 +338,10 @@ fn upsert_session_read(
              served_at      = excluded.served_at,
              bytes_returned = excluded.bytes_returned,
              read_count     = session_reads.read_count + 1",
-        params![path, session_id, mtime_ns, content_hash, served_mode, now, bytes_returned as i64],
-    )?;
-    Ok(())
+            params![path, session_id, mtime_ns, content_hash, served_mode, now, bytes_returned as i64],
+        )
+        .map(|_| ())
+    })
 }
 
 #[cfg(test)]
