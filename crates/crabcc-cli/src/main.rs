@@ -33,6 +33,7 @@ mod audit;
 mod auto_index;
 mod backup;
 mod compress_cmd;
+mod crawl_cmd;
 mod debug_network;
 mod doctor;
 mod fetch_cmd;
@@ -452,6 +453,33 @@ enum Cmd {
         /// Search later via `crabcc memory search <query> --wing fetch`.
         #[arg(long)]
         remember: bool,
+    },
+    /// Crawl from a seed URL: follow links, clean each page to markdown,
+    /// and (with --remember) stream every page into memory under
+    /// wing=`crawl`, room=host. Built on the crawl engine — bounded by
+    /// `--max-pages`/`--depth` with per-host politeness.
+    Crawl {
+        /// Seed URL to start the crawl from.
+        url: String,
+        /// Hops to follow from the seed (0 = fetch the seed only).
+        #[arg(long, default_value_t = 1)]
+        depth: usize,
+        /// Hard cap on the number of pages fetched.
+        #[arg(long = "max-pages", default_value_t = 20)]
+        max_pages: usize,
+        /// Follow off-host links too (default: stay on the seed's host).
+        #[arg(long = "all-hosts")]
+        all_hosts: bool,
+        /// Max concurrent in-flight fetches across the crawl.
+        #[arg(long, default_value_t = 4)]
+        concurrency: usize,
+        /// Stream each successful page into memory (wing=crawl, room=host).
+        /// Search later via `crabcc memory search <query> --wing crawl`.
+        #[arg(long)]
+        remember: bool,
+        /// Output format: `json` (default) or `text`.
+        #[arg(long, default_value = "json")]
+        format: String,
     },
     /// Start the localhost call-graph viewer (issue #64). Binds to 127.0.0.1
     /// by default — pass `--bind 0.0.0.0` only on a trusted LAN; the server
@@ -1045,6 +1073,30 @@ fn main() -> Result<()> {
         return fetch_cmd::run(&root, prompt, *no_chrome, format, *remember);
     }
 
+    // `crawl` is the multi-page sibling of `fetch`; also pure I/O, handled
+    // before the symbol Store is opened.
+    if let Some(Cmd::Crawl {
+        url,
+        depth,
+        max_pages,
+        all_hosts,
+        concurrency,
+        remember,
+        format,
+    }) = cli.cmd.as_ref()
+    {
+        return crawl_cmd::run(
+            &root,
+            url,
+            *depth,
+            *max_pages,
+            *all_hosts,
+            *concurrency,
+            *remember,
+            format,
+        );
+    }
+
     // `serve` boots crabcc-viz; doesn't need the symbol Store opened
     // here (the viz server lazy-opens its own). Gated behind the `viz`
     // feature so the default install doesn't pull in the dashboard.
@@ -1504,6 +1556,7 @@ fn main() -> Result<()> {
         Cmd::Info { .. } => unreachable!("info handled before store init"),
         Cmd::Go => unreachable!("go handled before store init"),
         Cmd::Fetch { .. } => unreachable!("fetch handled before store init"),
+        Cmd::Crawl { .. } => unreachable!("crawl handled before store init"),
         Cmd::Serve { .. } => unreachable!("serve handled before store init"),
         Cmd::Agent { .. } => unreachable!("agent handled before store init"),
         Cmd::Stack { .. } => unreachable!("stack handled before store init"),
@@ -2074,6 +2127,7 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::Jobs(_) => "jobs",
         Cmd::Go => "go",
         Cmd::Fetch { .. } => "fetch",
+        Cmd::Crawl { .. } => "crawl",
         Cmd::Serve { .. } => "serve",
         Cmd::Read { .. } => "read",
     }
