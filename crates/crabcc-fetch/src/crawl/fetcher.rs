@@ -95,32 +95,46 @@ impl HttpFetcher {
 
     /// Choose the client for the next request: a pooled proxy when one is
     /// available, else the direct base client. Returns the chosen proxy
-    /// (if any) so the caller can report its health back to the pool.
+    /// (if any) so the caller can report *that proxy's* health back.
+    ///
+    /// A proxy whose client won't build (unsupported scheme — e.g. a
+    /// `socks://` URL without the `socks` feature — or a malformed URL) is
+    /// a *permanent* failure, not a transient one: it's evicted outright
+    /// and the request falls back to a direct fetch reported against **no**
+    /// proxy. Returning `Some(proxy)` with a direct client here would mark
+    /// the dead proxy healthy on the next success and silently skip the
+    /// requested rotation.
     fn select(&self) -> (reqwest::Client, Option<String>) {
         if let Some(pool) = &self.pool {
             if let Some(proxy) = pool.pick() {
-                return (self.client_for(&proxy), Some(proxy));
+                match self.client_for(&proxy) {
+                    Some(client) => return (client, Some(proxy)),
+                    None => {
+                        pool.evict(&proxy);
+                        tracing::warn!(
+                            target: "crabcc_fetch",
+                            proxy = %proxy,
+                            "proxy client could not be built (unsupported scheme or bad URL); evicted",
+                        );
+                    }
+                }
             }
         }
         (self.client.clone(), None)
     }
 
-    /// Get-or-build (and cache) the client routed through `proxy`. Falls
-    /// back to the direct client if the proxy URL won't build.
-    fn client_for(&self, proxy: &str) -> reqwest::Client {
+    /// Get-or-build (and cache) the client routed through `proxy`, or
+    /// `None` when the proxy URL can't produce a client.
+    fn client_for(&self, proxy: &str) -> Option<reqwest::Client> {
         if let Some(c) = self.proxy_clients.read().unwrap().get(proxy) {
-            return c.clone();
+            return Some(c.clone());
         }
-        match build_client(self.timeout, Some(proxy)) {
-            Ok(c) => {
-                self.proxy_clients
-                    .write()
-                    .unwrap()
-                    .insert(proxy.to_string(), c.clone());
-                c
-            }
-            Err(_) => self.client.clone(),
-        }
+        let client = build_client(self.timeout, Some(proxy)).ok()?;
+        self.proxy_clients
+            .write()
+            .unwrap()
+            .insert(proxy.to_string(), client.clone());
+        Some(client)
     }
 
     /// Feed a proxy's outcome back to the pool. `ok` = it delivered a
@@ -300,6 +314,19 @@ mod tests {
         assert_eq!(pool.len(), 1); // one strike, still in rotation
         f.report("http://p:1", false);
         assert_eq!(pool.len(), 0); // second strike → evicted
+    }
+
+    #[test]
+    fn an_unbuildable_proxy_is_evicted_not_silently_bypassed() {
+        // A malformed proxy URL can't produce a client; select() must evict
+        // it and report *no* proxy — never hand back a direct client tagged
+        // with the dead proxy (which would mark it healthy on success and
+        // silently skip the requested rotation).
+        let pool = Arc::new(ProxyPool::from_list(vec!["http://[bad".into()]));
+        let f = HttpFetcher::with_pool(&FetchOpts::cli(), pool.clone()).unwrap();
+        let (_client, proxy) = f.select();
+        assert!(proxy.is_none());
+        assert!(pool.is_empty());
     }
 
     #[test]
