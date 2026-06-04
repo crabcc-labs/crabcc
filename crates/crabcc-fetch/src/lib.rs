@@ -20,7 +20,6 @@
 //! not (the CLI runs as the user, internal IPs may be desired).
 
 use anyhow::Result;
-use std::fmt::Write as _;
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 use std::time::Duration;
