@@ -24,3 +24,5 @@ mod graph_v4;
 mod shell_rewrite_e2e;
 #[path = "integration/shell_context_e2e.rs"]
 mod shell_context_e2e;
+#[path = "integration/cross_module_e2e.rs"]
+mod cross_module_e2e;
