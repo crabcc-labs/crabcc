@@ -1,0 +1,143 @@
+name: runner-health
+
+# Lightweight dashboard for the self-hosted Hetzner fleet.
+# Collects disk / RAM / CPU / load from each runner and surfaces a fleet
+# overview (status, busy flag, queued-job count) in the job summary.
+#
+# Two parallel `probe` shards race to grab the two Hetzner runners so both
+# get measured in the same run.  The follow-on `fleet` job calls the GitHub
+# API to show runner status + busy flags alongside a queue depth snapshot.
+#
+# Trigger manually (Actions → runner-health → Run workflow) or wait for the
+# scheduled run every 2 hours.
+
+on:
+  schedule:
+    - cron: '0 */2 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: runner-health
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  probe:
+    name: probe (${{ matrix.shard }})
+    runs-on: [self-hosted, linux, hetzner]
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        # One shard per Hetzner runner.  With max-parallel matching the fleet
+        # size both jobs dispatch simultaneously; each runner picks one up.
+        shard: [1, 2]
+      max-parallel: 2
+      fail-fast: false
+    steps:
+      - name: machine metrics
+        shell: bash
+        run: |
+          HOST="$(hostname)"
+
+          # Disk — root filesystem
+          ROOT_USE=$(df --output=pcent /   2>/dev/null | tail -1 | tr -dc '0-9')
+          ROOT_AVAIL=$(df -h --output=avail / 2>/dev/null | tail -1 | xargs)
+          ROOT_SIZE=$(df -h --output=size  / 2>/dev/null | tail -1 | xargs)
+
+          # Disk — dedicated cache volume (mounted by install.sh at /var/runner-data)
+          CACHE_BASE=/var/runner-data
+          if mountpoint -q "${CACHE_BASE}" 2>/dev/null; then
+            CACHE_USE=$(df --output=pcent "${CACHE_BASE}"   2>/dev/null | tail -1 | tr -dc '0-9')
+            CACHE_AVAIL=$(df -h --output=avail "${CACHE_BASE}" 2>/dev/null | tail -1 | xargs)
+            CACHE_SIZE=$(df -h --output=size  "${CACHE_BASE}" 2>/dev/null | tail -1 | xargs)
+            CACHE_ROW="| Cache volume (\`${CACHE_BASE}\`) | ${CACHE_USE}% used — ${CACHE_AVAIL} free / ${CACHE_SIZE} |"
+          else
+            CACHE_ROW="| Cache volume | **not mounted** — run \`install.sh --gc-only --cache-volume /dev/sdb\` |"
+          fi
+
+          # RAM
+          MEM_TOTAL=$(free -h | awk '/^Mem:/{print $2}')
+          MEM_USED=$( free -h | awk '/^Mem:/{print $3}')
+          MEM_FREE=$( free -h | awk '/^Mem:/{print $4}')
+          MEM_PCT=$(free | awk '/^Mem:/{printf "%.0f", $3/$2*100}')
+
+          # CPU
+          NCPU=$(nproc)
+          read -r LOAD1 LOAD5 LOAD15 _ < /proc/loadavg
+
+          # Jobs
+          WORKERS=$(pgrep -c 'Runner\.Worker' 2>/dev/null || echo 0)
+
+          # Write to the step summary for this runner
+          {
+            echo "## ${HOST} — shard ${{ matrix.shard }}"
+            echo "| Metric | Value |"
+            echo "|--------|-------|"
+            echo "| Root fs | ${ROOT_USE}% used — ${ROOT_AVAIL} free / ${ROOT_SIZE} |"
+            echo "${CACHE_ROW}"
+            echo "| RAM | ${MEM_PCT}% used — ${MEM_USED} used, ${MEM_FREE} free / ${MEM_TOTAL} |"
+            echo "| Load avg (1m / 5m / 15m) | ${LOAD1} / ${LOAD5} / ${LOAD15} across ${NCPU} CPUs |"
+            echo "| Worker processes (active jobs) | ${WORKERS} |"
+            echo "| Measured at | $(date -u '+%Y-%m-%d %H:%M UTC') |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  fleet:
+    name: fleet overview
+    runs-on: [self-hosted, linux, hetzner]
+    needs: probe
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: runner status + queue depth
+        shell: bash
+        env:
+          # /repos/.../actions/runners requires `administration:read`, which
+          # GITHUB_TOKEN cannot hold.  Set RUNNER_ADMIN_TOKEN to a PAT (classic
+          # with `repo` scope, or fine-grained with Administration: Read) to
+          # enable the full fleet table; falls back to GITHUB_TOKEN gracefully.
+          ADMIN_TOKEN: ${{ secrets.RUNNER_ADMIN_TOKEN }}
+          FALLBACK_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          API="https://api.github.com"
+          TOKEN="${ADMIN_TOKEN:-${FALLBACK_TOKEN}}"
+          AUTH=(-H "Authorization: Bearer ${TOKEN}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28")
+
+          # Runner list (requires administration:read; 403 without admin token)
+          HTTP_CODE=$(curl -s -o /tmp/runners.json -w "%{http_code}" \
+            "${AUTH[@]}" "${API}/repos/${REPO}/actions/runners?per_page=50")
+
+          # Queued + in-progress workflow run counts — works with GITHUB_TOKEN
+          QUEUE_TOKEN="${FALLBACK_TOKEN}"
+          QUEUE_AUTH=(-H "Authorization: Bearer ${QUEUE_TOKEN}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28")
+          QUEUED=$(curl -fsSL "${QUEUE_AUTH[@]}" \
+            "${API}/repos/${REPO}/actions/runs?status=queued&per_page=1" \
+            | jq -r '.total_count // 0')
+          IN_PROGRESS=$(curl -fsSL "${QUEUE_AUTH[@]}" \
+            "${API}/repos/${REPO}/actions/runs?status=in_progress&per_page=1" \
+            | jq -r '.total_count // 0')
+
+          {
+            echo "## Fleet overview"
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "| Runner | Status | Busy | Labels |"
+              echo "|--------|--------|------|--------|"
+              jq -r '
+                .runners[] |
+                "| \(.name) | \(.status) | \(if .busy then "**busy**" else "idle" end) | \(.labels | map(.name) | join(", ")) |"
+              ' /tmp/runners.json
+            else
+              echo "> ⚠️ Runner list unavailable (HTTP ${HTTP_CODE})."
+              echo "> The \`/actions/runners\` endpoint requires \`administration:read\`."
+              echo "> Add a \`RUNNER_ADMIN_TOKEN\` repo secret (classic PAT with \`repo\` scope,"
+              echo "> or fine-grained PAT with Administration: Read) to enable this table."
+            fi
+            echo ""
+            echo "**Queued workflow runs:** ${QUEUED}  "
+            echo "**In-progress workflow runs:** ${IN_PROGRESS}  "
+            echo ""
+            echo "_Snapshot at $(date -u '+%Y-%m-%d %H:%M UTC')_"
+          } >> "$GITHUB_STEP_SUMMARY"
