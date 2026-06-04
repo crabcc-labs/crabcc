@@ -223,7 +223,7 @@ fn run_traceroute(host: &str, max_hops: u8) -> CmdResult {
 
 fn run_capped(argv: &[&str]) -> CmdResult {
     let start = Instant::now();
-    let argv_owned: Vec<String> = argv.iter().map(|s| (*s).to_string()).collect();
+    let argv_owned: Vec<String> = argv.iter().map(|s| s.to_string()).collect();
 
     let mut cmd = Command::new(argv[0]);
     cmd.args(&argv[1..])

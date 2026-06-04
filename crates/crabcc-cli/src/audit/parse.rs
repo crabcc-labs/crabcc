@@ -12,7 +12,7 @@ pub fn parse_session(path: &Path) -> anyhow::Result<SessionFile> {
         .parent()
         .and_then(|p| p.file_name())
         .and_then(|name| name.to_str())
-        .unwrap_or("")
+        .unwrap_or_default()
         .to_string();
     Ok(SessionFile {
         path: path.display().to_string(),
