@@ -30,6 +30,17 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if command -v crabcc >/dev/null 2>&1; then crabcc shell rewrite-measure 2>/dev/null || true; fi; exit 0"
+          }
+        ]
+      }
     ]
   }
 }

@@ -92,7 +92,27 @@ pub fn open(path: &Path) -> Result<Connection> {
            trigger      TEXT NOT NULL DEFAULT 'manual'\n\
          );\n\
          CREATE INDEX IF NOT EXISTS idx_backup_runs_at   ON backup_runs(ran_at DESC);\n\
-         CREATE INDEX IF NOT EXISTS idx_backup_runs_repo ON backup_runs(repo);",
+         CREATE INDEX IF NOT EXISTS idx_backup_runs_repo ON backup_runs(repo);\n\
+         CREATE TABLE IF NOT EXISTS rewrite_log (\n\
+           id           INTEGER PRIMARY KEY AUTOINCREMENT,\n\
+           ts           INTEGER NOT NULL,\n\
+           session      TEXT,\n\
+           rule         TEXT NOT NULL,\n\
+           sig          TEXT NOT NULL,  -- rule + key arg, for suppression\n\
+           original     TEXT NOT NULL,\n\
+           rewritten    TEXT NOT NULL,\n\
+           est_saved    INTEGER NOT NULL DEFAULT 0,\n\
+           out_tokens   INTEGER,        -- filled post-exec by `shell rewrite-measure`\n\
+           verdict      TEXT            -- NULL until measured | 'helped' | 'META_ERROR_OPERATOR_NEEDED'\n\
+         );\n\
+         CREATE INDEX IF NOT EXISTS idx_rewrite_log_ts  ON rewrite_log(ts DESC);\n\
+         CREATE INDEX IF NOT EXISTS idx_rewrite_log_sig ON rewrite_log(sig);\n\
+         CREATE TABLE IF NOT EXISTS rewrite_suppress (\n\
+           sig          TEXT PRIMARY KEY,\n\
+           rule         TEXT NOT NULL,\n\
+           since_ts     INTEGER NOT NULL,\n\
+           reason       TEXT\n\
+         );",
     )?;
     Ok(conn)
 }

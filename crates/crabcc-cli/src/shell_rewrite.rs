@@ -16,8 +16,8 @@
 //!     lives (`target/`, `node_modules/`). Only applied when the pattern
 //!     is regex-compatible between grep-BRE and ripgrep, and only when
 //!     `rg` is actually on PATH.
-//!   * **Symbol upgrade** — `grep IDENT` / `rg IDENT` -> `crabcc refs
-//!     IDENT`, but *only* when IDENT is a bare identifier confirmed to be
+//!   * **Symbol upgrade** — `grep IDENT` / `rg IDENT` -> `crabcc lookup
+//!     refs IDENT`, but *only* when IDENT is a bare identifier confirmed to be
 //!     an indexed symbol and the search is repo-wide. The header
 //!     discloses the symbol scope and the raw-text `rg` fallback so the
 //!     model never silently loses comment/doc matches.
@@ -27,6 +27,7 @@
 //! is "rewrite only when certain, else do nothing". Set
 //! `CRABCC_NO_REWRITE=1` to disable rewriting entirely.
 
+use crate::rewrite_log;
 use anyhow::Result;
 use crabcc_core::{store::Store, track};
 use std::cell::RefCell;
@@ -41,6 +42,10 @@ pub struct Rewrite {
     pub inner: String,
     /// Stable rule id for tracing + header (e.g. "grep->rg").
     pub rule: &'static str,
+    /// The salient argument (symbol / pattern / glob) — combined with
+    /// `rule` into the suppression+log signature so one bad symbol
+    /// upgrade doesn't disable unrelated rewrites.
+    pub key: String,
     /// Caveat surfaced in the output header (e.g. the rg fallback).
     pub note: Option<String>,
     /// `crabcc track` op this rewrite is accounted under: "refs" for
@@ -271,6 +276,7 @@ fn plan_find(args: &[String]) -> Option<Rewrite> {
     Some(Rewrite {
         inner,
         rule: "find->rg",
+        key: glob,
         note: Some("ripgrep --files: skips .gitignore'd and hidden paths".into()),
         track_op: "rewrite",
     })
@@ -286,6 +292,7 @@ fn symbol_upgrade(pattern: &str, files_only: bool, rule: &'static str) -> Rewrit
     Rewrite {
         inner,
         rule,
+        key: pattern.to_string(),
         note: Some(format!(
             "symbol-scoped code refs; for raw text (comments/docs) use: rg {}",
             shq(pattern)
@@ -323,6 +330,7 @@ fn rg_swap(o: &GrepOpts, pattern: &str, paths: &[String]) -> Rewrite {
     Rewrite {
         inner,
         rule: "grep->rg",
+        key: pattern.to_string(),
         note: Some(
             "ripgrep: skips .gitignore'd and hidden paths (grep --no-ignore to include)".into(),
         ),
@@ -390,6 +398,18 @@ pub fn run(root: &Path, db: &Path, command: &str, session_id: Option<&str>) -> R
         return Ok(());
     }
 
+    // Measure/learn loop (best-effort): a `(rule, key)` whose prior
+    // measurement showed it did not reduce tokens is suppressed, so it
+    // passes through unchanged here. Every emitted rewrite is logged for
+    // dev debugging + later measurement by the PostToolUse hook.
+    let sig = rewrite_log::signature(rw.rule, &rw.key);
+    let conn = rewrite_log::open_internal();
+    if let Some(c) = &conn {
+        if rewrite_log::is_suppressed(c, &sig) {
+            return Ok(());
+        }
+    }
+
     let saved = track::estimate_saved(rw.track_op, 0, 0);
     let hdr = header(&rw, saved);
     let wrapped = format!("printf '%s\\n' {}; {}", shq(&hdr), rw.inner);
@@ -407,10 +427,69 @@ pub fn run(root: &Path, db: &Path, command: &str, session_id: Option<&str>) -> R
         "hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "allow",
-            "updatedInput": { "command": wrapped }
+            "updatedInput": { "command": wrapped.clone() }
         }
     });
     println!("{out}");
+
+    // Logged after emitting so bookkeeping never delays the rewrite. We
+    // store the *executed* (wrapped) command so the PostToolUse measure
+    // can match it back by `tool_input.command`.
+    if let Some(c) = &conn {
+        rewrite_log::log_event(
+            c,
+            session_id,
+            rw.rule,
+            &sig,
+            command,
+            &wrapped,
+            saved as i64,
+        );
+    }
+    Ok(())
+}
+
+/// PostToolUse counterpart of [`run`]. Reads the hook payload on stdin,
+/// and if the tool call was one of our rewrites, records the actual
+/// output size so the measure/learn loop can flag + suppress rewrites
+/// that did not reduce tokens. Best-effort; always exits cleanly.
+pub fn run_measure() -> Result<()> {
+    use std::io::Read;
+    let mut buf = String::new();
+    if std::io::stdin().read_to_string(&mut buf).is_err() || buf.trim().is_empty() {
+        return Ok(());
+    }
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&buf) else {
+        return Ok(());
+    };
+    let command = v["tool_input"]["command"].as_str().unwrap_or("");
+    if command.is_empty() {
+        return Ok(());
+    }
+    // The model-visible output is the Bash tool_response. Prefer its
+    // stdout field; fall back to the whole response payload.
+    let resp = &v["tool_response"];
+    let out_bytes = resp
+        .get("stdout")
+        .and_then(|s| s.as_str())
+        .map(|s| s.len())
+        .unwrap_or_else(|| {
+            resp.as_str()
+                .map(|s| s.len())
+                .unwrap_or_else(|| resp.to_string().len())
+        });
+    let out_tokens = track::tokens_for_bytes(out_bytes) as i64;
+
+    if let Some(conn) = rewrite_log::open_internal() {
+        if let Some(verdict) = rewrite_log::measure_by_command(&conn, command, out_tokens) {
+            tracing::info!(
+                target: "crabcc::shell::rewrite",
+                verdict,
+                out_tokens,
+                "measured rewritten command output"
+            );
+        }
+    }
     Ok(())
 }
 
