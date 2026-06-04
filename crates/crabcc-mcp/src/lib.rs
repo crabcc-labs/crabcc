@@ -1269,7 +1269,7 @@ mod tests {
             resp.get("error").is_some(),
             "expected JSON-RPC error, got: {resp}"
         );
-        let msg = resp["error"]["message"].as_str().unwrap_or("");
+        let msg = resp["error"]["message"].as_str().unwrap_or_default();
         assert!(
             msg.contains("dev-only") || msg.contains("--dev"),
             "error must hint at the dev flag: {msg}"
@@ -1304,7 +1304,7 @@ mod tests {
     fn every_tool_advertises_a_description() {
         for tool in tools_def_for(true) {
             let name = tool["name"].as_str().unwrap_or("(no-name)");
-            let desc = tool["description"].as_str().unwrap_or("");
+            let desc = tool["description"].as_str().unwrap_or_default();
             assert!(
                 desc.len() >= 12,
                 "tool {name:?} description too short or missing: {desc:?}"
@@ -1337,7 +1337,7 @@ mod tests {
         let parsed = parse_text_content(&r);
         // Default mode is Hits; the JSON has fingerprint envelope keys
         // (data + sha) — assert one of the recognisable shapes.
-        let raw_text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+        let raw_text = r["result"]["content"][0]["text"].as_str().unwrap_or_default();
         assert!(
             raw_text.contains("hello") || parsed["data"].is_array() || parsed.is_array(),
             "refs payload should mention `hello`: {raw_text:.200}"
@@ -1355,7 +1355,7 @@ mod tests {
     fn handle_tools_call_callers_returns_envelope() {
         let dir = fixture_root();
         let r = call_tool(dir.path(), "callers", json!({"name": "hello"}));
-        let raw_text = r["result"]["content"][0]["text"].as_str().unwrap_or("");
+        let raw_text = r["result"]["content"][0]["text"].as_str().unwrap_or_default();
         // Either the fingerprint envelope or a streamed shape — both
         // count "hello" as a callable.
         assert!(
@@ -1481,7 +1481,7 @@ mod tests {
                 resp.get("error").is_some(),
                 "{tool} with no args must error: {resp}"
             );
-            let msg = resp["error"]["message"].as_str().unwrap_or("");
+            let msg = resp["error"]["message"].as_str().unwrap_or_default();
             assert!(
                 msg.contains("name") || msg.contains("query") || msg.contains("missing"),
                 "{tool} error must mention the missing arg: {msg}"
@@ -1523,11 +1523,11 @@ mod tests {
             "jsonl",
         ];
         for tool in tools_def_for(false) {
-            let name = tool["name"].as_str().unwrap_or("");
+            let name = tool["name"].as_str().unwrap_or_default();
             if !name.starts_with("memory.") {
                 continue;
             }
-            let desc = tool["description"].as_str().unwrap_or("").to_lowercase();
+            let desc = tool["description"].as_str().unwrap_or_default().to_lowercase();
             assert!(
                 keywords.iter().any(|kw| desc.contains(kw)),
                 "memory tool {name:?} description should mention a domain concept: {desc:?}"
