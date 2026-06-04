@@ -14,6 +14,8 @@
 
 mod fetcher;
 mod frontier;
+#[cfg(feature = "crawl-lightpanda")]
+pub mod lightpanda;
 mod links;
 mod proxy;
 

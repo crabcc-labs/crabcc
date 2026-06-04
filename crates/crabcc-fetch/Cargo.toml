@@ -17,6 +17,11 @@ repository.workspace   = true
 # frontier — zero-infra fallback when the Hetzner Postgres backend is
 # unreachable) and `url` (robust relative→absolute link resolution).
 crawl = ["dep:rusqlite", "dep:url"]
+# Lightpanda CDP rendered-DOM transport (spawn-and-manage-locally browser,
+# persistent profile/cookies). Adds the process lifecycle today; the CDP
+# driver dep lands with the fetch impl. Kept separate so `crawl` stays
+# free of browser deps for the lib/viz consumers.
+crawl-lightpanda = ["crawl"]
 
 [dependencies]
 anyhow      = { workspace = true }

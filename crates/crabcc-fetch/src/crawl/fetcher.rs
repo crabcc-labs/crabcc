@@ -150,11 +150,23 @@ impl Fetcher {
 
     /// Select the default transport. Prefers Lightpanda (rendered DOM)
     /// and falls back to HTTP when its binary/endpoint isn't reachable.
-    /// Until the Lightpanda transport lands this is HTTP unconditionally.
+    ///
+    /// The lifecycle/detection half ships now; the CDP rendered-DOM fetch
+    /// is the next commit, so for the moment we still resolve to HTTP even
+    /// when Lightpanda is detected (logged), to avoid selecting a
+    /// transport that can't yet fetch.
     pub fn auto(opts: &FetchOpts, proxy: Option<&str>) -> anyhow::Result<Self> {
-        // TODO(crawl-lightpanda): if `lightpanda` is on PATH or
-        // `$CRABCC_LIGHTPANDA_URL` is set, spawn/connect over CDP and
-        // return `Fetcher::Lightpanda`; otherwise fall through.
+        #[cfg(feature = "crawl-lightpanda")]
+        if let Some(cfg) = super::lightpanda::LightpandaConfig::from_env() {
+            // TODO(crawl-lightpanda): build Fetcher::Lightpanda from `cfg`
+            // (spawn/connect over CDP) and return it here.
+            tracing::info!(
+                target: "crabcc_fetch",
+                source = ?cfg.source,
+                profile = %cfg.profile_dir.display(),
+                "lightpanda detected; CDP transport not wired yet, using HTTP",
+            );
+        }
         Self::http(opts, proxy)
     }
 
