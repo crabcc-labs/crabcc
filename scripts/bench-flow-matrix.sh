@@ -61,7 +61,7 @@ zeroclaw=("grep -rn Store ." "grep -rn Backend ." "find . -name '*.rs'")
 measure() {
   local cmd="$1" van flow wrapped
   van=$( cd "$WORK" && bash -c "$cmd" 2>/dev/null | wc -c )
-  wrapped=$( crabcc shell rewrite --command "$cmd" 2>/dev/null \
+  wrapped=$( crabcc shell rewrite --command "$cmd" --cwd "$WORK" 2>/dev/null \
              | jq -r '.hookSpecificOutput.updatedInput.command // empty' )
   if [ -n "$wrapped" ]; then
     flow=$( cd "$WORK" && bash -c "$wrapped" 2>/dev/null | wc -c )

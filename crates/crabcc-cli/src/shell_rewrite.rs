@@ -147,14 +147,18 @@ fn shq(s: &str) -> String {
 /// Plan a rewrite for `cmd`. `is_symbol` is consulted only for the
 /// bare-identifier grep/rg case, so the (DB-backed) predicate is never
 /// invoked for the common non-search command.
-pub fn plan(cmd: &str, is_symbol: &dyn Fn(&str) -> bool) -> Option<Rewrite> {
+pub fn plan(
+    cmd: &str,
+    is_symbol: &dyn Fn(&str) -> bool,
+    cwd: Option<&Path>,
+) -> Option<Rewrite> {
     let toks = tokenize(cmd)?;
     let (prog, rest) = toks.split_first()?;
     match prog.as_str() {
         "grep" => plan_grep(rest, is_symbol),
         "rg" => plan_rg(rest, is_symbol),
         "find" => plan_find(rest),
-        "cat" => plan_cat(rest),
+        "cat" => plan_cat(rest, cwd),
         _ => None,
     }
 }
@@ -167,7 +171,7 @@ pub fn plan(cmd: &str, is_symbol: &dyn Fn(&str) -> bool) -> Option<Rewrite> {
 /// it is never compacted — the read cache *is* the optimization. Multiple
 /// files or any flag -> passthrough (plain `cat` is still compaction-worthy
 /// via the post-stage chain).
-fn plan_cat(args: &[String]) -> Option<Rewrite> {
+fn plan_cat(args: &[String], cwd: Option<&Path>) -> Option<Rewrite> {
     let [file] = args else { return None };
     if file.starts_with('-') {
         return None;
@@ -182,11 +186,12 @@ fn plan_cat(args: &[String]) -> Option<Rewrite> {
         });
     }
     if is_source_file(file) {
-        // Resolve to the absolute path when the file exists so the read
-        // binds to the agent's cwd (cat's frame of reference), not
-        // crabcc's repo root; fall back to the literal path otherwise
-        // (where a missing file makes both `cat` and `read` error alike).
-        let target = std::fs::canonicalize(file)
+        // Resolve to the absolute path relative to the Bash tool's cwd so
+        // the read binds to the agent's frame of reference, not crabcc's
+        // process cwd. Fall back to the literal path when the file doesn't
+        // exist (both `cat` and `crabcc read` would fail alike).
+        let base = cwd.map(|d| d.join(file)).unwrap_or_else(|| file.into());
+        let target = std::fs::canonicalize(&base)
             .ok()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|| file.clone());
@@ -512,7 +517,13 @@ fn header(rw: &Rewrite, saved: usize) -> String {
 /// repo index, plans a rewrite, records it (trace + ledger) and prints
 /// the Claude Code PreToolUse envelope. Prints nothing when there is no
 /// safe rewrite.
-pub fn run(root: &Path, db: &Path, command: &str, session_id: Option<&str>) -> Result<()> {
+pub fn run(
+    root: &Path,
+    db: &Path,
+    command: &str,
+    session_id: Option<&str>,
+    cwd: Option<&Path>,
+) -> Result<()> {
     // Precedence: env disable-flag > .crabcc-cli.conf > built-in default.
     if std::env::var_os("CRABCC_NO_REWRITE").is_some() {
         return Ok(());
@@ -545,7 +556,7 @@ pub fn run(root: &Path, db: &Path, command: &str, session_id: Option<&str>) -> R
     // Dropped if the emitted tool (rg, jq, ...) isn't on PATH — never
     // hand the agent a command its environment can't run. `crabcc` is
     // always present (we are it).
-    let mut planned = plan(command, &is_symbol).filter(|rw| {
+    let mut planned = plan(command, &is_symbol, cwd).filter(|rw| {
         let prog = rw.inner.split_whitespace().next().unwrap_or("");
         prog == "crabcc" || on_path(prog)
     });
@@ -748,17 +759,17 @@ mod tests {
         // grep / rg for an indexed bare identifier, repo-wide, case-
         // sensitive, non-count -> `crabcc lookup refs` (+ --files-only),
         // with a header that discloses the rg fallback.
-        let g = plan("grep -rn Store .", &only_store).unwrap();
+        let g = plan("grep -rn Store .", &only_store, None).unwrap();
         assert_eq!(g.inner, "crabcc lookup refs Store");
         assert_eq!(g.rule, "grep->crabcc-refs");
         assert_eq!(g.track_op, "refs");
 
         assert_eq!(
-            plan("grep -rln Store", &only_store).unwrap().inner,
+            plan("grep -rln Store", &only_store, None).unwrap().inner,
             "crabcc lookup refs Store --files-only"
         );
 
-        let r = plan("rg Store", &only_store).unwrap();
+        let r = plan("rg Store", &only_store, None).unwrap();
         assert_eq!(r.inner, "crabcc lookup refs Store");
         assert_eq!(r.rule, "rg->crabcc-refs");
 
@@ -773,19 +784,19 @@ mod tests {
     fn falls_back_to_ripgrep_when_symbol_upgrade_is_unsafe() {
         // Unknown symbol, path-scoped, or case-insensitive -> faithful rg
         // swap (symbol scope/case can't be preserved by `lookup refs`).
-        let unknown = plan("grep -rn Nonexistent .", &never).unwrap();
+        let unknown = plan("grep -rn Nonexistent .", &never, None).unwrap();
         assert_eq!(unknown.inner, "rg -n Nonexistent .");
         assert_eq!(unknown.track_op, "rewrite");
         assert_eq!(
-            plan("grep -rn Store src/", &only_store).unwrap().inner,
+            plan("grep -rn Store src/", &only_store, None).unwrap().inner,
             "rg -n Store src/"
         );
         assert_eq!(
-            plan("grep -rin Store .", &only_store).unwrap().inner,
+            plan("grep -rin Store .", &only_store, None).unwrap().inner,
             "rg -i -n Store ."
         );
         // rg for a non-symbol is left alone (rg->rg is a no-op).
-        assert_eq!(plan("rg Nonexistent", &never), None);
+        assert_eq!(plan("rg Nonexistent", &never, None), None);
     }
 
     #[test]
@@ -793,15 +804,15 @@ mod tests {
         // Literal phrase, single file, and fixed-string forms all map to
         // a semantics-preserving rg invocation.
         assert_eq!(
-            plan("grep -rn 'fn open' .", &never).unwrap().inner,
+            plan("grep -rn 'fn open' .", &never, None).unwrap().inner,
             "rg -n 'fn open' ."
         );
         assert_eq!(
-            plan("grep -n foo file.rs", &never).unwrap().inner,
+            plan("grep -n foo file.rs", &never, None).unwrap().inner,
             "rg -n foo file.rs"
         );
         assert_eq!(
-            plan("grep -rnF 'a+b' .", &never).unwrap().inner,
+            plan("grep -rnF 'a+b' .", &never, None).unwrap().inner,
             "rg -F -n 'a+b' ."
         );
     }
@@ -810,14 +821,14 @@ mod tests {
     fn find_name_maps_to_ripgrep_files() {
         // -type f required: without it, find may return matching directories
         // that rg --files would silently drop — so we pass through instead.
-        assert!(plan("find . -name '*.rs'", &never).is_none());
+        assert!(plan("find . -name '*.rs'", &never, None).is_none());
 
         assert_eq!(
-            plan("find . -name '*.rs' -type f", &never).unwrap().inner,
+            plan("find . -name '*.rs' -type f", &never, None).unwrap().inner,
             "rg --files -g '*.rs' ."
         );
         assert_eq!(
-            plan("find src -iname '*.RS' -type f", &never)
+            plan("find src -iname '*.RS' -type f", &never, None)
                 .unwrap()
                 .inner,
             "rg --files --iglob '*.RS' src"
@@ -827,15 +838,15 @@ mod tests {
     #[test]
     fn cat_json_minifies_via_jq() {
         assert_eq!(
-            plan("cat config.json", &never).unwrap().inner,
+            plan("cat config.json", &never, None).unwrap().inner,
             "jq -c . config.json"
         );
-        assert_eq!(plan("cat src/a.json", &never).unwrap().rule, "cat-json->jq");
+        assert_eq!(plan("cat src/a.json", &never, None).unwrap().rule, "cat-json->jq");
         // Non-source text, flags, or multiple files are left to plain `cat`.
-        assert_eq!(plan("cat README.md", &never), None);
-        assert_eq!(plan("cat config.yaml", &never), None);
-        assert_eq!(plan("cat -n a.json", &never), None);
-        assert_eq!(plan("cat a.json b.json", &never), None);
+        assert_eq!(plan("cat README.md", &never, None), None);
+        assert_eq!(plan("cat config.yaml", &never, None), None);
+        assert_eq!(plan("cat -n a.json", &never, None), None);
+        assert_eq!(plan("cat a.json b.json", &never, None), None);
     }
 
     #[test]
@@ -844,12 +855,12 @@ mod tests {
         // outline stub on re-read; accuracy-preserving, never compacted).
         // Non-existent paths canonicalise to the literal fallback, so the
         // assertion is deterministic regardless of the test's cwd.
-        let r = plan("cat nope_xyz.rs", &never).unwrap();
+        let r = plan("cat nope_xyz.rs", &never, None).unwrap();
         assert_eq!(r.inner, "crabcc read nope_xyz.rs");
         assert_eq!(r.rule, "cat->crabcc-read");
         assert_eq!(r.track_op, "read");
         assert_eq!(
-            plan("cat src/missing_zzz.go", &never).unwrap().rule,
+            plan("cat src/missing_zzz.go", &never, None).unwrap().rule,
             "cat->crabcc-read"
         );
     }
@@ -866,7 +877,7 @@ mod tests {
             "find . -name '*.rs' -exec rm {} ;",
             "grep 'unbalanced",
         ] {
-            assert_eq!(plan(c, &never), None, "should pass through: {c}");
+            assert_eq!(plan(c, &never, None), None, "should pass through: {c}");
         }
         // Divergent regex (`+`/`?`), unknown/long flags, stdin-form grep,
         // non-grep/find programs, empty input, and unsupported find
@@ -884,7 +895,7 @@ mod tests {
             "find . -mtime -1",
             "find . -name '*.rs' -delete",
         ] {
-            assert_eq!(plan(c, &never), None, "should pass through: {c}");
+            assert_eq!(plan(c, &never, None), None, "should pass through: {c}");
         }
     }
 }
