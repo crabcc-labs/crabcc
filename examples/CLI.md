@@ -123,14 +123,14 @@ crabcc files --lang ruby --under app/models --limit 5
 
 ## 6. Fuzzy + prefix search — `crabcc fuzzy` / `crabcc prefix`
 
-> When you misremember a name. Backed by a Tantivy sidecar.
+> When you misremember a name. Built in-memory from the live `index.db` — no sidecar.
 
 ```bash
-crabcc fuzzy Asseessment    # Levenshtein distance 2 — finds "Assessment"
+crabcc fuzzy Asseessment    # Levenshtein distance 2, token-aware — finds "Assessment"
 crabcc prefix getUser       # case-insensitive starts-with — finds getUserKey, getUserAvatar, …
 ```
 
-Both return `[{name, kind, file, line, parent, score}, …]`.
+Both return `[{name, kind, file, line, parent, score}, …]` (`score`: 1.0 exact → 0.33 at distance 2).
 
 ---
 
@@ -139,10 +139,10 @@ Both return `[{name, kind, file, line, parent, score}, …]`.
 ```bash
 crabcc index      # full rebuild (~5–30s)
 crabcc refresh    # incremental — mtime + sha256 diff (~250ms no-op on 13k files)
-crabcc fts-rebuild  # rebuild Tantivy fuzzy/prefix sidecar only
+crabcc fts-rebuild  # no-op (kept for back-compat); reports the symbol count
 ```
 
-`crabcc index` rebuilds Tantivy too. `crabcc refresh` does not — run `fts-rebuild` if fuzzy results lag your edits.
+Fuzzy/prefix read the live `index.db`, so they're never stale on their own — if results lag your edits, run `crabcc refresh`.
 
 ---
 

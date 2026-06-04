@@ -20,7 +20,7 @@ Swift — ucracc-lsp answers:
 | `textDocument/definition`        | `query::find_symbol`                         |
 | `textDocument/references`        | `query::find_refs` ∪ `query::find_callers`   |
 | `textDocument/hover`             | symbol record (signature + file:line)        |
-| `workspace/symbol`               | tantivy `Fts::prefix`                        |
+| `workspace/symbol`               | native `Fts::prefix`                         |
 | `callHierarchy/{prepare,in,out}` | `CallGraph::build_from_edges`                |
 | `workspace/executeCommand`       | `ucracc.memory.search`, `.webfetch`, `.rerank` (feature-gated) |
 
@@ -112,7 +112,8 @@ require("lspconfig.configs").ucracc_lsp = {
 require("lspconfig").ucracc_lsp.setup({})
 ```
 
-ucracc-lsp expects `.crabcc/index.db` (and `.crabcc/tantivy/` for
+ucracc-lsp expects `.crabcc/index.db` (fuzzy/prefix for `workspace/symbol`
+are built in-memory from it — no separate sidecar) for
 workspace symbol) to exist. Run `crabcc index` in the repo once.
 
 ### `initialization_options`
@@ -122,7 +123,7 @@ standard LSP `initialization_options` blob:
 
 | Key | Type | Meaning |
 |---|---|---|
-| `indexPath` (a.k.a. `index_path`) | string | Path to the `.crabcc` dir holding `index.db` + `tantivy/`. Relative paths resolve against the workspace root; absolute paths are used as-is. Default: `<root>/.crabcc`. |
+| `indexPath` (a.k.a. `index_path`) | string | Path to the `.crabcc` dir holding `index.db`. Relative paths resolve against the workspace root; absolute paths are used as-is. Default: `<root>/.crabcc`. |
 
 Handy for out-of-tree indexes (CI artifacts, shared caches) and remote
 hosts where the `.crabcc` dir sits outside the checkout. It overrides the
@@ -150,7 +151,7 @@ edit-session.
 | `workspace/symbol`       | 601 µs   | 604 µs   | 1.1 µs     | **550×**  |
 
 `initialize` returns in tens of microseconds because Store + Fts are
-**lazy-opened**. The 1 ms SQLite + tantivy open happens on the background
+**lazy-opened**. The 1 ms SQLite open + symbol-load happens on the background
 `initialized` notification; if the user never sends a request, no I/O
 ever happens. First request after a cold launch pays the open cost once
 (then never again until process restart).
@@ -169,7 +170,7 @@ the thread-local Parser pool in `crabcc-core` (one Parser per thread per
 language, reused across calls), keystrokes in big files stay sub-200 µs.
 
 The dispatch wrapper adds < 1 µs per hot-path call (URL parse + Mutex
-acquire + Tokio task hop). Cold start is dominated by tantivy mmap
+acquire + Tokio task hop). Cold start is dominated by the SQLite open
 setup. The cache is a moka LRU (1024 entries, 30 s TTL) flushed on
 every `didOpen` / `didChange` / `didSave`, so we never return stale
 results.
@@ -207,13 +208,13 @@ every public path end-to-end.
 These are bookmarked but **not** in v1:
 
 - **jemalloc on Linux release builds** (`tikv-jemallocator`). Lower
-  allocator overhead in tantivy + serde_json hot paths. Cheap to add
+  allocator overhead in the search + serde_json hot paths. Cheap to add
   behind a Cargo feature.
 - **Linking with [Wild](https://github.com/davidlattimore/wild)** on
   Linux. Shaves dev-loop link time once it's stable enough for our
   build matrix.
 - **Cross-process FTS preview cache.** `workspace/symbol`'s 604 µs is
-  almost entirely tantivy. A small LRU on (query, top-K) would cut p99
+  almost entirely the symbol scan. A small LRU on (query, top-K) would cut p99
   on repeated typing.
 - **Reuse the parsed-tree across `didChange` events.** tree-sitter
   supports incremental reparse — we currently throw the tree away. Would
@@ -221,6 +222,6 @@ These are bookmarked but **not** in v1:
 
 Lattimore's "Wild performance tricks" (split_off_mut+Rayon, sharded-vec-writer,
 atomic↔non-atomic, `reuse_vec`) are most useful in CPU-bound batch tools.
-ucracc-lsp's hot path is < 10 µs and dominated by SQLite + tantivy — none
+ucracc-lsp's hot path is < 10 µs and dominated by SQLite + the symbol scan — none
 of those tricks would be measurable here. They're the right tools when
 `crabcc index` ingests a 100k-file monorepo; that's a different crate.

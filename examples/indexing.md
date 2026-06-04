@@ -17,7 +17,8 @@ crabcc index
 - **`skipped_too_large`** — files over 2 MB (skipped for sanity).
 - **`skipped_parse_error`** — files where tree-sitter couldn't parse.
 
-`crabcc index` also rebuilds the Tantivy fuzzy/prefix sidecar at `.crabcc/tantivy/`.
+Fuzzy/prefix search is built in-memory from this index on each call — there is
+no separate sidecar to maintain.
 
 ## Incremental refresh
 
@@ -40,23 +41,20 @@ crabcc refresh
 
 Wall-time on mc-mothership (~13k files): ~250 ms no-op, ~700 ms when one file changed.
 
-## Tantivy sidecar
+## Fuzzy/prefix freshness
 
-`crabcc refresh` does **not** rebuild Tantivy — only the SQLite index. If your
-fuzzy/prefix results lag the SQLite store, run:
-
-```bash
-crabcc fts-rebuild
-```
-
-`crabcc index` rebuilds Tantivy automatically — use that when in doubt.
+Fuzzy/prefix read the live `index.db` directly, so they always reflect the
+current index — there is nothing to re-sync. `crabcc fts-rebuild` is retained as
+a **no-op** (it just reports the symbol count) for backward compatibility. If
+results lag your edits, refresh the index itself with `crabcc refresh`.
 
 ## Where things live
 
 ```
 .crabcc/
-├── index.db          # SQLite (files, symbols, edges)
-└── tantivy/          # Tantivy index (fuzzy + prefix on symbol names)
+├── index.db          # SQLite (files, symbols, edges) — fuzzy/prefix read this live
+├── graph.json        # call-graph sidecar
+└── fsst.symbols      # optional signature-column codec table
 ```
 
 Add `.crabcc/` to your repo's `.gitignore`.

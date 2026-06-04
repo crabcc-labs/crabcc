@@ -626,8 +626,7 @@ bench/                ← raw-CLI A/B benchmark harness + visualize
                        ┌──────────────────────────────┐
                        │ Per-repo state                │
                        │  <repo>/.crabcc/              │
-                       │    index.db (FTS5 + symbols)  │
-                       │    tantivy/ (fuzzy + prefix)  │
+                       │    index.db (symbols + edges) │
                        │    graph.json (call graph)    │
                        │    fsst.symbols (codec)       │
                        │  $CRABCC_HOME/repos/<slug>/   │
@@ -635,7 +634,7 @@ bench/                ← raw-CLI A/B benchmark harness + visualize
                        └──────────────────────────────┘
 ```
 
-The CLI is a thin dispatcher: clap parses, the matched arm calls into one of three library crates, and `sonic_rs::to_string` encodes the result. The library crates are independent — `crabcc-mcp` runs the same code paths as the CLI but over JSON-RPC 2.0 instead of argv. `crabcc-memory` is the only crate that touches `memory.db`; symbol-index state (`index.db`, `tantivy/`, `graph.json`, `fsst.symbols`) stays in the repo's `.crabcc/`. Memory was relocated from `<repo>/.crabcc/memory.db` to `$CRABCC_HOME/repos/<slug>-<hash6>/memory.db` in [#484](https://github.com/crabcc-labs/crabcc/pull/484) so worktrees share one drawer store.
+The CLI is a thin dispatcher: clap parses, the matched arm calls into one of three library crates, and `sonic_rs::to_string` encodes the result. The library crates are independent — `crabcc-mcp` runs the same code paths as the CLI but over JSON-RPC 2.0 instead of argv. `crabcc-memory` is the only crate that touches `memory.db`; symbol-index state (`index.db`, `graph.json`, `fsst.symbols`) stays in the repo's `.crabcc/`. Memory was relocated from `<repo>/.crabcc/memory.db` to `$CRABCC_HOME/repos/<slug>-<hash6>/memory.db` in [#484](https://github.com/crabcc-labs/crabcc/pull/484) so worktrees share one drawer store.
 
 ### Per-command mechanics
 
@@ -645,7 +644,7 @@ The CLI is a thin dispatcher: clap parses, the matched arm calls into one of thr
 - **`callers`**: same as refs but uses ast-grep patterns `name($$$)` and `$RECV.name($$$)` to also catch method-receiver calls. Or, on indexes with edges populated, a single SQL scan over the `edges` table (O(callers), not O(files)).
 - **`outline`**: SQL `WHERE file_id = ? ORDER BY line_start`.
 - **`files`**: SQL on the indexed-files table, optionally filtered by prefix/lang/ext.
-- **`fuzzy` / `prefix`**: Tantivy sidecar at `.crabcc/tantivy/`. Rebuilt automatically on `crabcc index`; explicit `crabcc fts-rebuild` for refresh-only flows.
+- **`fuzzy` / `prefix`**: native, built in-memory from the live `index.db` symbol table on each call (no sidecar) — so results always reflect the current index. `fuzzy` is a bounded Levenshtein (distance ≤ 2, token-aware so `profile` matches `get_user_profile`) with an allocation-free byte DP and a dense-match fast-bail (a query matching most of the corpus returns in ~µs); `prefix` is a case-insensitive, token-aware starts-with. Replaced the former Tantivy sidecar in v6.2.0 ([#700](https://github.com/crabcc-labs/crabcc/pull/700), [#713](https://github.com/crabcc-labs/crabcc/pull/713)); `crabcc fts-rebuild` is now a no-op kept for back-compat.
 - **`memory search`**: hybrid by default — vector cosine KNN + FTS5 BM25 fused via Reciprocal Rank Fusion (k = 60). `--mode lexical` or `--mode vector` to ablate.
 - **`track`**: appends a JSONL log to `~/.crabcc/usage.log`, summarized by `crabcc track`.
 - **`watch`**: notify-debouncer-mini-based FS watcher on its own thread. Auto-runs `refresh` on file changes. Feedback-loop guard skips events under `.crabcc/`.

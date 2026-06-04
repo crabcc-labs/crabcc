@@ -1,5 +1,12 @@
 # 5.1.0 performance workstream — tantivy + LSP
 
+> **Historical (v5.1.0).** Tantivy was removed in v6.2.0 — fuzzy/prefix is now a
+> native, in-memory scan of the SQLite symbol table (see
+> [#700](https://github.com/crabcc-labs/crabcc/pull/700) /
+> [#713](https://github.com/crabcc-labs/crabcc/pull/713) and
+> `crates/crabcc-core/docs/HOW_IT_WORKS.md`). This doc is kept as a record of the
+> 5.1.0 tantivy-era work; the LSP hot-path notes still apply.
+
 Goal: make tantivy access/usage and the `ucracc-lsp` hot paths blazingly fast.
 Medium-effort, landed incrementally. **Measure → optimize → re-bench**, never blind.
 

@@ -331,7 +331,6 @@ crabcc_dir:         $(pwd)/.crabcc
 index_db:           $(pwd)/.crabcc/index.db
 memory_db:          $(pwd)/.crabcc/memory.db
 graph_json:         $(pwd)/.crabcc/graph.json
-fts_dir:            $(pwd)/.crabcc/tantivy
 fsst_symbols:       $(pwd)/.crabcc/fsst.symbols
 init_log:           $(pwd)/.crabcc/init.log
 serve_log:          $(pwd)/.crabcc/serve.log

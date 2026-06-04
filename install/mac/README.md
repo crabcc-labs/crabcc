@@ -22,7 +22,6 @@ Indexes live at:
 
 ```text
 ~/.crabcc/repos/<repo-slug>-<hash6>/index.db
-~/.crabcc/repos/<repo-slug>-<hash6>/tantivy/
 ```
 
 `<hash6>` comes from `remote.origin.url`, so **every worktree of `peterlodri-sec/crabcc`

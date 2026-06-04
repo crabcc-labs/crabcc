@@ -10,7 +10,7 @@ It runs **alongside** the semantic server for each language
 bound to a buffer, so you keep your type-aware diagnostics/completion and
 gain, on top:
 
-- **Repo-wide `workspace/symbol`** backed by crabcc's tantivy index
+- **Repo-wide `workspace/symbol`** backed by crabcc's native symbol search
   (sub-microsecond when warm).
 - **Call hierarchy** (incoming/outgoing) from crabcc's edge table.
 - **Instant cold start** — `ucracc-lsp` lazy-opens its index, so it never
@@ -62,7 +62,7 @@ Once per project (and let crabcc keep it fresh):
 
 ```bash
 cd /path/to/your/project
-crabcc index            # builds .crabcc/index.db + the tantivy/ sidecar
+crabcc index            # builds .crabcc/index.db
 ```
 
 ## Install the extension
@@ -145,8 +145,8 @@ worktree root).
   set `lsp.ucracc-lsp.binary.path`. Check the resolved env with Zed's
   **`zed: open log`**.
 - **No workspace symbols / empty go-to-definition** — the index is missing or
-  stale. Run `crabcc index` (it builds both `index.db` and the `tantivy/`
-  sidecar that `workspace/symbol` needs).
+  stale. Run `crabcc index` (it builds `index.db`, which `workspace/symbol`
+  reads directly).
 - **Server logs** — set `"env": { "UCRACC_LOG": "debug" }` under `binary`;
   output shows up in Zed's LSP logs (`dev: open language server logs`).
 
