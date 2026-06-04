@@ -95,11 +95,11 @@ fn collect_import_statement(node: Node, src: &[u8], out: &mut Vec<ImportSpec>) {
                 let path = child
                     .child_by_field_name("name")
                     .and_then(|n| n.utf8_text(src).ok())
-                    .unwrap_or("");
+                    .unwrap_or_default();
                 let alias = child
                     .child_by_field_name("alias")
                     .and_then(|n| n.utf8_text(src).ok())
-                    .unwrap_or("");
+                    .unwrap_or_default();
                 if !alias.is_empty() {
                     out.push(ImportSpec {
                         local: alias.to_string(),
@@ -117,7 +117,7 @@ fn collect_import_from(node: Node, src: &[u8], out: &mut Vec<ImportSpec>) {
     let module = node
         .child_by_field_name("module_name")
         .and_then(|n| n.utf8_text(src).ok())
-        .unwrap_or("")
+        .unwrap_or_default()
         .to_string();
     // `name` field appears once per imported binding (tree-sitter-python
     // exposes the post-`import` list as repeated `name` fields).
@@ -145,11 +145,11 @@ fn collect_import_from(node: Node, src: &[u8], out: &mut Vec<ImportSpec>) {
                 let name = child
                     .child_by_field_name("name")
                     .and_then(|n| n.utf8_text(src).ok())
-                    .unwrap_or("");
+                    .unwrap_or_default();
                 let alias = child
                     .child_by_field_name("alias")
                     .and_then(|n| n.utf8_text(src).ok())
-                    .unwrap_or("");
+                    .unwrap_or_default();
                 if !alias.is_empty() && !name.is_empty() {
                     out.push(ImportSpec {
                         local: alias.to_string(),

@@ -133,7 +133,7 @@ fn collect_use(node: Node, src: &[u8], prefix: &str, out: &mut Vec<ImportSpec>) 
             // dotted path is the qualified target.
             let full = node
                 .utf8_text(src)
-                .unwrap_or("")
+                .unwrap_or_default()
                 .split_whitespace()
                 .collect::<String>();
             let local = full.rsplit("::").next().unwrap_or(&full).to_string();
@@ -147,11 +147,11 @@ fn collect_use(node: Node, src: &[u8], prefix: &str, out: &mut Vec<ImportSpec>) 
             let path = node
                 .child_by_field_name("path")
                 .and_then(|n| n.utf8_text(src).ok())
-                .unwrap_or("");
+                .unwrap_or_default();
             let alias = node
                 .child_by_field_name("alias")
                 .and_then(|n| n.utf8_text(src).ok())
-                .unwrap_or("");
+                .unwrap_or_default();
             if !alias.is_empty() {
                 out.push(ImportSpec {
                     local: alias.to_string(),
@@ -172,7 +172,7 @@ fn collect_use(node: Node, src: &[u8], prefix: &str, out: &mut Vec<ImportSpec>) 
             let path = node
                 .child_by_field_name("path")
                 .and_then(|n| n.utf8_text(src).ok())
-                .unwrap_or("");
+                .unwrap_or_default();
             let new_prefix = join_path(prefix, path);
             if let Some(list) = node.child_by_field_name("list") {
                 collect_use(list, src, &new_prefix, out);

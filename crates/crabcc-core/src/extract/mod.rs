@@ -1167,7 +1167,7 @@ fn visibility_for(lang: &str, node: &Node, src: &[u8]) -> Option<String> {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.kind() == "modifiers" {
-                    let text = child.utf8_text(src).unwrap_or("");
+                    let text = child.utf8_text(src).unwrap_or_default();
                     for token in ["public", "open", "internal", "fileprivate", "private"] {
                         if text.contains(token) {
                             return Some(token.to_string());
@@ -1192,7 +1192,7 @@ fn visibility_for(lang: &str, node: &Node, src: &[u8]) -> Option<String> {
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 if child.kind() == "modifiers" {
-                    let text = child.utf8_text(src).unwrap_or("");
+                    let text = child.utf8_text(src).unwrap_or_default();
                     // Private wins over protected wins over public if multiple
                     // appeared (which would be invalid Java, but be defensive).
                     if text.contains("private") {
@@ -1252,7 +1252,7 @@ mod tests {
         assert!(matches!(s.kind, SymbolKind::Function));
         assert_eq!(s.visibility.as_deref(), Some("pub"));
         assert_eq!(s.line_start, 1);
-        let sig = s.signature.as_deref().unwrap_or("");
+        let sig = s.signature.as_deref().unwrap_or_default();
         assert!(
             sig.contains("foo"),
             "signature should contain name: {sig:?}"
@@ -1321,7 +1321,7 @@ mod tests {
         let src = "class User # the number seems arbitrary, ported from legacy\n  # extra notes\n  def name; end\nend\n";
         let syms = extract_file("a.rb", src, "ruby").unwrap();
         let cls = syms.iter().find(|s| s.name == "User").unwrap();
-        let sig = cls.signature.as_deref().unwrap_or("");
+        let sig = cls.signature.as_deref().unwrap_or_default();
         assert!(
             !sig.contains('#'),
             "signature should not leak '#' comments, got: {sig:?}"
@@ -1340,7 +1340,7 @@ mod tests {
         assert_eq!(s.name, "add");
         assert!(matches!(s.kind, SymbolKind::Function));
         assert_eq!(s.visibility.as_deref(), Some("pub"));
-        let sig = s.signature.as_deref().unwrap_or("");
+        let sig = s.signature.as_deref().unwrap_or_default();
         assert!(sig.contains("fn add"), "got: {sig:?}");
     }
 
@@ -1682,7 +1682,7 @@ mod tests {
         let src = "def add(a, b):\n    \"\"\"docstring\"\"\"\n    return a + b\n";
         let syms = extract_file("a.py", src, "python").unwrap();
         let s = syms.iter().find(|s| s.name == "add").unwrap();
-        let sig = s.signature.as_deref().unwrap_or("");
+        let sig = s.signature.as_deref().unwrap_or_default();
         assert!(sig.contains("def add"), "got: {sig:?}");
     }
 

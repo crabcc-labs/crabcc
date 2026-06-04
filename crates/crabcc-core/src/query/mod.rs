@@ -373,7 +373,7 @@ fn edge_hits_to_output(
                         }
                     }
                     let idx = (line as usize).saturating_sub(1);
-                    let raw = by_line.get(idx).copied().unwrap_or("");
+                    let raw = by_line.get(idx).copied().unwrap_or_default();
                     hits.push(Hit {
                         file: file.clone(),
                         line,

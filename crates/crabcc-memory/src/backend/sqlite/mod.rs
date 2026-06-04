@@ -18,6 +18,7 @@ mod encoding;
 mod ensure;
 
 use crate::backend::{cosine, Backend, LexicalQuery};
+use std::fmt::Write as _;
 use crate::types::*;
 use anyhow::{anyhow, Context, Result};
 use crabcc_core::hash::sha256_hex;
@@ -647,7 +648,7 @@ impl Backend for SqliteBackend {
         }
         sql.push_str(" ORDER BY d.id ASC");
         if limit > 0 {
-            sql.push_str(&format!(" LIMIT {limit}"));
+            write!(sql, " LIMIT {limit}").unwrap();
         }
         let mut stmt = conn.prepare(&sql)?;
         let refs: Vec<&dyn rusqlite::ToSql> =

@@ -27,6 +27,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use std::fs::{File, OpenOptions};
+use std::fmt::Write as _;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -264,11 +265,10 @@ fn generate_id() -> String {
         let mix = ts ^ (pid.wrapping_mul(0x9E37_79B9_7F4A_7C15));
         bytes.copy_from_slice(&mix.to_le_bytes());
     }
-    let mut out = String::with_capacity(16);
-    for b in bytes {
-        out.push_str(&format!("{b:02x}"));
-    }
-    out
+    bytes.iter().fold(String::with_capacity(16), |mut s, b| {
+        write!(s, "{b:02x}").unwrap();
+        s
+    })
 }
 
 /// Host-subprocess runtime. Looks up `claude` (or `claude-code`) on
