@@ -313,7 +313,7 @@ fn plan_grep(args: &[String], is_symbol: &dyn Fn(&str) -> bool) -> Option<Rewrit
     if !o.recursive
         && paths
             .iter()
-            .any(|p| std::fs::metadata(p).map_or(false, |m| m.is_dir()))
+            .any(|p| std::fs::metadata(p).is_ok_and(|m| m.is_dir()))
     {
         return None;
     }
