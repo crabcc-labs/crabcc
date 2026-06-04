@@ -15,7 +15,7 @@ What to include:
 
 | Status | Component |
 |---|---|
-| In scope | the `crabcc` binary and all crates in this workspace, the MCP server (`crabcc --mcp`), the BullMQ worker (`apps/jobs-worker`), the HITL/Telegram agent (`apps/crabcc-hitl-agent`), the viz dashboard (`crates/crabcc-viz/web`). |
+| In scope | the `crabcc` binary and all crates in this workspace, the MCP server (`crabcc --mcp`), the HITL/Telegram agent (`apps/crabcc-hitl-agent`), the viz dashboard (`crates/crabcc-viz/web`). |
 | In scope | the `.devcontainer/` and CI workflows in `.github/workflows/`. |
 | Out of scope | bugs in dependencies (please report upstream — but flag us so we can pin around them). |
 | Out of scope | self-inflicted misuse (running `crabcc` against an untrusted repo with `--effort max` and complaining about RCE in evaluated code). |

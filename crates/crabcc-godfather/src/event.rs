@@ -165,40 +165,53 @@ pub fn list_recent(
     limit: usize,
     min_severity: Option<Severity>,
 ) -> Result<Vec<Event>> {
-    // Pre-baked WHERE clauses — no per-call format!() allocation
-    // (#488: const slices over runtime branching). Filters branch
-    // on `severity_int` for new rows and fall back to the legacy
-    // TEXT column for any pre-migration rows where `severity_int`
-    // is NULL. (schema::apply backfills on every open, so the OR
-    // arm is theoretical — kept for safety on partial-migration
-    // DBs produced by an interrupted upgrade.)
-    let sev_clause: &str = match min_severity {
-        None | Some(Severity::Debug) => "",
-        Some(Severity::Info) => {
-            " WHERE severity_int >= 1 \
-              OR (severity_int IS NULL AND severity != '' AND severity != 'debug')"
-        }
-        Some(Severity::Warn) => {
-            " WHERE severity_int >= 2 \
-              OR (severity_int IS NULL AND severity IN ('warn','error','crash'))"
-        }
-        Some(Severity::Error) => {
-            " WHERE severity_int >= 3 \
-              OR (severity_int IS NULL AND severity IN ('error','crash'))"
-        }
-        Some(Severity::Crash) => {
-            " WHERE severity_int = 4 \
-              OR (severity_int IS NULL AND severity = 'crash')"
-        }
-    };
-    // SELECT both severity columns; COALESCE-decode below.
-    let sql = format!(
+    // Pre-baked full SQL strings — no format!() allocation per call.
+    // `prepare_cached` uses the SQL pointer as the cache key, so passing
+    // a static str lets it skip even the string-compare step on warm
+    // hits (#488). The OR arms cover pre-migration rows where
+    // `severity_int` is NULL; schema::apply backfills on every open so
+    // the OR arm is only hit on interrupted-upgrade DBs.
+    const SQL_ALL: &str =
         "SELECT id, ts, session_id, severity_int, severity, source, category, message, payload
-         FROM _crab_event{sev_clause}
+         FROM _crab_event
          ORDER BY ts DESC, id DESC
-         LIMIT ?1"
-    );
-    let mut stmt = conn.prepare_cached(&sql)?;
+         LIMIT ?1";
+    const SQL_INFO: &str =
+        "SELECT id, ts, session_id, severity_int, severity, source, category, message, payload
+         FROM _crab_event
+         WHERE severity_int >= 1
+            OR (severity_int IS NULL AND severity != '' AND severity != 'debug')
+         ORDER BY ts DESC, id DESC
+         LIMIT ?1";
+    const SQL_WARN: &str =
+        "SELECT id, ts, session_id, severity_int, severity, source, category, message, payload
+         FROM _crab_event
+         WHERE severity_int >= 2
+            OR (severity_int IS NULL AND severity IN ('warn','error','crash'))
+         ORDER BY ts DESC, id DESC
+         LIMIT ?1";
+    const SQL_ERROR: &str =
+        "SELECT id, ts, session_id, severity_int, severity, source, category, message, payload
+         FROM _crab_event
+         WHERE severity_int >= 3
+            OR (severity_int IS NULL AND severity IN ('error','crash'))
+         ORDER BY ts DESC, id DESC
+         LIMIT ?1";
+    const SQL_CRASH: &str =
+        "SELECT id, ts, session_id, severity_int, severity, source, category, message, payload
+         FROM _crab_event
+         WHERE severity_int = 4
+            OR (severity_int IS NULL AND severity = 'crash')
+         ORDER BY ts DESC, id DESC
+         LIMIT ?1";
+    let sql: &str = match min_severity {
+        None | Some(Severity::Debug) => SQL_ALL,
+        Some(Severity::Info) => SQL_INFO,
+        Some(Severity::Warn) => SQL_WARN,
+        Some(Severity::Error) => SQL_ERROR,
+        Some(Severity::Crash) => SQL_CRASH,
+    };
+    let mut stmt = conn.prepare_cached(sql)?;
     let rows = stmt.query_map(params![limit as i64], |row| {
         // INT path first: 1-byte read, no allocation. Fall through
         // to the legacy TEXT column for pre-migration rows.

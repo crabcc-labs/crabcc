@@ -89,16 +89,11 @@ impl Backend {
 }
 
 /// Where the agent process actually runs. Orthogonal to [`Backend`] —
-/// transport is the WHERE, backend is the WHAT-LLM. Default is
-/// `Subprocess` (host-side spawn, current behaviour). `Bullmq` enqueues
-/// the run on the crabcc-agents BullMQ queue and tails the per-job
-/// Redis Stream back into this run's log file; behind the
-/// `agents-bullmq` Cargo feature.
+/// transport is the WHERE, backend is the WHAT-LLM. Only `Subprocess`
+/// (host-side spawn) is supported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentTransport {
     Subprocess,
-    #[cfg(feature = "agents-bullmq")]
-    Bullmq,
 }
 
 impl AgentTransport {
@@ -108,31 +103,6 @@ impl AgentTransport {
     pub fn as_str(self) -> &'static str {
         match self {
             AgentTransport::Subprocess => "subprocess",
-            #[cfg(feature = "agents-bullmq")]
-            AgentTransport::Bullmq => "bullmq",
-        }
-    }
-    pub fn from_str(s: &str) -> Result<Self> {
-        match s {
-            "subprocess" | "host" | "local" => Ok(AgentTransport::Subprocess),
-            "bullmq" | "queue" | "agents" => {
-                #[cfg(not(feature = "agents-bullmq"))]
-                {
-                    Err(anyhow!(
-                        "transport `bullmq` requires this binary to be built with the \
-                         `agents-bullmq` Cargo feature. \
-                         Rebuild with `cargo install --path crates/crabcc-cli \
-                         --features agents-bullmq`."
-                    ))
-                }
-                #[cfg(feature = "agents-bullmq")]
-                {
-                    Ok(AgentTransport::Bullmq)
-                }
-            }
-            other => Err(anyhow!(
-                "unknown agent transport `{other}`; supported: subprocess (default), bullmq"
-            )),
         }
     }
 }
@@ -761,8 +731,6 @@ pub fn run(req: AgentRequest<'_>) -> Result<()> {
 
     let result = match req.transport {
         AgentTransport::Subprocess => SubprocessRuntime.run(&req, &run_dir),
-        #[cfg(feature = "agents-bullmq")]
-        AgentTransport::Bullmq => crate::agent_bullmq::BullmqRuntime.run(&req, &run_dir),
     };
     run_dir.finalize();
 

@@ -110,6 +110,15 @@ export interface DeadcodeResponse {
 }
 
 export type Bootstrap = Schemas["Bootstrap"];
+export type SavingsBucket = Schemas["SavingsBucket"];
+/** Live token-savings aggregate (/api/savings). by_op is keyed by op
+ *  name (sym/refs/read/media/rewrite/morph/...). */
+export interface Savings {
+  session: SavingsBucket;
+  last_24h: SavingsBucket;
+  all_time: SavingsBucket;
+  by_op: Record<string, SavingsBucket>;
+}
 export type ActivityHit = Schemas["ActivityHit"];
 export type AgentSummary = Schemas["AgentSummary"];
 export type AgentLog = Schemas["AgentLog"];
@@ -157,6 +166,7 @@ export const api = {
     getJson<ActivityResponse>(
       `/api/activity?since=${sinceTs ?? 0}&limit=${limit}`,
     ),
+  savings: () => getJson<Savings>("/api/savings"),
   agents: () => getJson<AgentsResponse>("/api/agents"),
   agentLog: (id: string, since: number) =>
     getJson<AgentLog>(`/api/agents/${id}/log?since=${since}`),

@@ -407,7 +407,7 @@ just the matching lines — when the question is small, raw wins on bytes.
 | `lto=fat` + `codegen-units=1` + `panic=abort`    | `Cargo.toml` `[profile.release]` | (baseline — landed pre-2.10) |
 | `cache_size = -64 MiB` (was -16 MiB)             | `Store::open` PRAGMAs | ~30% on bulk writes, faster cold reads on warm I/O |
 | `release-native` profile + `target-cpu=native`   | `Cargo.toml` + `task build-native` | +5–15% on byte-scan / index loops; SIGILL on non-matching CPU |
-| `tikv-jemallocator` global allocator             | `crabcc-cli/src/main.rs` | ~5–12% on alloc-heavy paths (extract.rs, MCP `serve_io`) |
+| `tikv-jemallocator` global allocator             | `crabcc-cli/src/main.rs` | **re-benched [#648](./docs/PERF-648-agent-shell-and-deps.md): tie** — system/jemalloc/mimalloc within <3% on cold index. Kept jemalloc; mimalloc gave no measured win. |
 | `bumpalo` per-file arena during tree-sitter walk | `crabcc-core/src/extract.rs` | already shipped; ~80% of the gain a nightly `Vec<T, A>` would offer |
 | Auto-snapshot of `.crabcc/` after index/refresh  | `crabcc-cli/src/backup.rs` | bookkeeping only — best-effort, never blocks the index path |
 
@@ -423,6 +423,35 @@ Re-run:
 ```bash
 cd bench && python3 raw-bench.py /path/to/your/repo && python3 visualize.py
 ```
+
+### #648 perf campaign + agent-shell protector
+
+Full results + methodology: [`docs/PERF-648-agent-shell-and-deps.md`](./docs/PERF-648-agent-shell-and-deps.md)
+(raw artifacts in [`docs/perf-648/`](./docs/perf-648/)). Headlines (measured 2026-06-04, bench-node):
+
+- **Agent MCP latency ~39–56× lower** — per-session `Store` reuse removes the
+  ~680 µs per-call DB-open floor in `serve_io`.
+- **Cold index 1.43× faster** — parse/extract parallelised across cores
+  (rayon), serial SQLite write preserved (identical output): 1.41s → 986ms.
+- **`read` tool ~19 ms → ~1 ms/call** — schema-ensure once/process + cached
+  session-read connection.
+- **Agent-shell protector**: PreToolUse hook rewrites grep/find → `rg` /
+  `crabcc lookup refs`, optionally chained `| rtk pipe | crabcc morph compact`
+  (RTK + Morph, auto-engaged from env), with a PostToolUse measure/learn loop.
+  **Vanilla vs full flow, per agent task** (crabcc source):
+
+  | task | vanilla | flow | cut |
+  |---|---:|---:|---:|
+  | find symbol | 88,076 | 1,952 | **−97%** |
+  | find refs | 4,907 | 185 | **−96%** |
+  | list files | 1,736 | 507 | **−70%** |
+  | text search | 15,509 | 7,192 | **−53%** |
+  | read JSON | 1,149 | 537 | **−53%** |
+  | read source | 14,790 | 7,752 | **−47%** |
+
+  Full methodology: [`docs/PERF-648`](./docs/PERF-648-agent-shell-and-deps.md).
+- **Allocator: measured tie** (see corrected row above) — jemalloc kept,
+  mimalloc reverted.
 
 ---
 

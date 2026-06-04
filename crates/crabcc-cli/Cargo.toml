@@ -22,12 +22,16 @@ path = "src/bin/ccc.rs"
 # binary still gets the +5-12% on alloc-heavy hot paths.
 default = []
 jemalloc = ["dep:tikv-jemallocator"]
-# Dispatch agent runs through the BullMQ-backed crabcc-agents worker
-# instead of the in-process subprocess runtime. Pulls in bullmq-rs +
-# redis. Off by default — vanilla CLI users don't pay the dep cost.
-# See apps/crabcc-agents/README.md for the worker side and
-# `--transport bullmq` / `CRABCC_AGENT_TRANSPORT=bullmq` to opt in.
-agents-bullmq = ["dep:bullmq-rs", "dep:redis", "dep:futures-util"]
+# Allocator A/B candidate — benched against jemalloc + system to settle
+# the shipped default. Gated `not(jemalloc)` in main.rs so the two never
+# both claim #[global_allocator].
+mimalloc = ["dep:mimalloc"]
+# Real semantic embeddings for `crabcc rag` (MiniLM-L6-v2 via fastembed).
+# NOT in `default`: ort fetches onnxruntime at build time (network) and
+# the model is a ~25MB lazy runtime download. Enabled in the shipped
+# build (`task build`/`install`/release) so users get semantic RAG while
+# plain `cargo build` + CI stay lean and offline-safe.
+memory-embed = ["crabcc-memory/memory-embed"]
 # Optional dashboard / SSE viewer (`crabcc serve`). Pulls in tiny_http +
 # tokio-rt + the entire `crabcc-viz` crate (~3500 LOC). Off by default
 # so `cargo install crabcc-cli` is fast for users who only want the
@@ -39,19 +43,38 @@ viz = ["dep:crabcc-viz"]
 # `tracing-subscriber` + `tracing-appender` init pulls in. Off by
 # default for a lean default install.
 telemetry = ["dep:tracing-subscriber", "dep:tracing-appender"]
+# Lightpanda CDP rendered-DOM transport for `crabcc crawl` (JS-built pages
+# render to real DOM). Adds a minimal ws:// CDP client (no TLS) to the
+# build; the transport auto-detects a `lightpanda` binary / endpoint and
+# falls back to the native HTTP fetch when absent. Off by default to keep
+# the base install lean — enable with
+# `cargo install --features crawl-lightpanda` (or `task` config).
+crawl-lightpanda = ["crabcc-fetch/crawl-lightpanda"]
+# Shared Postgres crawl frontier for `crabcc crawl` (multi-worker queue via
+# $CRABCC_CRAWL_PG). Off by default — without it, open_frontier always uses
+# the local SQLite frontier. Enable with `cargo install --features crawl-postgres`.
+crawl-postgres = ["crabcc-fetch/crawl-postgres"]
 
 [dependencies]
 walkdir = "2.5.0"
-crabcc-core   = { workspace = true, features = ["jobs"] }
-crabcc-fetch  = { workspace = true }
+crabcc-core   = { workspace = true }
+crabcc-fetch  = { workspace = true, features = ["crawl"] }
 crabcc-mcp    = { workspace = true }
 crabcc-memory = { workspace = true }
+# Image downscaling for the Read hook (`crabcc media downscale`): bound
+# oversized screenshots/photos to Anthropic's effective vision resolution
+# before the model reads them. png+jpeg only -> avoids the avif/exr/webp
+# codec weight `image`'s defaults pull in (those still compile when
+# fastembed enables them under crabcc-memory's `memory-embed`).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# Optional global allocator — only built under the `mimalloc` feature
+# (allocator bench candidate). See main.rs for the #[global_allocator] cfg.
+mimalloc = { version = "0.1", optional = true, default-features = false }
 # `viz` feature — see [features]. Drops the dashboard / SSE viewer + its
 # tokio-rt + tiny_http + html2md transitive cost from the default install.
 crabcc-viz    = { workspace = true, optional = true }
 ahash         = { workspace = true }
 anyhow        = { workspace = true }
-parking_lot   = { workspace = true }
 clap          = { workspace = true }
 tokio                    = { workspace = true }
 reqwest                  = { workspace = true }
@@ -77,18 +100,13 @@ toml          = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"], optional = true }
 tracing-appender   = { workspace = true, optional = true }
-
-# agents-bullmq feature — see [features].
-bullmq-rs    = { version = "1", optional = true }
-redis        = { version = "0.28", default-features = false, features = ["tokio-comp", "connection-manager", "streams"], optional = true }
-futures-util = { version = "0.3", optional = true }
 # Issue #112 follow-up — jemalloc as the global allocator on the binary
 # crate. ~5-12% on alloc-heavy paths (extract.rs, MCP serve_io). MSVC
 # targets fall back to system allocator (cfg gate in main.rs). Optional
 # behind the `jemalloc` feature so dev builds skip the 60s C-source
 # build script; release/install paths enable it.
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
-tikv-jemallocator = { version = "0.6", optional = true }
+tikv-jemallocator = { version = "0.7", optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

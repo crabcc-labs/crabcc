@@ -1,0 +1,69 @@
+name: runner-gc
+
+# On-demand disk reclamation for a self-hosted Hetzner runner.
+#
+# Scheduled, fleet-wide GC is handled by a host-local systemd timer
+# (`actions-runner-gc.timer`, installed by install/github-runner/install.sh)
+# — a GitHub Actions cron can't cover the whole fleet because all runners
+# share the same labels, so a scheduled job only ever lands on one host.
+#
+# This workflow is the manual/emergency escape hatch: trigger it to prune
+# whichever runner it lands on (e.g. one box reported >85% in its GC logs)
+# without SSHing in. It runs the exact same script the timer does.
+
+on:
+  workflow_dispatch:
+    inputs:
+      deep:
+        description: "Aggressive prune: all unused Docker images + build cache regardless of age"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  gc:
+    name: reclaim disk (slot ${{ matrix.slot }})
+    # Fan out across the fleet: GitHub runs at most one job per runner at a
+    # time, so N parallel slots land on up to N distinct hosts in a single
+    # dispatch — each installs the timer + prunes locally. A single job
+    # only ever cleans whichever one runner grabs it first (the idle/healthy
+    # one), never the disk-full hosts that actually need it.
+    strategy:
+      fail-fast: false
+      matrix:
+        slot: [1, 2, 3, 4, 5, 6, 7, 8]
+    # Per-slot: repeated dispatches serialise within a slot, but the eight
+    # slots run in parallel across hosts.
+    concurrency:
+      group: runner-gc-${{ matrix.slot }}
+      cancel-in-progress: false
+    runs-on: [self-hosted, linux, hetzner]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+      - name: bootstrap gc timer (idempotent)
+        shell: bash
+        run: |
+          # The self-hosted runners ARE the Hetzner hosts, so install the
+          # host-local systemd GC timer right here — then it self-prunes
+          # every 6h with no workflow needed. Idempotent: re-running just
+          # refreshes the units. Dispatch this workflow once per host to
+          # bootstrap the whole fleet (a scheduled job only lands on one).
+          sudo bash install/github-runner/install.sh --gc-only || \
+            echo "::warning::timer install failed (no sudo/systemd?); prune below still runs"
+      - name: runner-gc
+        shell: bash
+        run: |
+          ARGS=""
+          [ "${{ inputs.deep }}" = "true" ] && ARGS="--deep"
+          # Tee the script's df/prune output into the job summary too.
+          {
+            echo "## runner-gc on $(hostname)"
+            echo '```'
+            bash install/github-runner/runner-gc.sh $ARGS
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"

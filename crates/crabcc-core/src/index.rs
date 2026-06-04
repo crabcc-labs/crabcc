@@ -422,6 +422,68 @@ mod tests {
         assert_eq!(stats.files_indexed, 0);
     }
 
+    #[test]
+    fn parallel_build_indexes_multilang_handles_skips_and_is_deterministic() {
+        // Edge-case guard for the parallel parse path: a mix of languages
+        // plus every skip reason in one build. The parallel parse must
+        // index every valid file, tally each skip bucket, and produce a
+        // byte-stable result run-to-run (par_iter().collect() preserves
+        // walk order, so symbol/edge counts don't depend on thread timing).
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(
+            &root.join("a.rs"),
+            "pub struct Widget { id: u32 }\npub fn use_widget(w: &Widget) -> u32 { w.id }\n",
+        );
+        write(
+            &root.join("b.py"),
+            "class Service:\n    def run(self):\n        return 1\n",
+        );
+        write(
+            &root.join("c.ts"),
+            "export function handler() { return 1; }\n",
+        );
+        write(
+            &root.join("d.go"),
+            "package x\nfunc Serve() int { return 0 }\n",
+        );
+        write(&root.join("README.md"), "# docs only, unsupported\n"); // skipped_unsupported
+        write(
+            &root.join("big.rs"),
+            &"// pad\n".repeat(MAX_FILE_BYTES / 7 + 100),
+        ); // skipped_too_large
+        std::fs::write(root.join("raw.rs"), [0xff_u8, 0xfe, 0x00, 0x9f]).unwrap(); // non-utf8 -> unreadable
+
+        let store = Store::open(&root.join("idx.db")).unwrap();
+        let stats = full_index(root, &store).unwrap();
+
+        assert_eq!(stats.files_indexed, 4, "stats: {stats:?}");
+        assert_eq!(stats.skipped_too_large, 1, "stats: {stats:?}");
+        assert!(stats.skipped_unsupported >= 1, "stats: {stats:?}");
+        assert_eq!(stats.skipped_unreadable, 1, "non-utf8 file: {stats:?}");
+
+        // Cross-language symbols all landed.
+        for name in ["Widget", "Service", "handler", "Serve"] {
+            assert_eq!(
+                store.find_by_name(name).unwrap().len(),
+                1,
+                "missing {name} after parallel index"
+            );
+        }
+
+        // Determinism: a second full rebuild yields identical counts.
+        let stats2 = full_index(root, &store).unwrap();
+        assert_eq!(stats.files_indexed, stats2.files_indexed);
+        assert_eq!(
+            stats.symbols, stats2.symbols,
+            "symbol count not stable across rebuilds"
+        );
+        assert_eq!(
+            stats.edges, stats2.edges,
+            "edge count not stable across rebuilds"
+        );
+    }
+
     fn fresh_repo_with(files: &[(&str, &str)]) -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();

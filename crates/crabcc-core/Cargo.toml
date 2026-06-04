@@ -22,13 +22,6 @@ compress = ["dep:fsst-rs"]
 # justifies the dep cost in the default build. Mirrored as the
 # `markdown` feature on `crabcc-memory`.
 markdown = ["dep:markdown"]
-# Issue #109 — gates the BullMQ-backed jobs module (`pub mod jobs`).
-# Pulls in tokio + redis. Default OFF; the CLI / MCP / viz surfaces
-# stay sync. Enabled by the future apps/jobs-worker integration and
-# by the `crabcc jobs ...` subcommand once it lands. Issue #112's
-# methodology recommendation: tokio enters the workspace ONLY through
-# this feature, never workspace-wide.
-jobs = ["dep:tokio", "dep:redis"]
 # Issue #161 — gates the testcontainers-rs e2e suite for
 # `service_discovery`. Default OFF; spinning up Docker containers on
 # every `cargo test` would defeat fast unit-test feedback. Run with
@@ -44,6 +37,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 ignore = { workspace = true }
 memchr = { workspace = true }
+rayon = { workspace = true }
 tantivy = { workspace = true }
 tree-sitter = { workspace = true }
 tree-sitter-typescript = { workspace = true }
@@ -60,17 +54,11 @@ ast-grep-language = { workspace = true }
 sha2 = { workspace = true }
 tracing = { workspace = true }
 notify-debouncer-mini = { workspace = true }
-rayon = { workspace = true }
 atty = { workspace = true }
 bumpalo = { workspace = true }
 serde_yml = { workspace = true }
 fsst-rs = { workspace = true, optional = true }
 markdown = { workspace = true, optional = true }
-# Issue #109 — gated by the `jobs` feature. tokio + redis are async by
-# nature; everything else in this crate stays sync. The jobs module
-# spawns its own runtime when invoked from sync callers (CLI).
-tokio = { workspace = true, optional = true }
-redis = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
