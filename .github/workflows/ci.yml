@@ -68,8 +68,12 @@ jobs:
           USE="$(root_pct)"
           if [ "${USE:-0}" -ge 75 ]; then
             echo "::warning::root fs at ${USE}% before job — running emergency Docker prune"
-            docker system prune -af 2>/dev/null || true
-            docker builder prune -af 2>/dev/null || true
+            # Use an age filter (2h) rather than -af so a sibling job's images
+            # (built on the same host by the other runner service) are not
+            # deleted before a later step in that job can use them.
+            docker container prune -f 2>/dev/null || true
+            docker image prune -af --filter "until=2h" 2>/dev/null || true
+            docker builder prune -af --filter "until=2h" 2>/dev/null || true
             sudo apt-get clean 2>/dev/null || true
             sudo journalctl --vacuum-time=1d 2>/dev/null || true
             USE="$(root_pct)"
@@ -102,8 +106,12 @@ jobs:
           USE="$(root_pct)"
           if [ "${USE:-0}" -ge 75 ]; then
             echo "::warning::root fs at ${USE}% before job — running emergency Docker prune"
-            docker system prune -af 2>/dev/null || true
-            docker builder prune -af 2>/dev/null || true
+            # Use an age filter (2h) rather than -af so a sibling job's images
+            # (built on the same host by the other runner service) are not
+            # deleted before a later step in that job can use them.
+            docker container prune -f 2>/dev/null || true
+            docker image prune -af --filter "until=2h" 2>/dev/null || true
+            docker builder prune -af --filter "until=2h" 2>/dev/null || true
             sudo apt-get clean 2>/dev/null || true
             sudo journalctl --vacuum-time=1d 2>/dev/null || true
             USE="$(root_pct)"
@@ -234,8 +242,12 @@ jobs:
           USE="$(root_pct)"
           if [ "${USE:-0}" -ge 75 ]; then
             echo "::warning::root fs at ${USE}% before job — running emergency Docker prune"
-            docker system prune -af 2>/dev/null || true
-            docker builder prune -af 2>/dev/null || true
+            # Use an age filter (2h) rather than -af so a sibling job's images
+            # (built on the same host by the other runner service) are not
+            # deleted before a later step in that job can use them.
+            docker container prune -f 2>/dev/null || true
+            docker image prune -af --filter "until=2h" 2>/dev/null || true
+            docker builder prune -af --filter "until=2h" 2>/dev/null || true
             sudo apt-get clean 2>/dev/null || true
             sudo journalctl --vacuum-time=1d 2>/dev/null || true
             USE="$(root_pct)"

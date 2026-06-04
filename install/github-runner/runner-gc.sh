@@ -87,13 +87,20 @@ prune_docker() {
 prune_docker "$DEEP"
 
 # Auto-escalation: if root fs is still ≥80% after a normal prune, escalate
-# to deep immediately so the runner doesn't take the next job half-full.
+# to deep — but only when the runner is idle.  docker system prune -af
+# removes ALL unused images and build cache regardless of age; an image
+# built earlier in an active job but not yet attached to a container is
+# eligible, so a later step's `docker run` can fail.
 # Skipped when --deep was already passed (prune_docker already ran deep).
 if [ "$DEEP" = 0 ]; then
   USE_MID="$(root_pct)"
   if [ -n "${USE_MID:-}" ] && [ "$USE_MID" -ge 80 ]; then
-    log "root fs at ${USE_MID}% after normal Docker prune — auto-escalating to deep"
-    prune_docker 1
+    if runner_busy; then
+      log "root fs at ${USE_MID}% but runner busy — deferring deep Docker prune until idle"
+    else
+      log "root fs at ${USE_MID}% after normal Docker prune — auto-escalating to deep"
+      prune_docker 1
+    fi
   fi
 fi
 
