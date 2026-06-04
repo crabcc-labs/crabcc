@@ -1,0 +1,326 @@
+# Auto-merge bot for crabcc. Sweeps open PRs every 5 minutes (the GH Actions
+# cron floor). Eligibility: open >1h, no activity in the last 5min, not draft,
+# no pending review-requests, not labeled `do-not-automerge`/`wip`.
+#
+# Per-PR decision tree (one action per sweep, then exit -- the next sweep
+# picks the PR up after CI / codex finish their work):
+#
+#   merge          CI green + mergeable + clean
+#                  -> post recap comment, squash-merge to main, delete branch
+#   rebase         branch behind base (mss=BEHIND)
+#                  -> GH update-branch endpoint (merges main into head)
+#   fix            CI failing AND fix-attempt count < 2
+#                  -> dispatch .github/workflows/codex-auto-fix.yml on this PR
+#                     (it pushes a `[codex-fix] ...` commit; CI re-runs;
+#                     next sweep evaluates the result)
+#   bail-attempts  CI failing AND >= 2 `[codex-fix]` commits already
+#                  -> comment explaining, label `needs-manual-attention`,
+#                     Discord. Means the residual issues are presumed
+#                     medium/major bugs requiring human review.
+#   bail-conflict  mergeable=CONFLICTING or mss=DIRTY
+#                  -> comment explaining, label `needs-manual-rebase`,
+#                     Discord. We do not attempt 3-way merges in-bot.
+#   skip           anything else (CI pending, changes requested, etc.)
+#
+# Every non-skip action posts a one-line embed to Discord via
+# DISCORD_WEBHOOK_URL. The Discord ping is the central "what the bot did"
+# trail; the PR comment is the human-readable trail on the PR itself.
+#
+# Secrets / vars (Settings -> Secrets and variables -> Actions):
+#   DISCORD_WEBHOOK_URL  Channel webhook URL. Unset = notifications silently
+#                        skipped (warning logged), not an error.
+#   MERGE_BOT_PAT        Optional PAT with `repo` + admin scope to bypass
+#                        branch protection on merge. Unset = falls back to
+#                        GITHUB_TOKEN, which can only merge if branch
+#                        protection allows.
+#   APERTURE_HOSTNAME    Inherited via codex-auto-fix.yml (the fix path
+#                        delegates to that workflow).
+#
+# Safety hatches:
+#   - Labels `do-not-automerge` / `wip` exclude a PR from the sweep.
+#   - PRs with pending review-requests are skipped (the human is the gate).
+#   - reviewDecision=CHANGES_REQUESTED skips merge.
+#   - Attempts are capped at 2 `[codex-fix]` commits per PR. After that,
+#     the bot bails to manual review with a comment + label.
+#   - `dry_run: true` on workflow_dispatch: decide + Discord only; no
+#     merge, no comment, no codex dispatch, no label edit.
+#   - Sequential loop within one job: two PRs never race for main in the
+#     same sweep.
+
+name: Merge bot
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: 'PR number to act on (blank = scan eligible)'
+        required: false
+        type: string
+      dry_run:
+        description: 'Decide + Discord only; no mutations'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write   # workflow_dispatch on codex-auto-fix.yml
+  checks: read
+
+concurrency:
+  group: merge-bot-${{ github.event.inputs.pr || 'scan' }}
+  cancel-in-progress: false
+
+jobs:
+  bot:
+    name: Sweep + act
+    runs-on: [self-hosted, linux, hetzner]
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      MERGE_TOKEN: ${{ secrets.MERGE_BOT_PAT }}
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      INPUT_PR: ${{ github.event.inputs.pr }}
+      DRY: ${{ github.event.inputs.dry_run }}
+      REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.run_id }}
+      SERVER: ${{ github.server_url }}
+      MAX_FIX_ATTEMPTS: '2'
+    steps:
+      - name: Resolve eligible PRs
+        id: scan
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_PR:-}" ]; then
+            printf '%s\n' "$INPUT_PR" > /tmp/eligible_prs.txt
+          else
+            NOW=$(date -u +%s)
+            one_hour_ago=$(( NOW - 3600 ))
+            five_min_ago=$(( NOW - 300 ))
+            gh pr list --state open --limit 100 \
+              --json number,createdAt,updatedAt,isDraft,labels,reviewRequests \
+              --jq '
+                .[] |
+                select(.isDraft == false) |
+                select((.labels // []) | any(.name == "do-not-automerge" or .name == "wip") | not) |
+                select((.reviewRequests // []) | length == 0) |
+                select((.createdAt | fromdateiso8601) < '"$one_hour_ago"') |
+                select((.updatedAt | fromdateiso8601) < '"$five_min_ago"') |
+                .number
+              ' > /tmp/eligible_prs.txt
+          fi
+          count=$(wc -l < /tmp/eligible_prs.txt | tr -d ' ')
+          echo "eligible count: $count"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+
+      - name: Decide + act per PR
+        if: steps.scan.outputs.count != '0'
+        run: |
+          set -euo pipefail
+
+          # ---------------- helpers ----------------
+          discord_notify() {
+            local pr=$1 decision=$2 reason=$3 title=$4 url=$5 attempt=${6:-}
+            [ -z "${DISCORD_WEBHOOK_URL:-}" ] && { echo "(no webhook) $decision PR #$pr — $reason"; return 0; }
+            local color emoji verb
+            case "$decision" in
+              merge)         color=3066993;  emoji="✅"; verb="merged" ;;
+              rebase)        color=3447003;  emoji="⬆️"; verb="rebased" ;;
+              fix)           color=15844367; emoji="🤖"; verb="dispatched codex-fix on" ;;
+              bail-attempts) color=15158332; emoji="🛑"; verb="bailed after 2 attempts on" ;;
+              bail-conflict) color=15158332; emoji="⚠️"; verb="flagged conflicts on" ;;
+              *)             return 0 ;;
+            esac
+            if [ "${DRY:-false}" = "true" ]; then
+              verb="(dry-run) would have $verb"
+            fi
+            local title_field="$emoji merge-bot $verb PR #$pr"
+            [ -n "$attempt" ] && title_field="$title_field ($attempt)"
+            local payload
+            payload=$(jq -nc \
+              --arg t "$title_field" \
+              --arg d "$title — $reason" \
+              --arg u "$url" \
+              --arg f "$REPO · run $RUN_ID · $SERVER/$REPO/actions/runs/$RUN_ID" \
+              --argjson c "$color" \
+              '{
+                username: "crabcc merge-bot",
+                embeds: [{
+                  title: $t,
+                  url: $u,
+                  description: $d,
+                  color: $c,
+                  footer: { text: $f },
+                  timestamp: (now | strftime("%Y-%m-%dT%H:%M:%SZ"))
+                }]
+              }')
+            curl -fsS -X POST -H 'Content-Type: application/json' \
+              -d "$payload" "$DISCORD_WEBHOOK_URL" \
+              || echo "::warning::Discord webhook failed for PR #$pr"
+          }
+
+          act_merge() {
+            local pr=$1 fix_count=$2
+            local recap
+            if [ "$fix_count" -gt 0 ]; then
+              recap="merge-bot merging — CI green after $fix_count auto-fix attempt(s)."
+            else
+              recap="merge-bot merging — CI green on first pass, no auto-fix needed."
+            fi
+            gh pr comment "$pr" --body "$recap" || true
+            local tok=${MERGE_TOKEN:-$GH_TOKEN}
+            GH_TOKEN=$tok gh pr merge "$pr" --squash --delete-branch --admin 2>/tmp/merge.err \
+              || GH_TOKEN=$tok gh pr merge "$pr" --squash --delete-branch 2>>/tmp/merge.err \
+              || { echo "::warning::merge failed for PR #$pr"; cat /tmp/merge.err; return 1; }
+          }
+
+          act_rebase() {
+            local pr=$1 head_sha=$2
+            gh api -X PUT \
+              "/repos/$REPO/pulls/$pr/update-branch" \
+              -f expected_head_sha="$head_sha" 2>/tmp/upd.err \
+              || { echo "::warning::update-branch failed for PR #$pr"; cat /tmp/upd.err; return 1; }
+          }
+
+          act_fix() {
+            local pr=$1 attempt=$2
+            # Dispatch codex-auto-fix.yml directly -- avoids a noisy @codex-fix
+            # comment and lets the workflow's own queueing handle codex's
+            # runtime. codex-auto-fix.yml writes the `[codex-fix] ...` commit
+            # that our attempt counter keys off.
+            gh workflow run codex-auto-fix.yml \
+              -f pr="$pr" 2>/tmp/wf.err \
+              || { echo "::warning::codex-auto-fix dispatch failed for PR #$pr"; cat /tmp/wf.err; return 1; }
+            # Leave a minimal trail on the PR so reviewers see the loop.
+            gh pr comment "$pr" --body "merge-bot: dispatched codex auto-fix (attempt $attempt of $MAX_FIX_ATTEMPTS). Watching for the next CI cycle." || true
+          }
+
+          act_bail_attempts() {
+            local pr=$1 fix_count=$2
+            gh pr edit "$pr" --add-label "needs-manual-attention" 2>/dev/null || true
+            local body
+            body=$(cat <<'EOF'
+          merge-bot: bailing after __MAX_ATTEMPTS__ auto-fix attempts. CI is still red, so the residual issues are presumed medium/major bugs that need human review.
+
+          - Label `needs-manual-attention` applied; the bot will not retry while it is present.
+          - Remove the label to re-arm.
+          - Push any commit to reset the auto-fix counter (counted as `[codex-fix]` commits since the PR base).
+          EOF
+          )
+            body=${body//__MAX_ATTEMPTS__/$MAX_FIX_ATTEMPTS}
+            gh pr comment "$pr" --body "$body" || true
+          }
+
+          act_bail_conflict() {
+            local pr=$1
+            gh pr edit "$pr" --add-label "needs-manual-rebase" 2>/dev/null || true
+            gh pr comment "$pr" --body "merge-bot: bailing — merge conflicts with \`main\` that I won't try to auto-resolve. Rebase manually and the bot will pick it back up." || true
+          }
+
+          # ---------------- main loop ----------------
+          while read -r PR; do
+            [ -z "$PR" ] && continue
+            echo
+            echo "================== PR #$PR =================="
+
+            meta=$(gh pr view "$PR" --json \
+              number,state,isDraft,mergeable,mergeStateStatus,headRefName,headRefOid,baseRefName,statusCheckRollup,reviewDecision,labels,title,url 2>/dev/null) \
+              || { echo "fetch failed; skip"; continue; }
+
+            state=$(jq -r '.state' <<<"$meta")
+            mergeable=$(jq -r '.mergeable' <<<"$meta")          # MERGEABLE | CONFLICTING | UNKNOWN
+            mss=$(jq -r '.mergeStateStatus' <<<"$meta")          # CLEAN | DIRTY | BEHIND | BLOCKED | UNSTABLE | HAS_HOOKS | UNKNOWN
+            head_sha=$(jq -r '.headRefOid' <<<"$meta")
+            head_ref=$(jq -r '.headRefName' <<<"$meta")
+            base_ref=$(jq -r '.baseRefName' <<<"$meta")
+            title=$(jq -r '.title' <<<"$meta")
+            url=$(jq -r '.url' <<<"$meta")
+            review=$(jq -r '.reviewDecision // ""' <<<"$meta")
+            labels=$(jq -r '[.labels[].name] | join(",")' <<<"$meta")
+
+            # CI rollup: collapse to SUCCESS / FAILURE / PENDING / NONE
+            rollup=$(jq -r '
+              (.statusCheckRollup // []) |
+              map(.state // .conclusion // "PENDING") |
+              (if length == 0 then "NONE"
+               elif any(. == "FAILURE" or . == "CANCELLED" or . == "TIMED_OUT" or . == "STARTUP_FAILURE") then "FAILURE"
+               elif any(. == "PENDING" or . == "IN_PROGRESS" or . == "QUEUED" or . == null) then "PENDING"
+               else "SUCCESS" end)' <<<"$meta")
+
+            # Attempt counter: `[codex-fix]` commits in the PR diff (head ahead of base).
+            fix_count=$(gh api "/repos/$REPO/compare/$base_ref...$head_sha" \
+              --jq '[.commits[] | select(.commit.message | startswith("[codex-fix]"))] | length' \
+              2>/dev/null || echo 0)
+
+            head_subject=$(gh api "/repos/$REPO/commits/$head_sha" \
+              --jq '.commit.message | split("\n")[0]' 2>/dev/null || echo "")
+
+            echo "state=$state mergeable=$mergeable mss=$mss rollup=$rollup review=$review"
+            echo "fix_count=$fix_count / max=$MAX_FIX_ATTEMPTS"
+            echo "head: $head_sha ($head_ref) -- $head_subject"
+            echo "labels: $labels"
+
+            # ---------------- decision tree ----------------
+            decision=skip
+            reason=""
+            attempt=""
+
+            # Manual-attention label re-arms only when removed.
+            if printf '%s' ",$labels," | grep -q ',needs-manual-attention,'; then
+              decision=skip; reason="labeled needs-manual-attention"
+            elif [ "$state" != "OPEN" ]; then
+              decision=skip; reason="not OPEN ($state)"
+            elif [ "$review" = "CHANGES_REQUESTED" ]; then
+              decision=skip; reason="reviewer requested changes"
+            elif [ "$rollup" = "PENDING" ]; then
+              decision=skip; reason="CI in progress"
+            elif [ "$rollup" = "SUCCESS" ] && [ "$mergeable" = "MERGEABLE" ] && [ "$mss" = "CLEAN" ]; then
+              decision=merge; reason="CI green, branch clean"
+            elif [ "$mss" = "BEHIND" ]; then
+              decision=rebase; reason="branch behind $base_ref"
+            elif [ "$mergeable" = "CONFLICTING" ] || [ "$mss" = "DIRTY" ]; then
+              decision=bail-conflict; reason="merge conflicts with $base_ref"
+            elif [ "$rollup" = "FAILURE" ]; then
+              if [ "$fix_count" -ge "$MAX_FIX_ATTEMPTS" ]; then
+                decision=bail-attempts; reason="CI still red after $fix_count codex-fix attempts"
+              else
+                decision=fix
+                attempt="$((fix_count + 1))/$MAX_FIX_ATTEMPTS"
+                reason="CI red — codex-fix attempt $attempt"
+              fi
+            else
+              decision=skip; reason="no actionable state (mergeable=$mergeable mss=$mss rollup=$rollup)"
+            fi
+
+            echo "DECISION: $decision — $reason"
+            {
+              echo "## PR #$PR — \`$decision\`"
+              echo "- title: $title"
+              echo "- reason: $reason"
+              echo "- mergeable: $mergeable / $mss"
+              echo "- rollup: $rollup"
+              echo "- review: ${review:-NONE}"
+              echo "- fix attempts: $fix_count / $MAX_FIX_ATTEMPTS"
+              echo "- head: \`$head_sha\` — $head_subject"
+              echo "- labels: $labels"
+              echo
+            } >> "$GITHUB_STEP_SUMMARY"
+
+            # ---------------- act ----------------
+            if [ "${DRY:-false}" = "true" ]; then
+              echo "dry_run: skipping act for $decision"
+            else
+              case "$decision" in
+                merge)         act_merge "$PR" "$fix_count" || true ;;
+                rebase)        act_rebase "$PR" "$head_sha" || true ;;
+                fix)           act_fix "$PR" "$attempt" || true ;;
+                bail-attempts) act_bail_attempts "$PR" "$fix_count" || true ;;
+                bail-conflict) act_bail_conflict "$PR" || true ;;
+                skip)          : ;;
+              esac
+            fi
+
+            discord_notify "$PR" "$decision" "$reason" "$title" "$url" "$attempt" || true
+          done < /tmp/eligible_prs.txt
