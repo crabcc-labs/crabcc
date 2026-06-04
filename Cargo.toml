@@ -7,6 +7,11 @@ exclude = [
     # references them. See https://github.com/rust-lang/cargo/issues/9853.
     "crates/crabcc-viz",
     "crates/crabcc-desktop",
+    # editors/zed/crabcc: the Zed extension compiles to wasm32-wasip1 via
+    # zed_extension_api; it must not join the host workspace build. Built by
+    # Zed itself (zed: install dev extension) or `cargo build --target
+    # wasm32-wasip1` inside the crate.
+    "editors/zed/crabcc",
 ]
 members = [
     "crates/crabcc-cli",
