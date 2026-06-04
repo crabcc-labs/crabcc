@@ -199,6 +199,26 @@ else
 fi
 
 # --- 5. register with Zed --------------------------------------------------
+# A dev extension is loaded from its *source directory* on every Zed launch,
+# so that directory has to persist. When we cloned into a tempdir (standalone
+# `curl | bash` mode), the EXIT trap would wipe it out from under the user —
+# so stage a durable copy of editors/zed and point the instructions there.
+# Running from a real checkout keeps pointing at the live tree (so a
+# `git pull` + "rebuild dev extension" picks up changes).
+STAGE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/crabcc/zed-extension"
+EXT_INSTALL_DIR="$EXT_SRC"
+if [ -n "$CLONED_TMP" ]; then
+    mkdir -p "$STAGE_DIR"
+    if command -v rsync >/dev/null 2>&1; then
+        rsync -a --delete --exclude target "$EXT_SRC"/ "$STAGE_DIR"/
+    else
+        rm -rf "$STAGE_DIR"; mkdir -p "$STAGE_DIR"
+        ( cd "$EXT_SRC" && tar --exclude=target -cf - . ) | ( cd "$STAGE_DIR" && tar -xf - )
+    fi
+    EXT_INSTALL_DIR="$STAGE_DIR"
+    ok "staged the extension to a durable path: ${BOLD}$STAGE_DIR${RESET}"
+fi
+
 detect_zed_ext_dir() {
     [ -n "$ZED_EXT_DIR" ] && { printf '%s' "$ZED_EXT_DIR"; return; }
     case "$(uname -s)" in
@@ -215,7 +235,7 @@ ${BOLD}Final step — register the extension in Zed (one action):${RESET}
   1. Open Zed.
   2. Command palette (${BOLD}cmd-shift-p${RESET}) → ${BOLD}zed: install dev extension${RESET}
   3. Select this directory:
-       ${BOLD}$EXT_SRC${RESET}
+       ${BOLD}$EXT_INSTALL_DIR${RESET}
 
 Zed compiles it with its own version-matched toolchain and binds
 ${SERVER_BIN} to Rust / TS / JS / Python / Ruby / Go / Swift / Java / YAML /
