@@ -42,6 +42,7 @@ mod media;
 mod memory;
 mod model_info;
 mod morph;
+mod rag;
 mod read;
 mod rewrite_log;
 mod root_resolver;
@@ -418,6 +419,14 @@ enum Cmd {
         #[command(subcommand)]
         op: MediaOp,
     },
+    /// Symbol-aware code retrieval (RAG) over the index, on the
+    /// crabcc-memory backend (BM25 + sqlite-vec, RRF-fused). `build`
+    /// chunks every indexed symbol; `query` returns the top relevant
+    /// snippets. Complements — never replaces — `lookup sym/refs`.
+    Rag {
+        #[command(subcommand)]
+        op: RagOp,
+    },
     /// Loop detector (lean-ctx integration #5). Surfaces
     /// `(path, session_id)` / `(command, cwd, session_id)` pairs
     /// whose `read_count` / `run_count` cross a threshold (default
@@ -604,6 +613,23 @@ enum LoopOp {
         session_id: Option<String>,
         #[arg(long, default_value_t = crabcc_memory::loop_detect::DEFAULT_THRESHOLD)]
         threshold: i64,
+    },
+}
+
+#[derive(Subcommand)]
+enum RagOp {
+    /// Chunk every indexed symbol into the `code` wing (idempotent).
+    Build {
+        /// Clear existing code chunks first so renamed/deleted symbols
+        /// don't leave stale entries.
+        #[arg(long)]
+        rebuild: bool,
+    },
+    /// Search the code chunks; returns the top relevant snippets as JSON.
+    Query {
+        query: String,
+        #[arg(long, default_value_t = 8)]
+        limit: usize,
     },
 }
 
@@ -1620,6 +1646,10 @@ fn main() -> Result<()> {
                 threshold,
             )?;
         }
+        Cmd::Rag { op } => match op {
+            RagOp::Build { rebuild } => rag::run_build(&root, &store, rebuild)?,
+            RagOp::Query { query, limit } => rag::run_query(&root, &query, limit)?,
+        },
         // All other variants were handled in the early-return block above.
         Cmd::Setup { .. } => unreachable!("setup handled before store init"),
         Cmd::Info { .. } => unreachable!("info handled before store init"),
@@ -2215,6 +2245,7 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::Shell { .. } => "shell",
         Cmd::Morph { .. } => "morph",
         Cmd::Media { .. } => "media",
+        Cmd::Rag { .. } => "rag",
         Cmd::Loop { .. } => "loop",
         Cmd::Backup { .. } => "backup",
         Cmd::Doctor { .. } => "doctor",
