@@ -41,6 +41,7 @@ services:
     networks: [telemetry]
     # Intentionally NO `ports:` — the host publishes nothing. All access is via
     # the cloudflared tunnel below. Do not add a host port mapping.
+    profiles: [telemetry]
 
   cloudflared:
     image: cloudflare/cloudflared:latest
@@ -52,3 +53,7 @@ services:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?set CLOUDFLARE_TUNNEL_TOKEN in .env}
     networks: [telemetry]
     depends_on: [openobserve]
+    # Opt-in flag: the whole telemetry stack only starts under
+    # `--profile telemetry` / `COMPOSE_PROFILES=telemetry`, so it stays OFF by
+    # default even when this compose is loaded alongside a box's other stacks.
+    profiles: [telemetry]

@@ -27,7 +27,11 @@ dev mac / agent containers / CI                 ──OTLP/HTTP (gzip + Bearer)�
 3. In **Cloudflare Zero Trust → Networks → Tunnels**, create a named tunnel,
    copy its token into `.env`, and add a **public hostname** (e.g.
    `telemetry.example.com`) routing to `http://openobserve:5080`.
-4. `docker compose up -d`
+4. **Flag it on:** `docker compose --profile telemetry up -d` (or
+   `COMPOSE_PROFILES=telemetry docker compose up -d`). The stack is gated behind
+   the `telemetry` compose profile, so it stays **off by default** — a plain
+   `docker compose up` (or this file loaded alongside a box's other stacks)
+   starts nothing until the flag is set.
 5. Confirm: open `https://telemetry.example.com` → OpenObserve login. There is
    **no** open port on the box (`ss -tlnp` shows nothing public) — only the
    tunnel's outbound connection.
