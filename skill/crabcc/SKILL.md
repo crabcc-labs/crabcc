@@ -99,6 +99,12 @@ another tool or showing the user a clean list.
 Claude Code on most setups — use them by default. Plain `grep -rn` and `find . -name`
 should be considered deprecated for repo work.
 
+> **Big-file throughput tip:** for `awk` / `sort` / `grep` / `rg` over multi-GB
+> *ASCII* files, prefix `LC_ALL=C` (e.g. `LC_ALL=C awk '{print $1}' huge.log`) —
+> it skips per-character UTF-8 classification for a 2–10× speedup. Drop it when the
+> data is genuinely multibyte: the C locale changes collation, regex character
+> classes (`[[:alpha:]]`), and case folding, so it's only safe for byte/ASCII work.
+
 ## Output shape
 
 All commands print compact JSON to stdout. Symbols include `{name, kind, signature,
