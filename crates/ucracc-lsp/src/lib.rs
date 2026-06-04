@@ -13,5 +13,6 @@ pub mod markdown;
 #[cfg(feature = "rerank")]
 pub mod rerank;
 pub mod server;
+pub mod stats;
 #[cfg(feature = "yaml")]
 pub mod yaml;

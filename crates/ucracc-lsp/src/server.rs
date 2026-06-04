@@ -42,6 +42,8 @@ pub struct Backend {
     pub store: Arc<std::sync::Mutex<Option<Store>>>,
     pub fts: Arc<std::sync::Mutex<Option<Fts>>>,
     pub graph: Arc<std::sync::Mutex<Option<CallGraph>>>,
+    /// Local-only usage/error/perf counters (see stats.rs).
+    pub stats: Arc<crate::stats::Stats>,
 }
 
 fn ensure_store(store: &std::sync::Mutex<Option<Store>>, db_path: &std::path::Path) -> bool {
@@ -99,6 +101,7 @@ impl Backend {
             store: Arc::new(std::sync::Mutex::new(None)),
             fts: Arc::new(std::sync::Mutex::new(None)),
             graph: Arc::new(std::sync::Mutex::new(None)),
+            stats: Arc::new(crate::stats::Stats::new()),
         }
     }
 
@@ -126,6 +129,11 @@ impl Backend {
             },
             ..Default::default()
         }
+    }
+
+    /// Start a per-request timer; records method usage/latency on drop.
+    fn timer(&self, method: &'static str) -> crate::stats::Timer {
+        crate::stats::Timer::start(self.stats.clone(), method)
     }
 }
 
@@ -204,6 +212,7 @@ impl LanguageServer for Backend {
     }
 
     async fn shutdown(&self) -> RpcResult<()> {
+        self.stats.dump_to_home();
         Ok(())
     }
 
@@ -293,6 +302,7 @@ impl LanguageServer for Backend {
         &self,
         p: DocumentSymbolParams,
     ) -> RpcResult<Option<DocumentSymbolResponse>> {
+        let _t = self.timer("document_symbol");
         let cfg = self.root_config.lock().await.clone();
         let rel = match handlers::rel_from_url(&cfg.repo_root, &p.text_document.uri) {
             Some(r) => r,
@@ -321,6 +331,7 @@ impl LanguageServer for Backend {
         &self,
         p: GotoDefinitionParams,
     ) -> RpcResult<Option<GotoDefinitionResponse>> {
+        let _t = self.timer("goto_definition");
         let cfg = self.root_config.lock().await.clone();
         let uri = &p.text_document_position_params.text_document.uri;
         let pos = p.text_document_position_params.position;
@@ -355,6 +366,7 @@ impl LanguageServer for Backend {
     }
 
     async fn references(&self, p: ReferenceParams) -> RpcResult<Option<Vec<Location>>> {
+        let _t = self.timer("references");
         let cfg = self.root_config.lock().await.clone();
         let uri = &p.text_document_position.text_document.uri;
         let pos = p.text_document_position.position;
@@ -410,6 +422,7 @@ impl LanguageServer for Backend {
     }
 
     async fn hover(&self, p: HoverParams) -> RpcResult<Option<Hover>> {
+        let _t = self.timer("hover");
         let cfg = self.root_config.lock().await.clone();
         let uri = &p.text_document_position_params.text_document.uri;
         let pos = p.text_document_position_params.position;
@@ -437,6 +450,7 @@ impl LanguageServer for Backend {
     }
 
     async fn symbol(&self, p: WorkspaceSymbolParams) -> RpcResult<Option<Vec<SymbolInformation>>> {
+        let _t = self.timer("symbol");
         let q = p.query;
         if q.is_empty() {
             return Ok(Some(Vec::new()));
@@ -488,6 +502,7 @@ impl LanguageServer for Backend {
         &self,
         p: CallHierarchyPrepareParams,
     ) -> RpcResult<Option<Vec<CallHierarchyItem>>> {
+        let _t = self.timer("prepare_call_hierarchy");
         let cfg = self.root_config.lock().await.clone();
         let uri = &p.text_document_position_params.text_document.uri;
         let pos = p.text_document_position_params.position;
@@ -513,6 +528,7 @@ impl LanguageServer for Backend {
         &self,
         p: CallHierarchyIncomingCallsParams,
     ) -> RpcResult<Option<Vec<CallHierarchyIncomingCall>>> {
+        let _t = self.timer("incoming_calls");
         let cfg = self.root_config.lock().await.clone();
         let name = p.item.name.clone();
         ensure_store(&self.store, &cfg.db_path);
@@ -529,6 +545,7 @@ impl LanguageServer for Backend {
         &self,
         p: CallHierarchyOutgoingCallsParams,
     ) -> RpcResult<Option<Vec<CallHierarchyOutgoingCall>>> {
+        let _t = self.timer("outgoing_calls");
         let cfg = self.root_config.lock().await.clone();
         let name = p.item.name.clone();
 
@@ -589,8 +606,10 @@ impl LanguageServer for Backend {
         &self,
         p: ExecuteCommandParams,
     ) -> RpcResult<Option<serde_json::Value>> {
+        let mut _t = self.timer("execute_command");
         let cfg = self.root_config.lock().await.clone();
         let out: anyhow::Result<serde_json::Value> = match p.command.as_str() {
+            commands::STATS => Ok(self.stats.snapshot()),
             commands::MEMORY_SEARCH => commands::memory_search(&cfg.repo_root, &p.arguments),
             commands::WEBFETCH => commands::webfetch(&p.arguments),
             commands::RERANK => commands::rerank(&p.arguments),
@@ -599,6 +618,7 @@ impl LanguageServer for Backend {
         match out {
             Ok(v) => Ok(Some(v)),
             Err(e) => {
+                _t.fail();
                 let _ = self
                     .client
                     .log_message(MessageType::ERROR, format!("executeCommand: {e:#}"))
