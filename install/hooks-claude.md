@@ -8,9 +8,26 @@ Reference template for paste-into-`~/.claude/settings.json` integration of crabc
 
 3. **`PreToolUse` (matcher = `Bash`) — gh/GitHub CLI** — intercepts `gh pr/issue/run/release/workflow/api` calls and emits a hint with the equivalent `mcp__github__*` tool. Specifically flags the dispatch+poll chain (`gh workflow run` + `sleep` + `gh run list`) as a known anti-pattern with a race condition on run ID, pointing to `mcp__github__actions_run_trigger + actions_list/actions_get` instead.
 
+## Optional compaction chain: crabcc → RTK → Morph
+
+`crabcc shell rewrite` builds a **gated pipeline**, not a single rewrite, so the engine rewrite composes with two optional stdin-filter stages (no hook JSON change — it's all inside `updatedInput`):
+
+```
+<engine rewrite>  | rtk pipe <filter>     | crabcc morph compact --query Q
+grep→rg/lookup      CRABCC_RTK_PIPE set      MORPH_API_KEY set
+                    + rtk on PATH            (large compact-worthy outputs)
+```
+
+- **Why a pipeline, not three hooks** — multiple PreToolUse hooks each emitting `updatedInput` is undefined; chaining as pipe stages inside one rewritten command is deterministic. Each stage is a passthrough filter when disabled, so the chain never loses output.
+- **[Morph](https://morphllm.com) Compact** (`crabcc morph compact`, `POST /v1/compact`) — query-conditioned, byte-verbatim 50-70% shrink of large output (`cat`/`gh`/`git`/`rg` dumps). **Off unless `MORPH_API_KEY` is set** (privacy gate — code never leaves the machine otherwise). Degrades to full passthrough on no-key / network / parse error. PostToolUse *cannot* replace tool output (it only appends), so compaction must run in the command's own pipeline — hence PreToolUse.
+- **Morph Fast Apply** (`crabcc morph apply --file F --update '<lazy edit>'`, `morph-v3-fast`) — fast lazy-edit merge, delivered as a subcommand (not hooked onto the exact-match Edit tool, which it would interfere with).
+- **Latency** — the hook adds ~18 ms/call (almost all crabcc process spawn; the rewrite logic is sub-ms), +2 ms for grep/find candidates (which open the dev-debug ledger). Passthrough commands do zero SQLite work. Morph adds a network round-trip only on large compact-worthy outputs.
+- **Caching** — the measure/learn ledger (`~/.crabcc/_internal.db`, `rewrite_log`/`rewrite_suppress`, pruned ~2 MB) is separate from the symbol index, the `read` cache, and Claude Code's prompt cache — it touches none of them. Suppression is bounded to a recent 7-day window; measurement matches commands 1:1 by exact string.
+
 ## Verified against
 
 - [Claude Code hooks reference](https://code.claude.com/docs/en/hooks) — last cross-checked 2026-04-30.
+- [Morph Compact](https://docs.morphllm.com/sdk/components/compact) + [Fast Apply](https://docs.morphllm.com/quickstart) API — cross-checked 2026-06-04.
 
 ## Audit deltas (v2.5.x sweep, issue #29)
 
