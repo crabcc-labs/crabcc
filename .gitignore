@@ -1,6 +1,11 @@
 /target
 **/*.rs.bk
 .crabcc/
+
+# Nix: flake build symlinks + nix-direnv cache.
+/result
+/result-*
+.direnv/
 # DMG installer build outputs (scripts/build-dmg.sh)
 /dist/
 /build/
