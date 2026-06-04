@@ -356,13 +356,22 @@ fn walk(
                 line_end,
                 visibility: visibility_for(lang, &node, src),
             });
-            // Descend with this symbol as the new parent.
+            // Descend with this symbol as the new parent. Leaf symbols have no
+            // children, so skip the per-node TreeCursor allocation for them.
+            if node.child_count() == 0 {
+                return;
+            }
             let mut cursor = node.walk();
             for child in node.children(&mut cursor) {
                 walk(child, src, file, lang, Some(&n_owned), out);
             }
             return;
         }
+    }
+    // Leaf nodes (identifiers, punctuation, keywords) dominate the AST and have
+    // no children; skip the per-node TreeCursor allocation for them.
+    if node.child_count() == 0 {
+        return;
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
@@ -733,6 +742,10 @@ fn walk_edges(node: Node, src: &[u8], lang: &str, enclosing: Option<&str>, out: 
         });
     }
 
+    // Leaf nodes have no children; skip the per-node TreeCursor allocation.
+    if node.child_count() == 0 {
+        return;
+    }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         walk_edges(child, src, lang, next, out);
