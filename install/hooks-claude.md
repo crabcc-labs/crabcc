@@ -1,10 +1,12 @@
 # Claude Code hooks — `install/hooks-claude.json`
 
-Reference template for paste-into-`~/.claude/settings.json` integration of crabcc with Claude Code. Two hooks ship by default:
+Reference template for paste-into-`~/.claude/settings.json` integration of crabcc with Claude Code. Three hooks ship by default:
 
 1. **`SessionStart` (matcher = `startup`)** — refresh `.crabcc/index.db` if the repo has been indexed; print a hint to stderr otherwise. Fires only on new session starts (not on `resume`, `clear`, or `compact`).
 
-2. **`PreToolUse` (matcher = `Bash`)** — when the agent is about to shell out, peek at the bash command and, if it looks like a symbol lookup via `rg`/`grep`/`find -name`, nudge it toward `crabcc sym/refs/callers` via stderr. Non-blocking (`exit 0` always); the agent gets the hint as transcript context.
+2. **`PreToolUse` (matcher = `Bash`) — symbol search** — when the agent is about to shell out, peek at the bash command and, if it looks like a symbol lookup via `rg`/`grep`/`find -name`, nudge it toward `crabcc sym/refs/callers` via stderr. Non-blocking (`exit 0` always); the agent gets the hint as transcript context.
+
+3. **`PreToolUse` (matcher = `Bash`) — gh/GitHub CLI** — intercepts `gh pr/issue/run/release/workflow/api` calls and emits a hint with the equivalent `mcp__github__*` tool. Specifically flags the dispatch+poll chain (`gh workflow run` + `sleep` + `gh run list`) as a known anti-pattern with a race condition on run ID, pointing to `mcp__github__actions_run_trigger + actions_list/actions_get` instead.
 
 ## Verified against
 
@@ -72,6 +74,22 @@ Per the [hooks reference](https://code.claude.com/docs/en/hooks#configuration-pr
 3. `<repo>/.claude/settings.local.json`
 
 Our template ships as the global-level snippet (`~/.claude/settings.json` reach). To make it project-only, paste the same JSON into `<repo>/.claude/settings.json` instead — the `SessionStart` refresh will then only run when Claude opens *this* repo. Useful when you have multiple crabcc-indexed repos and want the auto-refresh to be opt-in per project.
+
+## Smoke test — gh hook
+
+After installing hooks, test the gh interception hint:
+
+```bash
+# Dispatch+poll chain should flag the anti-pattern:
+echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"gh workflow run foo.yml && sleep 5 && gh run list --limit 1"}}' | \
+  bash -c 'input=$(cat); cmd=$(echo "$input" | jq -r '"'"'.tool_input.command // ""'"'"'); chain=0; echo "$cmd" | grep -q "gh run list" && echo "$cmd" | grep -q "sleep " && chain=1; [ "$chain" = "1" ] && echo "hint(gh-chain) would fire"'
+# → hint(gh-chain) would fire
+
+# gh pr should suggest pull_request_read:
+echo '{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"gh pr view 123 --json title"}}' | \
+  bash -c 'input=$(cat); cmd=$(echo "$input" | jq -r '"'"'.tool_input.command // ""'"'"'); echo "$cmd" | grep -q "gh pr " && echo "hint(gh: pr) would fire"'
+# → hint(gh: pr) would fire
+```
 
 ## Future hooks (not shipped, considered)
 
