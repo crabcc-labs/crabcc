@@ -142,25 +142,24 @@ pub struct McpConfig {
 ///   CRABCC_OLLAMA_MODEL — overrides `agent.default_model.ollama`
 ///   CRABCC_AGENT_BACKEND — overrides `agent.backend`
 pub fn apply_env_overrides(cfg: &mut Config) {
-    if let Ok(v) = std::env::var("OLLAMA_BASE_URL") {
-        if !v.is_empty() {
-            cfg.ollama.base_url = v;
-        }
+    if let Some(v) = env_nonempty("OLLAMA_BASE_URL") {
+        cfg.ollama.base_url = v;
     }
-    if let Ok(v) = std::env::var("OLLAMA_NUM_CTX") {
-        if let Ok(n) = v.parse::<u32>() {
-            cfg.ollama.num_ctx = n;
-        }
+    if let Some(n) = std::env::var("OLLAMA_NUM_CTX").ok().and_then(|s| s.parse::<u32>().ok()) {
+        cfg.ollama.num_ctx = n;
     }
-    if let Ok(v) = std::env::var("CRABCC_OLLAMA_MODEL") {
-        if !v.is_empty() {
-            cfg.agent.default_model.ollama = v;
-        }
+    if let Some(v) = env_nonempty("CRABCC_OLLAMA_MODEL") {
+        cfg.agent.default_model.ollama = v;
     }
-    if let Ok(v) = std::env::var("CRABCC_AGENT_BACKEND") {
-        if !v.is_empty() {
-            cfg.agent.backend = v;
-        }
+    if let Some(v) = env_nonempty("CRABCC_AGENT_BACKEND") {
+        cfg.agent.backend = v;
+    }
+}
+
+fn env_nonempty(key: &str) -> Option<String> {
+    match std::env::var(key) {
+        Ok(v) if !v.is_empty() => Some(v),
+        _ => None,
     }
 }
 

@@ -59,10 +59,8 @@ impl Codec {
         if samples.is_empty() {
             return Err(anyhow!("Codec::train: empty samples"));
         }
-        // fsst-rs requires `&Vec<&[u8]>` (not `&[&[u8]]`). Stage a Vec from
-        // the slice — zero-copy on the contents themselves.
-        let owned: Vec<&[u8]> = samples.to_vec();
-        let inner = Compressor::train(&owned);
+        // fsst-rs requires `&Vec<&[u8]>` (not `&[&[u8]]`).
+        let inner = Compressor::train(&samples.to_vec());
         Ok(Self { inner })
     }
 
@@ -92,12 +90,10 @@ impl Codec {
 
         let mut sym_buf = vec![0u8; count * 8];
         f.read_exact(&mut sym_buf).context("Codec::load: symbols")?;
-        let mut symbols: Vec<Symbol> = Vec::with_capacity(count);
-        for chunk in sym_buf.chunks_exact(8) {
-            let mut arr = [0u8; 8];
-            arr.copy_from_slice(chunk);
-            symbols.push(Symbol::from_slice(&arr));
-        }
+        let symbols: Vec<Symbol> = sym_buf
+            .chunks_exact(8)
+            .map(|chunk| Symbol::from_slice(chunk.try_into().expect("chunks_exact(8)")))
+            .collect();
 
         let mut lengths = vec![0u8; count];
         f.read_exact(&mut lengths).context("Codec::load: lengths")?;

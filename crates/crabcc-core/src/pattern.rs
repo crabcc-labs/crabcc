@@ -76,11 +76,17 @@ pub fn find_callers(src: &str, lang: SupportLang, name: &str) -> Vec<Hit> {
 fn is_safe_identifier(s: &str) -> bool {
     !s.is_empty()
         && s.chars().all(|c| c.is_alphanumeric() || c == '_')
-        && !s.chars().next().unwrap().is_ascii_digit()
+        && !s.starts_with(|c: char| c.is_ascii_digit())
 }
 
 fn compact_snippet(s: &str) -> String {
-    let one_line: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let one_line = s.split_whitespace().fold(String::new(), |mut acc, w| {
+        if !acc.is_empty() {
+            acc.push(' ');
+        }
+        acc.push_str(w);
+        acc
+    });
     // 80 chars is enough to disambiguate a call site without paying for noise.
     if one_line.len() > 80 {
         format!("{}…", &one_line[..80])

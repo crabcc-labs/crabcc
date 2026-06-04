@@ -283,9 +283,9 @@ fn check_keys() -> CheckResult {
             warnings.push(format!(
                 "~/.crabcc.local.api-key mode is {mode}, expected 400 (chmod 400 to fix)"
             ));
-            status = std::cmp::max_by_key(status, CheckStatus::Warn, |s: &CheckStatus| {
-                matches!(s, CheckStatus::Fail) as u8
-            });
+            if !matches!(status, CheckStatus::Fail) {
+                status = CheckStatus::Warn;
+            }
         }
     }
     if let Some(mode) = env_info.get("mode_octal").and_then(|v| v.as_str()) {
@@ -293,9 +293,9 @@ fn check_keys() -> CheckResult {
             warnings.push(format!(
                 "~/.crabcc/ollama-stack/.env mode is {mode}, expected 600"
             ));
-            status = std::cmp::max_by_key(status, CheckStatus::Warn, |s: &CheckStatus| {
-                matches!(s, CheckStatus::Fail) as u8
-            });
+            if !matches!(status, CheckStatus::Fail) {
+                status = CheckStatus::Warn;
+            }
         }
     }
 
