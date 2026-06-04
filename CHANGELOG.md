@@ -6,6 +6,19 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`crabcc research` — deep-research handoff bridge.** Closes the loop
+  `crabcc init` opens. `crabcc research brief` turns the machine-readable
+  `.crabcc/onboard/research-plan.json` into a ready-to-run brief for the
+  deep-research skill (per-topic queries + the storage contract).
+  `crabcc research ingest --topic <t>` (body from `--file` or stdin) stores a
+  topic's findings into the `research` memory wing (room = topic), so
+  `crabcc enrich "<topic>"` surfaces them. `crabcc research status` shows which
+  plan topics have findings yet — *plan in → findings in a known wing → enrich
+  out*, end to end. Reads only the memory Palace + the onboard plan; no symbol
+  Store needed. The `init` research-plan.md + JSON now point at these commands.
+
 ## [6.1.0] — 2026-06-04
 
 ### Added

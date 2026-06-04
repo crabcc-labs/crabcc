@@ -51,6 +51,7 @@ mod model_info;
 mod morph;
 mod rag;
 mod read;
+mod research_cmd;
 mod rewrite_log;
 mod root_resolver;
 mod run_cmd;
@@ -540,6 +541,15 @@ enum Cmd {
         /// Soft token budget for the returned context (~4 chars/token).
         #[arg(long = "max-tokens", default_value_t = 2000)]
         max_tokens: usize,
+    },
+    /// Drive the deep-research handoff from `crabcc init`'s research plan:
+    /// emit a research brief (`brief`), store findings into the `research`
+    /// memory wing (`ingest`), and track which topics are done (`status`).
+    /// Closes the loop init opens — plan in, findings to a known wing,
+    /// `crabcc enrich` out.
+    Research {
+        #[command(subcommand)]
+        cmd: research_cmd::ResearchCmd,
     },
     /// Token-cheap CSV summaries via qsv (an explicit alternative to `cat`ting
     /// a large CSV into context). Summaries, not the raw rows.
@@ -1487,6 +1497,12 @@ fn main() -> Result<()> {
         return memory::run(&root, sub);
     }
 
+    // `research` reads only the memory Palace + the onboard plan file (like
+    // `memory` / `enrich`); no symbol Store needed.
+    if let Some(Cmd::Research { cmd }) = cli.cmd {
+        return research_cmd::run(&root, cmd);
+    }
+
     // shell group — record is observation-only; rewrite reads the index
     // (read-only) to gate symbol upgrades.
     if let Some(Cmd::Shell { op }) = &cli.cmd {
@@ -1851,6 +1867,7 @@ fn main() -> Result<()> {
         Cmd::Fetch { .. } => unreachable!("fetch handled before store init"),
         Cmd::Crawl { .. } => unreachable!("crawl handled before store init"),
         Cmd::Enrich { .. } => unreachable!("enrich handled before store init"),
+        Cmd::Research { .. } => unreachable!("research handled before store init"),
         Cmd::Csv { .. } => unreachable!("csv handled before store init"),
         Cmd::Squeeze { .. } => unreachable!("squeeze handled before store init"),
         Cmd::Run { .. } => unreachable!("run handled before store init"),
@@ -2477,6 +2494,7 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::Fetch { .. } => "fetch",
         Cmd::Crawl { .. } => "crawl",
         Cmd::Enrich { .. } => "enrich",
+        Cmd::Research { .. } => "research",
         Cmd::Csv { .. } => "csv",
         Cmd::Squeeze { .. } => "squeeze",
         Cmd::Run { .. } => "run",
