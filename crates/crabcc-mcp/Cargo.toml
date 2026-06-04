@@ -30,3 +30,19 @@ criterion = "0.8"
 name = "serve_io"
 harness = false
 required-features = ["bench"]
+
+# Agent->MCP hot-path bench: synthesized claude_code / nullclaw / zeroclaw
+# tool-call workloads driven through the real serve_io dispatch loop.
+# Run via `cargo bench -p crabcc-mcp --features bench --bench agent_workload`.
+[[bench]]
+name = "agent_workload"
+harness = false
+required-features = ["bench"]
+
+# End-to-end counterpart to agent_workload: spawns a real `crabcc --mcp`
+# child and replays a profile over stdio. Gated behind `bench` so
+# `--all-targets` stays clean. Run via
+# `cargo run -p crabcc-mcp --features bench --example agent_replay -- --root <repo>`.
+[[example]]
+name = "agent_replay"
+required-features = ["bench"]
