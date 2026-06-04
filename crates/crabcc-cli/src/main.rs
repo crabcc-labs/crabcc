@@ -37,8 +37,11 @@ mod compress_cmd;
 mod crawl_cmd;
 mod debug_network;
 mod doctor;
+mod edit;
+mod enrich_cmd;
 mod fetch_cmd;
 mod go;
+mod init_cmd;
 mod install;
 mod install_integrations;
 mod media;
@@ -518,7 +521,28 @@ enum Cmd {
         /// untrusted; never crawl authenticated targets through them.
         #[arg(long, value_name = "PROTOCOL")]
         proxify: Option<String>,
+        /// Resume from a persistent on-disk frontier at this path (created
+        /// if absent) so an interrupted crawl picks up where it left off.
+        /// Default is an ephemeral in-memory frontier.
+        #[arg(long, value_name = "PATH")]
+        state: Option<std::path::PathBuf>,
     },
+    /// Token-bounded documentation context from memory (crawler-ingested
+    /// docs). Returns the most-relevant cached concept plus one
+    /// semi-relevant one, trimmed to `--max-tokens`, for prompt
+    /// context-gathering. The assembled context is cached on disk.
+    Enrich {
+        /// What to pull docs for (a concept / library / topic).
+        query: String,
+        /// Soft token budget for the returned context (~4 chars/token).
+        #[arg(long = "max-tokens", default_value_t = 2000)]
+        max_tokens: usize,
+    },
+    /// Onboard onto a fresh codebase: detect the stack from dependency
+    /// manifests, crawl each dependency's docs into memory in the
+    /// background, and write a research plan + codebase overview +
+    /// SessionStart-hook snippet under `.crabcc/onboard/`.
+    Init,
     /// Start the localhost call-graph viewer (issue #64). Binds to 127.0.0.1
     /// by default — pass `--bind 0.0.0.0` only on a trusted LAN; the server
     /// is unauthenticated and exposes architecture.
@@ -563,6 +587,25 @@ enum Cmd {
         /// only drops near-constant lines.
         #[arg(long, default_value_t = 2.5)]
         threshold: f64,
+    },
+    /// AST-targeted edit: rewrite one symbol's exact span via the index, so
+    /// the agent sends just the symbol (FILE#SYMBOL), not the whole file.
+    Edit {
+        /// `FILE#SYMBOL` (e.g. `crates/crabcc-core/src/store.rs#Store::open`).
+        target: String,
+        /// New symbol body / lazy edit. Read from stdin when omitted.
+        #[arg(long)]
+        update: Option<String>,
+        /// Splice the update verbatim as the new symbol body (deterministic).
+        #[arg(long, conflicts_with = "lazy")]
+        replace: bool,
+        /// Merge a lazy edit into the symbol via Morph Fast Apply
+        /// (requires `MORPH_API_KEY`).
+        #[arg(long)]
+        lazy: bool,
+        /// Splice the result into the file in place (default: preview only).
+        #[arg(long)]
+        write: bool,
     },
     /// Audit Claude session logs for token waste.
     Audit {
@@ -1189,6 +1232,7 @@ fn main() -> Result<()> {
         remember,
         format,
         proxify,
+        state,
     }) = cli.cmd.as_ref()
     {
         return crawl_cmd::run(
@@ -1201,7 +1245,20 @@ fn main() -> Result<()> {
             *remember,
             format,
             proxify.as_deref(),
+            state.as_deref(),
         );
+    }
+
+    // `enrich` reads only the memory Palace (like `memory`), so it's handled
+    // before the symbol Store is opened.
+    if let Some(Cmd::Enrich { query, max_tokens }) = cli.cmd.as_ref() {
+        return enrich_cmd::run(&root, query, *max_tokens);
+    }
+
+    // `init` reads dependency manifests + writes onboarding artifacts +
+    // spawns background crawls; no symbol Store needed.
+    if let Some(Cmd::Init) = cli.cmd.as_ref() {
+        return init_cmd::run(&root);
     }
 
     // `serve` boots crabcc-viz; doesn't need the symbol Store opened
@@ -1658,6 +1715,15 @@ fn main() -> Result<()> {
                 threshold,
             )?;
         }
+        Cmd::Edit {
+            target,
+            update,
+            replace,
+            lazy,
+            write,
+        } => {
+            edit::run(&root, &store, &target, update, replace, lazy, write)?;
+        }
         Cmd::Rag { op } => match op {
             RagOp::Build { rebuild } => rag::run_build(&root, &store, rebuild)?,
             RagOp::Query { query, limit } => rag::run_query(&root, &query, limit)?,
@@ -1668,6 +1734,8 @@ fn main() -> Result<()> {
         Cmd::Go => unreachable!("go handled before store init"),
         Cmd::Fetch { .. } => unreachable!("fetch handled before store init"),
         Cmd::Crawl { .. } => unreachable!("crawl handled before store init"),
+        Cmd::Enrich { .. } => unreachable!("enrich handled before store init"),
+        Cmd::Init => unreachable!("init handled before store init"),
         Cmd::Serve { .. } => unreachable!("serve handled before store init"),
         Cmd::Agent { .. } => unreachable!("agent handled before store init"),
         Cmd::Stack { .. } => unreachable!("stack handled before store init"),
@@ -2289,8 +2357,11 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::Go => "go",
         Cmd::Fetch { .. } => "fetch",
         Cmd::Crawl { .. } => "crawl",
+        Cmd::Enrich { .. } => "enrich",
+        Cmd::Init => "init",
         Cmd::Serve { .. } => "serve",
         Cmd::Read { .. } => "read",
+        Cmd::Edit { .. } => "edit",
     }
 }
 

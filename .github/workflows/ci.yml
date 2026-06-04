@@ -52,7 +52,12 @@ env:
 jobs:
   fmt:
     name: fmt
-    runs-on: [self-hosted, linux, hetzner]
+    # gh-runner: Debian/Ubuntu runners only (runner-01, runner-01b).
+    # bench-node (NixOS) lacks apt and has a separate disk budget — it
+    # must never pick up build jobs.  Add the label in GitHub Settings →
+    # Actions → Runners for each eligible runner; jobs queue here until
+    # at least one runner carries it.
+    runs-on: [self-hosted, linux, hetzner, gh-runner]
     env:
       RUSTC_WRAPPER: ""  # override global; cargo fmt never invokes rustc
     steps:
@@ -70,7 +75,7 @@ jobs:
 
   lint:
     name: lint (clippy)
-    runs-on: [self-hosted, linux, hetzner]
+    runs-on: [self-hosted, linux, hetzner, gh-runner]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -184,7 +189,7 @@ jobs:
 
   test:
     name: test (ubuntu, scoped)
-    runs-on: [self-hosted, linux, hetzner]
+    runs-on: [self-hosted, linux, hetzner, gh-runner]
     steps:
       - uses: actions/checkout@v6
         with:
