@@ -24,6 +24,29 @@ busy box, so **Phase B measures serially**, optionally `taskset`-pinned. That
 split is what makes a deep matrix fit in ~1 hour without lying about the
 numbers.
 
+## Fully utilizing the box
+
+`fat` LTO's final link is **largely single-threaded**, so a handful of wide
+builds leaves most cores idle during the link. To actually fill the machine:
+
+1. **One leg per core** — `--jobs` defaults to `min(legs, cores)`, not a small
+   pool. Per-leg `CARGO_BUILD_JOBS` is oversubscribed ~1.5× (`--saturate`,
+   default on) so the parallel dep-codegen bursts soak up the cores the LTO
+   links leave idle.
+2. **Enough legs** — with fewer legs than cores, the LTO phase under-fills no
+   matter how you schedule it. `--deep` (the 28-leg matrix, adds the
+   v2/v3/v4/native target-cpu axis) gives a 32-vCPU box enough independent
+   work to stay full. The harness prints a `⚠ legs < cores` warning when you'd
+   leave the box half-idle.
+3. **sccache** — auto-enabled when on `PATH`. Per-leg target dirs otherwise
+   recompile the whole dependency tree N times; sccache shares cached crate
+   artifacts across legs with matching flags, converting that redundancy into
+   useful throughput. `provision-ovh.sh` installs it and prints `--show-stats`.
+
+Phase B (measurement) is deliberately serial and leaves the box idle — that's
+the price of trustworthy timings. Keep it short by pinning to a few cores
+(`--pin 0-3`); the build phase is where the rented hour is actually spent.
+
 ## Run it locally
 
 ```bash
@@ -60,13 +83,28 @@ exit path** (a `trap` guards against leaving a billable box running).
 
 ```bash
 source ~/ovh-openrc.sh        # OpenStack RC file v3 from Horizon
-FLAVOR=c3-32 ./scripts/bench-opt-bin/provision-ovh.sh
-# --keep to leave the box up, --quick for the 2-leg smoke
+./scripts/bench-opt-bin/provision-ovh.sh         # defaults: c3-64 + --deep
+# FLAVOR=c3-32 ... to downsize, --keep to leave the box up, --quick for smoke
 ```
 
-Sizing: each LTO leg's link phase is largely single-threaded, so concurrency
-≈ `cores / per-leg-jobs`. A **c3-32 (32 vCPU)** runs ~6 legs wide and clears
-the fractional matrix (incl. PGO) inside the hour; c3-16 also fits but tighter.
+### Sizing & cost
+
+OVH `c3` suffix is **RAM in GiB** at 1 vCPU : 2 GiB, so `c3-64` = 32 vCPU. The
+default 28-leg `--deep` matrix is sized to keep all 32 vCPU busy through the
+LTO links. Public-cloud bills per minute and outbound traffic is free (except
+APAC), so a sub-hour run costs a fraction of the hourly rate:
+
+| Flavor | vCPU / RAM | ~On-demand /hr | Notes |
+|---|---|--:|---|
+| `c3-16` | 8 / 16 GiB | ~$0.215 | tight; use the 11-leg fractional matrix |
+| `c3-32` | 16 / 32 GiB | ~$0.431 | fractional matrix fits comfortably |
+| **`c3-64`** | **32 / 64 GiB** | **~$0.850** | **default — runs `--deep` (28 legs) inside ~1h** |
+| `c3-128` | 64 / 128 GiB | ~$1.70 | overkill unless you widen the matrix further |
+
+Rates are OVH on-demand (mid-2026, region-dependent — verify at checkout). A
+`c3-64` run that finishes in ~45 min costs **well under \$1** all-in. The
+`trap` in `provision-ovh.sh` deletes the VM on every exit path, so the
+only real cost risk — a forgotten running box — is guarded.
 
 ## Promoting a winner
 

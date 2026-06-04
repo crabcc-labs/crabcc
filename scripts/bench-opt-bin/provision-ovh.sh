@@ -13,20 +13,25 @@
 # a crashed run never leaves a billable VM running. Pass --keep to override.
 #
 # Knobs (env):
-#   FLAVOR     OVH flavor   (default: c3-32 — 32 vCPU / 64 GB, ~1h sweep box)
+#   FLAVOR     OVH flavor   (default: c3-64 — 32 vCPU / 64 GB, ~$0.85/h)
 #   IMAGE      base image   (default: "Ubuntu 24.04")
 #   KEYPAIR    nova keypair name to inject (default: $USER-bench)
 #   SSH_KEY    private key for SSH        (default: ~/.ssh/id_ed25519)
 #   NETWORK    network to attach          (default: Ext-Net — public IP)
-#   SWEEP_ARGS extra args to sweep.py     (default: empty → full matrix)
+#   SWEEP_ARGS extra args to sweep.py     (default: --deep → 28-leg matrix that
+#              saturates 32 vCPU; pin measurement to cores 0-3)
+#
+# Note OVH `c3` suffix is RAM-GiB at 1 vCPU : 2 GiB, so c3-64 = 32 vCPU / 64 GiB.
+# The 28-leg --deep matrix is sized to keep all 32 vCPU busy through the
+# single-threaded fat-LTO link phase (11 legs would leave the box half-idle).
 set -euo pipefail
 
-FLAVOR="${FLAVOR:-c3-32}"
+FLAVOR="${FLAVOR:-c3-64}"
 IMAGE="${IMAGE:-Ubuntu 24.04}"
 KEYPAIR="${KEYPAIR:-${USER}-bench}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_ed25519}"
 NETWORK="${NETWORK:-Ext-Net}"
-SWEEP_ARGS="${SWEEP_ARGS:-}"
+SWEEP_ARGS="${SWEEP_ARGS:---deep --pin 0-3}"
 KEEP=0
 SERVER_NAME="crabcc-bench-opt-bin-$(date +%s)"
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -105,7 +110,17 @@ if ! command -v cargo >/dev/null; then
 fi
 source "$HOME/.cargo/env"
 rustup component add llvm-tools-preview >/dev/null 2>&1 || true
-echo "toolchain ready: $(rustc --version), bolt=$(command -v llvm-bolt || echo none)"
+# sccache: shares cached crate artifacts across the per-leg target dirs so the
+# matrix doesn't recompile the whole dependency tree N times — turns redundant
+# work into useful throughput on the rented box. Prebuilt binary (cargo install
+# would burn minutes of the hour).
+if ! command -v sccache >/dev/null; then
+  SCV=v0.8.2
+  curl -fsSL "https://github.com/mozilla/sccache/releases/download/${SCV}/sccache-${SCV}-x86_64-unknown-linux-musl.tar.gz" \
+    | tar xz -C /tmp 2>/dev/null \
+    && sudo install "/tmp/sccache-${SCV}-x86_64-unknown-linux-musl/sccache" /usr/local/bin/sccache 2>/dev/null || true
+fi
+echo "toolchain ready: $(rustc --version), bolt=$(command -v llvm-bolt || echo none), sccache=$(command -v sccache || echo none), nproc=$(nproc)"
 BOOTSTRAP
 
 echo ">> syncing repo → $IP"
@@ -114,7 +129,10 @@ rsync -az --delete -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o UserKnownH
   "$REPO_ROOT"/ "ubuntu@$IP:~/crabcc/"
 
 echo ">> running sweep (this is the ~1h part)…"
-$SSH "source ~/.cargo/env && cd ~/crabcc && python3 scripts/bench-opt-bin/sweep.py $SWEEP_ARGS"
+$SSH "source ~/.cargo/env && cd ~/crabcc && \
+  export SCCACHE_DIR=\$HOME/.cache/sccache SCCACHE_CACHE_SIZE=40G && \
+  python3 scripts/bench-opt-bin/sweep.py $SWEEP_ARGS && \
+  (command -v sccache >/dev/null && sccache --show-stats || true)"
 
 echo ">> pulling results back"
 mkdir -p "$REPO_ROOT/bench/results"

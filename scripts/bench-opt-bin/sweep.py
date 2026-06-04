@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import shutil
@@ -110,6 +111,34 @@ def default_matrix() -> list[Leg]:
     return legs
 
 
+def deep_matrix() -> list[Leg]:
+    """A wider matrix (~28 legs) for big boxes — enough independent legs to
+    keep every core busy *through* the single-threaded fat-LTO link phase,
+    where the fractional matrix (11 legs) would leave a 32-vCPU box idle.
+
+    Adds a full target-cpu axis (v2/v3/v4/native) and spreads PGO/BOLT across
+    the strongest cpu×alloc corners."""
+    cpus = ["x86-64-v2", "x86-64-v3", "x86-64-v4", "native"]
+    allocs = ["system", "mimalloc", "jemalloc"]
+    legs: list[Leg] = []
+    # 1. Plain cross of cpu × alloc (12).
+    for cpu in cpus:
+        for alloc in allocs:
+            legs.append(Leg(f"{cpu}-{alloc}", cpu, alloc))
+    # 2. PGO / BOLT / PGO+BOLT on the front-runner corners (v3,native × system,mimalloc) → 12.
+    for cpu in ("x86-64-v3", "native"):
+        for alloc in ("system", "mimalloc"):
+            for pgo, bolt in ((True, False), (False, True), (True, True)):
+                sid = f"{cpu}-{alloc}{'-pgo' if pgo else ''}{'-bolt' if bolt else ''}"
+                legs.append(Leg(sid, cpu, alloc, pgo=pgo, bolt=bolt))
+    # 3. Footprint corners (4).
+    for cpu in ("x86-64-v3", "x86-64-v4"):
+        legs.append(Leg(f"{cpu}-system-optz", cpu, "system", opt_level="z"))
+    legs.append(Leg("v3-system-optz-jemalloc", "x86-64-v3", "jemalloc", opt_level="z"))
+    legs.append(Leg("native-system-optz", "native", "system", opt_level="z"))
+    return legs
+
+
 # ----------------------------------------------------------------------------
 # Tooling preflight
 # ----------------------------------------------------------------------------
@@ -143,9 +172,15 @@ def rustflags(leg: Leg, *, profile_generate: str | None = None,
     if leg.opt_level:
         flags.append(f"-C opt-level={leg.opt_level}")
     if leg.bolt:
-        # BOLT needs relocations preserved + frame pointers for accurate CFG.
+        # BOLT needs relocations preserved + frame pointers for accurate CFG,
+        # AND an unstripped symbol table to read the function inventory.
+        # `release-nightly` inherits `[profile.release] strip = true`, so the
+        # override is mandatory here — without it BOLT can't process the input.
+        # The optimized output is re-stripped in bolt_optimize() so the
+        # footprint axis stays comparable to the (stripped) non-BOLT legs.
         flags.append("-C link-args=-Wl,--emit-relocs")
         flags.append("-C force-frame-pointers=yes")
+        flags.append("-C strip=none")
     if profile_generate:
         flags.append(f"-C profile-generate={profile_generate}")
     if profile_use:
@@ -166,6 +201,14 @@ def cargo_build(leg: Leg, target_dir: Path, env_extra: dict, jobs: int,
     env = {**os.environ, **env_extra,
            "CARGO_TARGET_DIR": str(target_dir),
            "CARGO_BUILD_JOBS": str(jobs)}
+    # Per-leg target dirs isolate differing RUSTFLAGS but otherwise force a
+    # full dependency recompile per leg (~N× redundant work). sccache shares
+    # cached crate artifacts across legs whose flags match (the bulk of the
+    # tree differs only in target-cpu / allocator features), turning that
+    # redundancy back into useful throughput. PGO instrument/use legs embed a
+    # profile path so they simply miss the cache — no harm.
+    if shutil.which("sccache") and "RUSTC_WRAPPER" not in env:
+        env["RUSTC_WRAPPER"] = "sccache"
     log(f"  $ RUSTFLAGS='{env_extra.get('RUSTFLAGS', '')}' {' '.join(cmd)}")
     subprocess.run(cmd, cwd=REPO_ROOT, env=env, check=True,
                    stdout=log.file, stderr=subprocess.STDOUT)
@@ -267,6 +310,13 @@ def bolt_optimize(binary: Path, leg_dir: Path, log) -> Path:
          "-split-functions", "-split-all-cold", "-split-eh", "-icf=1",
          "-dyno-stats"],
         check=True, stdout=log.file, stderr=subprocess.STDOUT)
+    # Re-strip: the non-BOLT legs inherit profile `strip = true`, so strip the
+    # optimized output too or this leg's footprint numbers are inflated by the
+    # symbol table BOLT required as input.
+    stripper = shutil.which("llvm-strip") or shutil.which("strip")
+    if stripper:
+        subprocess.run([stripper, str(optimized)], check=False,
+                       stdout=log.file, stderr=subprocess.STDOUT)
     return optimized
 
 
@@ -434,30 +484,50 @@ def main() -> int:
     ap.add_argument("--out", default=str(REPO_ROOT / "bench" / "results"),
                     help="dir for NDJSON + report (default: bench/results)")
     ap.add_argument("--jobs", type=int, default=0,
-                    help="parallel build legs (default: cores//6, min 1)")
+                    help="parallel build legs (default: saturate — min(legs, cores))")
     ap.add_argument("--runs", type=int, default=8, help="hyperfine runs per leg")
     ap.add_argument("--pin", default=None,
                     help="taskset core spec for measurements, e.g. '0-3'")
     ap.add_argument("--only", default=None,
                     help="comma list of leg ids to run (default: all)")
+    ap.add_argument("--deep", action="store_true",
+                    help="wider ~28-leg matrix (target-cpu axis) — keeps a big "
+                         "box busy through the serial LTO phase")
+    ap.add_argument("--saturate", action="store_true", default=True,
+                    help="oversubscribe per-leg build jobs to fill idle cores "
+                         "during the single-threaded LTO link (default: on)")
+    ap.add_argument("--no-saturate", dest="saturate", action="store_false",
+                    help="size per-leg jobs to exactly cores (no oversubscription)")
     ap.add_argument("--quick", action="store_true",
                     help="smoke: baseline + one mimalloc leg, no PGO/BOLT")
     ap.add_argument("--dry-run", action="store_true", help="print the plan and exit")
     args = ap.parse_args()
 
-    cores = os.cpu_count() or 4
-    jobs = args.jobs if args.jobs > 0 else max(1, cores // 6)
-    per_leg_jobs = max(2, cores // jobs)
-
-    legs = default_matrix()
+    legs = deep_matrix() if args.deep else default_matrix()
     if args.quick:
         legs = [l for l in legs if l.id in ("baseline-v3-system", "v3-mimalloc")]
     if args.only:
         want = set(args.only.split(","))
         legs = [l for l in legs if l.id in want]
 
+    # Saturating job math. Fat-LTO's final link is largely single-threaded, so
+    # to keep every core busy we run ~one leg per core (capped by leg count)
+    # rather than a handful of wide builds. During the parallel dep-codegen
+    # bursts that briefly oversubscribes — harmless and intended; it's what
+    # fills the cores the LTO links leave idle. Deepen the matrix (--deep) when
+    # legs < cores so there's enough independent work to stay full.
+    cores = os.cpu_count() or 4
+    n = len(legs)
+    jobs = args.jobs if args.jobs > 0 else max(1, min(n, cores))
+    oversub = 1.5 if args.saturate else 1.0
+    per_leg_jobs = max(2, math.ceil(cores * oversub / jobs))
+
+    util_note = ("" if n >= cores else
+                 f"  ⚠ {n} legs < {cores} cores: LTO links will under-fill the box; "
+                 "use --deep or a smaller flavor")
     if args.dry_run:
-        print(f"host cores={cores} pool={jobs} per-leg-jobs={per_leg_jobs}")
+        print(f"host cores={cores} legs={n} pool={jobs} per-leg-jobs={per_leg_jobs} "
+              f"saturate={args.saturate}{util_note}")
         for l in legs:
             print(f"  {l.id:24s} cpu={l.target_cpu:10s} alloc={l.alloc:8s} "
                   f"optz={'z' if l.opt_level else '-'} pgo={int(l.pgo)} bolt={int(l.bolt)}")
@@ -470,11 +540,13 @@ def main() -> int:
     bolt_ok = have("llvm-bolt") and have("merge-fdata")
     need_bolt = any(l.bolt for l in legs)
     need_pgo = any(l.pgo for l in legs)
-    print(f"== bench-opt-bin == cores={cores} pool={jobs} per-leg-jobs={per_leg_jobs}")
+    print(f"== bench-opt-bin == cores={cores} legs={n} pool={jobs} "
+          f"per-leg-jobs={per_leg_jobs} saturate={args.saturate}{util_note}")
     print(f"   hyperfine={'ok' if have('hyperfine') else 'MISSING'} "
           f"size={'ok' if have('size') else 'MISSING'} "
           f"llvm-profdata={'ok' if profdata else 'MISSING'} "
-          f"bolt={'ok' if bolt_ok else 'MISSING'}")
+          f"bolt={'ok' if bolt_ok else 'MISSING'} "
+          f"sccache={'ok' if have('sccache') else 'off'}")
     if need_pgo and not profdata:
         print("   ! PGO legs will be skipped (install: rustup component add llvm-tools-preview)")
     if need_bolt and not bolt_ok:
