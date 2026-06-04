@@ -143,54 +143,61 @@ fn build_remote_command(cli: &Cli, interactive: bool) -> Option<String> {
         return None;
     }
 
-    // Item 3: env injection. Prepended as an `export` so it applies to
-    // the whole pipeline, not just the first stage.
-    let mut s = String::new();
-    if !cli.color {
-        s.push_str("export NO_COLOR=1 TERM=dumb CI=1; ");
-    }
+    // Item 3: env injection, prepended as an `export` so it reaches the
+    // user command (and the grouped subshell below) regardless of mode.
+    let env = if cli.color {
+        ""
+    } else {
+        "export NO_COLOR=1 TERM=dumb CI=1; "
+    };
 
     // The payload: either the user's command (verbatim, ssh-style) or a
     // remote `bash -s` that consumes the piped script on stdin.
-    if cli.script.is_some() {
-        s.push_str("bash -s");
+    let base = if cli.script.is_some() {
+        "bash -s".to_string()
     } else {
-        s.push_str(&cli.command.join(" "));
-    }
+        cli.command.join(" ")
+    };
 
     // No filter → the command (or `bash -s`) is the last statement, so
     // ssh already returns its exit status. Hand it over untouched.
     let has_filter = cli.tail.is_some() || cli.grep.is_some() || cli.count;
     if !has_filter {
-        return Some(s);
+        return Some(format!("{env}{base}"));
     }
 
     // Item 2: remote-side filtering pipeline. Order is fixed and
     // documented: merge stderr → grep → tail → count.
+    let mut pipe = String::new();
     if !cli.no_merge {
-        s.push_str(" 2>&1");
+        pipe.push_str(" 2>&1");
     }
     if let Some(pat) = &cli.grep {
-        s.push_str(" | grep -e ");
-        s.push_str(&shell_quote(pat));
+        pipe.push_str(" | grep -e ");
+        pipe.push_str(&shell_quote(pat));
     }
     if let Some(n) = cli.tail {
-        s.push_str(&format!(" | tail -n {n}"));
+        pipe.push_str(&format!(" | tail -n {n}"));
     }
     if cli.count {
-        s.push_str(" | wc -l");
+        pipe.push_str(" | wc -l");
     }
 
-    // A pipeline's exit status is its *last* stage's, which would mask
-    // the user command's result — `tail` always succeeds (hiding a
-    // failed `cargo test`), and `grep` exits 1 on no match (turning a
-    // success into a failure). Re-exit with the first stage's status
-    // (`PIPESTATUS[0]`, the user command) so the advertised
-    // exit-code propagation holds. `PIPESTATUS` is a bashism, so run the
-    // whole thing under `bash -c` rather than trust the remote login
-    // shell.
-    s.push_str("; exit ${PIPESTATUS[0]}");
-    Some(format!("bash -c {}", shell_quote(&s)))
+    // Two wrappers, both required for a correct pipeline:
+    //
+    // * `( base )` groups the *whole* command so the redirection + filter
+    //   apply to all of it. Without the group, `2>&1 | …` binds only to
+    //   the last simple command, so e.g. `make; make test` would let
+    //   `make`'s output bypass the filter and flood back to the agent.
+    //
+    // * `; exit ${PIPESTATUS[0]}` re-exits with the *first* stage's
+    //   status (the grouped command). A pipeline otherwise reports its
+    //   last stage — `tail` always succeeds (hiding a failed command),
+    //   `grep` exits 1 on no match (faking a failure). `PIPESTATUS` is a
+    //   bashism, so run the whole thing under `bash -c` rather than
+    //   trust the remote login shell.
+    let inner = format!("{env}( {base} ){pipe}; exit ${{PIPESTATUS[0]}}");
+    Some(format!("bash -c {}", shell_quote(&inner)))
 }
 
 /// Assemble the full `ssh` argv: optimization flags, multiplexing,
@@ -323,10 +330,21 @@ mod tests {
     fn filter_pipeline_order() {
         let c = cli(&["--grep", "ERROR", "--tail", "5", "--count", "host", "make"]);
         let r = build_remote_command(&c, false).unwrap();
-        // Filtering wraps in `bash -c` and re-exits with the user
-        // command's status so the pipeline doesn't mask it.
+        // Filtering wraps in `bash -c`, groups the command, and re-exits
+        // with the user command's status so the pipeline doesn't mask it.
         assert!(r.starts_with("bash -c "));
-        assert!(r.contains("make 2>&1 | grep -e ERROR | tail -n 5 | wc -l; exit ${PIPESTATUS[0]}"));
+        assert!(
+            r.contains("( make ) 2>&1 | grep -e ERROR | tail -n 5 | wc -l; exit ${PIPESTATUS[0]}")
+        );
+    }
+
+    #[test]
+    fn multi_command_is_grouped_before_filtering() {
+        // A command with control operators must be grouped so the filter
+        // applies to all of it, not just the trailing simple command.
+        let c = cli(&["--tail", "10", "host", "make; make test"]);
+        let r = build_remote_command(&c, false).unwrap();
+        assert!(r.contains("( make; make test ) 2>&1 | tail -n 10"));
     }
 
     #[test]
