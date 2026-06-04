@@ -17,7 +17,8 @@
 //!   cargo bench -p ucracc-lsp --bench fixture_scale -- --test
 
 use crabcc_core::{fts::Fts, store::Store};
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use std::hint::black_box;
 use std::sync::Arc;
 use tempfile::TempDir;
 use tokio::runtime::Runtime;
