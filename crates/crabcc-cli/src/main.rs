@@ -35,6 +35,7 @@ mod backup;
 mod cli_config;
 mod compress_cmd;
 mod crawl_cmd;
+mod csv;
 mod debug_network;
 mod doctor;
 mod edit;
@@ -532,6 +533,12 @@ enum Cmd {
         #[arg(long = "max-tokens", default_value_t = 2000)]
         max_tokens: usize,
     },
+    /// Token-cheap CSV summaries via qsv (an explicit alternative to `cat`ting
+    /// a large CSV into context). Summaries, not the raw rows.
+    Csv {
+        #[command(subcommand)]
+        op: CsvCmd,
+    },
     /// Start the localhost call-graph viewer (issue #64). Binds to 127.0.0.1
     /// by default — pass `--bind 0.0.0.0` only on a trusted LAN; the server
     /// is unauthenticated and exposes architecture.
@@ -656,6 +663,20 @@ enum LoopOp {
         #[arg(long, default_value_t = crabcc_memory::loop_detect::DEFAULT_THRESHOLD)]
         threshold: i64,
     },
+}
+
+#[derive(Subcommand)]
+enum CsvCmd {
+    /// Per-column stats (`qsv stats`): type, min/max, mean, etc.
+    Stats { file: PathBuf },
+    /// `n` random rows (`qsv sample`).
+    Sample {
+        file: PathBuf,
+        #[arg(long, default_value_t = 10)]
+        n: usize,
+    },
+    /// Row count (`qsv count`).
+    Count { file: PathBuf },
 }
 
 #[derive(Subcommand)]
@@ -1242,6 +1263,15 @@ fn main() -> Result<()> {
         return enrich_cmd::run(&root, query, *max_tokens);
     }
 
+    // `csv` only shells out to qsv; no symbol Store needed.
+    if let Some(Cmd::Csv { op }) = cli.cmd.as_ref() {
+        return match op {
+            CsvCmd::Stats { file } => csv::run(csv::CsvOp::Stats, file, 0),
+            CsvCmd::Sample { file, n } => csv::run(csv::CsvOp::Sample, file, *n),
+            CsvCmd::Count { file } => csv::run(csv::CsvOp::Count, file, 0),
+        };
+    }
+
     // `serve` boots crabcc-viz; doesn't need the symbol Store opened
     // here (the viz server lazy-opens its own). Gated behind the `viz`
     // feature so the default install doesn't pull in the dashboard.
@@ -1716,6 +1746,7 @@ fn main() -> Result<()> {
         Cmd::Fetch { .. } => unreachable!("fetch handled before store init"),
         Cmd::Crawl { .. } => unreachable!("crawl handled before store init"),
         Cmd::Enrich { .. } => unreachable!("enrich handled before store init"),
+        Cmd::Csv { .. } => unreachable!("csv handled before store init"),
         Cmd::Serve { .. } => unreachable!("serve handled before store init"),
         Cmd::Agent { .. } => unreachable!("agent handled before store init"),
         Cmd::Stack { .. } => unreachable!("stack handled before store init"),
@@ -2338,6 +2369,7 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::Fetch { .. } => "fetch",
         Cmd::Crawl { .. } => "crawl",
         Cmd::Enrich { .. } => "enrich",
+        Cmd::Csv { .. } => "csv",
         Cmd::Serve { .. } => "serve",
         Cmd::Read { .. } => "read",
         Cmd::Edit { .. } => "edit",
