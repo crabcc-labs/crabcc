@@ -202,7 +202,18 @@ fn render_research_plan(topics: &[Topic]) -> String {
 
 /// A lightweight codebase overview for the SessionStart injection.
 fn render_overview(root: &Path, topics: &[Topic]) -> String {
-    let mut s = String::from("# Codebase onboarding\n\n## Stack\n\n");
+    let mut s = String::from("# Codebase onboarding\n\n");
+
+    if let Some(desc) = std::fs::read_to_string(root.join("README.md"))
+        .ok()
+        .and_then(|t| readme_summary(&t))
+    {
+        s.push_str("## What this is\n\n");
+        s.push_str(&desc);
+        s.push_str("\n\n");
+    }
+
+    s.push_str("## Stack\n\n");
     if topics.is_empty() {
         s.push_str("- _(no dependency manifests detected)_\n");
     } else {
@@ -210,6 +221,17 @@ fn render_overview(root: &Path, topics: &[Topic]) -> String {
             s.push_str(&format!("- {}\n", t.name));
         }
     }
+
+    s.push_str("\n## Entry points\n\n");
+    let eps = entry_points(root);
+    if eps.is_empty() {
+        s.push_str("- _(none detected)_\n");
+    } else {
+        for e in &eps {
+            s.push_str(&format!("- `{e}`\n"));
+        }
+    }
+
     s.push_str("\n## Top-level layout\n\n");
     for entry in top_level_dirs(root) {
         s.push_str(&format!("- `{entry}/`\n"));
@@ -221,6 +243,105 @@ fn render_overview(root: &Path, topics: &[Topic]) -> String {
          background onboarding crawl; re-run as it completes).\n",
     );
     s
+}
+
+/// First descriptive paragraph of a README: skip a leading H1 / badges /
+/// blockquotes / HTML / blank lines, then take the first run of prose lines,
+/// truncated for the overview.
+fn readme_summary(text: &str) -> Option<String> {
+    let mut para = String::new();
+    // True while inside a multi-line HTML block (e.g. a centered <h1>…</h1>
+    // header or <p>…</p> badge block) whose inner text lines don't
+    // themselves start with `<` and would otherwise be mistaken for prose.
+    let mut in_html = false;
+    for line in text.lines() {
+        let t = line.trim();
+        if !para.is_empty() {
+            if t.is_empty() {
+                break; // end of the first paragraph
+            }
+            para.push(' ');
+            para.push_str(t);
+            continue;
+        }
+        // Still scanning for the start of the first prose paragraph.
+        if in_html {
+            // Skip the whole block until it closes or a blank line ends it.
+            if t.is_empty() || t.contains("</") || t.ends_with("/>") {
+                in_html = false;
+            }
+            continue;
+        }
+        if t.is_empty()
+            || t.starts_with('#')
+            || t.starts_with("![")
+            || t.starts_with('[')
+            || t.starts_with('>')
+        {
+            continue;
+        }
+        if t.starts_with('<') {
+            // Enter block-skip mode unless this tag is closed on its own line.
+            if !(t.contains("</") || t.ends_with("/>")) {
+                in_html = true;
+            }
+            continue;
+        }
+        para.push_str(t);
+    }
+    if para.is_empty() {
+        None
+    } else {
+        Some(truncate(&para, 400))
+    }
+}
+
+/// Likely program entry points at conventional locations (cheap, no full
+/// walk): repo-root `src/{main,lib}.rs` + JS index files, plus each
+/// `crates/<name>/src/{main,lib}.rs` in a Cargo workspace.
+fn entry_points(root: &Path) -> Vec<String> {
+    let mut eps = Vec::new();
+    for rel in [
+        "src/main.rs",
+        "src/lib.rs",
+        "src/index.ts",
+        "src/index.js",
+        "index.js",
+    ] {
+        if root.join(rel).is_file() {
+            eps.push(rel.to_string());
+        }
+    }
+    if let Ok(rd) = std::fs::read_dir(root.join("crates")) {
+        let mut names: Vec<String> = rd
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .filter_map(|e| e.file_name().into_string().ok())
+            .collect();
+        names.sort();
+        for c in names {
+            for f in ["main.rs", "lib.rs"] {
+                let rel = format!("crates/{c}/src/{f}");
+                if root.join(&rel).is_file() {
+                    eps.push(rel);
+                }
+            }
+        }
+    }
+    eps.truncate(30);
+    eps
+}
+
+/// Truncate to `max` bytes on a char boundary, appending an ellipsis.
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &s[..end])
 }
 
 /// Visible top-level directory names (skips dotfiles + common noise),
@@ -340,5 +461,44 @@ mod tests {
     fn malformed_manifests_yield_no_topics() {
         assert!(parse_cargo_deps("this is not toml {{{").is_empty());
         assert!(parse_npm_deps("not json").is_empty());
+    }
+
+    #[test]
+    fn readme_summary_skips_chrome_and_takes_first_paragraph() {
+        let md = "# crabcc\n\n![badge](x) [link](y)\n\n> a tagline quote\n\n\
+                  The fast symbol index.\nLine two of the para.\n\nNext paragraph ignored.\n";
+        assert_eq!(
+            readme_summary(md).unwrap(),
+            "The fast symbol index. Line two of the para."
+        );
+        assert!(readme_summary("# only a title\n").is_none());
+    }
+
+    #[test]
+    fn readme_summary_skips_multiline_html_header_block() {
+        // Inner text (`crabcc`) of a multi-line <h1> must not become the
+        // paragraph — the whole block is skipped until it closes.
+        let md = "<h1 align=\"center\">\ncrabcc\n</h1>\n\n\
+                  <p><img src=\"x\"></p>\n\nReal description here.\n";
+        assert_eq!(readme_summary(md).unwrap(), "Real description here.");
+    }
+
+    #[test]
+    fn truncate_adds_ellipsis_on_char_boundary() {
+        assert_eq!(truncate("short", 100), "short");
+        assert_eq!(truncate("héllo", 2), "h…"); // mid 'é' → backs up to 'h'
+    }
+
+    #[test]
+    fn entry_points_finds_root_and_workspace_crates() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("src/lib.rs"), "").unwrap();
+        std::fs::create_dir_all(root.join("crates/foo/src")).unwrap();
+        std::fs::write(root.join("crates/foo/src/main.rs"), "").unwrap();
+        let eps = entry_points(root);
+        assert!(eps.contains(&"src/lib.rs".to_string()));
+        assert!(eps.contains(&"crates/foo/src/main.rs".to_string()));
     }
 }
