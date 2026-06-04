@@ -91,6 +91,14 @@ jobs:
               'if .* \{ Some(' \
               'Replace with `cond.then_some(val)` — bool::then_some is cleaner for Option-producing conditions'
 
+          hit '.map(|t| …).unwrap_or(false)' \
+              '\.map(.*\)\.unwrap_or(false)' \
+              'Replace with `Option::is_some_and(|t| …)` — stable since 1.70, no unwrap needed'
+
+          hit '.unwrap_or(0) on numeric Option/Result' \
+              '\.unwrap_or(0[^.])\|\.unwrap_or(0$)' \
+              'Replace with `.unwrap_or_default()` when 0 is the type default (i64/u64/u32/usize/…)'
+
           {
             if [ "$TOTAL" -eq 0 ]; then
               printf '## ✅ No improvable style patterns in this diff\n'
