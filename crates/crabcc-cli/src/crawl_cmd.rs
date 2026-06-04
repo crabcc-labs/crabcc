@@ -79,6 +79,15 @@ pub fn run(
     } else {
         Frontier::Sqlite(SqliteFrontier::open_in_memory()?)
     };
+
+    // Respect the total --max-pages budget across resumes: a persistent
+    // frontier (--state or Postgres) may already hold archived pages from a
+    // prior run, so charge them against this run's budget. No-op for a
+    // fresh/in-memory frontier (count is 0). Without this, resuming a
+    // 100-page crawl interrupted at 50 would fetch 100 *more*.
+    let already_fetched = rt.block_on(frontier.counts())?.0;
+    opts.max_pages = max_pages.saturating_sub(already_fetched);
+
     let fetcher = match proxify {
         Some(proto) => {
             let protocol: Protocol = proto.parse().map_err(|e: String| anyhow::anyhow!(e))?;
