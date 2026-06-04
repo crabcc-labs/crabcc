@@ -1,0 +1,327 @@
+# Self-hosted Codex CLI auto-fixer driven via Tailscale Aperture (the AI
+# gateway included in our Tailscale Pro sub). Aperture proxies the upstream
+# LLM provider behind the tailnet -- no per-runner API key, identity comes
+# from the Tailscale node. Reference:
+#   https://tailscale.com/docs/aperture/how-to/use-openai-compatible-tools
+#
+# Triggers:
+#   - issue_comment:  body containing `@codex` or `@codex-fix` (PR comments)
+#   - workflow_dispatch:  manual, optional `pr` input (blank = scan open PRs)
+#   - schedule:  every 5 minutes (GitHub Actions cron minimum -- you asked
+#     for 3 min, but native cron can't go lower than 5. To get true 3-min
+#     cadence, replace `schedule:` with an off-platform poker hitting
+#     `repository_dispatch`. The per-PR loop guard makes 5-min scans cheap.)
+#
+# Secrets required (Settings -> Secrets and variables -> Actions):
+#   APERTURE_HOSTNAME    Aperture MagicDNS name on our tailnet (e.g. `aperture`)
+#   TS_OAUTH_CLIENT_ID   Tailscale OAuth client id (skip if runner is already
+#   TS_OAUTH_SECRET      joined to the tailnet; delete the Tailscale step too)
+#   GITHUB_TOKEN         auto-provisioned, no setup needed
+#
+# Per-run behavior:
+#   1. Resolve target PR(s) -- mention/dispatch input/scan of open PRs.
+#   2. Loop guard: skip if HEAD commit subject already begins `[codex-fix]`.
+#   3. Checkout PR head, join tailnet, install Codex CLI, write
+#      `~/.codex/config.toml` pointing at `http://$APERTURE_HOSTNAME/v1`.
+#   4. Run `codex exec` with a structured prompt -- it commits each fix
+#      atomically with `[codex-fix] <subject>` + bot Co-Authored-By trailer.
+#   5. Push commits back to the PR head ref.
+#   6. Post one PR comment summarising commits + skipped items + timestamp
+#      + signature.
+
+name: Codex auto-fix (Aperture)
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: 'PR number (blank = scan all open)'
+        required: false
+        type: string
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  # Per-PR for mention/dispatch; single 'scan' bucket for scheduled sweeps.
+  group: codex-auto-fix-${{ github.event.issue.number || github.event.inputs.pr || 'scan' }}
+  cancel-in-progress: false
+
+jobs:
+  triage:
+    # Gate mention runs: skip bot senders and require @codex / @codex-fix.
+    if: |
+      github.event_name != 'issue_comment' ||
+      (github.event.sender.type != 'Bot' &&
+       github.event.issue.pull_request != null &&
+       (contains(github.event.comment.body, '@codex-fix') ||
+        contains(github.event.comment.body, '@codex')))
+    name: Resolve target PR(s)
+    runs-on: [self-hosted, linux, hetzner]
+    outputs:
+      prs: ${{ steps.resolve.outputs.prs }}
+    steps:
+      - name: Resolve PR list (JSON array)
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVT: ${{ github.event_name }}
+          INPUT_PR: ${{ github.event.inputs.pr }}
+          ISSUE_NUM: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          case "$EVT" in
+            issue_comment)
+              echo "prs=[\"$ISSUE_NUM\"]" >> "$GITHUB_OUTPUT"
+              ;;
+            workflow_dispatch)
+              if [ -n "${INPUT_PR:-}" ]; then
+                echo "prs=[\"$INPUT_PR\"]" >> "$GITHUB_OUTPUT"
+              else
+                prs=$(gh pr list --state open --json number --jq '[.[].number | tostring]')
+                echo "prs=$prs" >> "$GITHUB_OUTPUT"
+              fi
+              ;;
+            schedule)
+              prs=$(gh pr list --state open --json number --jq '[.[].number | tostring]')
+              echo "prs=$prs" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "prs=[]" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+  fix:
+    needs: triage
+    if: needs.triage.outputs.prs != '[]' && needs.triage.outputs.prs != ''
+    name: Codex fix PR #${{ matrix.pr }}
+    runs-on: [self-hosted, linux, hetzner]
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        pr: ${{ fromJSON(needs.triage.outputs.prs) }}
+    steps:
+      - name: Resolve head + loop guard
+        id: meta
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          meta=$(gh pr view ${{ matrix.pr }} \
+            --json headRefName,headRefOid,state,isDraft,headRepositoryOwner,headRepository)
+          state=$(echo "$meta" | jq -r '.state')
+          draft=$(echo "$meta" | jq -r '.isDraft')
+          head_owner=$(echo "$meta" | jq -r '.headRepositoryOwner.login // empty')
+          base_owner='${{ github.repository_owner }}'
+          if [ "$state" != "OPEN" ]; then
+            echo "PR not open ($state); skip"; echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ "$draft" = "true" ]; then
+            echo "PR is draft; skip"; echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -n "$head_owner" ] && [ "$head_owner" != "$base_owner" ]; then
+            echo "PR head is a fork ($head_owner); cannot push back, skip"
+            echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          HEAD_REF=$(echo "$meta" | jq -r '.headRefName')
+          HEAD_SHA=$(echo "$meta" | jq -r '.headRefOid')
+          msg=$(gh api "/repos/${{ github.repository }}/commits/$HEAD_SHA" \
+            --jq '.commit.message | split("\n")[0]')
+          if printf '%s' "$msg" | grep -q '^\[codex-fix\]'; then
+            echo "HEAD already codex-fixed; skip"; echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "head_ref=$HEAD_REF" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Join tailnet
+        if: steps.meta.outputs.skip != 'true'
+        uses: tailscale/github-action@v3
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci-codex
+
+      - name: Checkout PR head
+        if: steps.meta.outputs.skip != 'true'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.meta.outputs.head_ref }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node
+        if: steps.meta.outputs.skip != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Codex CLI
+        if: steps.meta.outputs.skip != 'true'
+        run: npm install -g @openai/codex
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.meta.outputs.skip != 'true'
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.meta.outputs.skip != 'true'
+        with:
+          shared-key: codex-auto-fix
+          save-if: 'false'
+
+      - name: Write Codex config -> Aperture
+        if: steps.meta.outputs.skip != 'true'
+        env:
+          APERTURE_HOSTNAME: ${{ secrets.APERTURE_HOSTNAME }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.codex
+          # http:// is correct per Aperture docs -- the WireGuard tunnel
+          # handles encryption; https:// causes TLS issues.
+          cat > ~/.codex/config.toml <<EOF
+          model = "gpt-5-codex"
+          model_provider = "aperture"
+
+          [model_providers.aperture]
+          name = "Tailscale Aperture"
+          base_url = "http://${APERTURE_HOSTNAME}/v1"
+          env_key = "OPENAI_API_KEY"
+          wire_api = "chat"
+          EOF
+
+      - name: Codex auto-fix
+        if: steps.meta.outputs.skip != 'true'
+        env:
+          # Aperture ignores client-provided keys (identity is Tailscale-based)
+          # but Codex requires the env_key to exist -- any value works.
+          OPENAI_API_KEY: 'aperture-tailnet'
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name 'codex-auto-fix[bot]'
+          git config user.email 'codex-auto-fix@users.noreply.github.com'
+
+          cat > /tmp/codex-prompt.md <<'PROMPT'
+          You are an auto-fix bot working on PR #__PR__ of `crabcc-labs/crabcc`.
+          The PR branch is already checked out. Read `CLAUDE.md` and `AGENTS.md`
+          first so you follow repo conventions.
+
+          GOAL
+          - Find and fix low-risk lint / format issues. Leave everything else
+            for a human.
+
+          STEPS
+          1. Run `cargo fmt --all -- --check`. If it fails, run
+             `cargo fmt --all`, then stage + commit just the formatted files
+             as a single atomic commit (see COMMIT FORMAT below).
+          2. Run `cargo clippy --workspace --all-targets -- -D warnings`.
+             For each warning that has a mechanical fix:
+               - prefer `cargo clippy --fix --allow-dirty --allow-staged
+                 --workspace --all-targets` to apply the machine-applicable
+                 subset, then commit the resulting diff atomically; OR
+               - if the lint requires a manual but obvious rewrite (e.g.
+                 redundant clone, needless borrow), patch it yourself.
+             ONE LOGICAL FIX PER COMMIT. Do not bundle unrelated lints.
+          3. Try `cargo check --workspace --all-targets` after every commit.
+             If it breaks, `git reset --hard HEAD~1` and skip that fix.
+
+          DO NOT TOUCH
+          - `crates/crabcc-memory/schema/` (schema is additive, see CLAUDE.md)
+          - `Cargo.lock` unless dependencies actually changed
+          - Public APIs, business logic, test expectations
+          - Anything beyond format / clippy hygiene
+
+          COMMIT FORMAT (mandatory, the workflow scans for this prefix)
+            Subject: `[codex-fix] <imperative one-line summary>`
+            Body must end with this trailer exactly:
+              Co-Authored-By: codex-auto-fix[bot] <codex-auto-fix@users.noreply.github.com>
+
+          OUTPUT
+          When done, write `/tmp/codex-summary.md` with two markdown sections:
+            ## Fixed
+            - `<short-sha>` <subject>   (one bullet per commit)
+            ## Skipped
+            - <issue> -- <why you didn't fix it>
+          If you fixed nothing, still create the file with empty sections.
+          PROMPT
+          sed -i "s/__PR__/${{ matrix.pr }}/g" /tmp/codex-prompt.md
+
+          # exec = noninteractive single-shot. --full-auto auto-approves the
+          # sandbox tool calls; --skip-git-repo-check disables the
+          # "not a git repo" safety prompt (we just cloned, it's fine).
+          codex exec --full-auto --skip-git-repo-check \
+            "$(cat /tmp/codex-prompt.md)" 2>&1 | tee /tmp/codex-run.log
+
+      - name: Push commits
+        id: push
+        if: steps.meta.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_REF: ${{ steps.meta.outputs.head_ref }}
+        run: |
+          set -euo pipefail
+          git fetch origin "$HEAD_REF" --quiet || true
+          ahead=$(git rev-list --count "origin/$HEAD_REF..HEAD" 2>/dev/null || echo 0)
+          echo "ahead=$ahead" >> "$GITHUB_OUTPUT"
+          if [ "$ahead" = "0" ]; then
+            echo "No new commits to push."; exit 0
+          fi
+          for delay in 0 2 4 8 16; do
+            [ "$delay" -gt 0 ] && sleep "$delay"
+            if git push -u origin "HEAD:$HEAD_REF"; then
+              exit 0
+            fi
+          done
+          echo "push failed after retries"; exit 1
+
+      - name: Summarise + comment on PR
+        if: steps.meta.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_REF: ${{ steps.meta.outputs.head_ref }}
+          AHEAD: ${{ steps.push.outputs.ahead }}
+        run: |
+          set -euo pipefail
+          NOW=$(date -u +'%Y-%m-%dT%H:%M:%SZ')
+
+          if [ "${AHEAD:-0}" = "0" ]; then
+            commits='_(no commits pushed this run)_'
+          else
+            commits=$(git log \
+              --pretty='format:- `%h` %s' \
+              --grep='^\[codex-fix\]' \
+              "HEAD~${AHEAD}..HEAD" 2>/dev/null || echo '_(none matched [codex-fix] prefix)_')
+          fi
+
+          if [ -f /tmp/codex-summary.md ]; then
+            report=$(cat /tmp/codex-summary.md)
+          else
+            report='_(no /tmp/codex-summary.md emitted by Codex)_'
+          fi
+
+          {
+            printf '**Codex auto-fix run** -- %s\n\n' "$NOW"
+            printf '**Commits pushed (%s)**\n%s\n\n' "${AHEAD:-0}" "$commits"
+            printf '**Codex report**\n%s\n\n' "$report"
+            printf -- '---\n'
+            printf '_Signed by `codex-auto-fix[bot]` via Tailscale Aperture'
+            printf ' &middot; trigger: `%s`' "${{ github.event_name }}"
+            printf ' &middot; run [#%s](%s/%s/actions/runs/%s)' \
+              "${{ github.run_number }}" \
+              '${{ github.server_url }}' \
+              '${{ github.repository }}' \
+              '${{ github.run_id }}'
+            printf ' &middot; workflow: `.github/workflows/codex-auto-fix.yml`'
+            printf ' &middot; model: `gpt-5-codex`_\n'
+          } > /tmp/codex-comment.md
+
+          gh pr comment ${{ matrix.pr }} --body-file /tmp/codex-comment.md
