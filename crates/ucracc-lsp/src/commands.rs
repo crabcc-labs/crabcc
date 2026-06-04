@@ -61,13 +61,13 @@ pub fn webfetch(args: &[Value]) -> Result<Value> {
     let results = match rt {
         Ok(handle) => {
             let url2 = url.clone();
-            handle.block_on(async move { fetch_and_clean(&[url2], FetchOpts::default()).await })
+            handle.block_on(async move { fetch_and_clean(&[url2], FetchOpts::cli()).await })
         }
         Err(_) => {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()?;
-            rt.block_on(async move { fetch_and_clean(&[url], FetchOpts::default()).await })
+            rt.block_on(async move { fetch_and_clean(&[url], FetchOpts::cli()).await })
         }
     };
     Ok(serde_json::to_value(&results)?)
