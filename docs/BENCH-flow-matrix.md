@@ -37,20 +37,25 @@ env -u MORPH_API_KEY -u OPENROUTER_API_KEY -u MODELS CRABCC_NO_MORPH=1 \
 
 ## Lane 2 — Morph squeeze (deterministic + `MORPH_API_KEY`)
 
-Same deterministic mix, but the flow's Morph stage engages, further squeezing
-the `flow` column. Costs Morph tokens; sends clean-tree repo content to
-`api.morphllm.com`.
+Same deterministic mix with the flow's Morph stage engaged. Costs Morph tokens;
+sends clean-tree repo content to `api.morphllm.com`. Measured on a local run
+(`crabcc` @ `main`, `target/debug/crabcc`, Morph **on**):
 
-> _Pending a keyed run._ Refresh with:
+| profile      | vanilla   | flow (Morph on) | reduction |
+|--------------|-----------|-----------------|-----------|
+| claude_code  |   138,285 |          27,577 |   **−80%** |
+| nullclaw     |   102,161 |           3,036 |   **−97%** |
+| zeroclaw     |   103,381 |           2,929 |   **−97%** |
+
+Morph deepens the engine+RTK flow further where there's prose left to squeeze:
+claude_code **−71% → −80%** and zeroclaw **−95% → −97%** vs the Morph-off lane
+above. nullclaw is already at the floor (its flow output is almost entirely
+symbol-upgrade JSON), so Morph adds nothing there.
+
+> Refresh with:
 > ```bash
 > MORPH_API_KEY=… CRABCC=target/release/crabcc bash scripts/bench-flow-matrix.sh
 > ```
-
-| profile      | flow (Morph off) | flow (Morph on) | extra reduction |
-|--------------|------------------|-----------------|-----------------|
-| claude_code  |           40,189 |             TBD |             TBD |
-| nullclaw     |            3,036 |             TBD |             TBD |
-| zeroclaw     |            4,692 |             TBD |             TBD |
 
 ## Lane 3 — real-tokenizer prompt tokens (`OPENROUTER_API_KEY` + `MODELS`)
 
