@@ -140,6 +140,29 @@ signature is suppressed, so it passes through unchanged next time. True
 pre-exec measurement is impossible (the command hasn't run), so the design is
 estimate-gate up front + real measurement + learning post-exec.
 
+## 8. Vanilla Claude Code vs full crabcc flow (end-to-end)
+
+The whole point, one table: a vanilla agent shelling out raw vs the same
+intent run through the **full flow** (engine rewrite → RTK → Morph,
+auto-engaged from the env). Measured on the crabcc source tree (clean,
+no `target/`); tokens ≈ output bytes / 4.
+
+| Agent task | vanilla | full flow | reduction |
+|---|---:|---:|---:|
+| find symbol (`grep Store` → `lookup refs`) | 88,076 | 1,952 | **−97%** |
+| find refs (`grep Backend` → `lookup refs`) | 4,907 | 185 | **−96%** |
+| list files (`find *.rs` → `rg --files`+rtk) | 1,736 | 507 | **−70%** |
+| read JSON (`cat *.json` → `jq -c`) | 1,149 | 537 | **−53%** |
+| text search (`grep 'pub fn'` → rg+rtk+Morph) | 15,509 | 7,192 | **−53%** |
+| read source (`cat store.rs` → Morph) | 14,790 | 7,752 | **−47%** |
+
+Symbol-aware ops are the standout (−96/−97%: precise refs vs every
+textual hit); raw dumps (source/text/files/JSON) land −47 to −70% via
+gitignore-aware search + RTK + Morph. Tiny outputs (a handful of hits)
+see a small *negative* (~+20 tok) from the provenance header — the chain
+is for volume, not trivia. Numbers are flow-invariant to the underlying
+crab version (the reductions come from the rewrite layer, not the index).
+
 ## 7. Which features benefit AI agents most (measured)
 
 Per-operation token cost vs the naive baseline, on the crabcc repo

@@ -436,9 +436,20 @@ Full results + methodology: [`docs/PERF-648-agent-shell-and-deps.md`](./docs/PER
 - **`read` tool ~19 ms → ~1 ms/call** — schema-ensure once/process + cached
   session-read connection.
 - **Agent-shell protector**: PreToolUse hook rewrites grep/find → `rg` /
-  `crabcc lookup refs`. Symbol upgrades cut **34–98%** of output tokens
-  (precise refs vs every textual match); a PostToolUse measure/learn loop
-  suppresses any rewrite that doesn't actually reduce tokens.
+  `crabcc lookup refs`, optionally chained `| rtk pipe | crabcc morph compact`
+  (RTK + Morph, auto-engaged from env), with a PostToolUse measure/learn loop.
+  **Vanilla vs full flow, per agent task** (crabcc source):
+
+  | task | vanilla | flow | cut |
+  |---|---:|---:|---:|
+  | find symbol | 88,076 | 1,952 | **−97%** |
+  | find refs | 4,907 | 185 | **−96%** |
+  | list files | 1,736 | 507 | **−70%** |
+  | text search | 15,509 | 7,192 | **−53%** |
+  | read JSON | 1,149 | 537 | **−53%** |
+  | read source | 14,790 | 7,752 | **−47%** |
+
+  Full methodology: [`docs/PERF-648`](./docs/PERF-648-agent-shell-and-deps.md).
 - **Allocator: measured tie** (see corrected row above) — jemalloc kept,
   mimalloc reverted.
 
