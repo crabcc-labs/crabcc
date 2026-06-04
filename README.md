@@ -66,7 +66,7 @@ The installer:
 > crabcc to a stable location and run `crabcc install-claude` from
 > inside that clone. `scripts/bootstrap.sh` (below) handles all of
 > this automatically. Full script consolidation tracked in
-> [#501](https://github.com/peterlodri-sec/crabcc/issues/501).
+> [#501](https://github.com/crabcc-labs/crabcc/issues/501).
 
 Knobs (env or `--flag`):
 
@@ -87,7 +87,7 @@ and optionally brings up Docker/Ollama and the macOS LaunchAgent.
 Idempotent — same script for fresh install **and** upgrade.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/peterlodri-sec/crabcc/main/scripts/bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/crabcc-labs/crabcc/main/scripts/bootstrap.sh | bash
 
 # Defaults:
 #   ✓ Docker Desktop + Ollama stack (LiteLLM proxy on :4000)
@@ -309,7 +309,7 @@ Local-first, per-repo memory at `$CRABCC_HOME/repos/<slug>-<hash6>/memory.db`
 (default `$CRABCC_HOME = ~/.crabcc`). Per-repo by design: the slug is the
 repo's basename and `<hash6>` is the first 6 hex chars of
 `sha256(remote.origin.url)` so worktrees of the same repo share one db
-([#484](https://github.com/peterlodri-sec/crabcc/pull/484)). Ships the
+([#484](https://github.com/crabcc-labs/crabcc/pull/484)). Ships the
 full pipeline tracked by [issue #2](../../issues/2):
 
 - **Storage** — `SqliteBackend` with WAL + FSST drawer-body compression
@@ -399,7 +399,7 @@ Honest losses: single-file outline of a small file (where `grep -nE` is already
 trivial) and small directory listings. crabcc returns rich JSON, raw `grep` returns
 just the matching lines — when the question is small, raw wins on bytes.
 
-### v2.10.x perf passes (issue [#112](https://github.com/peterlodri-sec/crabcc/issues/112))
+### v2.10.x perf passes (issue [#112](https://github.com/crabcc-labs/crabcc/issues/112))
 
 | Lever                                            | Where it lives | Measured Δ on hot paths |
 |--------------------------------------------------|----------------|------------------------:|
@@ -605,7 +605,7 @@ bench/                ← raw-CLI A/B benchmark harness + visualize
                        └──────────────────────────────┘
 ```
 
-The CLI is a thin dispatcher: clap parses, the matched arm calls into one of three library crates, and `sonic_rs::to_string` encodes the result. The library crates are independent — `crabcc-mcp` runs the same code paths as the CLI but over JSON-RPC 2.0 instead of argv. `crabcc-memory` is the only crate that touches `memory.db`; symbol-index state (`index.db`, `tantivy/`, `graph.json`, `fsst.symbols`) stays in the repo's `.crabcc/`. Memory was relocated from `<repo>/.crabcc/memory.db` to `$CRABCC_HOME/repos/<slug>-<hash6>/memory.db` in [#484](https://github.com/peterlodri-sec/crabcc/pull/484) so worktrees share one drawer store.
+The CLI is a thin dispatcher: clap parses, the matched arm calls into one of three library crates, and `sonic_rs::to_string` encodes the result. The library crates are independent — `crabcc-mcp` runs the same code paths as the CLI but over JSON-RPC 2.0 instead of argv. `crabcc-memory` is the only crate that touches `memory.db`; symbol-index state (`index.db`, `tantivy/`, `graph.json`, `fsst.symbols`) stays in the repo's `.crabcc/`. Memory was relocated from `<repo>/.crabcc/memory.db` to `$CRABCC_HOME/repos/<slug>-<hash6>/memory.db` in [#484](https://github.com/crabcc-labs/crabcc/pull/484) so worktrees share one drawer store.
 
 ### Per-command mechanics
 
@@ -808,14 +808,14 @@ dropped in v1.0.1 — `cargo install` from source.)
 | SQLite tuning + +14 coverage tests | ✅ shipped (v1.0.0) | — |
 | CI: nextest + JUnit XML artifact | ✅ shipped (v1.0.0) | — |
 | install.sh + brew skeleton | ✅ shipped (v1.0.0) | — |
-| Languages: Go, Python, Rust | ✅ shipped (v1.1.0) | [#4](https://github.com/peterlodri-sec/crabcc/issues/4) |
-| CI optimizations (sccache, smarter cache) | ✅ shipped | [#6](https://github.com/peterlodri-sec/crabcc/issues/6) |
-| FSST string compression | ✅ shipped (v2.0.0) | [#1](https://github.com/peterlodri-sec/crabcc/issues/1) |
-| Edges-at-extract (graph build O(n²)→O(n)) | ✅ shipped (v2.0.0) | [#3](https://github.com/peterlodri-sec/crabcc/issues/3) |
-| `crabcc memory` M0 + M3-light surface | ✅ shipped (v2.0.0) | [#2](https://github.com/peterlodri-sec/crabcc/issues/2) |
+| Languages: Go, Python, Rust | ✅ shipped (v1.1.0) | [#4](https://github.com/crabcc-labs/crabcc/issues/4) |
+| CI optimizations (sccache, smarter cache) | ✅ shipped | [#6](https://github.com/crabcc-labs/crabcc/issues/6) |
+| FSST string compression | ✅ shipped (v2.0.0) | [#1](https://github.com/crabcc-labs/crabcc/issues/1) |
+| Edges-at-extract (graph build O(n²)→O(n)) | ✅ shipped (v2.0.0) | [#3](https://github.com/crabcc-labs/crabcc/issues/3) |
+| `crabcc memory` M0 + M3-light surface | ✅ shipped (v2.0.0) | [#2](https://github.com/crabcc-labs/crabcc/issues/2) |
 | `crabcc upgrade` + shell completions | ✅ shipped (v2.1.0) | — |
-| **Memory: semantic search (M0.5 + M1)** | 🚧 v2.5 sprint 1 | [#2](https://github.com/peterlodri-sec/crabcc/issues/2) |
-| **Distribution: brew tap, mdBook, demos** | 🚧 v2.5 sprint 2 | [#5](https://github.com/peterlodri-sec/crabcc/issues/5) |
+| **Memory: semantic search (M0.5 + M1)** | 🚧 v2.5 sprint 1 | [#2](https://github.com/crabcc-labs/crabcc/issues/2) |
+| **Distribution: brew tap, mdBook, demos** | 🚧 v2.5 sprint 2 | [#5](https://github.com/crabcc-labs/crabcc/issues/5) |
 
 ---
 
