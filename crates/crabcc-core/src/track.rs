@@ -143,15 +143,11 @@ pub fn read_log() -> Result<Vec<Entry>> {
         return Ok(Vec::new());
     }
     let body = fs::read_to_string(&path)?;
-    let mut out = Vec::new();
-    for line in body.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        if let Ok(e) = serde_json::from_str::<Entry>(line) {
-            out.push(e);
-        }
-    }
+    let out = body
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|l| serde_json::from_str::<Entry>(l).ok())
+        .collect();
     Ok(out)
 }
 
@@ -166,10 +162,7 @@ pub fn report() -> Result<Report> {
 
     let mut r = Report::default();
     for e in &entries {
-        let bumps = [&mut r.all_time];
-        for b in bumps {
-            add(b, e);
-        }
+        add(&mut r.all_time, e);
         if e.ts >= day_cutoff {
             add(&mut r.last_24h, e);
         }

@@ -84,21 +84,22 @@ pub fn diff_symbols(file: &str, before: &[Symbol], after: &[Symbol]) -> SymbolDi
     let mut body_moved = Vec::new();
 
     for (name, b) in &before_map {
-        match after_map.get(name) {
+        let name = name.to_string();
+        match after_map.get(name.as_str()) {
             None => removed.push(SymbolChange::Removed {
-                name: (*name).to_string(),
+                name,
                 line_start: b.line_start,
             }),
             Some(a) => {
                 if a.signature != b.signature {
                     sig_changed.push(SymbolChange::SignatureChanged {
-                        name: (*name).to_string(),
+                        name,
                         before: b.signature.clone(),
                         after: a.signature.clone(),
                     });
                 } else if a.line_start != b.line_start {
                     body_moved.push(SymbolChange::BodyMoved {
-                        name: (*name).to_string(),
+                        name,
                         before_line: b.line_start,
                         after_line: a.line_start,
                     });
