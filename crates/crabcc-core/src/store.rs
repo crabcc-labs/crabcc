@@ -198,9 +198,9 @@ impl Store {
     /// we walk the symbol-ID-keyed call graph. Streams the full table — fine
     /// at the workspace sizes we target (max ~20k call edges on this repo).
     pub fn iter_call_edges_resolved(&self) -> Result<Vec<(i64, i64, i64)>> {
-        let mut stmt = self
-            .conn
-            .prepare_cached("SELECT src_symbol_id, dst_symbol_id, line FROM edges WHERE kind = 'call'")?;
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT src_symbol_id, dst_symbol_id, line FROM edges WHERE kind = 'call'",
+        )?;
         let rows = stmt
             .query_map([], |r| {
                 Ok((
@@ -504,7 +504,9 @@ impl Store {
         // our own walker, never untrusted input. The public surface
         // change is binary-compatible for callers that just `.get()`
         // the map; we type-alias-swap rather than wrap.
-        let mut stmt = self.conn.prepare_cached("SELECT path, sha256, mtime FROM files")?;
+        let mut stmt = self
+            .conn
+            .prepare_cached("SELECT path, sha256, mtime FROM files")?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,

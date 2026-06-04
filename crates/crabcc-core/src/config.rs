@@ -145,7 +145,10 @@ pub fn apply_env_overrides(cfg: &mut Config) {
     if let Some(v) = env_nonempty("OLLAMA_BASE_URL") {
         cfg.ollama.base_url = v;
     }
-    if let Some(n) = std::env::var("OLLAMA_NUM_CTX").ok().and_then(|s| s.parse::<u32>().ok()) {
+    if let Some(n) = std::env::var("OLLAMA_NUM_CTX")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+    {
         cfg.ollama.num_ctx = n;
     }
     if let Some(v) = env_nonempty("CRABCC_OLLAMA_MODEL") {

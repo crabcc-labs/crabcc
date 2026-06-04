@@ -69,40 +69,92 @@ pub fn build_report(godfather: &Godfather, crash_id: i64) -> Result<String> {
 
     let mut s = String::new();
     s.push_str("# crabcc crash report\n\n");
-    write!(s, "**Session**: `{}` · **App**: `{}` · **Version**: `{}` · **PID**: `{}`\n\n",
-        session.id, session.app, session.version, session.pid).unwrap();
-    write!(s, "**Crash time** (unix): `{}`  ·  **Exit code**: `{}`  ·  **Signal**: `{}`\n\n",
+    write!(
+        s,
+        "**Session**: `{}` · **App**: `{}` · **Version**: `{}` · **PID**: `{}`\n\n",
+        session.id, session.app, session.version, session.pid
+    )
+    .unwrap();
+    write!(
+        s,
+        "**Crash time** (unix): `{}`  ·  **Exit code**: `{}`  ·  **Signal**: `{}`\n\n",
         ts,
-        exit_code.map(|c| c.to_string()).unwrap_or_else(|| "—".into()),
-        exit_signal.map(|sig| sig.to_string()).unwrap_or_else(|| "—".into()),
-    ).unwrap();
+        exit_code
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "—".into()),
+        exit_signal
+            .map(|sig| sig.to_string())
+            .unwrap_or_else(|| "—".into()),
+    )
+    .unwrap();
 
     s.push_str("## Install\n\n");
-    write!(s, "- **Version**: `{}`\n", install_version.as_deref().unwrap_or("unknown")).unwrap();
-    write!(s, "- **Source**: `{}`\n", install_source.as_deref().unwrap_or("unknown")).unwrap();
-    write!(s, "- **Installed at** (unix): `{}`\n\n", install_time.as_deref().unwrap_or("unknown")).unwrap();
+    write!(
+        s,
+        "- **Version**: `{}`\n",
+        install_version.as_deref().unwrap_or("unknown")
+    )
+    .unwrap();
+    write!(
+        s,
+        "- **Source**: `{}`\n",
+        install_source.as_deref().unwrap_or("unknown")
+    )
+    .unwrap();
+    write!(
+        s,
+        "- **Installed at** (unix): `{}`\n\n",
+        install_time.as_deref().unwrap_or("unknown")
+    )
+    .unwrap();
 
     s.push_str("## Host (PII-clean)\n\n");
     if let Some(h) = host {
-        write!(s, "- **OS**: `{}` `{}` · **arch**: `{}`\n", h.os, h.os_version, h.arch).unwrap();
-        write!(s, "- **CPU**: `{}` cores · **RAM**: `{}` MB\n", h.cpu_count, h.total_memory_mb).unwrap();
-        write!(s, "- **hostname-hash**: `{}` · **machine-id-hash**: `{}`\n\n",
-            h.hostname_hash, h.machine_id_hash).unwrap();
+        write!(
+            s,
+            "- **OS**: `{}` `{}` · **arch**: `{}`\n",
+            h.os, h.os_version, h.arch
+        )
+        .unwrap();
+        write!(
+            s,
+            "- **CPU**: `{}` cores · **RAM**: `{}` MB\n",
+            h.cpu_count, h.total_memory_mb
+        )
+        .unwrap();
+        write!(
+            s,
+            "- **hostname-hash**: `{}` · **machine-id-hash**: `{}`\n\n",
+            h.hostname_hash, h.machine_id_hash
+        )
+        .unwrap();
     } else {
         s.push_str("- (host info not yet recorded)\n\n");
     }
 
     s.push_str("## Resource summary\n\n");
-    write!(s, "- Samples: `{}` · Peak RSS: `{}` MB · Mean CPU: `{:.1}%`\n\n",
-        summary.0, summary.1, summary.2).unwrap();
+    write!(
+        s,
+        "- Samples: `{}` · Peak RSS: `{}` MB · Mean CPU: `{:.1}%`\n\n",
+        summary.0, summary.1, summary.2
+    )
+    .unwrap();
 
     s.push_str("## Recent events (warn+)\n\n");
     if recent_events.is_empty() {
         s.push_str("- (none)\n\n");
     } else {
         for ev in &recent_events {
-            write!(s, "- `{}` `{}` `{}/{}` — {}\n",
-                ev.ts, ev.severity.as_str(), ev.source, ev.category, ev.message).unwrap();
+            write!(
+                s,
+                "- `{}` `{}` `{}/{}` — {}\n",
+                ev.ts,
+                ev.severity.as_str(),
+                ev.source,
+                ev.category,
+                ev.message
+            )
+            .unwrap();
         }
         s.push('\n');
     }

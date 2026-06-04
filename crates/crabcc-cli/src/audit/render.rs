@@ -22,8 +22,12 @@ pub fn render_human(report: &AuditReport) -> String {
             } else {
                 finding.detail.clone()
             };
-            writeln!(output, "{:.<20} {:>10} {:<50}", finding.kind, finding.tokens, detail)
-                .unwrap();
+            writeln!(
+                output,
+                "{:.<20} {:>10} {:<50}",
+                finding.kind, finding.tokens, detail
+            )
+            .unwrap();
         }
     }
 
