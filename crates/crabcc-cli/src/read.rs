@@ -42,8 +42,9 @@ fn effective_session_id(arg: Option<String>) -> Option<String> {
 
 fn repo_label(root: &Path) -> String {
     root.file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| root.to_string_lossy().to_string())
+        .map(|n| n.to_string_lossy())
+        .unwrap_or_else(|| root.to_string_lossy())
+        .into_owned()
 }
 
 #[cfg(test)]

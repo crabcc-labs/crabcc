@@ -201,20 +201,18 @@ fn claude_code_tool_count(root: &Path) -> Option<usize> {
     }
 
     // Pick the most recently modified .jsonl.
-    let latest = std::fs::read_dir(&sessions_dir).ok()?.flatten().fold(
-        None::<(SystemTime, PathBuf)>,
-        |best, entry| {
+    let latest = std::fs::read_dir(&sessions_dir)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
             let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
-                return best;
+                return None;
             }
             let mtime = entry.metadata().and_then(|m| m.modified()).ok()?;
-            match best {
-                Some((b, _)) if b >= mtime => best,
-                _ => Some((mtime, path)),
-            }
-        },
-    )?;
+            Some((mtime, path))
+        })
+        .max_by_key(|(mtime, _)| *mtime)?;
 
     // Tally tool_use events. tail-parse: read whole file (sessions
     // are tiny — a few KB to a few MB) and count occurrences of
