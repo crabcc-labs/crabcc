@@ -38,6 +38,13 @@ const LOCK_STALE_SECS: u64 = 600;
 const WAIT_TIMEOUT: Duration = Duration::from_secs(45);
 const WAIT_POLL: Duration = Duration::from_millis(500);
 
+/// Memory wing the deep-research handoff stores findings into — separate
+/// from crawl docs so research can be queried (and enriched) on its own.
+const RESULT_WING: &str = "research";
+/// How many SessionStart injections to emit before going silent: the
+/// "first few prompts" kickstart, after which onboarding context tapers off.
+const INJECT_LIMIT: u32 = 3;
+
 /// Onboard the repo — **deduped across concurrent agents**.
 ///
 /// Launch N agents at once and exactly one wins an atomic lock and becomes
@@ -118,6 +125,10 @@ fn lead(root: &Path, onboard_dir: &Path) -> Result<()> {
         render_research_plan(&topics),
     )?;
     std::fs::write(
+        onboard_dir.join("research-plan.json"),
+        render_research_plan_json(&topics),
+    )?;
+    std::fs::write(
         onboard_dir.join("overview.md"),
         render_overview(root, &topics),
     )?;
@@ -133,10 +144,33 @@ fn lead(root: &Path, onboard_dir: &Path) -> Result<()> {
         spawned,
     );
     eprintln!(
-        "init: wrote {}/research-plan.md and overview.md",
+        "init: wrote {}/research-plan.{{md,json}} and overview.md",
         onboard_dir.display()
     );
-    eprintln!("\n{}", hook_snippet(root));
+    eprintln!("\n{}", hook_snippet());
+    Ok(())
+}
+
+/// SessionStart-hook entry point (`crabcc init --inject`): emit the
+/// onboarding context for the first [`INJECT_LIMIT`] invocations, then go
+/// silent so it tapers off after the agent is oriented. Cheap — reads the
+/// overview the leader wrote; never crawls, locks, or blocks.
+pub fn run_inject(root: &Path) -> Result<()> {
+    let onboard = root.join(".crabcc").join("onboard");
+    let counter = onboard.join(".injected");
+    let count = std::fs::read_to_string(&counter)
+        .ok()
+        .and_then(|s| s.trim().parse::<u32>().ok())
+        .unwrap_or(0);
+    if count >= INJECT_LIMIT {
+        return Ok(()); // oriented — stay silent
+    }
+    // Only count an injection we actually emitted: if onboarding hasn't
+    // produced the overview yet, stay silent without consuming a slot.
+    if let Ok(text) = std::fs::read_to_string(onboard.join("overview.md")) {
+        print!("{text}");
+        let _ = std::fs::write(&counter, (count + 1).to_string());
+    }
     Ok(())
 }
 
@@ -335,6 +369,53 @@ fn render_research_plan(topics: &[Topic]) -> String {
     s
 }
 
+/// One research task in the machine-readable handoff.
+#[derive(serde::Serialize)]
+struct ResearchTask {
+    topic: String,
+    ecosystem: &'static str,
+    doc_url: String,
+    queries: Vec<String>,
+}
+
+/// The machine-readable research plan the deep-research skill iterates.
+#[derive(serde::Serialize)]
+struct ResearchPlan {
+    /// Where to store findings: `crabcc memory remember --wing <result_wing>
+    /// --room <topic> …`, then retrieve via `crabcc enrich`.
+    result_wing: &'static str,
+    tasks: Vec<ResearchTask>,
+}
+
+/// Render the research plan as JSON — one task per dependency with stable
+/// search queries + the result wing. Pairs with the human research-plan.md;
+/// this is the traceable handoff an agent can drive programmatically.
+fn render_research_plan_json(topics: &[Topic]) -> String {
+    let tasks = topics
+        .iter()
+        .map(|t| ResearchTask {
+            topic: t.name.clone(),
+            ecosystem: match t.ecosystem {
+                Ecosystem::Rust => "rust",
+                Ecosystem::Npm => "npm",
+            },
+            doc_url: doc_url(t),
+            queries: vec![
+                format!(
+                    "{} latest stable release notes and breaking changes",
+                    t.name
+                ),
+                format!("{} common pitfalls and best practices", t.name),
+            ],
+        })
+        .collect();
+    let plan = ResearchPlan {
+        result_wing: RESULT_WING,
+        tasks,
+    };
+    serde_json::to_string_pretty(&plan).unwrap_or_else(|_| "{}".into())
+}
+
 /// A lightweight codebase overview for the SessionStart injection.
 fn render_overview(root: &Path, topics: &[Topic]) -> String {
     let mut s = String::from("# Codebase onboarding\n\n");
@@ -523,14 +604,12 @@ fn spawn_background_crawls(topics: &[&Topic]) -> usize {
 
 /// SessionStart-hook snippet that injects the onboarding overview into the
 /// agent's first prompts (paste into `.claude/settings.json`).
-fn hook_snippet(root: &Path) -> String {
-    let path = root.join(".crabcc").join("onboard").join("overview.md");
-    format!(
-        "To inject this on session start, add to .claude/settings.json:\n\
-         {{\"hooks\":{{\"SessionStart\":[{{\"hooks\":[{{\"type\":\"command\",\
-         \"command\":\"cat {}\"}}]}}]}}}}",
-        path.display()
-    )
+fn hook_snippet() -> String {
+    "To inject onboarding context into your first few prompts, add to \
+     .claude/settings.json:\n\
+     {\"hooks\":{\"SessionStart\":[{\"hooks\":[{\"type\":\"command\",\
+     \"command\":\"crabcc init --inject\"}]}]}}"
+        .to_string()
 }
 
 #[cfg(test)]
@@ -651,6 +730,43 @@ mod tests {
             &dir.path().join("nope"),
             Duration::from_millis(40)
         ));
+    }
+
+    #[test]
+    fn research_plan_json_carries_wing_and_tasks() {
+        let json = render_research_plan_json(&[Topic {
+            name: "serde".into(),
+            ecosystem: Ecosystem::Rust,
+        }]);
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["result_wing"], "research");
+        assert_eq!(v["tasks"][0]["topic"], "serde");
+        assert_eq!(v["tasks"][0]["ecosystem"], "rust");
+        assert!(!v["tasks"][0]["queries"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn inject_emits_first_few_then_taps_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let onboard = dir.path().join(".crabcc").join("onboard");
+        std::fs::create_dir_all(&onboard).unwrap();
+        std::fs::write(onboard.join("overview.md"), "ctx").unwrap();
+        for _ in 0..INJECT_LIMIT + 2 {
+            run_inject(dir.path()).unwrap();
+        }
+        let count: u32 = std::fs::read_to_string(onboard.join(".injected"))
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert_eq!(count, INJECT_LIMIT); // capped — tapered off after first few
+    }
+
+    #[test]
+    fn inject_is_silent_without_an_overview() {
+        let dir = tempfile::tempdir().unwrap();
+        run_inject(dir.path()).unwrap(); // no onboarding artifacts yet
+        assert!(!dir.path().join(".crabcc/onboard/.injected").exists());
     }
 
     #[test]
