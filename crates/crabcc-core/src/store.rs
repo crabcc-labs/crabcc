@@ -200,7 +200,7 @@ impl Store {
     pub fn iter_call_edges_resolved(&self) -> Result<Vec<(i64, i64, i64)>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT src_symbol_id, dst_symbol_id, line FROM edges WHERE kind = 'call'")?;
+            .prepare_cached("SELECT src_symbol_id, dst_symbol_id, line FROM edges WHERE kind = 'call'")?;
         let rows = stmt
             .query_map([], |r| {
                 Ok((
@@ -271,31 +271,33 @@ impl Store {
     }
 
     pub fn upsert_file(&self, path: &str, sha256: &str, mtime: i64, lang: &str) -> Result<i64> {
-        self.conn.execute(
+        // `RETURNING id` (sqlite ≥ 3.35) collapses the old INSERT + SELECT
+        // pair into one round-trip. `last_insert_rowid` doesn't update on
+        // the UPSERT conflict path, which is why the prior code needed the
+        // separate SELECT — RETURNING fires on both INSERT and UPDATE arms.
+        let mut stmt = self.conn.prepare_cached(
             "INSERT INTO files(path, sha256, mtime, lang, indexed_at)
              VALUES (?1, ?2, ?3, ?4, strftime('%s','now'))
              ON CONFLICT(path) DO UPDATE SET sha256=excluded.sha256,
                                              mtime=excluded.mtime,
                                              lang=excluded.lang,
-                                             indexed_at=strftime('%s','now')",
-            params![path, sha256, mtime, lang],
+                                             indexed_at=strftime('%s','now')
+             RETURNING id",
         )?;
-        // last_insert_rowid is NOT updated on the UPSERT conflict path, so
-        // we must look up the id after to handle both insert and update.
-        let id: i64 = self.conn.query_row(
-            "SELECT id FROM files WHERE path = ?1",
-            params![path],
-            |row| row.get(0),
-        )?;
+        let id: i64 = stmt.query_row(params![path, sha256, mtime, lang], |row| row.get(0))?;
         Ok(id)
     }
 
     pub fn replace_symbols(&self, file_id: i64, symbols: &[Symbol]) -> Result<()> {
-        self.conn
-            .execute("DELETE FROM symbols WHERE file_id = ?1", params![file_id])?;
+        // One transaction per file → one fsync per file. `unchecked_transaction`
+        // works on `&Connection` so the public `&self` signature stays stable
+        // for callers holding a `Mutex<Store>`. Single-writer guarantee makes this safe.
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("DELETE FROM symbols WHERE file_id = ?1", params![file_id])?;
         // We always bind `signature_enc` explicitly so the row reflects the
         // encoding actually used (no reliance on the schema DEFAULT).
-        let mut stmt = self.conn.prepare(
+        // `prepare_cached` amortises parse cost across a multi-file reindex.
+        let mut stmt = tx.prepare_cached(
             "INSERT INTO symbols(file_id, name, kind, signature, parent_id, line_start, line_end, visibility, signature_enc)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         )?;
@@ -322,7 +324,7 @@ impl Store {
                         s.visibility,
                         1_i64,
                     ])?;
-                    name_to_id.insert(s.name.clone(), self.conn.last_insert_rowid());
+                    name_to_id.insert(s.name.clone(), tx.last_insert_rowid());
                     continue;
                 }
             }
@@ -338,14 +340,15 @@ impl Store {
                 s.visibility,
                 0_i64,
             ])?;
-            name_to_id.insert(s.name.clone(), self.conn.last_insert_rowid());
+            name_to_id.insert(s.name.clone(), tx.last_insert_rowid());
         }
+        // Drop the INSERT statement before preparing UPDATE so the cached-statement
+        // slots are released sequentially rather than overlapping.
+        drop(stmt);
         // Pass 2: resolve parent_id within the same file. Symbols whose `parent`
         // doesn't match any name we just inserted stay parent_id=NULL (e.g. an
         // impl-block target that isn't itself defined in this file).
-        let mut update = self
-            .conn
-            .prepare("UPDATE symbols SET parent_id = ?1 WHERE id = ?2")?;
+        let mut update = tx.prepare_cached("UPDATE symbols SET parent_id = ?1 WHERE id = ?2")?;
         for s in symbols {
             let parent_name = match s.parent.as_deref() {
                 Some(p) => p,
@@ -359,6 +362,8 @@ impl Store {
                 update.execute(params![*parent_id, child_id])?;
             }
         }
+        drop(update);
+        tx.commit()?;
         Ok(())
     }
 
@@ -376,15 +381,17 @@ impl Store {
     /// where the `src_symbol IS NULL` rows never matched a `callers_of`
     /// lookup because that filter requires a non-null `e.src_symbol`.
     pub fn replace_edges(&self, file_id: i64, edges: &[Edge]) -> Result<()> {
+        // Same transaction-per-file shape as `replace_symbols`.
+        let tx = self.conn.unchecked_transaction()?;
         // `replace_symbols` running before us already cascades the old edges
         // away via FK ON DELETE CASCADE; this DELETE is defensive in case a
         // future caller reverses the order, and is essentially free when the
         // index is empty for this file.
-        self.conn.execute(
+        tx.execute(
             "DELETE FROM edges WHERE src_symbol_id IN (SELECT id FROM symbols WHERE file_id = ?1)",
             params![file_id],
         )?;
-        let mut insert = self.conn.prepare(
+        let mut insert = tx.prepare_cached(
             "INSERT INTO edges(src_symbol_id, dst_symbol_id, kind, line)
              VALUES (?1, ?2, ?3, ?4)",
         )?;
@@ -410,6 +417,8 @@ impl Store {
             };
             insert.execute(params![src_id, dst_id, e.kind, e.line])?;
         }
+        drop(insert);
+        tx.commit()?;
         Ok(())
     }
 
@@ -431,7 +440,7 @@ impl Store {
     /// against the `symbols` table (a single name can be ambiguous across
     /// files), union the sentinel id when present, then JOIN through edges.
     pub fn callers_of(&self, name: &str) -> Result<Vec<EdgeHit>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT f.path, e.line, src.name
              FROM edges e
              JOIN symbols src   ON src.id = e.src_symbol_id
@@ -456,7 +465,7 @@ impl Store {
     /// extraction passes; add them to this filter when the extractor starts
     /// emitting them.
     pub fn refs_of(&self, name: &str) -> Result<Vec<EdgeHit>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT f.path, e.line, src.name
              FROM edges e
              JOIN symbols src   ON src.id = e.src_symbol_id
@@ -481,7 +490,7 @@ impl Store {
         // refresh diffs. Real source paths can't start with '<'.
         let mut stmt = self
             .conn
-            .prepare("SELECT path, lang FROM files WHERE lang != '_unresolved'")?;
+            .prepare_cached("SELECT path, lang FROM files WHERE lang != '_unresolved'")?;
         let rows = stmt.query_map([], |row| {
             Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
@@ -495,7 +504,7 @@ impl Store {
         // our own walker, never untrusted input. The public surface
         // change is binary-compatible for callers that just `.get()`
         // the map; we type-alias-swap rather than wrap.
-        let mut stmt = self.conn.prepare("SELECT path, sha256, mtime FROM files")?;
+        let mut stmt = self.conn.prepare_cached("SELECT path, sha256, mtime FROM files")?;
         let rows = stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
@@ -734,7 +743,7 @@ impl Store {
     }
 
     pub fn iter_all_symbols(&self) -> Result<Vec<Symbol>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             // Exclude sentinel rows — these anchor unresolved-name edges
             // and are never user-meaningful symbols (CRIT-2, round-2 review).
             "SELECT s.name, s.kind, s.signature, p.name AS parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
@@ -759,7 +768,7 @@ impl Store {
     }
 
     pub fn symbols_in_file(&self, file: &str) -> Result<Vec<Symbol>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT s.name, s.kind, s.signature, p.name AS parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
              FROM symbols s
              JOIN files f ON s.file_id = f.id
@@ -783,7 +792,7 @@ impl Store {
     }
 
     pub fn find_by_name(&self, name: &str) -> Result<Vec<Symbol>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare_cached(
             "SELECT s.name, s.kind, s.signature, p.name AS parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
              FROM symbols s
              JOIN files f ON s.file_id = f.id
