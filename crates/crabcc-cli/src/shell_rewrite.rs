@@ -433,11 +433,6 @@ const COMPACTABLE: &[&str] = &[
     "cat", "gh", "git", "rg", "grep", "find", "curl", "jq", "tree",
 ];
 
-/// Min residual size (bytes, ~2k tokens) before the hook pays Morph's
-/// network round-trip. RTK handles smaller outputs locally for free, so
-/// the default chain only escalates to Morph for large residuals.
-const MORPH_MIN_BYTES: usize = 8000;
-
 /// First token of a simple (no-metacharacter) command, if it's worth
 /// piping through a compaction stage.
 fn compactable_program(cmd: &str) -> Option<String> {
@@ -499,7 +494,12 @@ fn header(rw: &Rewrite, saved: usize) -> String {
 /// the Claude Code PreToolUse envelope. Prints nothing when there is no
 /// safe rewrite.
 pub fn run(root: &Path, db: &Path, command: &str, session_id: Option<&str>) -> Result<()> {
+    // Precedence: env disable-flag > .crabcc-cli.conf > built-in default.
     if std::env::var_os("CRABCC_NO_REWRITE").is_some() {
+        return Ok(());
+    }
+    let cfg = crate::cli_config::load(root);
+    if !cfg.rewrite_enabled {
         return Ok(());
     }
 
@@ -576,16 +576,18 @@ pub fn run(root: &Path, db: &Path, command: &str, session_id: Option<&str>) -> R
     let mut stages: Vec<String> = vec![base];
     let mut chain: Vec<&str> = Vec::new();
     if compact_worthy {
-        if let Some(rtk) = rtk_stage(&orig_prog) {
-            stages.push(rtk);
-            chain.push("rtk");
+        if cfg.rtk {
+            if let Some(rtk) = rtk_stage(&orig_prog) {
+                stages.push(rtk);
+                chain.push("rtk");
+            }
         }
-        if morph_enabled() {
+        if cfg.morph && morph_enabled() {
             // RTK already did the bulk, free, local reduction. Only pay
             // Morph's network round-trip when the *residual* output is
             // still large enough for its query-conditioned pass to be
             // worth ~1s (cached on repeat). Keeps the default fast.
-            let mut m = format!("crabcc morph compact --min-bytes {MORPH_MIN_BYTES}");
+            let mut m = format!("crabcc morph compact --min-bytes {}", cfg.morph_min_bytes);
             if let Some(q) = &compact_query {
                 m.push_str(" --query ");
                 m.push_str(&shq(q));
