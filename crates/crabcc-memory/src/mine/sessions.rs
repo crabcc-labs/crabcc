@@ -102,7 +102,7 @@ fn process_file(
                 continue;
             }
         };
-        let role = evt.message.as_ref().map(|m| m.role.as_str()).unwrap_or("");
+        let role = evt.message.as_ref().map(|m| m.role.as_str()).unwrap_or_default();
         let text = evt.message.as_ref().map(|m| m.text()).unwrap_or_default();
         if text.is_empty() {
             report.record_skip();

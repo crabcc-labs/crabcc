@@ -10,6 +10,7 @@
 // shutdown without an explicit channel, and adding one is more
 // machinery than the test value justifies.
 
+use std::fmt::Write as _;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -59,9 +60,9 @@ fn http_request(
 ) -> (u16, String) {
     let mut req = format!("{method} {path} HTTP/1.1\r\nHost: {addr}\r\n");
     for (k, v) in headers {
-        req.push_str(&format!("{k}: {v}\r\n"));
+        write!(req, "{k}: {v}\r\n").unwrap();
     }
-    req.push_str(&format!("Content-Length: {}\r\n", body.len()));
+    write!(req, "Content-Length: {}\r\n", body.len()).unwrap();
     req.push_str("Connection: close\r\n\r\n");
     req.push_str(body);
 
@@ -74,8 +75,8 @@ fn http_request(
     stream.read_to_string(&mut raw).expect("read");
 
     let mut parts = raw.splitn(2, "\r\n\r\n");
-    let head = parts.next().unwrap_or("");
-    let body = parts.next().unwrap_or("").to_string();
+    let head = parts.next().unwrap_or_default();
+    let body = parts.next().unwrap_or_default().to_string();
     let status: u16 = head
         .lines()
         .next()

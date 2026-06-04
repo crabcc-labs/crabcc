@@ -15,6 +15,7 @@
 //!   cargo bench -p ucracc-lsp --bench extractor_cost
 
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use std::fmt::Write as _;
 #[cfg(any(feature = "yaml", feature = "markdown"))]
 use tree_sitter::Parser;
 
@@ -138,9 +139,9 @@ fn bench_incremental_reparse(c: &mut Criterion) {
     // Build a ~100-fn Rust source (~3 KLOC of identifiers).
     let mut src = String::new();
     for i in 0..100 {
-        src.push_str(&format!(
+        write!(src,
             "pub fn handler_{i}(input: &str) -> String {{\n    let mid = format!(\"{{input}}-{i}\");\n    helper_{i}(&mid)\n}}\n\nfn helper_{i}(s: &str) -> String {{\n    s.to_string()\n}}\n\n"
-        ));
+        ).unwrap();
     }
     let ts_lang = crabcc_core::extract::language("rust").unwrap();
 

@@ -367,7 +367,7 @@ mod fastembed_impl {
         fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
             // fastembed wants Vec<String>; one allocation per call is
             // negligible next to the ONNX inference cost.
-            let owned: Vec<String> = texts.iter().map(|s| s.to_string()).collect();
+            let owned: Vec<String> = texts.iter().copied().map(str::to_string).collect();
             let mut guard = self
                 .inner
                 .lock()

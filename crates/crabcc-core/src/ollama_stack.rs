@@ -433,14 +433,14 @@ fn parse_container(v: serde_json::Value) -> ContainerInfo {
     let name = v
         .get("Name")
         .and_then(|x| x.as_str())
-        .unwrap_or("")
+        .unwrap_or_default()
         .trim_start_matches('/')
         .to_string();
     let image = v
         .get("Config")
         .and_then(|c| c.get("Image"))
         .and_then(|x| x.as_str())
-        .unwrap_or("")
+        .unwrap_or_default()
         .to_string();
     let image_digest = v.get("Image").and_then(|x| x.as_str()).map(str::to_string);
     let container_id = v
@@ -463,7 +463,7 @@ fn parse_container(v: serde_json::Value) -> ContainerInfo {
     let created = v
         .get("Created")
         .and_then(|x| x.as_str())
-        .unwrap_or("")
+        .unwrap_or_default()
         .to_string();
     let ports = v
         .get("NetworkSettings")

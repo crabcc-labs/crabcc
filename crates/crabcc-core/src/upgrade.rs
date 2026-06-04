@@ -283,7 +283,7 @@ pub fn cleanup_index(root: &Path) -> Result<()> {
         // Don't delete the user's `.crabcc/usage.log` if any future code stores
         // it under the repo (currently it lives under `~/.crabcc/`). We only
         // touch index/tantivy/graph artifacts.
-        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or_default();
         match name {
             "index.db" | "index.db-shm" | "index.db-wal" | "graph.json" => {
                 let _ = std::fs::remove_file(&p);

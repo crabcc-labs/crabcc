@@ -129,13 +129,13 @@ fn store_in_memory(root: &Path, results: &[FetchResult]) -> Result<()> {
             continue;
         }
         let host = url_host(&r.url).unwrap_or("unknown");
-        let title = r.title.as_deref().unwrap_or("");
+        let title = r.title.as_deref().unwrap_or_default();
         let body = if title.is_empty() {
             r.content_markdown.clone().unwrap_or_default()
         } else {
             format!(
                 "# {title}\n\n{}",
-                r.content_markdown.as_deref().unwrap_or("")
+                r.content_markdown.as_deref().unwrap_or_default()
             )
         };
         let _ = palace.remember_in_session("fetch", Some(host), &r.url, &body, session.as_deref());
@@ -247,7 +247,7 @@ async fn fetch_one(client: &reqwest::Client, url: &str) -> FetchResult {
     if is_reddit_url(url) {
         return fetch_reddit_json(client, url).await;
     }
-    let host = url_host(url).unwrap_or("");
+    let host = url_host(url).unwrap_or_default();
     let prefer_main = host_uses_article_extractor(host);
     match client.get(url).send().await {
         Err(e) => FetchResult {
@@ -450,9 +450,9 @@ fn render_reddit_json(body: &str) -> Option<(String, String)> {
     let selftext = post
         .get("selftext")
         .and_then(|s| s.as_str())
-        .unwrap_or("")
+        .unwrap_or_default()
         .trim();
-    let post_url = post.get("url").and_then(|u| u.as_str()).unwrap_or("");
+    let post_url = post.get("url").and_then(|u| u.as_str()).unwrap_or_default();
     let score = post.get("score").and_then(|s| s.as_i64()).unwrap_or(0);
 
     let mut md = String::new();
@@ -487,7 +487,7 @@ fn render_reddit_json(body: &str) -> Option<(String, String)> {
             let cbody = data
                 .get("body")
                 .and_then(|b| b.as_str())
-                .unwrap_or("")
+                .unwrap_or_default()
                 .trim();
             if cbody.is_empty() {
                 continue;
