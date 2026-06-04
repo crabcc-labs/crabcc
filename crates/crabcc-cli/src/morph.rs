@@ -104,11 +104,14 @@ fn post_json(path: &str, key: &str, body: serde_json::Value) -> Result<serde_jso
     // no-op in normal operation; an unlisted host (e.g. a misconfigured BASE)
     // fails loudly before the request leaves the machine. (issue #160)
     crate::netlog::guard("morph", &url)?;
+    // Client with an allowlist-aware redirect policy, so a 3xx from
+    // api.morphllm.com can't follow into an unlisted host past the guard.
+    let client = crate::netlog::http_client("morph").context("morph: build client")?;
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     rt.block_on(async {
-        let resp = reqwest::Client::new()
+        let resp = client
             .post(&url)
             .bearer_auth(key)
             .json(&body)

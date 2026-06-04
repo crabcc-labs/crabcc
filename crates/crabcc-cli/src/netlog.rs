@@ -150,6 +150,34 @@ fn host_of(url: &str) -> Option<String> {
         .map(|h| h.to_string())
 }
 
+/// Whether a redirect hop to `host` should be followed. A redirect from an
+/// allowed host to an unlisted one is egress to an unlisted host, so deny mode
+/// blocks it; log-only/audit never block (matching [`guard`]).
+fn follow_redirect(host: &str, mode: Mode, allow: &Allowlist) -> bool {
+    allow.allows(host) || mode != Mode::Deny
+}
+
+/// Build an HTTP client whose redirect policy re-applies the allowlist to every
+/// hop — so a 3xx from an allowed host can't smuggle egress to an unlisted one
+/// past the guard (which only sees the initial URL). Pair with [`guard`] on the
+/// first request: guard covers the initial host, this covers the redirect tail.
+pub fn http_client(caller: &'static str) -> reqwest::Result<reqwest::Client> {
+    let mode = Mode::from_env();
+    let allow = Allowlist::seed();
+    let policy = reqwest::redirect::Policy::custom(move |attempt| {
+        let host = attempt.url().host_str().unwrap_or("").to_string();
+        if follow_redirect(&host, mode, allow) {
+            attempt.follow()
+        } else {
+            tracing::warn!(target: "crabcc::netlog", caller, host = %host, "blocked redirect to unlisted host");
+            attempt.error(format!(
+                "netlog: redirect to unlisted host `{host}` blocked (caller `{caller}`)"
+            ))
+        }
+    });
+    reqwest::Client::builder().redirect(policy).build()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,6 +244,15 @@ mod tests {
         assert!(guard_with("t", "https://evil.com/x", Mode::Deny, &a).is_err());
         assert!(guard_with("t", "https://evil.com/x", Mode::LogOnly, &a).is_ok());
         assert!(guard_with("t", "https://evil.com/x", Mode::Audit, &a).is_ok());
+    }
+
+    #[test]
+    fn redirect_follows_listed_blocks_unlisted_in_deny() {
+        let a = al();
+        assert!(follow_redirect("api.github.com", Mode::Deny, &a)); // listed → follow
+        assert!(!follow_redirect("evil.com", Mode::Deny, &a)); // unlisted + deny → block
+        assert!(follow_redirect("evil.com", Mode::LogOnly, &a)); // log-only never blocks
+        assert!(follow_redirect("evil.com", Mode::Audit, &a)); // audit never blocks
     }
 
     #[test]
