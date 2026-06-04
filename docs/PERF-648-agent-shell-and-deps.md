@@ -153,6 +153,7 @@ Per-operation token cost vs the naive baseline, on the crabcc repo
 | `outline` (understand a file) | 3,631 tok | 14 ms | cat 14,790 | **−75%** |
 | `read` (cache hit → outline stub) | ~3.7k tok | 32 ms | cat re-read 14,790 | **−75%** |
 | `files --ext` | 2,142 tok | 14 ms | find 2,327 | −7% |
+| `files --ext --group` | dir-keyed | 14 ms | flat array | **−44%** (folds repeated dir prefixes) |
 
 ### Top 3 by benefit — human-operated CLI
 

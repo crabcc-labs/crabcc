@@ -105,11 +105,22 @@ fn query_surface_coheres_on_one_index() {
         "fuzzy should find Store"
     );
 
-    // files: the indexed file list includes both sources.
+    // files: the indexed file list includes both sources (flat array).
     let files = run(p, h, &["lookup", "files", "--ext", "rs"]);
     assert!(
         files.contains("store.rs") && files.contains("app.rs"),
         "files: {files}"
+    );
+    // --group: directory-keyed object (drops repeated path prefixes).
+    let grouped = run(p, h, &["lookup", "files", "--ext", "rs", "--group"]);
+    let gv: serde_json::Value = serde_json::from_str(&grouped).unwrap();
+    assert!(
+        gv.is_object(),
+        "grouped files must be a dir-keyed object: {grouped}"
+    );
+    assert!(
+        grouped.contains("store.rs") && grouped.contains("app.rs"),
+        "grouped must still list every basename: {grouped}"
     );
 
     // graph: build the call graph, then walk callers of run -> finds a
