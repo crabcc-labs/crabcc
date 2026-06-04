@@ -222,9 +222,7 @@ impl SqliteBackend {
                 // (e.g. HashEmbedder::with_dim(N) in tests) are silently skipped.
                 let rows: Vec<(i64, Vec<u8>)> = {
                     let mut stmt = conn
-                        .prepare(
-                            "SELECT drawer_id, bytes FROM drawer_embeddings WHERE dim = 384",
-                        )
+                        .prepare("SELECT drawer_id, bytes FROM drawer_embeddings WHERE dim = 384")
                         .context("prepare drawers_vec backfill")?;
                     // Bind collected result to a local so the MappedRows
                     // temporary (which borrows stmt) is dropped before stmt.
