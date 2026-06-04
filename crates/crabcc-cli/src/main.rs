@@ -1668,15 +1668,15 @@ fn run_model_info(op: &ModelInfoOp) -> Result<()> {
         }
         ModelInfoOp::Ls { json } => {
             let dir = model_info::default_dir(&home);
-            let mut rows: Vec<String> = Vec::new();
-            if let Ok(entries) = std::fs::read_dir(&dir) {
-                for e in entries.flatten() {
-                    let n = e.file_name().to_string_lossy().to_string();
-                    if n.starts_with(".model.") && n.ends_with(".info") {
-                        rows.push(n);
-                    }
-                }
-            }
+            let mut rows: Vec<String> = std::fs::read_dir(&dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|e| {
+                    let n = e.file_name().to_string_lossy().into_owned();
+                    (n.starts_with(".model.") && n.ends_with(".info")).then_some(n)
+                })
+                .collect();
             rows.sort();
             if *json {
                 let dir_s = dir.display().to_string();
@@ -1843,7 +1843,7 @@ fn run_shell(root: &Path, op: &ShellOp) -> Result<()> {
                 Some(p) => p.clone(),
                 None => std::env::current_dir().map_err(|e| anyhow::anyhow!("get cwd: {e}"))?,
             };
-            let cwd_str = cwd_path.to_string_lossy().to_string();
+            let cwd_str = cwd_path.to_string_lossy().into_owned();
             let session = session_id
                 .clone()
                 .filter(|s| !s.trim().is_empty())

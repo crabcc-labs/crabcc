@@ -118,7 +118,7 @@ pub fn compute(
         m => m,
     };
 
-    let path_for_storage = canonical.to_string_lossy().to_string();
+    let path_for_storage = canonical.to_string_lossy().into_owned();
     let outline_key = relative_to_root(&canonical, root);
 
     let payload = match resolved {
@@ -244,8 +244,8 @@ fn relative_to_root(path: &Path, root: &Path) -> String {
     let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     path.strip_prefix(&canonical_root)
         .ok()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| path.to_string_lossy().to_string())
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string_lossy().into_owned())
 }
 
 fn lookup_session_read(db: &Path, path: &Path, session_id: &str) -> Result<Option<CachedRead>> {
