@@ -13,8 +13,32 @@ use anyhow::{anyhow, Context, Result};
 use crabcc_core::{hash::sha256_hex, outline, store::Store};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Ensure the memory db dir + schema exist for `root`, at most once per root
+/// per process. `read` only needs the `session_reads` table, but the full
+/// `Palace::open` (schema + sqlite-vec + FSST + FTS5 + migrations) costs ~19 ms;
+/// running it on every `read` call dominated the MCP `read` tool latency. The
+/// schema is idempotent and persistent, so ensuring it once per process is
+/// enough — mirrors the once-per-process `register_sqlite_vec_once` pattern.
+fn ensure_schema(root: &Path) -> Result<()> {
+    static ENSURED: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+    // Hold the lock across the open so concurrent first-reads (serve_http)
+    // don't both pay the ~19 ms open for the same root.
+    let mut done = ENSURED
+        .get_or_init(|| Mutex::new(HashSet::new()))
+        .lock()
+        .map_err(|_| anyhow!("poisoned ensure-schema mutex"))?;
+    if !done.contains(root) {
+        // Idempotent: creates the db dir, applies the schema, migrates legacy.
+        let _ = crate::Palace::open(root)?;
+        done.insert(root.to_path_buf());
+    }
+    Ok(())
+}
 
 /// Maximum bytes returned in `--mode=full`. 256 KiB ≈ 64 k tokens —
 /// generous for source files, trips on assets / generated bundles /
@@ -100,9 +124,9 @@ pub fn compute(
     let db_path = crate::resolve_db_path(root)?;
     let cached = match session_id.as_deref() {
         Some(sid) => {
-            // `Palace::open` is idempotent and creates the db dir +
-            // schema; required before any raw rusqlite call.
-            let _ = crate::Palace::open(root)?;
+            // Ensure the db dir + schema exist (once per process); the bare
+            // rusqlite lookup/upsert below need the `session_reads` table.
+            ensure_schema(root)?;
             lookup_session_read(&db_path, &canonical, sid)?
         }
         None => None,
