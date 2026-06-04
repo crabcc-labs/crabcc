@@ -58,6 +58,18 @@ pub struct FuzzyHit {
 /// drops out relative to the old behavior. Distance ≤ 2.
 const MAX_EDIT_DISTANCE: usize = 2;
 
+/// Fuzzy stops scanning once it has gathered `max(limit * FUZZY_SCAN_FACTOR,
+/// FUZZY_SCAN_FLOOR)` candidates (or `limit` exact, distance-0 hits). This
+/// bounds latency when a short/common query matches a large slice of the
+/// corpus — the dominant cost there is computing the DP for every matching
+/// row, and once the result `limit` can be filled there's no point continuing.
+/// The trade-off is approximate ranking *only* in that plentiful-match case
+/// (the top `limit` come from the rows scanned before the bail, not a global
+/// ranking); when matches are sparse the cap is never hit and results are
+/// exact. The floor keeps a healthy pool even for small `limit`s.
+const FUZZY_SCAN_FACTOR: usize = 32;
+const FUZZY_SCAN_FLOOR: usize = 512;
+
 impl Fts {
     /// Build the in-memory index from the live SQLite store. Uses the name-only
     /// projection (`iter_symbol_names`) so the FSST-compressed `signature`
@@ -101,6 +113,13 @@ impl Fts {
         // One scratch reused across every row + token comparison in this scan.
         let mut lev = Lev::default();
         let mut scored: Vec<(usize, &Row)> = Vec::new();
+        // Fast-bail thresholds (see FUZZY_SCAN_* docs): `limit` exact hits is
+        // already an optimal top-`limit`, and a full candidate pool is enough
+        // to fill `limit` after sorting.
+        let cap = limit
+            .saturating_mul(FUZZY_SCAN_FACTOR)
+            .max(FUZZY_SCAN_FLOOR);
+        let mut exact = 0usize;
         for row in &self.rows {
             let mut best = lev.distance(&q, &row.name_lower, MAX_EDIT_DISTANCE);
             for t in &row.tokens {
@@ -112,7 +131,15 @@ impl Fts {
                 }
             }
             if let Some(d) = best {
+                if d == 0 {
+                    exact += 1;
+                }
                 scored.push((d, row));
+                // Bail once we can't do better (`limit` exact hits) or we have
+                // a full pool — bounds latency on dense-match queries.
+                if exact >= limit || scored.len() >= cap {
+                    break;
+                }
             }
         }
         // Closest match first; ties broken by name for stable output.
@@ -424,6 +451,28 @@ mod tests {
             .map(|h| h.name)
             .collect();
         assert!(f.iter().any(|n| n == "get_user_profile"), "fuzzy: {f:?}");
+    }
+
+    #[test]
+    fn fuzzy_bails_on_dense_matches() {
+        // 5000 rows whose `user` token matches the query exactly. The scan must
+        // bail early and still return exactly `limit` valid (distance-0) hits.
+        let sym = |i: usize| crate::types::Symbol {
+            name: format!("get_user_{i:05}"),
+            kind: SymbolKind::Function,
+            signature: None,
+            parent: None,
+            file: "a.rs".into(),
+            line_start: i as u32,
+            line_end: i as u32,
+            visibility: None,
+        };
+        let fts = Fts::from_symbols((0..5000).map(sym));
+        let hits = fts.fuzzy("user", 20).unwrap();
+        assert_eq!(hits.len(), 20, "dense match should fill exactly the limit");
+        assert!(hits.iter().all(|h| h.name.starts_with("get_user_")));
+        // All are token-exact (distance 0 → score 1.0).
+        assert!(hits.iter().all(|h| h.score == 1.0), "expected exact hits");
     }
 
     #[test]
