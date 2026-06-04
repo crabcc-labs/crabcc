@@ -40,6 +40,7 @@ mod install;
 mod install_integrations;
 mod memory;
 mod model_info;
+mod morph;
 mod read;
 mod rewrite_log;
 mod root_resolver;
@@ -402,6 +403,12 @@ enum Cmd {
         #[command(subcommand)]
         op: ShellOp,
     },
+    /// Optional Morph LLM (https://morphllm.com) helpers. Off unless
+    /// `MORPH_API_KEY` is set — nothing leaves the machine otherwise.
+    Morph {
+        #[command(subcommand)]
+        op: MorphOp,
+    },
     /// Loop detector (lean-ctx integration #5). Surfaces
     /// `(path, session_id)` / `(command, cwd, session_id)` pairs
     /// whose `read_count` / `run_count` cross a threshold (default
@@ -588,6 +595,41 @@ enum LoopOp {
         session_id: Option<String>,
         #[arg(long, default_value_t = crabcc_memory::loop_detect::DEFAULT_THRESHOLD)]
         threshold: i64,
+    },
+}
+
+#[derive(Subcommand)]
+enum MorphOp {
+    /// Read stdin and emit a query-conditioned, byte-verbatim compacted
+    /// version via Morph Compact. Passthrough (prints input unchanged) when
+    /// `MORPH_API_KEY` is unset, the input is below `--min-bytes`, or the
+    /// API errors — the agent never loses output.
+    Compact {
+        /// What the agent is looking for; sharpens the compression. Omitted
+        /// => Morph auto-detects.
+        #[arg(long)]
+        query: Option<String>,
+        /// Fraction of text to retain (0.05–1.0).
+        #[arg(long, default_value_t = 0.5)]
+        ratio: f64,
+        /// Skip the network round-trip for inputs smaller than this.
+        #[arg(long, default_value_t = 2000)]
+        min_bytes: usize,
+    },
+    /// Merge a lazy edit snippet into a file via Morph Fast Apply
+    /// (`morph-v3-fast`). Errors if `MORPH_API_KEY` is unset.
+    Apply {
+        #[arg(long)]
+        file: PathBuf,
+        /// The lazy edit snippet (use `// ... existing code ...` markers).
+        #[arg(long)]
+        update: String,
+        /// One-line description of the edit (improves ambiguous merges).
+        #[arg(long, default_value = "")]
+        instruction: String,
+        /// Write the merged result back to the file instead of stdout.
+        #[arg(long)]
+        write: bool,
     },
 }
 
@@ -835,6 +877,25 @@ fn main() -> Result<()> {
             anyhow::bail!("--workspace is not supported with --mcp/--mcp-http in v4.5");
         }
         return run_workspace(cli);
+    }
+
+    // morph group — optional external LLM filter; needs neither a repo
+    // root nor the Store, so dispatch before resolution (compact is a
+    // generic stdin pipe usable anywhere).
+    if let Some(Cmd::Morph { op }) = &cli.cmd {
+        return match op {
+            MorphOp::Compact {
+                query,
+                ratio,
+                min_bytes,
+            } => morph::run_compact(query.as_deref(), *ratio, *min_bytes),
+            MorphOp::Apply {
+                file,
+                update,
+                instruction,
+                write,
+            } => morph::run_apply(file, instruction, update, *write),
+        };
     }
 
     // Resolve `--root` to a concrete source dir + index-artifact dir.
@@ -1541,6 +1602,7 @@ fn main() -> Result<()> {
         Cmd::Doctor { .. } => unreachable!("doctor handled before store init"),
         Cmd::Memory { .. } => unreachable!("memory handled before store init"),
         Cmd::Shell { .. } => unreachable!("shell handled before store init"),
+        Cmd::Morph { .. } => unreachable!("morph handled before store init"),
         Cmd::Audit { .. } => unreachable!("audit handled before store init"),
         Cmd::Loop { .. } => unreachable!("loop handled before store init"),
     }
@@ -2119,6 +2181,7 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::Graph { .. } => "graph",
         Cmd::Memory { .. } => "memory",
         Cmd::Shell { .. } => "shell",
+        Cmd::Morph { .. } => "morph",
         Cmd::Loop { .. } => "loop",
         Cmd::Backup { .. } => "backup",
         Cmd::Doctor { .. } => "doctor",
