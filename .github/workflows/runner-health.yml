@@ -40,7 +40,12 @@ jobs:
       - name: machine metrics
         shell: bash
         run: |
-          HOST="$(hostname)"
+          # Heterogeneous fleet: the Ubuntu Hetzner runners AND the NixOS
+          # bench-node carry these labels, and NixOS lacks `hostname` (+ maybe
+          # other tools) on PATH. Don't let one missing optional command abort
+          # the whole probe under `bash -e`.
+          set +e
+          HOST="$(hostname 2>/dev/null || uname -n 2>/dev/null || echo "${HOSTNAME:-unknown}")"
 
           # Disk — root filesystem
           ROOT_USE=$(df --output=pcent /   2>/dev/null | tail -1 | tr -dc '0-9')
