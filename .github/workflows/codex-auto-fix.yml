@@ -187,15 +187,28 @@ jobs:
           mkdir -p ~/.codex
           # http:// is correct per Aperture docs -- the WireGuard tunnel
           # handles encryption; https:// causes TLS issues.
+          # Notes (verified June 2026):
+          #  - wire_api MUST be "responses" for any custom provider on Codex
+          #    >= 0.59 -- "chat" trips openai/codex#7051 (assistant msg with
+          #    tool_calls must be followed by tool messages...). Open issue,
+          #    no fix yet; downgrade to 0.58 is the only other workaround.
+          #  - Model is gpt-5.5 (OpenAI's current Codex default), not the
+          #    `gpt-5.3-codex` you'll see in some Aperture sample configs.
+          #  - reasoning_effort=high matches the HN/Reddit consensus for
+          #    agentic loops; drop to medium if cost matters more than depth.
+          #  - auto_compact_token_limit=220000 dodges openai/codex#19409,
+          #    where the 400K-context catalog entry overflows near ~258K.
           cat > ~/.codex/config.toml <<EOF
-          model = "gpt-5-codex"
+          model = "gpt-5.5"
+          model_reasoning_effort = "high"
+          model_auto_compact_token_limit = 220000
           model_provider = "aperture"
 
           [model_providers.aperture]
           name = "Tailscale Aperture"
           base_url = "http://${APERTURE_HOSTNAME}/v1"
           env_key = "OPENAI_API_KEY"
-          wire_api = "chat"
+          wire_api = "responses"
           EOF
 
       - name: Codex auto-fix
@@ -321,7 +334,7 @@ jobs:
               '${{ github.repository }}' \
               '${{ github.run_id }}'
             printf ' &middot; workflow: `.github/workflows/codex-auto-fix.yml`'
-            printf ' &middot; model: `gpt-5-codex`_\n'
+            printf ' &middot; model: `gpt-5.5` (high)_\n'
           } > /tmp/codex-comment.md
 
           gh pr comment ${{ matrix.pr }} --body-file /tmp/codex-comment.md
