@@ -162,9 +162,18 @@ fn follow_redirect(host: &str, mode: Mode, allow: &Allowlist) -> bool {
 /// past the guard (which only sees the initial URL). Pair with [`guard`] on the
 /// first request: guard covers the initial host, this covers the redirect tail.
 pub fn http_client(caller: &'static str) -> reqwest::Result<reqwest::Client> {
+    /// Match reqwest's default loop/depth protection — a custom policy opts out
+    /// of it, so we must re-impose the cap or a same-host redirect loop spins
+    /// forever instead of failing with too-many-redirects.
+    const MAX_REDIRECTS: usize = 10;
     let mode = Mode::from_env();
     let allow = Allowlist::seed();
     let policy = reqwest::redirect::Policy::custom(move |attempt| {
+        if attempt.previous().len() >= MAX_REDIRECTS {
+            return attempt.error(format!(
+                "netlog: too many redirects (>{MAX_REDIRECTS}) for caller `{caller}`"
+            ));
+        }
         let host = attempt.url().host_str().unwrap_or("").to_string();
         if follow_redirect(&host, mode, allow) {
             attempt.follow()
