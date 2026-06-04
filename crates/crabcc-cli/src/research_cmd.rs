@@ -227,11 +227,29 @@ fn ingest(root: &Path, topic: &str, file: Option<&Path>, wing: Option<&str>) -> 
     let source = format!("research:{topic}");
     let session = std::env::var("TERM_SESSION_ID").ok();
     let id = palace.remember_in_session(&wing, Some(topic), &source, &body, session.as_deref())?;
+
+    // A new finding changes what `crabcc enrich` should surface, but the enrich
+    // cache is keyed only by (query, budget) and is consulted *before* the
+    // Palace — a previously-cached query would keep returning stale context.
+    // We can't know which cached query keys match the new drawer (the match is
+    // fuzzy), so drop the whole cache; it re-assembles lazily on next enrich.
+    invalidate_enrich_cache(&palace_root);
+
     println!(
         "{}",
         serde_json::json!({"id": id, "wing": wing, "room": topic, "source": source})
     );
     Ok(())
+}
+
+/// Best-effort removal of `<root>/.crabcc/enrich-cache` (mirrors the path in
+/// `enrich_cmd`). Never fails the ingest — a stale cache is the worst case,
+/// and the next ingest retries.
+fn invalidate_enrich_cache(root: &Path) {
+    let cache = root.join(".crabcc").join("enrich-cache");
+    if cache.exists() {
+        let _ = std::fs::remove_dir_all(&cache);
+    }
 }
 
 fn status(root: &Path, json: bool) -> Result<()> {
@@ -326,6 +344,19 @@ mod tests {
         assert!(b.contains("## 1. serde"));
         assert!(!b.contains("Docs:"));
         assert!(!b.contains("Queries:"));
+    }
+
+    #[test]
+    fn invalidate_enrich_cache_removes_dir_and_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cache = tmp.path().join(".crabcc").join("enrich-cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("abc.md"), "stale context").unwrap();
+        assert!(cache.exists());
+        invalidate_enrich_cache(tmp.path());
+        assert!(!cache.exists());
+        // No-op (no panic) when the cache is already gone.
+        invalidate_enrich_cache(tmp.path());
     }
 
     #[test]
