@@ -52,15 +52,23 @@ env:
 jobs:
   fmt:
     name: fmt
-    # gh-runner: Debian/Ubuntu runners only (runner-01, runner-01b).
-    # bench-node (NixOS) lacks apt and has a separate disk budget — it
-    # must never pick up build jobs.  Add the label in GitHub Settings →
-    # Actions → Runners for each eligible runner; jobs queue here until
-    # at least one runner carries it.
-    runs-on: [self-hosted, linux, hetzner, gh-runner]
+    # Intended for Debian/Ubuntu runners only (runner-01, runner-01b).
+    # The preflight step below fails fast on bench-node (NixOS, no apt-get).
+    # Permanent fix: add 'gh-runner' label to runner-01 and runner-01b in
+    # GitHub Settings → Actions → Runners, then change runs-on to
+    # [self-hosted, linux, hetzner, gh-runner] in this file.
+    runs-on: [self-hosted, linux, hetzner]
     env:
       RUSTC_WRAPPER: ""  # override global; cargo fmt never invokes rustc
     steps:
+      - name: preflight — assert Debian/Ubuntu runner
+        shell: bash
+        run: |
+          if ! command -v apt-get >/dev/null 2>&1; then
+            echo "::error::Runner '$RUNNER_NAME' is not eligible (no apt-get / not Debian-based)."
+            echo "::error::Re-run this job — runner-01 or runner-01b will pick it up."
+            exit 1
+          fi
       - uses: actions/checkout@v6
         with:
           fetch-depth: 1
@@ -75,8 +83,16 @@ jobs:
 
   lint:
     name: lint (clippy)
-    runs-on: [self-hosted, linux, hetzner, gh-runner]
+    runs-on: [self-hosted, linux, hetzner]
     steps:
+      - name: preflight — assert Debian/Ubuntu runner
+        shell: bash
+        run: |
+          if ! command -v apt-get >/dev/null 2>&1; then
+            echo "::error::Runner '$RUNNER_NAME' is not eligible (no apt-get / not Debian-based)."
+            echo "::error::Re-run this job — runner-01 or runner-01b will pick it up."
+            exit 1
+          fi
       - uses: actions/checkout@v6
         with:
           # Full history so the PR diff (base..head) resolves. Must be a literal
@@ -189,8 +205,16 @@ jobs:
 
   test:
     name: test (ubuntu, scoped)
-    runs-on: [self-hosted, linux, hetzner, gh-runner]
+    runs-on: [self-hosted, linux, hetzner]
     steps:
+      - name: preflight — assert Debian/Ubuntu runner
+        shell: bash
+        run: |
+          if ! command -v apt-get >/dev/null 2>&1; then
+            echo "::error::Runner '$RUNNER_NAME' is not eligible (no apt-get / not Debian-based)."
+            echo "::error::Re-run this job — runner-01 or runner-01b will pick it up."
+            exit 1
+          fi
       - uses: actions/checkout@v6
         with:
           # Full history so the PR diff (base..head) resolves. Must be a literal
