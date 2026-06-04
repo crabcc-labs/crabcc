@@ -25,6 +25,8 @@ use crabcc_memory::Palace;
 /// - `format`: `json` (default) or `text`.
 /// - `proxify`: when set, route fetches through a rotating proxifly pool
 ///   of that protocol (`http`/`https`/`socks4`/`socks5`).
+/// - `state`: resume from a persistent on-disk frontier at this path
+///   (created if absent); default is an ephemeral in-memory frontier.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     root: &Path,
@@ -36,6 +38,7 @@ pub fn run(
     remember: bool,
     format: &str,
     proxify: Option<&str>,
+    state: Option<&Path>,
 ) -> Result<()> {
     if url_host(seed).is_none() {
         anyhow::bail!("crawl: `{seed}` is not an http(s) URL");
@@ -50,23 +53,31 @@ pub fn run(
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    // Frontier backend: the shared Postgres queue when $CRABCC_CRAWL_PG is
-    // set (open_frontier falls back to local SQLite if it's unreachable or
-    // the crawl-postgres feature isn't built), otherwise an ephemeral
-    // in-memory SQLite frontier. The durable output is the Palace archive
-    // (with --remember) either way.
-    let frontier = match std::env::var("CRABCC_CRAWL_PG")
+    // Frontier backend, in precedence order:
+    //   --state PATH        → resumable on-disk SQLite frontier (reopening
+    //                         the same path picks up still-queued rows and
+    //                         skips done URLs).
+    //   $CRABCC_CRAWL_PG    → shared Postgres queue (open_frontier falls
+    //                         back to local SQLite if it's unreachable or
+    //                         the crawl-postgres feature isn't built).
+    //   (neither)           → ephemeral in-memory SQLite frontier.
+    // The durable output is the Palace archive (with --remember) regardless.
+    let frontier = if let Some(state_path) = state {
+        if let Some(parent) = state_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        Frontier::Sqlite(SqliteFrontier::open(state_path)?)
+    } else if let Some(pg) = std::env::var("CRABCC_CRAWL_PG")
         .ok()
         .filter(|v| !v.is_empty())
     {
-        Some(pg) => {
-            let fallback = root.join(".crabcc").join("crawl-frontier.db");
-            if let Some(parent) = fallback.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            rt.block_on(open_frontier(&fallback, Some(&pg)))?
+        let fallback = root.join(".crabcc").join("crawl-frontier.db");
+        if let Some(parent) = fallback.parent() {
+            let _ = std::fs::create_dir_all(parent);
         }
-        None => Frontier::Sqlite(SqliteFrontier::open_in_memory()?),
+        rt.block_on(open_frontier(&fallback, Some(&pg)))?
+    } else {
+        Frontier::Sqlite(SqliteFrontier::open_in_memory()?)
     };
     let fetcher = match proxify {
         Some(proto) => {
