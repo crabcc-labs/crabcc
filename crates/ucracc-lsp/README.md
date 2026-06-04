@@ -66,10 +66,36 @@ candidates; beyond that the cross-encoder stops paying for itself.
 ## Install / wire up
 
 ```bash
-# build
+# build from source
 cargo build --release -p ucracc-lsp
-
 # the binary lives at target/release/ucracc-lsp; it speaks LSP over stdio
+
+# or install onto $PATH
+cargo install --path crates/ucracc-lsp
+```
+
+### Prebuilt releases
+
+Each `ucracc-lsp-v*` tag publishes a [GitHub release](https://github.com/crabcc-labs/crabcc/releases)
+with per-target tarballs (linux x86_64 / aarch64, macOS aarch64), each
+accompanied by a `.sha256` checksum — and, once signing is enabled, a cosign
+`.cosign.bundle`. A multi-arch **Docker image** is also published:
+
+```bash
+docker pull crabcc-labs/ucracc-lsp:0.4.0     # or :latest
+```
+
+Verifying downloads (checksums always; cosign once keys/secrets are wired) is
+documented in [`docs/COSIGN-SETUP.md`](../../docs/COSIGN-SETUP.md).
+
+**Zed** — install the [`editors/zed/crabcc`](../../editors/zed/crabcc) extension
+(`zed: install dev extension` → pick that dir). Zed can't bind a new LSP
+binary to a language from `settings.json` alone, so the extension is the
+supported path. Full guide: [`docs/ZED.md`](docs/ZED.md). TL;DR:
+
+```bash
+cargo install --path crates/ucracc-lsp   # binary on $PATH
+crabcc index                             # build the index in your project
 ```
 
 Editor config — Neovim example (alongside rust-analyzer):
@@ -88,6 +114,23 @@ require("lspconfig").ucracc_lsp.setup({})
 
 ucracc-lsp expects `.crabcc/index.db` (and `.crabcc/tantivy/` for
 workspace symbol) to exist. Run `crabcc index` in the repo once.
+
+### `initialization_options`
+
+Clients can override where the server looks for the index via the
+standard LSP `initialization_options` blob:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `indexPath` (a.k.a. `index_path`) | string | Path to the `.crabcc` dir holding `index.db` + `tantivy/`. Relative paths resolve against the workspace root; absolute paths are used as-is. Default: `<root>/.crabcc`. |
+
+Handy for out-of-tree indexes (CI artifacts, shared caches) and remote
+hosts where the `.crabcc` dir sits outside the checkout. It overrides the
+index *location* only — the index must still have been built **for the
+same workspace root** (stored file paths are relative to it), so pointing
+at a different root's index (e.g. a subcrate reading the parent monorepo's
+`.crabcc`) is not supported. In Zed, set it under
+`lsp.ucracc-lsp.initialization_options`.
 
 ## Performance
 

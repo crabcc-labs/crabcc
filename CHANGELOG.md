@@ -6,6 +6,38 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`ucracc-lsp` 0.4.0 + signed Docker/release pipeline.** The LSP crate is
+  bumped to 0.4.0 (Zed integration + `indexPath`). New
+  `release-ucracc-lsp-image.yml` builds a multi-arch Docker image
+  (`install/Dockerfile.ucracc-lsp`), pushes it to Docker Hub, and
+  cosign-signs it; `release-ucracc-lsp.yml` gains opt-in cosign signing of
+  the release tarballs. Both are inert until the `DOCKERHUB_*` /
+  `COSIGN_*` secrets are set. Setup: `docs/COSIGN-SETUP.md`.
+- **Zed editor integration.** A new `editors/zed/crabcc` extension registers
+  `ucracc-lsp` as an additional language server for Rust, the TS/JS
+  family, Python, Ruby, Go, Swift, Java, YAML, and Markdown — running
+  alongside the semantic server for each language (rust-analyzer, pyright,
+  gopls, …). Zed can't bind a new LSP binary to a language from
+  `settings.json` alone, so the extension is the supported path. It honors
+  `lsp.ucracc-lsp.binary.path` and forwards `initialization_options` /
+  `settings`. Guide: `crates/ucracc-lsp/docs/ZED.md`.
+- **`ucracc-lsp` honors `initialization_options.indexPath`.** Clients (the
+  Zed extension, or any LSP client) can point the server at a `.crabcc`
+  directory other than `<root>/.crabcc` — useful for out-of-tree indexes
+  (CI artifacts, shared caches) and remote/SSH hosts where the `.crabcc`
+  dir sits outside the checkout. Location override only: the index must
+  still have been built for the same workspace root. Relative paths resolve
+  against the workspace root; absent → unchanged default behavior. Both
+  `indexPath` and `index_path` spellings accepted.
+- **`install/zed.sh`** — one-shot installer for the Zed integration.
+  Installs the `ucracc-lsp` binary, builds the project index, ensures the
+  `wasm32-wasip1` toolchain, and build-checks the extension; finishes with
+  the single Zed palette action (or an opt-in experimental `--headless`
+  drop-in that compiles the wasm component and places it in Zed's
+  installed-extensions dir).
+
 ## [5.0.0] — 2026-06-01 — *stable baseline*
 
 Promotes the battle-tested v4.5 sharpening line to a stable **v5.0** major, so

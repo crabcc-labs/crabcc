@@ -7,7 +7,7 @@ use crate::audit::tokens::estimate_tokens;
 pub fn parse_session(path: &Path) -> anyhow::Result<SessionFile> {
     let contents = fs::read_to_string(path)?;
     let messages = contents.lines().count();
-    let total_tokens = contents.lines().map(|line| estimate_tokens(line)).sum();
+    let total_tokens = contents.lines().map(estimate_tokens).sum();
     let project = path
         .parent()
         .and_then(|p| p.file_name())

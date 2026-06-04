@@ -89,15 +89,15 @@ pub fn build_report(godfather: &Godfather, crash_id: i64) -> Result<String> {
     .unwrap();
 
     s.push_str("## Install\n\n");
-    write!(
+    writeln!(
         s,
-        "- **Version**: `{}`\n",
+        "- **Version**: `{}`",
         install_version.as_deref().unwrap_or("unknown")
     )
     .unwrap();
-    write!(
+    writeln!(
         s,
-        "- **Source**: `{}`\n",
+        "- **Source**: `{}`",
         install_source.as_deref().unwrap_or("unknown")
     )
     .unwrap();
@@ -110,15 +110,15 @@ pub fn build_report(godfather: &Godfather, crash_id: i64) -> Result<String> {
 
     s.push_str("## Host (PII-clean)\n\n");
     if let Some(h) = host {
-        write!(
+        writeln!(
             s,
-            "- **OS**: `{}` `{}` · **arch**: `{}`\n",
+            "- **OS**: `{}` `{}` · **arch**: `{}`",
             h.os, h.os_version, h.arch
         )
         .unwrap();
-        write!(
+        writeln!(
             s,
-            "- **CPU**: `{}` cores · **RAM**: `{}` MB\n",
+            "- **CPU**: `{}` cores · **RAM**: `{}` MB",
             h.cpu_count, h.total_memory_mb
         )
         .unwrap();
@@ -145,9 +145,9 @@ pub fn build_report(godfather: &Godfather, crash_id: i64) -> Result<String> {
         s.push_str("- (none)\n\n");
     } else {
         for ev in &recent_events {
-            write!(
+            writeln!(
                 s,
-                "- `{}` `{}` `{}/{}` — {}\n",
+                "- `{}` `{}` `{}/{}` — {}",
                 ev.ts,
                 ev.severity.as_str(),
                 ev.source,
