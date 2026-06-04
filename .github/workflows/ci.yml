@@ -285,20 +285,23 @@ jobs:
           if ! command -v apt-fast >/dev/null 2>&1; then
             sudo apt-get update -qq || true
             sudo apt-get install -y --no-install-recommends software-properties-common || true
+            # `sudo env DEBIAN_FRONTEND=…` — sudoers env_reset drops the
+            # step-level env, and the apt-fast package asks debconf questions, so
+            # set it inside sudo or the install can hang instead of falling back.
             sudo add-apt-repository -y ppa:apt-fast/stable >/dev/null 2>&1 \
               && sudo apt-get update -qq \
-              && sudo apt-get install -y apt-fast \
+              && sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y apt-fast \
               || echo "::warning::apt-fast PPA install failed — falling back to apt-get"
           fi
           if command -v apt-fast >/dev/null 2>&1; then
-            INST="sudo apt-fast -y install --no-install-recommends"
+            INST="sudo env DEBIAN_FRONTEND=noninteractive apt-fast -y install --no-install-recommends"
           else
-            INST="sudo apt-get install -y --no-install-recommends"
+            INST="sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends"
           fi
           # Runtime fallback to plain apt-get if apt-fast is present but errors
           # (e.g. a missing runtime dep) — so "fallback-safe" holds at run time,
           # not just at bootstrap.
-          APT_GET="sudo apt-get install -y --no-install-recommends"
+          APT_GET="sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends"
           command -v mold >/dev/null 2>&1 || $INST mold || $APT_GET mold
           # ripgrep must be on PATH for shell_rewrite_e2e::find_swaps_to_ripgrep —
           # the rewriter only emits the find→rg swap when `rg` is found on PATH.
