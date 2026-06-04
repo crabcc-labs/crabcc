@@ -19,16 +19,26 @@ on:
         type: boolean
         default: false
 
-concurrency:
-  group: runner-gc
-  cancel-in-progress: false
-
 permissions:
   contents: read
 
 jobs:
   gc:
-    name: reclaim disk
+    name: reclaim disk (slot ${{ matrix.slot }})
+    # Fan out across the fleet: GitHub runs at most one job per runner at a
+    # time, so N parallel slots land on up to N distinct hosts in a single
+    # dispatch — each installs the timer + prunes locally. A single job
+    # only ever cleans whichever one runner grabs it first (the idle/healthy
+    # one), never the disk-full hosts that actually need it.
+    strategy:
+      fail-fast: false
+      matrix:
+        slot: [1, 2, 3, 4, 5, 6, 7, 8]
+    # Per-slot: repeated dispatches serialise within a slot, but the eight
+    # slots run in parallel across hosts.
+    concurrency:
+      group: runner-gc-${{ matrix.slot }}
+      cancel-in-progress: false
     runs-on: [self-hosted, linux, hetzner]
     timeout-minutes: 20
     steps:
