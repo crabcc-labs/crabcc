@@ -1,0 +1,21 @@
+# .cccignore — files crabcc should not index. Same glob syntax as .gitignore.
+#
+# crabcc composes three ignore sources: .gitignore/.ignore (always), then
+# .dockerignore, then .cccignore (this file, highest precedence — use `!` to
+# re-include). Keeping the index lean makes `crabcc index` + load fast.
+#
+# This file is crabcc dogfooding itself: skip build output, generated artifacts,
+# and binary/demo assets that carry no symbols.
+
+target/
+dist/
+result
+.repowise/
+.versions
+
+# demo + image assets (not code)
+assets/*.gif
+assets/*.tape
+
+# generated / minified
+*.min.js
