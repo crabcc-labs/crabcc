@@ -67,7 +67,7 @@ command -v journalctl >/dev/null 2>&1 && sudo journalctl --vacuum-time=2d 2>/dev
 
 # ── Stale temp from completed jobs (current job's files are <1d old) ────
 find /tmp -mindepth 1 -maxdepth 1 -mtime +1 -exec rm -rf {} + 2>/dev/null || true
-for tmp in "${RUNNER_TEMP:-}" "$HOME/actions-runner/_work/_temp"; do
+for tmp in "${RUNNER_TEMP:-}" "${RUNNER_GC_WORK_TEMP:-}" "$HOME/actions-runner/_work/_temp"; do
   [ -n "$tmp" ] && [ -d "$tmp" ] &&
     find "$tmp" -mindepth 1 -mtime +1 -exec rm -rf {} + 2>/dev/null || true
 done

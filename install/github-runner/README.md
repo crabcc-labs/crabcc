@@ -70,6 +70,11 @@ journalctl -u actions-runner-gc.service          # see what it pruned
 > done
 > ```
 >
+> `--gc-only` auto-detects the runner's user + working dir from the
+> existing `actions-runner.service`, so it targets the right account even
+> when the runner runs as a non-root `deploy` user (pass `--user <name>` to
+> override).
+>
 > New hosts get the timer automatically from a full `install.sh` run. For a
 > one-off prune without SSH, trigger the on-demand `runner-gc` GitHub
 > workflow (Actions → runner-gc → Run workflow), which runs the same script

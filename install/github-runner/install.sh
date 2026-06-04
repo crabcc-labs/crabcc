@@ -21,6 +21,7 @@ RUNNER_LABELS="self-hosted,linux,hetzner"
 REPO_URL=""
 TOKEN=""
 GC_ONLY=0
+USER_EXPLICIT=0
 
 usage() {
   sed -n '2,14p' "$0"
@@ -31,7 +32,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --url) REPO_URL="$2"; shift 2 ;;
     --token) TOKEN="$2"; shift 2 ;;
-    --user) RUNNER_USER="$2"; shift 2 ;;
+    --user) RUNNER_USER="$2"; USER_EXPLICIT=1; shift 2 ;;
     --name) RUNNER_NAME="$2"; shift 2 ;;
     --labels) RUNNER_LABELS="$2"; shift 2 ;;
     --gc-only) GC_ONLY=1; shift ;;
@@ -45,8 +46,22 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
+RUNNER_UNIT=/etc/systemd/system/actions-runner.service
+
+# In --gc-only mode, a `sudo ... --gc-only` invoked as root would default
+# RUNNER_USER to root and target /root — missing the cache/_work of the
+# account the runner actually runs as (e.g. a `deploy` user). Recover the
+# real user + working dir from the existing runner service unit, unless the
+# operator pinned --user explicitly.
+if [ "$GC_ONLY" = 1 ] && [ "$USER_EXPLICIT" = 0 ] && [ -f "$RUNNER_UNIT" ]; then
+  unit_user="$(awk -F= '/^User=/{print $2; exit}' "$RUNNER_UNIT")"
+  unit_wd="$(awk -F= '/^WorkingDirectory=/{print $2; exit}' "$RUNNER_UNIT")"
+  [ -n "$unit_user" ] && RUNNER_USER="$unit_user"
+  [ -n "$unit_wd" ] && INSTALL_DIR_OVERRIDE="$unit_wd"
+fi
+
 RUNNER_HOME="$(eval echo "~${RUNNER_USER}")"
-INSTALL_DIR="${RUNNER_HOME}/actions-runner"
+INSTALL_DIR="${INSTALL_DIR_OVERRIDE:-${RUNNER_HOME}/actions-runner}"
 
 # ── Disk-GC timer ───────────────────────────────────────────────────────
 # A single GitHub Actions cron only ever lands on one runner, so it can't
@@ -67,6 +82,7 @@ Description=GitHub Actions runner disk GC (${RUNNER_NAME})
 Type=oneshot
 User=${RUNNER_USER}
 Environment=HOME=${RUNNER_HOME}
+Environment=RUNNER_GC_WORK_TEMP=${INSTALL_DIR}/_work/_temp
 ExecStart=/usr/bin/env bash ${INSTALL_DIR}/runner-gc.sh
 EOF
 
