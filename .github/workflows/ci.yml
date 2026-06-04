@@ -64,10 +64,11 @@ jobs:
       - name: disk guard
         shell: bash
         run: |
-          # Disk pressure is measured by BOTH blocks and inodes: a runner at
-          # 17% blocks can still ENOSPC at `apt-get install` when inodes hit
-          # 100% (millions of tiny cargo/sccache files). Block-only guards
-          # were blind to that — every threshold below now trips on either.
+          # `apt-get install mold` has ENOSPC'd here while `df /` read ~15%/3%
+          # inodes — apt was writing to a mount the `/`-only check never saw
+          # (a small tmpfs /tmp, a separate /var, or apt's own cache dir). Dump
+          # EVERY mount's block + inode usage so the culprit is visible in logs.
+          echo "::group::disk (all mounts)"; df -h; echo; df -i; echo "::endgroup::"
           root_pct()  { df --output=pcent  / 2>/dev/null | tail -1 | tr -dc '0-9'; }
           root_ipct() { df --output=ipcent / 2>/dev/null | tail -1 | tr -dc '0-9'; }
           hot() { [ "${1:-0}" -ge "$2" ]; }
@@ -79,18 +80,17 @@ jobs:
             docker container prune -f 2>/dev/null || true
             docker image prune -af --filter "until=2h" 2>/dev/null || true
             docker builder prune -af --filter "until=2h" 2>/dev/null || true
-            sudo apt-get clean 2>/dev/null || true
             sudo journalctl --vacuum-time=1d 2>/dev/null || true
-            # Inode reclamation (clearing cargo registry/src etc.) is NOT done
-            # here: two runner services share a host, so deleting Cargo sources
-            # at job start can yank files from under a SIBLING compile
-            # (-mtime +1 means extracted-earlier, not unused). That heavy sweep
-            # is idle-gated in runner-gc.sh; here we only run prunes safe during
-            # active builds (above), then re-measure and fail fast if needed.
             USE="$(root_pct)"; IUSE="$(root_ipct)"
           fi
+          # Always reclaim apt's own write targets — they live on whatever
+          # (possibly small) mount apt uses and are the prime ENOSPC suspect,
+          # independent of `/` usage. Safe during active jobs: cache + >1d temp.
+          sudo apt-get clean 2>/dev/null || true
+          sudo rm -rf /var/cache/apt/archives/partial/* 2>/dev/null || true
+          for tdir in /tmp /var/tmp; do sudo find "$tdir" -mindepth 1 -maxdepth 1 -mtime +1 -exec rm -rf {} + 2>/dev/null || true; done
           if hot "${USE:-0}" 90 || hot "${IUSE:-0}" 90; then
-            echo "::error::root fs still ${USE}% blocks / ${IUSE}% inodes after safe prune — aborting to avoid mid-job ENOSPC (run: runner-gc --deep on this host)"
+            echo "::error::root fs still ${USE}% blocks / ${IUSE}% inodes after prune (see df dump above for the full mount) — aborting"
             exit 1
           fi
           echo "disk: ${USE}% blocks / ${IUSE}% inodes — OK"
@@ -113,10 +113,11 @@ jobs:
       - name: disk guard
         shell: bash
         run: |
-          # Disk pressure is measured by BOTH blocks and inodes: a runner at
-          # 17% blocks can still ENOSPC at `apt-get install` when inodes hit
-          # 100% (millions of tiny cargo/sccache files). Block-only guards
-          # were blind to that — every threshold below now trips on either.
+          # `apt-get install mold` has ENOSPC'd here while `df /` read ~15%/3%
+          # inodes — apt was writing to a mount the `/`-only check never saw
+          # (a small tmpfs /tmp, a separate /var, or apt's own cache dir). Dump
+          # EVERY mount's block + inode usage so the culprit is visible in logs.
+          echo "::group::disk (all mounts)"; df -h; echo; df -i; echo "::endgroup::"
           root_pct()  { df --output=pcent  / 2>/dev/null | tail -1 | tr -dc '0-9'; }
           root_ipct() { df --output=ipcent / 2>/dev/null | tail -1 | tr -dc '0-9'; }
           hot() { [ "${1:-0}" -ge "$2" ]; }
@@ -128,18 +129,17 @@ jobs:
             docker container prune -f 2>/dev/null || true
             docker image prune -af --filter "until=2h" 2>/dev/null || true
             docker builder prune -af --filter "until=2h" 2>/dev/null || true
-            sudo apt-get clean 2>/dev/null || true
             sudo journalctl --vacuum-time=1d 2>/dev/null || true
-            # Inode reclamation (clearing cargo registry/src etc.) is NOT done
-            # here: two runner services share a host, so deleting Cargo sources
-            # at job start can yank files from under a SIBLING compile
-            # (-mtime +1 means extracted-earlier, not unused). That heavy sweep
-            # is idle-gated in runner-gc.sh; here we only run prunes safe during
-            # active builds (above), then re-measure and fail fast if needed.
             USE="$(root_pct)"; IUSE="$(root_ipct)"
           fi
+          # Always reclaim apt's own write targets — they live on whatever
+          # (possibly small) mount apt uses and are the prime ENOSPC suspect,
+          # independent of `/` usage. Safe during active jobs: cache + >1d temp.
+          sudo apt-get clean 2>/dev/null || true
+          sudo rm -rf /var/cache/apt/archives/partial/* 2>/dev/null || true
+          for tdir in /tmp /var/tmp; do sudo find "$tdir" -mindepth 1 -maxdepth 1 -mtime +1 -exec rm -rf {} + 2>/dev/null || true; done
           if hot "${USE:-0}" 90 || hot "${IUSE:-0}" 90; then
-            echo "::error::root fs still ${USE}% blocks / ${IUSE}% inodes after safe prune — aborting to avoid mid-job ENOSPC (run: runner-gc --deep on this host)"
+            echo "::error::root fs still ${USE}% blocks / ${IUSE}% inodes after prune (see df dump above for the full mount) — aborting"
             exit 1
           fi
           echo "disk: ${USE}% blocks / ${IUSE}% inodes — OK"
@@ -260,10 +260,11 @@ jobs:
       - name: disk guard
         shell: bash
         run: |
-          # Disk pressure is measured by BOTH blocks and inodes: a runner at
-          # 17% blocks can still ENOSPC at `apt-get install` when inodes hit
-          # 100% (millions of tiny cargo/sccache files). Block-only guards
-          # were blind to that — every threshold below now trips on either.
+          # `apt-get install mold` has ENOSPC'd here while `df /` read ~15%/3%
+          # inodes — apt was writing to a mount the `/`-only check never saw
+          # (a small tmpfs /tmp, a separate /var, or apt's own cache dir). Dump
+          # EVERY mount's block + inode usage so the culprit is visible in logs.
+          echo "::group::disk (all mounts)"; df -h; echo; df -i; echo "::endgroup::"
           root_pct()  { df --output=pcent  / 2>/dev/null | tail -1 | tr -dc '0-9'; }
           root_ipct() { df --output=ipcent / 2>/dev/null | tail -1 | tr -dc '0-9'; }
           hot() { [ "${1:-0}" -ge "$2" ]; }
@@ -275,18 +276,17 @@ jobs:
             docker container prune -f 2>/dev/null || true
             docker image prune -af --filter "until=2h" 2>/dev/null || true
             docker builder prune -af --filter "until=2h" 2>/dev/null || true
-            sudo apt-get clean 2>/dev/null || true
             sudo journalctl --vacuum-time=1d 2>/dev/null || true
-            # Inode reclamation (clearing cargo registry/src etc.) is NOT done
-            # here: two runner services share a host, so deleting Cargo sources
-            # at job start can yank files from under a SIBLING compile
-            # (-mtime +1 means extracted-earlier, not unused). That heavy sweep
-            # is idle-gated in runner-gc.sh; here we only run prunes safe during
-            # active builds (above), then re-measure and fail fast if needed.
             USE="$(root_pct)"; IUSE="$(root_ipct)"
           fi
+          # Always reclaim apt's own write targets — they live on whatever
+          # (possibly small) mount apt uses and are the prime ENOSPC suspect,
+          # independent of `/` usage. Safe during active jobs: cache + >1d temp.
+          sudo apt-get clean 2>/dev/null || true
+          sudo rm -rf /var/cache/apt/archives/partial/* 2>/dev/null || true
+          for tdir in /tmp /var/tmp; do sudo find "$tdir" -mindepth 1 -maxdepth 1 -mtime +1 -exec rm -rf {} + 2>/dev/null || true; done
           if hot "${USE:-0}" 90 || hot "${IUSE:-0}" 90; then
-            echo "::error::root fs still ${USE}% blocks / ${IUSE}% inodes after safe prune — aborting to avoid mid-job ENOSPC (run: runner-gc --deep on this host)"
+            echo "::error::root fs still ${USE}% blocks / ${IUSE}% inodes after prune (see df dump above for the full mount) — aborting"
             exit 1
           fi
           echo "disk: ${USE}% blocks / ${IUSE}% inodes — OK"

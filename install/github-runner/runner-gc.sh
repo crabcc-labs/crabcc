@@ -70,9 +70,9 @@ if [ -n "${THRESHOLD:-}" ]; then
   log "disk at ${TC_BLK}% blocks / ${TC_INO:-?}% inodes — at/above ${THRESHOLD}% — running GC"
 fi
 
-log "host $(hostname) — disk before:"
-df -h / "${CACHE_BASE}" 2>/dev/null || df -h / 2>/dev/null || true
-df -ih / "${CACHE_BASE}" 2>/dev/null || df -ih / 2>/dev/null || true   # inodes too
+log "host $(hostname) — disk before (ALL mounts: a full tmpfs/var is otherwise invisible):"
+df -h  2>/dev/null || true
+df -ih 2>/dev/null || true   # inodes for every mount too
 
 # ── Docker: unused images / build cache / stopped containers ─────────────
 prune_docker() {
@@ -144,21 +144,16 @@ if [ -d "$SCCACHE_DIR_PATH" ] && ! runner_busy; then
   log "sccache: pruned objects not accessed in 14d from ${SCCACHE_DIR_PATH}"
 fi
 
-# ── Inode reclamation ─────────────────────────────────────────────────────
-# Docker/byte prunes free bytes but few inodes; when the host is short on
-# INODES the offenders are the millions of tiny files under cargo registry/src
-# and sccache. registry/src is fully regenerable (cargo re-extracts from the
-# .crate tarballs in registry/cache, themselves re-downloadable), so on inode
-# pressure we clear it wholesale instead of by mtime. Idle-only — a concurrent
-# compile may be reading a source file. Triggers at ≥80% inodes, or whenever
-# --deep / the auto-escalation above set DEEP=1.
-IUSE_NOW="$(root_ipct)"
-if ! runner_busy && { [ "$DEEP" = 1 ] || { [ -n "${IUSE_NOW:-}" ] && [ "$IUSE_NOW" -ge 80 ]; }; }; then
-  log "inode reclamation (inodes at ${IUSE_NOW:-?}%): clearing regenerable cargo src + sccache"
-  rm -rf "${EFFECTIVE_CARGO_HOME}/registry/src"/* 2>/dev/null || true
-  # registry/cache (the .crate tarballs) is kept: few inodes, saves re-download.
-  [ -d "$SCCACHE_DIR_PATH" ] && find "$SCCACHE_DIR_PATH" -mindepth 1 -atime +2 -delete 2>/dev/null || true
-fi
+# ── apt + /tmp on small/separate mounts ───────────────────────────────────
+# CI's `apt-get install mold` has ENOSPC'd while `/` and the cache volume show
+# plenty free — meaning apt is writing to a SMALL mount neither check covers
+# (a tmpfs /tmp, a separate /var, apt's own cache dir). Reclaim those targets
+# directly: the apt package cache + partial downloads, and temp files >1d.
+# (>1d so a sibling job's live /tmp data on a shared host is never touched.)
+sudo rm -rf /var/cache/apt/archives/partial/* 2>/dev/null || true
+for tdir in /tmp /var/tmp; do
+  [ -d "$tdir" ] && find "$tdir" -mindepth 1 -maxdepth 1 -mtime +1 -exec rm -rf {} + 2>/dev/null || true
+done
 
 # ── tool-cache: prune downloaded toolchain entries older than 30 days ──────
 # Guard with runner_busy: setup-* actions resolve toolchains from this dir
@@ -216,9 +211,9 @@ if ! runner_busy; then
   fi
 fi
 
-log "disk after:"
-df -h / "${CACHE_BASE}" 2>/dev/null || df -h / 2>/dev/null || true
-df -ih / "${CACHE_BASE}" 2>/dev/null || df -ih / 2>/dev/null || true   # inodes too
+log "disk after (ALL mounts):"
+df -h  2>/dev/null || true
+df -ih 2>/dev/null || true
 
 USE="$(root_pct)"; IUSE="$(root_ipct)"
 log "root filesystem usage after GC: ${USE:-?}% blocks / ${IUSE:-?}% inodes"
