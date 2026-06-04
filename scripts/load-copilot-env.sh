@@ -59,7 +59,12 @@ done
     || { echo "timed out waiting for workflow run (dispatched at $DISPATCH_TS)" >&2; exit 11; }
 
 echo "Waiting for run $RUN_ID ..."
-timeout 300 gh run watch "$RUN_ID" -R "$REPO" --exit-status
+# `timeout` is GNU coreutils; not present on macOS by default.
+if command -v timeout >/dev/null 2>&1; then
+    timeout 300 gh run watch "$RUN_ID" -R "$REPO" --exit-status
+else
+    gh run watch "$RUN_ID" -R "$REPO" --exit-status
+fi
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
