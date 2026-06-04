@@ -84,11 +84,23 @@ impl SqliteFrontier {
 
     /// Claim up to `limit` queued URLs (shallowest first), marking them
     /// `inflight` so a concurrent or resumed run won't redo them.
+    ///
+    /// Single atomic `UPDATE … RETURNING`: selecting then updating in two
+    /// steps would let two workers sharing the same SQLite file observe
+    /// the same queued rows before either commits. This claims and
+    /// returns in one statement, so each row goes to exactly one worker.
+    /// `RETURNING` doesn't preserve order, so re-sort by depth to keep
+    /// the crawl breadth-first.
     pub fn claim(&self, limit: usize) -> anyhow::Result<Vec<Pending>> {
         let mut stmt = self.conn.prepare(
-            "SELECT url, depth FROM frontier WHERE state='queued' ORDER BY depth, rowid LIMIT ?1",
+            "UPDATE frontier SET state='inflight'
+             WHERE url IN (
+                 SELECT url FROM frontier WHERE state='queued'
+                 ORDER BY depth, rowid LIMIT ?1
+             )
+             RETURNING url, depth",
         )?;
-        let rows: Vec<Pending> = stmt
+        let mut rows: Vec<Pending> = stmt
             .query_map([limit as i64], |r| {
                 Ok(Pending {
                     url: r.get(0)?,
@@ -96,12 +108,7 @@ impl SqliteFrontier {
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
-        for p in &rows {
-            self.conn.execute(
-                "UPDATE frontier SET state='inflight' WHERE url=?1",
-                [&p.url],
-            )?;
-        }
+        rows.sort_by_key(|p| p.depth);
         Ok(rows)
     }
 
