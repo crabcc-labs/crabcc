@@ -157,9 +157,15 @@ pub fn open_frontier(local_path: &Path, pg_url: Option<&str>) -> anyhow::Result<
     if let Some(pg) = pg_url {
         // TODO(crawl-postgres): probe `pg`; on a successful connection
         // return the Postgres-backed frontier instead of falling through.
+        // Log only the host — a connection string can embed
+        // `user:password@`, which must never reach the logs.
+        let redacted = url::Url::parse(pg)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_string))
+            .unwrap_or_else(|| "<set>".to_string());
         tracing::warn!(
             target: "crabcc_fetch",
-            pg,
+            pg_host = %redacted,
             "postgres crawl backend not wired yet; using local SQLite frontier"
         );
     }

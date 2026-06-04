@@ -1,17 +1,27 @@
 //! Fetch transports for the crawler.
 //!
-//! The intended **default** transport is Lightpanda — a headless,
-//! CDP-driven browser that returns the *rendered DOM* (so JS-built pages
-//! work) without any screenshots or vision models: we pull `outerHTML`
-//! over CDP and smart-parse it with the same pure helpers the
-//! single-shot path uses ([`crate::clean_html`] + link extraction). That
-//! transport lands in the next layer; until then — and whenever the
-//! Lightpanda binary isn't present, e.g. in CI — we fall back to the
-//! reqwest [`HttpFetcher`] (fast, but no JS execution).
+//! Intended fallback chain (each step tried when the previous can't
+//! handle a URL — unavailable binary, JS-only page, or a bot wall):
 //!
-//! A transport returns both the cleaned [`FetchResult`] *and* the raw
-//! HTML, because the crawler needs the raw markup to harvest links — the
-//! single-shot `fetch_one` throws the HTML away after cleaning.
+//! 1. **Lightpanda** (default) — headless, CDP-driven browser returning
+//!    the *rendered DOM* (so JS-built pages work) with no screenshots or
+//!    vision models: pull `outerHTML` over CDP and smart-parse it with
+//!    the same pure helpers the single-shot path uses
+//!    ([`crate::clean_html`] + link extraction).
+//! 2. **[`HttpFetcher`]** (reqwest) — fast, no JS execution; the fallback
+//!    when Lightpanda isn't present (e.g. CI) and the default in tests.
+//! 3. **CloakBrowser** (ultimate fallback) — stealth Chromium (CDP /
+//!    Playwright-compatible) for sites that block both of the above
+//!    behind anti-bot fingerprinting. Same CDP seam as Lightpanda.
+//!
+//! Only steps 1 and 3 are the next layer; step 2 ships here.
+//!
+//! **Output is always token-friendly markdown.** A transport returns the
+//! cleaned [`FetchResult`] (whose `content_markdown` is htmd-converted
+//! markdown, never raw HTML) *and* the raw HTML — the latter only so the
+//! crawler can harvest links; `fetch_one` throws the HTML away after
+//! cleaning. A compact `msgpack` serialization of `FetchResult` for
+//! shipping batches to an LLM is a planned opt-in.
 
 use crate::{
     clean_html, is_reddit_url, read_body_capped, url_host, FetchOpts, FetchResult, Transport,

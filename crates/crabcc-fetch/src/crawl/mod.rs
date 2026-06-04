@@ -116,8 +116,34 @@ pub async fn crawl(
                 .clone();
             let gsem = global.clone();
             let f = fetcher.clone();
+            let enforce_ssrf = opts.fetch.enforce_ssrf;
             let (url, depth) = (p.url, p.depth);
             set.spawn(async move {
+                // SSRF guard at fetch time — mirrors `fetch_and_clean`,
+                // which checks before every `fetch_one`. The enqueue-time
+                // filter below only covers *discovered* links; the seed
+                // and any resumed/queued rows must be checked here too, or
+                // an ingest-posture crawl could hit `169.254.169.254` etc.
+                if enforce_ssrf {
+                    if let Err(reason) = is_ingest_safe_url(&url) {
+                        let result = FetchResult {
+                            url: url.clone(),
+                            status: 0,
+                            title: None,
+                            content_markdown: None,
+                            via: crate::Transport::Direct,
+                            error: Some(reason),
+                        };
+                        return (
+                            url,
+                            depth,
+                            FetchedPage {
+                                result,
+                                raw_html: None,
+                            },
+                        );
+                    }
+                }
                 let _g = gsem.acquire_owned().await.ok();
                 let _h = hsem.acquire_owned().await.ok();
                 let page = f.fetch(&url).await;
@@ -261,5 +287,38 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(report.fetched, 2);
+    }
+
+    #[tokio::test]
+    async fn ssrf_guard_blocks_private_seed_in_ingest_posture() {
+        // No server: the guard must reject the seed *before* any request,
+        // so a private/metadata address can't be hit even as the seed.
+        let frontier = SqliteFrontier::open_in_memory().unwrap();
+        let mut opts = CrawlOpts::new(5, 1);
+        opts.fetch = crate::FetchOpts::ingest(); // enforce_ssrf = true
+        let fetcher = Arc::new(Fetcher::http(&opts.fetch, None).unwrap());
+
+        let mut errors = Vec::new();
+        let report = crawl(
+            "http://169.254.169.254/latest/meta-data/",
+            &opts,
+            &frontier,
+            fetcher,
+            |r, _| {
+                if let Some(e) = &r.error {
+                    errors.push(e.clone());
+                }
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(report.fetched, 1);
+        assert_eq!(report.errors, 1);
+        assert_eq!(report.discovered, 0);
+        assert!(
+            errors[0].contains("not allowed"),
+            "expected SSRF rejection, got: {errors:?}"
+        );
     }
 }
