@@ -192,8 +192,10 @@ impl SqliteBackend {
 
         // v2.5.1 (#17) + #20 — sqlite-vec virtual table for ANN search.
         // Dim is fixed at 384 (MiniLM-L6-v2 / HashEmbedder default).
-        // `drawers_vec_state` stores the embedding count at last sync so a
-        // re-open after a feature-off write detects and backfills missing rows.
+        // `drawers_vec_state` stores a "count:id_sum" fingerprint at last sync.
+        // Using both count and SUM(drawer_id) detects the case where a
+        // feature-off build deletes one row and inserts another (net count=0
+        // but different IDs → sum changes), which a count-only check misses.
         #[cfg(feature = "memory-vec")]
         {
             conn.execute_batch(
@@ -208,29 +210,30 @@ impl SqliteBackend {
             )
             .context("create drawers_vec virtual table")?;
 
-            // Row count stored at last sync (0 = never synced). Storing the
-            // count (not a boolean) lets us detect rows written by a
-            // feature-off build between two memory-vec-enabled opens.
-            let synced_count: i64 = conn
+            let synced_fp: String = conn
                 .query_row(
-                    "SELECT CAST(value AS INTEGER) FROM drawers_vec_state WHERE key = 'backfilled'",
+                    "SELECT value FROM drawers_vec_state WHERE key = 'backfilled'",
                     [],
                     |r| r.get(0),
                 )
-                .unwrap_or(0);
+                .unwrap_or_default();
 
-            let current_count: i64 = conn
+            // Single-pass aggregation: COUNT and SUM(drawer_id) together.
+            let (current_count, current_id_sum): (i64, i64) = conn
                 .query_row(
-                    "SELECT COUNT(*) FROM drawer_embeddings WHERE dim = 384",
+                    "SELECT COUNT(*), COALESCE(SUM(drawer_id), 0) \
+                     FROM drawer_embeddings WHERE dim = 384",
                     [],
-                    |r| r.get(0),
+                    |r| Ok((r.get(0)?, r.get(1)?)),
                 )
-                .unwrap_or(0);
+                .unwrap_or((0, 0));
+            let current_fp = format!("{}:{}", current_count, current_id_sum);
 
-            if synced_count != current_count {
+            if synced_fp != current_fp {
                 // Re-sync: delete existing vec rows then re-insert all 384-dim
                 // embeddings. Handles initial backfill and recovery when
-                // feature-off writes added rows never mirrored into drawers_vec.
+                // feature-off writes mutated drawer_embeddings without updating
+                // drawers_vec (e.g. delete-one-insert-one keeping count equal).
                 let rows: Vec<(i64, Vec<u8>)> = {
                     let mut stmt = conn
                         .prepare("SELECT drawer_id, bytes FROM drawer_embeddings WHERE dim = 384")
@@ -255,7 +258,7 @@ impl SqliteBackend {
                 }
                 tx.execute(
                     "INSERT OR REPLACE INTO drawers_vec_state(key, value) VALUES ('backfilled', ?1)",
-                    params![current_count.to_string()],
+                    params![current_fp],
                 )?;
                 tx.commit().context("commit drawers_vec backfill")?;
             }
