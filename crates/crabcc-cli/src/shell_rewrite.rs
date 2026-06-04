@@ -425,141 +425,118 @@ mod tests {
         n == "Store"
     }
 
-    #[test]
-    fn tokenize_rejects_metacharacters() {
-        assert!(tokenize("grep foo | wc -l").is_none());
-        assert!(tokenize("grep foo && ls").is_none());
-        assert!(tokenize("grep foo $(pwd)").is_none());
-        assert!(tokenize("grep foo > out.txt").is_none());
-        assert!(tokenize("find . -name '*.rs' -exec rm {} ;").is_none());
-    }
+    // Each test drives the full `plan()` pipeline (tokenize -> flag parse
+    // -> plan_grep/plan_rg/plan_find -> symbol_upgrade/rg_swap -> header)
+    // across a family of inputs, rather than one assertion per case.
 
     #[test]
-    fn tokenize_handles_quotes() {
+    fn symbol_upgrades_for_indexed_identifier() {
+        // grep / rg for an indexed bare identifier, repo-wide, case-
+        // sensitive, non-count -> `crabcc lookup refs` (+ --files-only),
+        // with a header that discloses the rg fallback.
+        let g = plan("grep -rn Store .", &only_store).unwrap();
+        assert_eq!(g.inner, "crabcc lookup refs Store");
+        assert_eq!(g.rule, "grep->crabcc-refs");
+        assert_eq!(g.track_op, "refs");
+
         assert_eq!(
-            tokenize("grep -rn 'foo bar' src").unwrap(),
-            vec!["grep", "-rn", "foo bar", "src"]
+            plan("grep -rln Store", &only_store).unwrap().inner,
+            "crabcc lookup refs Store --files-only"
         );
-        assert!(tokenize("grep 'unbalanced").is_none());
+
+        let r = plan("rg Store", &only_store).unwrap();
+        assert_eq!(r.inner, "crabcc lookup refs Store");
+        assert_eq!(r.rule, "rg->crabcc-refs");
+
+        // Header carries rule + estimate + the rg fallback note.
+        let h = header(&g, 2000);
+        assert!(h.contains("[grep->crabcc-refs]"), "{h}");
+        assert!(h.contains("2000 tok saved"), "{h}");
+        assert!(h.contains("rg Store"), "{h}");
     }
 
     #[test]
-    fn grep_symbol_upgrade_when_indexed() {
-        let rw = plan("grep -rn Store .", &only_store).unwrap();
-        assert_eq!(rw.inner, "crabcc lookup refs Store");
-        assert_eq!(rw.rule, "grep->crabcc-refs");
-        assert_eq!(rw.track_op, "refs");
-        assert!(rw.note.as_ref().unwrap().contains("rg Store"));
+    fn falls_back_to_ripgrep_when_symbol_upgrade_is_unsafe() {
+        // Unknown symbol, path-scoped, or case-insensitive -> faithful rg
+        // swap (symbol scope/case can't be preserved by `lookup refs`).
+        let unknown = plan("grep -rn Nonexistent .", &never).unwrap();
+        assert_eq!(unknown.inner, "rg -n Nonexistent .");
+        assert_eq!(unknown.track_op, "rewrite");
+        assert_eq!(
+            plan("grep -rn Store src/", &only_store).unwrap().inner,
+            "rg -n Store src/"
+        );
+        assert_eq!(
+            plan("grep -rin Store .", &only_store).unwrap().inner,
+            "rg -i -n Store ."
+        );
+        // rg for a non-symbol is left alone (rg->rg is a no-op).
+        assert_eq!(plan("rg Nonexistent", &never), None);
     }
 
     #[test]
-    fn grep_files_only_symbol_upgrade() {
-        let rw = plan("grep -rln Store", &only_store).unwrap();
-        assert_eq!(rw.inner, "crabcc lookup refs Store --files-only");
+    fn faithful_grep_to_ripgrep_swaps() {
+        // Literal phrase, single file, and fixed-string forms all map to
+        // a semantics-preserving rg invocation.
+        assert_eq!(
+            plan("grep -rn 'fn open' .", &never).unwrap().inner,
+            "rg -n 'fn open' ."
+        );
+        assert_eq!(
+            plan("grep -n foo file.rs", &never).unwrap().inner,
+            "rg -n foo file.rs"
+        );
+        assert_eq!(
+            plan("grep -rnF 'a+b' .", &never).unwrap().inner,
+            "rg -F -n 'a+b' ."
+        );
     }
 
     #[test]
-    fn grep_unknown_symbol_falls_back_to_rg() {
-        let rw = plan("grep -rn Nonexistent .", &never).unwrap();
-        assert_eq!(rw.inner, "rg -n Nonexistent .");
-        assert_eq!(rw.track_op, "rewrite");
+    fn find_name_maps_to_ripgrep_files() {
+        assert_eq!(
+            plan("find . -name '*.rs'", &never).unwrap().inner,
+            "rg --files -g '*.rs' ."
+        );
+        assert_eq!(
+            plan("find src -iname '*.RS' -type f", &never)
+                .unwrap()
+                .inner,
+            "rg --files --iglob '*.RS' src"
+        );
     }
 
     #[test]
-    fn grep_with_path_scope_uses_rg_not_symbol() {
-        // A path-scoped search must keep the scope; crabcc refs is repo-wide.
-        let rw = plan("grep -rn Store src/", &only_store).unwrap();
-        assert_eq!(rw.inner, "rg -n Store src/");
-    }
-
-    #[test]
-    fn grep_case_insensitive_uses_rg_not_symbol() {
-        let rw = plan("grep -rin Store .", &only_store).unwrap();
-        assert_eq!(rw.inner, "rg -i -n Store .");
-    }
-
-    #[test]
-    fn grep_literal_phrase_swaps_to_rg() {
-        let rw = plan("grep -rn 'fn open' .", &never).unwrap();
-        assert_eq!(rw.inner, "rg -n 'fn open' .");
-    }
-
-    #[test]
-    fn grep_divergent_regex_passes_through() {
-        // `+` and `?` differ between grep-BRE and ripgrep -> no rewrite.
-        assert!(plan("grep -rn 'a+b' .", &never).is_none());
-        assert!(plan("grep -rn 'colou?r' .", &never).is_none());
-    }
-
-    #[test]
-    fn grep_fixed_string_swaps_despite_metachars_in_pattern() {
-        let rw = plan("grep -rnF 'a+b' .", &never).unwrap();
-        assert_eq!(rw.inner, "rg -F -n 'a+b' .");
-    }
-
-    #[test]
-    fn grep_unknown_flag_passes_through() {
-        assert!(plan("grep -P 'foo' .", &never).is_none());
-        assert!(plan("grep --include=*.rs foo .", &never).is_none());
-    }
-
-    #[test]
-    fn grep_stdin_form_passes_through() {
-        // No -r and no path == reads stdin; rewriting would scan `.`.
-        assert!(plan("grep foo", &never).is_none());
-    }
-
-    #[test]
-    fn grep_single_file_swaps_to_rg() {
-        let rw = plan("grep -n foo file.rs", &never).unwrap();
-        assert_eq!(rw.inner, "rg -n foo file.rs");
-    }
-
-    #[test]
-    fn rg_symbol_gets_upgraded() {
-        let rw = plan("rg Store", &only_store).unwrap();
-        assert_eq!(rw.inner, "crabcc lookup refs Store");
-        assert_eq!(rw.rule, "rg->crabcc-refs");
-    }
-
-    #[test]
-    fn rg_non_symbol_is_not_rewritten() {
-        assert!(plan("rg Nonexistent", &never).is_none());
-    }
-
-    #[test]
-    fn find_name_maps_to_rg_files() {
-        let rw = plan("find . -name '*.rs'", &never).unwrap();
-        assert_eq!(rw.inner, "rg --files -g '*.rs' .");
-        assert_eq!(rw.rule, "find->rg");
-    }
-
-    #[test]
-    fn find_iname_maps_to_iglob() {
-        let rw = plan("find src -iname '*.RS' -type f", &never).unwrap();
-        assert_eq!(rw.inner, "rg --files --iglob '*.RS' src");
-    }
-
-    #[test]
-    fn find_with_exec_or_other_predicate_passes_through() {
-        assert!(plan("find . -name '*.rs' -delete", &never).is_none());
-        assert!(plan("find . -type d", &never).is_none());
-        assert!(plan("find . -mtime -1", &never).is_none());
-    }
-
-    #[test]
-    fn non_search_commands_pass_through() {
-        assert!(plan("ls -la", &never).is_none());
-        assert!(plan("cargo build", &never).is_none());
-        assert!(plan("", &never).is_none());
-    }
-
-    #[test]
-    fn header_includes_rule_and_estimate() {
-        let rw = symbol_upgrade("Store", false, "grep->crabcc-refs");
-        let h = header(&rw, 2000);
-        assert!(h.contains("[grep->crabcc-refs]"));
-        assert!(h.contains("2000 tok saved"));
-        assert!(h.contains("rg Store"));
+    fn unsafe_or_unknown_commands_pass_through() {
+        // Shell metacharacters / pipes / substitution / redirects / -exec
+        // and braces are never rewritten (tokenize bails).
+        for c in [
+            "grep foo | wc -l",
+            "grep foo && ls",
+            "grep foo $(pwd)",
+            "grep foo > out.txt",
+            "find . -name '*.rs' -exec rm {} ;",
+            "grep 'unbalanced",
+        ] {
+            assert_eq!(plan(c, &never), None, "should pass through: {c}");
+        }
+        // Divergent regex (`+`/`?`), unknown/long flags, stdin-form grep,
+        // non-grep/find programs, empty input, and unsupported find
+        // predicates also pass through.
+        for c in [
+            "grep -rn 'a+b' .",
+            "grep -rn 'colou?r' .",
+            "grep -P 'foo' .",
+            "grep --include=*.rs foo .",
+            "grep foo",
+            "ls -la",
+            "cargo build",
+            "",
+            "find . -type d",
+            "find . -mtime -1",
+            "find . -name '*.rs' -delete",
+        ] {
+            assert_eq!(plan(c, &never), None, "should pass through: {c}");
+        }
     }
 }
