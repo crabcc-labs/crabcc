@@ -107,8 +107,10 @@ if [ -d "$SCCACHE_DIR_PATH" ] && ! runner_busy; then
 fi
 
 # ── tool-cache: prune downloaded toolchain entries older than 30 days ──────
+# Guard with runner_busy: setup-* actions resolve toolchains from this dir
+# throughout a job; deleting an entry while a step is still running breaks it.
 TOOL_CACHE_PATH="${RUNNER_TOOL_CACHE:-${CACHE_BASE}/tool-cache}"
-if [ -d "$TOOL_CACHE_PATH" ]; then
+if [ -d "$TOOL_CACHE_PATH" ] && ! runner_busy; then
   find "${TOOL_CACHE_PATH}" -mindepth 1 -maxdepth 2 -mtime +30 -exec rm -rf {} + 2>/dev/null || true
   log "tool-cache: pruned entries older than 30d from ${TOOL_CACHE_PATH}"
 fi

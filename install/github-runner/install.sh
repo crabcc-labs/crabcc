@@ -179,7 +179,7 @@ patch_runner_unit() {
 
   while IFS= read -r unit; do
     [ -z "$unit" ] && continue
-    if grep -q "TMPDIR=${CACHE_BASE}/tmp" "$unit"; then
+    if grep -q "TMPDIR=${CACHE_BASE}/tmp" "$unit" && grep -q "SCCACHE_CACHE_SIZE=" "$unit"; then
       echo "[runner] unit already patched: ${unit} — skipping"
       continue
     fi
@@ -189,10 +189,14 @@ patch_runner_unit() {
     # Insert the four Environment= lines immediately before [Install] so
     # they land inside [Service]. awk preserves the rest of the unit verbatim.
     awk -v base="${CACHE_BASE}" '
+      # Strip any pre-existing cache-env lines so re-runs are idempotent
+      # even when an older patch omitted some vars (e.g. SCCACHE_CACHE_SIZE).
+      /^Environment=(TMPDIR|CARGO_HOME|SCCACHE_DIR|SCCACHE_CACHE_SIZE|RUNNER_TOOL_CACHE)=/ { next }
       /^\[Install\]/ {
         print "Environment=TMPDIR=" base "/tmp"
         print "Environment=CARGO_HOME=" base "/cargo"
         print "Environment=SCCACHE_DIR=" base "/sccache"
+        print "Environment=SCCACHE_CACHE_SIZE=15G"
         print "Environment=RUNNER_TOOL_CACHE=" base "/tool-cache"
         print ""
       }
