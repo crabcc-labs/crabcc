@@ -38,15 +38,28 @@ gh auth status >/dev/null 2>&1 || { echo "gh not authenticated — run: gh auth 
 mkdir -p "$(dirname "$OUT")"
 chmod 700 "$(dirname "$OUT")" 2>/dev/null || true
 
+# Capture timestamp before dispatch so the poll can ignore pre-existing runs.
+DISPATCH_TS="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 echo "Dispatching load-copilot-env.yml on $REPO @ $REF ..."
 gh workflow run load-copilot-env.yml -R "$REPO" --ref "$REF"
 
-sleep 3
-RUN_ID="$(gh run list -R "$REPO" --workflow=load-copilot-env.yml --limit 1 --json databaseId -q '.[0].databaseId')"
-[[ -n "$RUN_ID" && "$RUN_ID" != "null" ]] || { echo "could not find workflow run" >&2; exit 11; }
+# Exponential backoff: wait for a run created at or after DISPATCH_TS.
+# Without the timestamp filter, `gh run list --limit 1` can grab an older
+# run that was already queued, leading to a download of stale artifacts.
+RUN_ID=""
+for delay in 3 6 12 24 48; do
+    sleep "$delay"
+    RUN_ID="$(gh run list -R "$REPO" --workflow=load-copilot-env.yml \
+        --limit 5 --json databaseId,createdAt \
+        -q "[.[] | select(.createdAt >= \"$DISPATCH_TS\")] | .[0].databaseId // empty" \
+        2>/dev/null || true)"
+    [[ -n "$RUN_ID" && "$RUN_ID" != "null" ]] && break
+done
+[[ -n "$RUN_ID" && "$RUN_ID" != "null" ]] \
+    || { echo "timed out waiting for workflow run (dispatched at $DISPATCH_TS)" >&2; exit 11; }
 
 echo "Waiting for run $RUN_ID ..."
-gh run watch "$RUN_ID" -R "$REPO" --exit-status
+timeout 300 gh run watch "$RUN_ID" -R "$REPO" --exit-status
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT

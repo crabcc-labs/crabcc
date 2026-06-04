@@ -292,10 +292,15 @@ else
         bash scripts/gen-summary.sh --quiet >> "$LOG" 2>&1 || true
         BODY_ARG=""
         [ -f ".summary/gen-summary.md" ] && BODY_ARG="--body-file .summary/gen-summary.md"
-        PR_URL="$(gh pr create \
+        # Capture stdout only; send stderr to log so error messages don't
+        # corrupt the URL. Extract the https URL explicitly rather than
+        # relying on tail -1 which breaks if gh emits warnings.
+        # shellcheck disable=SC2086
+        PR_OUT="$(gh pr create \
             --base "$BASE" \
             --title "$MSG" \
-            $BODY_ARG 2>&1 | tail -1 || true)"
+            $BODY_ARG 2>>"$LOG" || true)"
+        PR_URL="$(echo "$PR_OUT" | grep -oE 'https://github\.com/[^[:space:]]+' | tail -1 || true)"
         if [ -n "$PR_URL" ]; then
             step_ok 5 "$PR_URL"
         else
