@@ -46,11 +46,17 @@ pub fn signature(rule: &str, key: &str) -> String {
     format!("{rule}:{key}")
 }
 
-/// Has this signature been suppressed by a prior bad measurement?
+/// How long a suppression stays in effect. Bounded so a one-off bad
+/// measurement doesn't disable a rewrite forever — after the window the
+/// rewrite is tried (and re-measured) again. Keeps the loop to "recent"
+/// behaviour rather than an ever-growing permanent blocklist.
+const SUPPRESS_WINDOW_SECS: i64 = 7 * 24 * 60 * 60;
+
+/// Has this signature been suppressed by a *recent* bad measurement?
 pub fn is_suppressed(conn: &Connection, sig: &str) -> bool {
     conn.query_row(
-        "SELECT 1 FROM rewrite_suppress WHERE sig = ?1",
-        params![sig],
+        "SELECT 1 FROM rewrite_suppress WHERE sig = ?1 AND since_ts >= ?2",
+        params![sig, now_ts() - SUPPRESS_WINDOW_SECS],
         |_| Ok(()),
     )
     .is_ok()
@@ -108,8 +114,10 @@ pub fn measure_by_command(
         params![out_tokens, verdict, id],
     );
     if over_budget {
+        // OR REPLACE (not IGNORE): re-arm `since_ts` so the recency window
+        // in `is_suppressed` resets on each fresh bad measurement.
         let _ = conn.execute(
-            "INSERT OR IGNORE INTO rewrite_suppress (sig, rule, since_ts, reason) \
+            "INSERT OR REPLACE INTO rewrite_suppress (sig, rule, since_ts, reason) \
              SELECT sig, rule, ?2, ?3 FROM rewrite_log WHERE id = ?1",
             params![
                 id,

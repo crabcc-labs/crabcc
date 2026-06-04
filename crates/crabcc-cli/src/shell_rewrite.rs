@@ -338,13 +338,45 @@ fn rg_swap(o: &GrepOpts, pattern: &str, paths: &[String]) -> Rewrite {
     }
 }
 
-/// Is `rg` on PATH? Faithful swaps must never emit a command the agent's
-/// environment cannot run, or the rewrite itself becomes the error.
+/// Is `bin` on PATH? A swap must never emit a command the agent's
+/// environment can't run, or the rewrite itself becomes the error.
+fn on_path(bin: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|p| std::env::split_paths(&p).any(|dir| dir.join(bin).is_file()))
+}
+
 fn rg_on_path() -> bool {
-    let Some(path) = std::env::var_os("PATH") else {
-        return false;
-    };
-    std::env::split_paths(&path).any(|dir| dir.join("rg").is_file())
+    on_path("rg")
+}
+
+/// Programs whose output is large/unstructured enough that a compaction
+/// stage (RTK / Morph) pays off. Symbol queries are already tiny, so the
+/// crabcc engine rewrites that produce them are never compacted.
+const COMPACTABLE: &[&str] = &[
+    "cat", "gh", "git", "rg", "grep", "find", "curl", "jq", "tree",
+];
+
+/// First token of a simple (no-metacharacter) command, if it's worth
+/// piping through a compaction stage.
+fn compactable_program(cmd: &str) -> Option<String> {
+    let toks = tokenize(cmd)?;
+    let prog = toks.into_iter().next()?;
+    COMPACTABLE.contains(&prog.as_str()).then_some(prog)
+}
+
+/// Morph Compact is enabled iff a key is present (privacy gate).
+fn morph_enabled() -> bool {
+    std::env::var_os("MORPH_API_KEY").is_some()
+}
+
+/// An `rtk pipe <filter>` stage, iff the user opted in
+/// (`CRABCC_RTK_PIPE=<filter>`) and `rtk` is on PATH. The filter is the
+/// user's choice — rtk filters vary in aggressiveness, so we never guess.
+fn rtk_pipe_stage() -> Option<String> {
+    let filter = std::env::var("CRABCC_RTK_PIPE")
+        .ok()
+        .filter(|f| !f.trim().is_empty())?;
+    on_path("rtk").then(|| format!("rtk pipe {}", shq(&filter)))
 }
 
 /// Build the one-line provenance header prepended to the rewritten
@@ -389,39 +421,96 @@ pub fn run(root: &Path, db: &Path, command: &str, session_id: Option<&str>) -> R
         }
     };
 
-    let Some(rw) = plan(command, &is_symbol) else {
-        return Ok(());
+    // ── Stage 1: engine rewrite (grep/find -> rg / crabcc lookup refs).
+    // Dropped if it would emit `rg` without rg on PATH.
+    let planned =
+        plan(command, &is_symbol).filter(|rw| !rw.inner.starts_with("rg ") || rg_on_path());
+
+    // Open the dev-debug ledger only for an actual rewrite candidate, so
+    // the hot path (the vast majority of Bash commands, which don't
+    // rewrite) does zero SQLite work. Best-effort; `None` => skip
+    // suppression + logging, never block.
+    let conn = if planned.is_some() {
+        rewrite_log::open_internal()
+    } else {
+        None
     };
 
-    // A swap that produces an `rg` command is only safe if rg is present.
-    if rw.inner.starts_with("rg ") && !rg_on_path() {
-        return Ok(());
-    }
+    // A prior measurement may have suppressed this (rule, key) for not
+    // actually reducing tokens -> drop the engine rewrite.
+    let engine = planned.filter(|rw| match &conn {
+        Some(c) => !rewrite_log::is_suppressed(c, &rewrite_log::signature(rw.rule, &rw.key)),
+        None => true,
+    });
 
-    // Measure/learn loop (best-effort): a `(rule, key)` whose prior
-    // measurement showed it did not reduce tokens is suppressed, so it
-    // passes through unchanged here. Every emitted rewrite is logged for
-    // dev debugging + later measurement by the PostToolUse hook.
-    let sig = rewrite_log::signature(rw.rule, &rw.key);
-    let conn = rewrite_log::open_internal();
-    if let Some(c) = &conn {
-        if rewrite_log::is_suppressed(c, &sig) {
-            return Ok(());
+    // Base command + whether its output is worth compacting + the compact
+    // query. Symbol upgrades (track_op "refs") are already tiny -> never
+    // compacted; passthrough commands are compacted only when compactable.
+    let (base, compact_query, compact_worthy) = match &engine {
+        Some(rw) => (
+            rw.inner.clone(),
+            (rw.rule == "grep->rg").then(|| rw.key.clone()),
+            rw.track_op != "refs",
+        ),
+        None => (
+            command.to_string(),
+            None,
+            compactable_program(command).is_some(),
+        ),
+    };
+
+    // ── Stages 2-3: optional RTK filter, then Morph compact. Each is
+    // opt-in (CRABCC_RTK_PIPE + rtk on PATH; MORPH_API_KEY) and a stdin
+    // filter that degrades to passthrough, so the chain never loses output.
+    let mut stages: Vec<String> = vec![base];
+    let mut chain: Vec<&str> = Vec::new();
+    if compact_worthy {
+        if let Some(rtk) = rtk_pipe_stage() {
+            stages.push(rtk);
+            chain.push("rtk");
+        }
+        if morph_enabled() {
+            let mut m = String::from("crabcc morph compact");
+            if let Some(q) = &compact_query {
+                m.push_str(" --query ");
+                m.push_str(&shq(q));
+            }
+            stages.push(m);
+            chain.push("morph");
         }
     }
 
-    let saved = track::estimate_saved(rw.track_op, 0, 0);
-    let hdr = header(&rw, saved);
-    let wrapped = format!("printf '%s\\n' {}; {}", shq(&hdr), rw.inner);
+    // Nothing to do: neither an engine rewrite nor any post-stage.
+    if engine.is_none() && stages.len() == 1 {
+        return Ok(());
+    }
 
+    let inner = stages.join(" | ");
+    let saved = engine
+        .as_ref()
+        .map(|rw| track::estimate_saved(rw.track_op, 0, 0))
+        .unwrap_or(0);
+    let mut hdr = match &engine {
+        Some(rw) => header(rw, saved),
+        None => "## crabcc-rewrite [compact]".to_string(),
+    };
+    if !chain.is_empty() {
+        hdr.push_str(&format!(" | +{}", chain.join("+")));
+    }
+    let wrapped = format!("printf '%s\\n' {}; {}", shq(&hdr), inner);
+
+    let chain_str = chain.join("+");
     tracing::info!(
         target: "crabcc::shell::rewrite",
-        rule = rw.rule,
+        rule = engine.as_ref().map(|rw| rw.rule).unwrap_or("compact"),
         saved,
+        chain = chain_str.as_str(),
         session = session_id.unwrap_or(""),
         "rewrote agent shell command"
     );
-    track::record(rw.track_op, command, 0, &root.to_string_lossy(), 0);
+    if let Some(rw) = &engine {
+        track::record(rw.track_op, command, 0, &root.to_string_lossy(), 0);
+    }
 
     let out = serde_json::json!({
         "hookSpecificOutput": {
@@ -435,7 +524,8 @@ pub fn run(root: &Path, db: &Path, command: &str, session_id: Option<&str>) -> R
     // Logged after emitting so bookkeeping never delays the rewrite. We
     // store the *executed* (wrapped) command so the PostToolUse measure
     // can match it back by `tool_input.command`.
-    if let Some(c) = &conn {
+    if let (Some(c), Some(rw)) = (&conn, &engine) {
+        let sig = rewrite_log::signature(rw.rule, &rw.key);
         rewrite_log::log_event(
             c,
             session_id,
