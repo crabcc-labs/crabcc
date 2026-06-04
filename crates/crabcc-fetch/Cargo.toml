@@ -24,6 +24,12 @@ crawl = ["dep:rusqlite", "dep:url"]
 # feature is needed. Kept separate so `crawl` stays free of browser deps
 # for the lib/viz consumers.
 crawl-lightpanda = ["crawl", "dep:tokio-tungstenite", "dep:futures-util"]
+# Postgres-backed crawl frontier — a shared queue so multiple workers can
+# split one crawl (atomic claim via FOR UPDATE SKIP LOCKED).
+# open_frontier() prefers it when $CRABCC_CRAWL_PG is set and reachable,
+# falling back to the local SQLite frontier otherwise. Async
+# (tokio-postgres); the Frontier enum's methods are async.
+crawl-postgres = ["crawl", "dep:tokio-postgres"]
 
 [dependencies]
 anyhow      = { workspace = true }
@@ -44,6 +50,7 @@ url         = { version = "2", optional = true }
 bytes       = "1"
 tokio-tungstenite = { version = "0.29.0", default-features = false, features = ["connect", "handshake"], optional = true }
 futures-util = { version = "0.3.32", default-features = false, features = ["std", "sink"], optional = true }
+tokio-postgres = { version = "0.7.17", optional = true }
 
 [dev-dependencies]
 tempfile   = { workspace = true }

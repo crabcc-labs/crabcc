@@ -12,7 +12,7 @@
 
 use std::sync::Arc;
 
-use crabcc_fetch::crawl::{crawl, CrawlOpts, Fetcher, SqliteFrontier};
+use crabcc_fetch::crawl::{crawl, CrawlOpts, Fetcher, Frontier, SqliteFrontier};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -24,7 +24,7 @@ async fn main() -> anyhow::Result<()> {
     let max_pages: usize = args.next().and_then(|s| s.parse().ok()).unwrap_or(8);
 
     let opts = CrawlOpts::new(max_pages, max_depth);
-    let frontier = SqliteFrontier::open_in_memory()?;
+    let frontier = Frontier::Sqlite(SqliteFrontier::open_in_memory()?);
     let fetcher = Arc::new(Fetcher::auto(&opts.fetch, None)?);
 
     println!(
@@ -42,7 +42,7 @@ async fn main() -> anyhow::Result<()> {
     })
     .await?;
 
-    let (pages, queued) = frontier.counts().unwrap();
+    let (pages, queued) = frontier.counts().await.unwrap();
     println!(
         "\ndone: fetched={} errors={} discovered={} (archived={pages}, still_queued={queued})",
         report.fetched, report.errors, report.discovered

@@ -9,7 +9,8 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use crabcc_fetch::crawl::{
-    crawl, CrawlOpts, Fetcher, Protocol, ProxiflySource, ProxyPool, SqliteFrontier,
+    crawl, open_frontier, CrawlOpts, Fetcher, Frontier, Protocol, ProxiflySource, ProxyPool,
+    SqliteFrontier,
 };
 use crabcc_fetch::{url_host, FetchResult};
 use crabcc_memory::Palace;
@@ -49,10 +50,24 @@ pub fn run(
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    // Ephemeral working frontier; the durable output is the Palace
-    // archive (with --remember). A resumable on-disk frontier is a
-    // follow-up (`--state <path>` → open_frontier).
-    let frontier = SqliteFrontier::open_in_memory()?;
+    // Frontier backend: the shared Postgres queue when $CRABCC_CRAWL_PG is
+    // set (open_frontier falls back to local SQLite if it's unreachable or
+    // the crawl-postgres feature isn't built), otherwise an ephemeral
+    // in-memory SQLite frontier. The durable output is the Palace archive
+    // (with --remember) either way.
+    let frontier = match std::env::var("CRABCC_CRAWL_PG")
+        .ok()
+        .filter(|v| !v.is_empty())
+    {
+        Some(pg) => {
+            let fallback = root.join(".crabcc").join("crawl-frontier.db");
+            if let Some(parent) = fallback.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            rt.block_on(open_frontier(&fallback, Some(&pg)))?
+        }
+        None => Frontier::Sqlite(SqliteFrontier::open_in_memory()?),
+    };
     let fetcher = match proxify {
         Some(proto) => {
             let protocol: Protocol = proto.parse().map_err(|e: String| anyhow::anyhow!(e))?;

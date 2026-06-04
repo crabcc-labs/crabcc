@@ -152,31 +152,251 @@ impl SqliteFrontier {
     }
 }
 
-/// Open the crawl frontier, preferring the Hetzner Postgres backend and
+/// A crawl frontier backend: local SQLite (default, zero-infra) or a
+/// shared Postgres queue (multi-worker, behind `crawl-postgres`). The
+/// engine drives this; [`open_frontier`] chooses the backend.
+///
+/// Methods are `async` so the Postgres backend can await its client; the
+/// SQLite arm runs its synchronous rusqlite calls inline. A closed enum
+/// (rather than `dyn`) keeps the engine free of `async-trait` and dynamic
+/// dispatch.
+pub enum Frontier {
+    Sqlite(SqliteFrontier),
+    #[cfg(feature = "crawl-postgres")]
+    Postgres(PostgresFrontier),
+}
+
+// `unused_async` fires on the SQLite-only build (no `.await` in any arm);
+// the `async` is load-bearing once the Postgres backend is compiled in.
+#[allow(clippy::unused_async)]
+impl Frontier {
+    pub async fn enqueue(
+        &self,
+        url: &str,
+        depth: usize,
+        host: Option<&str>,
+    ) -> anyhow::Result<bool> {
+        match self {
+            Frontier::Sqlite(f) => f.enqueue(url, depth, host),
+            #[cfg(feature = "crawl-postgres")]
+            Frontier::Postgres(f) => f.enqueue(url, depth, host).await,
+        }
+    }
+
+    pub async fn claim(&self, limit: usize) -> anyhow::Result<Vec<Pending>> {
+        match self {
+            Frontier::Sqlite(f) => f.claim(limit),
+            #[cfg(feature = "crawl-postgres")]
+            Frontier::Postgres(f) => f.claim(limit).await,
+        }
+    }
+
+    pub async fn mark(&self, url: &str, state: &str) -> anyhow::Result<()> {
+        match self {
+            Frontier::Sqlite(f) => f.mark(url, state),
+            #[cfg(feature = "crawl-postgres")]
+            Frontier::Postgres(f) => f.mark(url, state).await,
+        }
+    }
+
+    pub async fn record_page(&self, r: &FetchResult, depth: usize) -> anyhow::Result<()> {
+        match self {
+            Frontier::Sqlite(f) => f.record_page(r, depth),
+            #[cfg(feature = "crawl-postgres")]
+            Frontier::Postgres(f) => f.record_page(r, depth).await,
+        }
+    }
+
+    pub async fn counts(&self) -> anyhow::Result<(usize, usize)> {
+        match self {
+            Frontier::Sqlite(f) => f.counts(),
+            #[cfg(feature = "crawl-postgres")]
+            Frontier::Postgres(f) => f.counts().await,
+        }
+    }
+}
+
+/// Shared Postgres-backed frontier — a single queue multiple crawl workers
+/// can split. `claim` uses `FOR UPDATE SKIP LOCKED` so each queued row goes
+/// to exactly one worker without blocking the others.
+///
+/// NOTE: compile-checked + SQL-reviewed, but **not** runtime-verified in CI
+/// (no Postgres in the sandbox). `open_frontier` falls back to SQLite when
+/// the server is unreachable, so a misconfigured `$CRABCC_CRAWL_PG` never
+/// hard-fails a crawl.
+#[cfg(feature = "crawl-postgres")]
+pub struct PostgresFrontier {
+    client: tokio_postgres::Client,
+}
+
+#[cfg(feature = "crawl-postgres")]
+impl PostgresFrontier {
+    /// Connect (libpq URL or key=value DSN), run the additive schema, and
+    /// requeue any rows a crashed worker left `inflight`.
+    pub async fn connect(conn_str: &str) -> anyhow::Result<Self> {
+        let (client, connection) = tokio_postgres::connect(conn_str, tokio_postgres::NoTls).await?;
+        // Drive the connection in the background; it resolves when the
+        // client is dropped at end of crawl.
+        tokio::spawn(async move {
+            if let Err(e) = connection.await {
+                tracing::warn!(target: "crabcc_fetch", error = %e, "postgres connection closed");
+            }
+        });
+        let me = Self { client };
+        me.init().await?;
+        Ok(me)
+    }
+
+    async fn init(&self) -> anyhow::Result<()> {
+        self.client
+            .batch_execute(
+                "CREATE TABLE IF NOT EXISTS frontier (
+                     url           TEXT PRIMARY KEY,
+                     depth         INTEGER NOT NULL,
+                     state         TEXT NOT NULL DEFAULT 'queued',
+                     host          TEXT,
+                     discovered_at BIGINT NOT NULL DEFAULT extract(epoch from now())::bigint
+                 );
+                 CREATE INDEX IF NOT EXISTS frontier_state_depth ON frontier(state, depth);
+                 CREATE TABLE IF NOT EXISTS pages (
+                     url              TEXT PRIMARY KEY,
+                     status           INTEGER,
+                     title            TEXT,
+                     content_markdown TEXT,
+                     error            TEXT,
+                     depth            INTEGER,
+                     fetched_at       BIGINT NOT NULL DEFAULT extract(epoch from now())::bigint
+                 );
+                 UPDATE frontier SET state='queued' WHERE state='inflight';",
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn enqueue(&self, url: &str, depth: usize, host: Option<&str>) -> anyhow::Result<bool> {
+        let n = self
+            .client
+            .execute(
+                "INSERT INTO frontier(url, depth, state, host) VALUES ($1,$2,'queued',$3)
+                 ON CONFLICT (url) DO NOTHING",
+                &[&url, &(depth as i32), &host],
+            )
+            .await?;
+        Ok(n > 0)
+    }
+
+    async fn claim(&self, limit: usize) -> anyhow::Result<Vec<Pending>> {
+        // Atomic multi-worker claim: lock the shallowest queued rows,
+        // skipping any another worker already holds, and flip them
+        // inflight in one statement.
+        let rows = self
+            .client
+            .query(
+                "UPDATE frontier SET state='inflight'
+                 WHERE url IN (
+                     SELECT url FROM frontier WHERE state='queued'
+                     ORDER BY depth, discovered_at
+                     LIMIT $1
+                     FOR UPDATE SKIP LOCKED
+                 )
+                 RETURNING url, depth",
+                &[&(limit as i64)],
+            )
+            .await?;
+        let mut out: Vec<Pending> = rows
+            .iter()
+            .map(|r| Pending {
+                url: r.get::<_, String>(0),
+                depth: r.get::<_, i32>(1) as usize,
+            })
+            .collect();
+        out.sort_by_key(|p| p.depth);
+        Ok(out)
+    }
+
+    async fn mark(&self, url: &str, state: &str) -> anyhow::Result<()> {
+        self.client
+            .execute("UPDATE frontier SET state=$2 WHERE url=$1", &[&url, &state])
+            .await?;
+        Ok(())
+    }
+
+    async fn record_page(&self, r: &FetchResult, depth: usize) -> anyhow::Result<()> {
+        self.client
+            .execute(
+                "INSERT INTO pages(url,status,title,content_markdown,error,depth)
+                 VALUES ($1,$2,$3,$4,$5,$6)
+                 ON CONFLICT (url) DO UPDATE SET
+                     status=EXCLUDED.status, title=EXCLUDED.title,
+                     content_markdown=EXCLUDED.content_markdown,
+                     error=EXCLUDED.error, depth=EXCLUDED.depth",
+                &[
+                    &r.url,
+                    &(r.status as i32),
+                    &r.title,
+                    &r.content_markdown,
+                    &r.error,
+                    &(depth as i32),
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn counts(&self) -> anyhow::Result<(usize, usize)> {
+        let pages: i64 = self
+            .client
+            .query_one("SELECT COUNT(*) FROM pages", &[])
+            .await?
+            .get(0);
+        let queued: i64 = self
+            .client
+            .query_one("SELECT COUNT(*) FROM frontier WHERE state='queued'", &[])
+            .await?
+            .get(0);
+        Ok((pages as usize, queued as usize))
+    }
+}
+
+/// Open the crawl frontier, preferring the shared Postgres backend and
 /// falling back to a local SQLite file at `local_path`.
 ///
 /// `pg_url` is the shared-queue connection string (typically from
-/// `$CRABCC_CRAWL_PG`). When it's `Some` but the Postgres backend isn't
-/// available — not yet implemented today, unreachable tomorrow — we log
-/// and drop to the local SQLite frontier so a crawl never hard-fails on
-/// missing infrastructure.
-pub fn open_frontier(local_path: &Path, pg_url: Option<&str>) -> anyhow::Result<SqliteFrontier> {
+/// `$CRABCC_CRAWL_PG`). When it's `Some` but the Postgres backend is
+/// unreachable — or not compiled in — we log (host only; a DSN can embed
+/// `user:password@`, which must never reach the logs) and drop to the
+/// local SQLite frontier, so a crawl never hard-fails on missing infra.
+pub async fn open_frontier(local_path: &Path, pg_url: Option<&str>) -> anyhow::Result<Frontier> {
     if let Some(pg) = pg_url {
-        // TODO(crawl-postgres): probe `pg`; on a successful connection
-        // return the Postgres-backed frontier instead of falling through.
-        // Log only the host — a connection string can embed
-        // `user:password@`, which must never reach the logs.
         let redacted = url::Url::parse(pg)
             .ok()
             .and_then(|u| u.host_str().map(str::to_string))
             .unwrap_or_else(|| "<set>".to_string());
+        #[cfg(feature = "crawl-postgres")]
+        match PostgresFrontier::connect(pg).await {
+            Ok(f) => {
+                tracing::info!(
+                    target: "crabcc_fetch",
+                    pg_host = %redacted,
+                    "using shared postgres crawl frontier",
+                );
+                return Ok(Frontier::Postgres(f));
+            }
+            Err(e) => tracing::warn!(
+                target: "crabcc_fetch",
+                pg_host = %redacted,
+                error = %e,
+                "postgres unreachable; using local SQLite frontier",
+            ),
+        }
+        #[cfg(not(feature = "crawl-postgres"))]
         tracing::warn!(
             target: "crabcc_fetch",
             pg_host = %redacted,
-            "postgres crawl backend not wired yet; using local SQLite frontier"
+            "postgres backend not compiled (build with --features crawl-postgres); using local SQLite frontier",
         );
     }
-    SqliteFrontier::open(local_path)
+    Ok(Frontier::Sqlite(SqliteFrontier::open(local_path)?))
 }
 
 #[cfg(test)]

@@ -50,6 +50,10 @@ telemetry = ["dep:tracing-subscriber", "dep:tracing-appender"]
 # the base install lean — enable with
 # `cargo install --features crawl-lightpanda` (or `task` config).
 crawl-lightpanda = ["crabcc-fetch/crawl-lightpanda"]
+# Shared Postgres crawl frontier for `crabcc crawl` (multi-worker queue via
+# $CRABCC_CRAWL_PG). Off by default — without it, open_frontier always uses
+# the local SQLite frontier. Enable with `cargo install --features crawl-postgres`.
+crawl-postgres = ["crabcc-fetch/crawl-postgres"]
 
 [dependencies]
 walkdir = "2.5.0"
