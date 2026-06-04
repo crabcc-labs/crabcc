@@ -1,0 +1,49 @@
+name: runner-gc
+
+# On-demand disk reclamation for a self-hosted Hetzner runner.
+#
+# Scheduled, fleet-wide GC is handled by a host-local systemd timer
+# (`actions-runner-gc.timer`, installed by install/github-runner/install.sh)
+# — a GitHub Actions cron can't cover the whole fleet because all runners
+# share the same labels, so a scheduled job only ever lands on one host.
+#
+# This workflow is the manual/emergency escape hatch: trigger it to prune
+# whichever runner it lands on (e.g. one box reported >85% in its GC logs)
+# without SSHing in. It runs the exact same script the timer does.
+
+on:
+  workflow_dispatch:
+    inputs:
+      deep:
+        description: "Aggressive prune: all unused Docker images + build cache regardless of age"
+        type: boolean
+        default: false
+
+concurrency:
+  group: runner-gc
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  gc:
+    name: reclaim disk
+    runs-on: [self-hosted, linux, hetzner]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+      - name: runner-gc
+        shell: bash
+        run: |
+          ARGS=""
+          [ "${{ inputs.deep }}" = "true" ] && ARGS="--deep"
+          # Tee the script's df/prune output into the job summary too.
+          {
+            echo "## runner-gc on $(hostname)"
+            echo '```'
+            bash install/github-runner/runner-gc.sh $ARGS
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
