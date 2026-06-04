@@ -511,6 +511,13 @@ enum Cmd {
         /// Output format: `json` (default) or `text`.
         #[arg(long, default_value = "json")]
         format: String,
+        /// Route fetches through a rotating pool of free public proxies of
+        /// this protocol (`http`|`https`|`socks4`|`socks5`), self-healing
+        /// as dead ones are found. Off by default. Free proxies are flaky
+        /// and can MITM — every fetched page is already treated as
+        /// untrusted; never crawl authenticated targets through them.
+        #[arg(long, value_name = "PROTOCOL")]
+        proxify: Option<String>,
     },
     /// Start the localhost call-graph viewer (issue #64). Binds to 127.0.0.1
     /// by default — pass `--bind 0.0.0.0` only on a trusted LAN; the server
@@ -1181,6 +1188,7 @@ fn main() -> Result<()> {
         concurrency,
         remember,
         format,
+        proxify,
     }) = cli.cmd.as_ref()
     {
         return crawl_cmd::run(
@@ -1192,6 +1200,7 @@ fn main() -> Result<()> {
             *concurrency,
             *remember,
             format,
+            proxify.as_deref(),
         );
     }
 
@@ -2003,7 +2012,11 @@ fn run_shell(root: &Path, db: &Path, op: &ShellOp) -> Result<()> {
                 let resolved = root_resolver::resolve(Some(hook_cwd.as_path()))?;
                 eff_root = resolved.source_dir.clone();
                 eff_db = resolved.db();
-                (eff_root.as_path(), eff_db.as_path(), Some(hook_cwd.as_path()))
+                (
+                    eff_root.as_path(),
+                    eff_db.as_path(),
+                    Some(hook_cwd.as_path()),
+                )
             } else {
                 (root, db, None)
             };

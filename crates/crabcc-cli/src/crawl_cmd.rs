@@ -8,7 +8,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use anyhow::Result;
-use crabcc_fetch::crawl::{crawl, CrawlOpts, Fetcher, SqliteFrontier};
+use crabcc_fetch::crawl::{
+    crawl, CrawlOpts, Fetcher, Protocol, ProxiflySource, ProxyPool, SqliteFrontier,
+};
 use crabcc_fetch::{url_host, FetchResult};
 use crabcc_memory::Palace;
 
@@ -20,6 +22,8 @@ use crabcc_memory::Palace;
 /// - `remember`: persist each successful page into `<root>` memory under
 ///   wing=`crawl`, room=host, source_id=url.
 /// - `format`: `json` (default) or `text`.
+/// - `proxify`: when set, route fetches through a rotating proxifly pool
+///   of that protocol (`http`/`https`/`socks4`/`socks5`).
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     root: &Path,
@@ -30,6 +34,7 @@ pub fn run(
     concurrency: usize,
     remember: bool,
     format: &str,
+    proxify: Option<&str>,
 ) -> Result<()> {
     if url_host(seed).is_none() {
         anyhow::bail!("crawl: `{seed}` is not an http(s) URL");
@@ -48,7 +53,20 @@ pub fn run(
     // archive (with --remember). A resumable on-disk frontier is a
     // follow-up (`--state <path>` → open_frontier).
     let frontier = SqliteFrontier::open_in_memory()?;
-    let fetcher = Arc::new(Fetcher::auto(&opts.fetch, None)?);
+    let fetcher = match proxify {
+        Some(proto) => {
+            let protocol: Protocol = proto.parse().map_err(|e: String| anyhow::anyhow!(e))?;
+            let loader = reqwest::Client::builder().build()?;
+            let source = ProxiflySource::new(protocol);
+            let pool = rt.block_on(ProxyPool::load(&loader, &source))?;
+            if pool.is_empty() {
+                anyhow::bail!("crawl --proxify {proto}: proxy source returned no proxies");
+            }
+            eprintln!("[crawl] proxify: {} {proto} proxies loaded", pool.len());
+            Arc::new(Fetcher::http_with_pool(&opts.fetch, Arc::new(pool))?)
+        }
+        None => Arc::new(Fetcher::auto(&opts.fetch, None)?),
+    };
 
     let palace = if remember {
         Some(Palace::open(root)?)

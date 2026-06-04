@@ -96,7 +96,9 @@ fastembed = "5"
 tiny_http = "0.12"
 serde_yml = "0.0.13"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "webpki-roots"] }
+# `socks` so `crabcc crawl --proxify socks4|socks5` can actually route
+# through SOCKS proxies (without it reqwest::Proxy::all rejects socks:// URLs).
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "webpki-roots", "socks"] }
 linkify = "0.11"
 # html2md 0.2.x ships with `crate-type = ["rlib", "dylib", "staticlib"]`,
 # which forces a `panic_unwind` runtime link and is incompatible with

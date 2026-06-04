@@ -147,11 +147,7 @@ fn shq(s: &str) -> String {
 /// Plan a rewrite for `cmd`. `is_symbol` is consulted only for the
 /// bare-identifier grep/rg case, so the (DB-backed) predicate is never
 /// invoked for the common non-search command.
-pub fn plan(
-    cmd: &str,
-    is_symbol: &dyn Fn(&str) -> bool,
-    cwd: Option<&Path>,
-) -> Option<Rewrite> {
+pub fn plan(cmd: &str, is_symbol: &dyn Fn(&str) -> bool, cwd: Option<&Path>) -> Option<Rewrite> {
     let toks = tokenize(cmd)?;
     let (prog, rest) = toks.split_first()?;
     match prog.as_str() {
@@ -314,7 +310,11 @@ fn plan_grep(args: &[String], is_symbol: &dyn Fn(&str) -> bool) -> Option<Rewrit
     // rg always recurses into directories, so the swap would silently add
     // results that grep never returns. Passthrough when any explicit path
     // is a directory and the user didn't opt into recursion.
-    if !o.recursive && paths.iter().any(|p| std::fs::metadata(p).map_or(false, |m| m.is_dir())) {
+    if !o.recursive
+        && paths
+            .iter()
+            .any(|p| std::fs::metadata(p).is_ok_and(|m| m.is_dir()))
+    {
         return None;
     }
 
@@ -799,7 +799,9 @@ mod tests {
         assert_eq!(unknown.inner, "rg -n Nonexistent .");
         assert_eq!(unknown.track_op, "rewrite");
         assert_eq!(
-            plan("grep -rn Store src/", &only_store, None).unwrap().inner,
+            plan("grep -rn Store src/", &only_store, None)
+                .unwrap()
+                .inner,
             "rg -n Store src/"
         );
         assert_eq!(
@@ -835,7 +837,9 @@ mod tests {
         assert!(plan("find . -name '*.rs'", &never, None).is_none());
 
         assert_eq!(
-            plan("find . -name '*.rs' -type f", &never, None).unwrap().inner,
+            plan("find . -name '*.rs' -type f", &never, None)
+                .unwrap()
+                .inner,
             "rg --files -g '*.rs' ."
         );
         assert_eq!(
@@ -852,7 +856,10 @@ mod tests {
             plan("cat config.json", &never, None).unwrap().inner,
             "jq -c . config.json || cat config.json"
         );
-        assert_eq!(plan("cat src/a.json", &never, None).unwrap().rule, "cat-json->jq");
+        assert_eq!(
+            plan("cat src/a.json", &never, None).unwrap().rule,
+            "cat-json->jq"
+        );
         // Non-source text, flags, or multiple files are left to plain `cat`.
         assert_eq!(plan("cat README.md", &never, None), None);
         assert_eq!(plan("cat config.yaml", &never, None), None);
