@@ -22,11 +22,6 @@ path = "src/bin/ccc.rs"
 # binary still gets the +5-12% on alloc-heavy hot paths.
 default = []
 jemalloc = ["dep:tikv-jemallocator"]
-# v3.0 (#62) — surfaces the SandboxRuntime stub. The actual microsandbox
-# integration is deferred per `install/agent-runtime.md`; this feature
-# only flips on the trait impl + a clearer "not yet implemented" error
-# so callers can write code against the v3.0 API today.
-agent-sandbox = []
 # Dispatch agent runs through the BullMQ-backed crabcc-agents worker
 # instead of the in-process subprocess runtime. Pulls in bullmq-rs +
 # redis. Off by default — vanilla CLI users don't pay the dep cost.

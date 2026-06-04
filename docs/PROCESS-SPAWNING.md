@@ -38,9 +38,9 @@ to copy the full parent env into the child's address space.
 - Inherited `TERM`/`COLORTERM`/`SHELL` keeps the agent's own coloured
   output / prompt rendering aligned with the user's terminal, which
   the user has already configured.
-- The future `SandboxRuntime` (issue #62) will use `env_clear()` —
-  sandboxing is the right place for that level of control. Non-sandbox
-  is the "you trust your shell" path.
+- A future sandboxed runtime would use `env_clear()` — sandboxing is the
+  right place for that level of control. The subprocess path is "you
+  trust your shell".
 
 **When to revisit:** if we ever spawn agents in tight loops (e.g. a
 parallel-evaluation sweep, or a CI matrix that fans out across

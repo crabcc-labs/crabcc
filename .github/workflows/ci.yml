@@ -214,9 +214,14 @@ jobs:
           cache-all-crates: "true"
 
       - name: install cargo-nextest (JUnit reporter)
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest
+        run: |
+          # Use the cached binary if present; compile from source otherwise.
+          # taiki-e/install-action@v2 was consistently failing on this runner
+          # (exit 1 in <100ms before any output) — cargo install is slower but
+          # always works from the registry without hitting GitHub Releases.
+          if ! cargo nextest --version &>/dev/null 2>&1; then
+            cargo install cargo-nextest --locked
+          fi
 
       # Scope policy:
       #   - push to main → full workspace (covers any cross-crate fallout)
