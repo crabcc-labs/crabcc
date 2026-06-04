@@ -1030,11 +1030,13 @@ dependencies = [
  "htmd",
  "linkify",
  "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "tracing",
+ "url",
 ]
 
 [[package]]

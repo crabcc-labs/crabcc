@@ -11,6 +11,13 @@ repository.workspace   = true
 # `/api/memory/ingest` HTTP handler) depend on this so per-domain
 # extractors / SSRF guards / size caps live in exactly one place.
 
+[features]
+# Multi-page crawler: frontier + link-following + politeness on top of
+# the single-shot fetch primitives. Pulls `rusqlite` (the local SQLite
+# frontier — zero-infra fallback when the Hetzner Postgres backend is
+# unreachable) and `url` (robust relative→absolute link resolution).
+crawl = ["dep:rusqlite", "dep:url"]
+
 [dependencies]
 anyhow      = { workspace = true }
 serde       = { workspace = true }
@@ -20,6 +27,10 @@ reqwest     = { workspace = true }
 linkify     = { workspace = true }
 htmd        = { workspace = true }
 tracing     = { workspace = true }
+# crawl-only: local frontier store + URL resolution. Optional so the
+# base library doesn't pull SQLite into `crabcc-viz` / CLI fetch builds.
+rusqlite    = { workspace = true, optional = true }
+url         = { version = "2", optional = true }
 # Used by the streamed-body cap in fetch_one. Pulled transitively via
 # reqwest, but pinned explicitly so a reqwest bump that drops the
 # re-export breaks here, not at use sites.
