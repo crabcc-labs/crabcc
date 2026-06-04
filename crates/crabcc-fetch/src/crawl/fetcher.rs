@@ -32,9 +32,15 @@ use crate::{
 /// for link harvesting. `raw_html` is `None` for non-HTML bodies (e.g.
 /// the Reddit JSON path), transport errors, or transports that don't
 /// expose markup.
+///
+/// `final_url` is the URL *after* any redirects — the body came from
+/// there, so relative links must resolve against it and host-scoping
+/// must compare against it, not the originally-requested URL. Falls back
+/// to the request URL when no redirect occurred or on error.
 pub struct FetchedPage {
     pub result: FetchResult,
     pub raw_html: Option<String>,
+    pub final_url: String,
 }
 
 /// reqwest-backed transport: fast, no JavaScript execution. The fallback
@@ -68,16 +74,20 @@ impl HttpFetcher {
             return FetchedPage {
                 result: crate::fetch_one(&self.client, url, self.max_body).await,
                 raw_html: None,
+                final_url: url.into(),
             };
         }
-        let host = url_host(url).unwrap_or_default();
         match self.client.get(url).send().await {
             Err(e) => FetchedPage {
                 result: error_result(url, e.to_string()),
                 raw_html: None,
+                final_url: url.into(),
             },
             Ok(resp) => {
                 let status = resp.status().as_u16();
+                // The effective URL after redirects — the body is from
+                // here, so links resolve and scope against it.
+                let final_url = resp.url().to_string();
                 match read_body_capped(resp, self.max_body).await {
                     Err(e) => FetchedPage {
                         result: FetchResult {
@@ -89,8 +99,10 @@ impl HttpFetcher {
                             error: Some(e),
                         },
                         raw_html: None,
+                        final_url,
                     },
                     Ok(html) => {
+                        let host = url_host(&final_url).unwrap_or_default();
                         let (title, markdown) = clean_html(host, &html);
                         FetchedPage {
                             result: FetchResult {
@@ -102,6 +114,7 @@ impl HttpFetcher {
                                 error: None,
                             },
                             raw_html: Some(html),
+                            final_url,
                         }
                     }
                 }

@@ -89,7 +89,10 @@ pub async fn crawl(
     fetcher: Arc<Fetcher>,
     mut on_page: impl FnMut(&FetchResult, usize),
 ) -> anyhow::Result<CrawlReport> {
-    let seed_host = url_host(seed).unwrap_or_default().to_string();
+    // Updated to the seed's *effective* host once fetched, so a seed
+    // that redirects (example.com → www.example.com) scopes to where it
+    // landed rather than dropping every link as off-host.
+    let mut seed_host = url_host(seed).unwrap_or_default().to_string();
     frontier.enqueue(seed, 0, Some(&seed_host))?;
 
     let mut report = CrawlReport::default();
@@ -135,11 +138,12 @@ pub async fn crawl(
                             error: Some(reason),
                         };
                         return (
-                            url,
+                            url.clone(),
                             depth,
                             FetchedPage {
                                 result,
                                 raw_html: None,
+                                final_url: url,
                             },
                         );
                     }
@@ -167,9 +171,18 @@ pub async fn crawl(
             report.fetched += 1;
             on_page(&page.result, depth);
 
+            // The seed is the only depth-0 page; adopt its post-redirect
+            // host as the same-host scope.
+            if depth == 0 {
+                if let Some(h) = url_host(&page.final_url) {
+                    seed_host = h.to_string();
+                }
+            }
+
             if depth < opts.max_depth {
                 if let Some(html) = &page.raw_html {
-                    for link in extract_links(&url, html) {
+                    // Resolve against the effective (post-redirect) URL.
+                    for link in extract_links(&page.final_url, html) {
                         if opts.same_host && url_host(&link).unwrap_or_default() != seed_host {
                             continue;
                         }
@@ -220,11 +233,18 @@ mod tests {
                     .find(|(p, _)| *p == path)
                     .map(|(_, b)| *b)
                     .unwrap_or("");
-                let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                );
+                // A body of `302:/dest` emits a redirect to /dest.
+                let resp = if let Some(loc) = body.strip_prefix("302:") {
+                    format!(
+                        "HTTP/1.1 302 Found\r\nLocation: {loc}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                } else {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                };
                 let _ = stream.write_all(resp.as_bytes());
             }
         });
@@ -287,6 +307,37 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(report.fetched, 2);
+    }
+
+    #[tokio::test]
+    async fn resolves_links_against_redirected_url() {
+        // /old → /new/, whose body links to a *relative* `page`. The link
+        // must resolve against /new/ (→ /new/page), not the seed /old.
+        let base = spawn_server(vec![
+            ("/old", "302:/new/"),
+            ("/new/", r#"<a href="page">deeper</a>"#),
+            ("/new/page", "leaf"),
+        ]);
+        let seed = format!("{base}/old");
+
+        let frontier = SqliteFrontier::open_in_memory().unwrap();
+        let opts = CrawlOpts::new(50, 1);
+        let fetcher = Arc::new(Fetcher::http(&opts.fetch, None).unwrap());
+
+        let mut seen = Vec::new();
+        crawl(&seed, &opts, &frontier, fetcher, |r, _| {
+            seen.push(r.url.clone())
+        })
+        .await
+        .unwrap();
+
+        // The relative link resolved against /new/, so /new/page was
+        // crawled; a naive resolve against /old would have produced
+        // /page (404, never linked) instead.
+        assert!(
+            seen.iter().any(|u| u.ends_with("/new/page")),
+            "expected /new/page to be discovered, saw: {seen:?}"
+        );
     }
 
     #[tokio::test]
