@@ -306,6 +306,7 @@ impl LanguageServer for Backend {
         // a user might have changed outside the editor (git pull, etc.).
         let store = self.store.clone();
         let graph = self.graph.clone();
+        let fts = self.fts.clone();
         tokio::task::spawn_blocking(move || {
             ensure_store(&store, &cfg.db_path);
             let store_guard = store.lock().unwrap();
@@ -313,6 +314,10 @@ impl LanguageServer for Backend {
                 let _ = index::refresh(&cfg.repo_root, store);
                 drop(store_guard);
                 *graph.lock().unwrap() = None;
+                // Drop the cached fuzzy/prefix snapshot — `refresh` mutated
+                // the symbol table, so the next workspace/symbol request must
+                // rebuild `fts` from the updated store (mirrors `graph`).
+                *fts.lock().unwrap() = None;
             }
         });
         let _ = p; // saved file was already re-indexed by did_change/did_open.
@@ -746,8 +751,12 @@ impl Backend {
         .await
         .unwrap_or_else(|e| Err(anyhow::anyhow!("join: {e}")));
 
-        if let Err(e) = result {
-            warn!(target: "ucracc_lsp", ?uri, error = %e, "index_uri failed");
+        match result {
+            // The store just changed — drop the cached fuzzy/prefix snapshot
+            // so the next workspace/symbol request rebuilds it from the
+            // updated symbol table instead of serving a stale name list.
+            Ok(()) => *self.fts.lock().unwrap() = None,
+            Err(e) => warn!(target: "ucracc_lsp", ?uri, error = %e, "index_uri failed"),
         }
     }
 }

@@ -423,6 +423,70 @@ async fn cache_invalidates_on_did_change() {
     );
 }
 
+/// `workspace/symbol` relies on a cached fuzzy/prefix snapshot of the symbol
+/// table. That snapshot MUST be dropped on edits, or prefix search keeps
+/// serving the pre-edit name list. (Regression guard for the P2 raised on the
+/// Tantivy-removal PR: the snapshot was never invalidated.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn workspace_symbol_reflects_did_change() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().to_path_buf();
+    write_fixtures(&root);
+    build_index(&root);
+
+    let svc = boot(root.clone()).await;
+    let uri = uri_for(&root, "ucracc.rs");
+    open_doc(&svc, uri.clone(), "rust", fixtures::RUST_SRC).await;
+
+    async fn has_symbol(
+        svc: &LspService<ucracc_lsp::server::Backend>,
+        query: &str,
+    ) -> bool {
+        svc.inner()
+            .symbol(WorkspaceSymbolParams {
+                query: query.to_string(),
+                partial_result_params: PartialResultParams::default(),
+                work_done_progress_params: WorkDoneProgressParams::default(),
+            })
+            .await
+            .expect("workspace/symbol")
+            .map(|syms| syms.iter().any(|s| s.name == query))
+            .unwrap_or(false)
+    }
+
+    // Prime the snapshot and confirm the post-rename name is absent first.
+    assert!(
+        has_symbol(&svc, "UcraccStore").await,
+        "baseline UcraccStore not found"
+    );
+    assert!(
+        !has_symbol(&svc, "UcraccStoreV2").await,
+        "UcraccStoreV2 present before the edit?!"
+    );
+
+    // Rename UcraccStore -> UcraccStoreV2 across the whole file.
+    let renamed = fixtures::RUST_SRC.replace("UcraccStore", "UcraccStoreV2");
+    svc.inner()
+        .did_change(DidChangeTextDocumentParams {
+            text_document: VersionedTextDocumentIdentifier {
+                uri: uri.clone(),
+                version: 2,
+            },
+            content_changes: vec![TextDocumentContentChangeEvent {
+                range: None,
+                range_length: None,
+                text: renamed.clone(),
+            }],
+        })
+        .await;
+
+    // The snapshot must have been invalidated, so the new name is searchable.
+    assert!(
+        has_symbol(&svc, "UcraccStoreV2").await,
+        "workspace/symbol served a stale fts snapshot after did_change"
+    );
+}
+
 /// Incremental reparse path: send a small-range `didChange` (not a full
 /// replace), then assert the LSP re-indexes correctly. Catches regressions
 /// where the cached `Tree` is reused without applying the InputEdit, or

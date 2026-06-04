@@ -55,7 +55,13 @@ impl Fts {
     /// Build the in-memory index from the live SQLite store. Cheap — a single
     /// `iter_all_symbols` scan and a `to_lowercase` per name.
     pub fn from_store(store: &Store) -> Result<Self> {
-        let symbols = store.iter_all_symbols()?;
+        Ok(Self::from_symbols(store.iter_all_symbols()?))
+    }
+
+    /// Build directly from in-memory symbols, bypassing SQLite. `from_store`
+    /// delegates here; benches and perf-guard tests use it to spin up large
+    /// synthetic corpora without paying the indexing cost.
+    pub fn from_symbols(symbols: impl IntoIterator<Item = crate::types::Symbol>) -> Self {
         let rows = symbols
             .into_iter()
             .map(|s| Row {
@@ -67,7 +73,7 @@ impl Fts {
                 name: s.name,
             })
             .collect();
-        Ok(Self { rows })
+        Self { rows }
     }
 
     /// Number of searchable symbols.
