@@ -169,12 +169,13 @@ fn canonicalise_url(s: &str) -> (String, String) {
 }
 
 fn cache_key(input: &str) -> String {
-    let digest = Sha256::digest(input.as_bytes());
-    let mut s = String::with_capacity(16);
-    for b in digest.iter().take(8) {
-        let _ = write!(s, "{:02x}", b);
-    }
-    s
+    Sha256::digest(input.as_bytes())
+        .iter()
+        .take(8)
+        .fold(String::with_capacity(16), |mut s, b| {
+            write!(s, "{b:02x}").unwrap();
+            s
+        })
 }
 
 /// When true, index artifacts live under `<repo>/.crabcc/` (legacy).

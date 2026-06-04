@@ -261,12 +261,10 @@ pub fn refresh_delta(root: &Path, store: &Store) -> Result<RefreshDelta> {
     }
 
     // Delete rows for files no longer on disk.
-    for rel in in_db.keys() {
-        if !seen.contains(rel) {
-            store.delete_file(rel)?;
-            delta.stats.deleted += 1;
-            delta.removed.push(rel.clone());
-        }
+    for rel in in_db.keys().filter(|r| !seen.contains(*r)) {
+        store.delete_file(rel)?;
+        delta.stats.deleted += 1;
+        delta.removed.push(rel.clone());
     }
 
     // Sort each bucket so the JSON output is deterministic — matters for

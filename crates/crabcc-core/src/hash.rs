@@ -2,14 +2,12 @@ use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    let mut h = Sha256::new();
-    h.update(bytes);
-    let digest: [u8; 32] = h.finalize().into();
-    let mut s = String::with_capacity(64);
-    for b in digest {
-        let _ = write!(&mut s, "{b:02x}");
-    }
-    s
+    Sha256::digest(bytes)
+        .iter()
+        .fold(String::with_capacity(64), |mut s, b| {
+            write!(s, "{b:02x}").unwrap();
+            s
+        })
 }
 
 /// Wrap a query result body with a SHA-256 fingerprint envelope, so an
