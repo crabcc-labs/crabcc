@@ -18,10 +18,12 @@ repository.workspace   = true
 # unreachable) and `url` (robust relative→absolute link resolution).
 crawl = ["dep:rusqlite", "dep:url"]
 # Lightpanda CDP rendered-DOM transport (spawn-and-manage-locally browser,
-# persistent profile/cookies). Adds the process lifecycle today; the CDP
-# driver dep lands with the fetch impl. Kept separate so `crawl` stays
-# free of browser deps for the lib/viz consumers.
-crawl-lightpanda = ["crawl"]
+# persistent profile/cookies). Pulls a minimal ws:// CDP client
+# (tokio-tungstenite, no TLS) + futures-util. The browser is spawned with
+# std::process (sync, at fetcher construction), so no tokio `process`
+# feature is needed. Kept separate so `crawl` stays free of browser deps
+# for the lib/viz consumers.
+crawl-lightpanda = ["crawl", "dep:tokio-tungstenite", "dep:futures-util"]
 
 [dependencies]
 anyhow      = { workspace = true }
@@ -40,6 +42,8 @@ url         = { version = "2", optional = true }
 # reqwest, but pinned explicitly so a reqwest bump that drops the
 # re-export breaks here, not at use sites.
 bytes       = "1"
+tokio-tungstenite = { version = "0.29.0", default-features = false, features = ["connect", "handshake"], optional = true }
+futures-util = { version = "0.3.32", default-features = false, features = ["std", "sink"], optional = true }
 
 [dev-dependencies]
 tempfile   = { workspace = true }

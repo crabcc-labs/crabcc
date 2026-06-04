@@ -39,6 +39,13 @@ viz = ["dep:crabcc-viz"]
 # `tracing-subscriber` + `tracing-appender` init pulls in. Off by
 # default for a lean default install.
 telemetry = ["dep:tracing-subscriber", "dep:tracing-appender"]
+# Lightpanda CDP rendered-DOM transport for `crabcc crawl` (JS-built pages
+# render to real DOM). Adds a minimal ws:// CDP client (no TLS) to the
+# build; the transport auto-detects a `lightpanda` binary / endpoint and
+# falls back to the native HTTP fetch when absent. Off by default to keep
+# the base install lean — enable with
+# `cargo install --features crawl-lightpanda` (or `task` config).
+crawl-lightpanda = ["crabcc-fetch/crawl-lightpanda"]
 
 [dependencies]
 walkdir = "2.5.0"
