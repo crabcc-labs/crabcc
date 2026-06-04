@@ -35,6 +35,16 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 1
+      - name: bootstrap gc timer (idempotent)
+        shell: bash
+        run: |
+          # The self-hosted runners ARE the Hetzner hosts, so install the
+          # host-local systemd GC timer right here — then it self-prunes
+          # every 6h with no workflow needed. Idempotent: re-running just
+          # refreshes the units. Dispatch this workflow once per host to
+          # bootstrap the whole fleet (a scheduled job only lands on one).
+          sudo bash install/github-runner/install.sh --gc-only || \
+            echo "::warning::timer install failed (no sudo/systemd?); prune below still runs"
       - name: runner-gc
         shell: bash
         run: |
