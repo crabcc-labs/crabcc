@@ -55,10 +55,17 @@ root_pct() { df --output=pcent / 2>/dev/null | tail -1 | tr -dc '0-9'; }
 # sccache files). Every escalation/warning now considers blocks OR inodes.
 root_ipct() { df --output=ipcent / 2>/dev/null | tail -1 | tr -dc '0-9'; }
 
+# Fullest of ALL real mounts (block / inode %), excluding pseudo fs + /dev/shm
+# + /run. `df /` only sees the root fs, so a full /tmp or separate /var — the
+# exact mount apt ENOSPCs on — is invisible to it. Threshold decisions key off
+# these so the watchdog never skips a host whose non-root mount is full.
+worst_pct()  { df -P  2>/dev/null | awk 'NR>1 && $6!~"^/(dev|proc|sys|run)"{gsub("%","",$5); if($5+0>m)m=$5+0} END{print m+0}'; }
+worst_ipct() { df -Pi 2>/dev/null | awk 'NR>1 && $6!~"^/(dev|proc|sys|run)" && $5!="-"{gsub("%","",$5); if($5+0>m)m=$5+0} END{print m+0}'; }
+
 # Early exit when called by the disk-watchdog timer and disk is healthy.
 # The 15-min watchdog uses --if-above 75; the 4h full-GC timer omits it.
 if [ -n "${THRESHOLD:-}" ]; then
-  TC_BLK="$(root_pct)"; TC_INO="$(root_ipct)"
+  TC_BLK="$(worst_pct)"; TC_INO="$(worst_ipct)"
   # Skip only when BOTH blocks AND inodes are below threshold. The 15-min
   # watchdog runs `--if-above 75`; a host at 17% blocks / 96% inodes must
   # still GC, or inode-only ENOSPC goes unhandled until a full/manual run.
