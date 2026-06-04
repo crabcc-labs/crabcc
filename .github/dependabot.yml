@@ -1,0 +1,48 @@
+# Dependabot — keeps the workspace dep slab from regrowing (issue #180, Phase 5).
+#
+# Strategy (per #180):
+#   * roll all patch + minor Cargo bumps into ONE weekly PR;
+#   * majors fall out into their own focused PRs so review can be targeted;
+#   * tree-sitter grammars + core move as a single group (grammar ABI is tied
+#     to the tree-sitter major, so they must bump atomically).
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    labels:
+      - dependencies
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      # Listed first so tree-sitter*/ast-grep* land here (incl. majors) rather
+      # than in the catch-all minor/patch group below.
+      tree-sitter:
+        patterns:
+          - "tree-sitter"
+          - "tree-sitter-*"
+          - "ast-grep-*"
+      cargo-minor-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # GitHub Actions versions (CI has flagged actions/checkout@v4 / node20 as
+  # deprecated) — one grouped weekly PR.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+    commit-message:
+      prefix: "chore(actions)"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
