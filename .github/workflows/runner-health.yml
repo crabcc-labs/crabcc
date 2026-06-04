@@ -55,6 +55,7 @@ jobs:
             CACHE_SIZE=$(df -h --output=size  "${CACHE_BASE}" 2>/dev/null | tail -1 | xargs)
             CACHE_ROW="| Cache volume (\`${CACHE_BASE}\`) | ${CACHE_USE}% used — ${CACHE_AVAIL} free / ${CACHE_SIZE} |"
           else
+            CACHE_USE=0
             CACHE_ROW="| Cache volume | **not mounted** — run \`install.sh --gc-only --cache-volume /dev/sdb\` |"
           fi
 
@@ -83,6 +84,24 @@ jobs:
             echo "| Worker processes (active jobs) | ${WORKERS} |"
             echo "| Measured at | $(date -u '+%Y-%m-%d %H:%M UTC') |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+          # Emit GitHub annotations so the job turns red/yellow and
+          # triggers email/mobile notifications when disk is elevated.
+          # Thresholds: ≥90% → error (job fails), ≥80% → warning (job passes).
+          ALERT=0
+          if [ -n "${ROOT_USE:-}" ] && [ "$ROOT_USE" -ge 90 ]; then
+            echo "::error::${HOST} root fs CRITICAL: ${ROOT_USE}% full (${ROOT_AVAIL} free) — run runner-gc --deep immediately"
+            ALERT=1
+          elif [ -n "${ROOT_USE:-}" ] && [ "$ROOT_USE" -ge 80 ]; then
+            echo "::warning::${HOST} root fs at ${ROOT_USE}% (${ROOT_AVAIL} free) — GC will auto-escalate on next 4h cycle"
+          fi
+          if [ -n "${CACHE_USE:-}" ] && [ "$CACHE_USE" -ge 90 ]; then
+            echo "::error::${HOST} cache volume CRITICAL: ${CACHE_USE}% full — sccache/cargo growth needs attention"
+            ALERT=1
+          elif [ -n "${CACHE_USE:-}" ] && [ "$CACHE_USE" -ge 80 ]; then
+            echo "::warning::${HOST} cache volume at ${CACHE_USE}% — monitor sccache growth"
+          fi
+          [ "$ALERT" = 1 ] && exit 1 || true
 
   fleet:
     name: fleet overview
