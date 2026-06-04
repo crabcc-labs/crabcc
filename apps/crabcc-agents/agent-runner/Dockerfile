@@ -71,6 +71,28 @@ RUN wget -qO- https://github.com/rtk-ai/rtk/releases/latest/download/rtk-linux-m
       | tar -xz -C /usr/local/bin || \
     echo "rtk binary release not found — rtk install deferred to entrypoint"
 
+# crabcc — code-intelligence CLI + stdio MCP server (sym/refs/callers/outline/
+# memory). Gives the in-container agent symbol lookups instead of grep, wired
+# into Claude Code via mcp.json. Pinned to a published release. The Linux
+# release artifacts are glibc (gnu), so on Alpine/musl we add gcompat; a native
+# musl artifact would let us drop the shim (tracked for crabcc release CI).
+# Arch-mapped from buildx TARGETARCH. The trailing `crabcc --version` fails the
+# build loudly if the download/extract layout is wrong.
+ARG CRABCC_VERSION=5.0.0
+ARG TARGETARCH
+RUN apk add --no-cache gcompat libstdc++ \
+ && case "${TARGETARCH:-arm64}" in \
+        arm64) _triple=aarch64-unknown-linux-gnu ;; \
+        amd64) _triple=x86_64-unknown-linux-gnu ;; \
+        *) echo "crabcc: unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+ && wget -qO /tmp/crabcc.tgz \
+        "https://github.com/crabcc-labs/crabcc/releases/download/v${CRABCC_VERSION}/crabcc-v${CRABCC_VERSION}-${_triple}.tar.gz" \
+ && mkdir -p /tmp/cc && tar -xzf /tmp/crabcc.tgz -C /tmp/cc \
+ && install -m 0755 "$(find /tmp/cc -type f -name crabcc | head -n1)" /usr/local/bin/crabcc \
+ && rm -rf /tmp/cc /tmp/crabcc.tgz \
+ && crabcc --version
+
 # mini-swe-agent (https://mini-swe-agent.com) — pinned per release.
 # Pinned via build arg so version bumps are deliberate. `--break-
 # system-packages` is needed because Alpine ships a PEP 668-managed
