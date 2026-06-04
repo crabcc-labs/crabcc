@@ -95,10 +95,11 @@ fn symlink_idempotent(_target: &Path, _link: &Path) -> Result<()> {
 /// front of it — so the agent still finds `git`, `gh`, `jq`, `rg`,
 /// etc. that the user had on PATH already.
 pub fn agent_path(home: &Path) -> String {
-    let mut out: Vec<PathBuf> = Vec::new();
-    out.push(home.join(CRABCC_BIN_DIR));
-    out.push(home.join(".cargo").join("bin"));
-    out.push(home.join(".local").join("bin"));
+    let mut out = vec![
+        home.join(CRABCC_BIN_DIR),
+        home.join(".cargo/bin"),
+        home.join(".local/bin"),
+    ];
     if let Ok(existing) = std::env::var("PATH") {
         for p in std::env::split_paths(&existing) {
             if !out.iter().any(|x| x == &p) {
@@ -107,7 +108,7 @@ pub fn agent_path(home: &Path) -> String {
         }
     }
     std::env::join_paths(out)
-        .map(|s| s.to_string_lossy().to_string())
+        .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default()
 }
 
