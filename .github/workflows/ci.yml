@@ -89,6 +89,9 @@ jobs:
           sudo apt-get clean 2>/dev/null || true
           sudo rm -rf /var/cache/apt/archives/partial/* 2>/dev/null || true
           for tdir in /tmp /var/tmp; do sudo find "$tdir" -mindepth 1 -maxdepth 1 -mtime +1 -exec rm -rf {} + 2>/dev/null || true; done
+          # Re-measure AFTER the apt/temp cleanup above — otherwise we'd abort
+          # on the pre-cleanup numbers even though the cleanup just freed space.
+          USE="$(root_pct)"; IUSE="$(root_ipct)"
           if hot "${USE:-0}" 90 || hot "${IUSE:-0}" 90; then
             echo "::error::root fs still ${USE}% blocks / ${IUSE}% inodes after prune (see df dump above for the full mount) — aborting"
             exit 1
@@ -138,6 +141,9 @@ jobs:
           sudo apt-get clean 2>/dev/null || true
           sudo rm -rf /var/cache/apt/archives/partial/* 2>/dev/null || true
           for tdir in /tmp /var/tmp; do sudo find "$tdir" -mindepth 1 -maxdepth 1 -mtime +1 -exec rm -rf {} + 2>/dev/null || true; done
+          # Re-measure AFTER the apt/temp cleanup above — otherwise we'd abort
+          # on the pre-cleanup numbers even though the cleanup just freed space.
+          USE="$(root_pct)"; IUSE="$(root_ipct)"
           if hot "${USE:-0}" 90 || hot "${IUSE:-0}" 90; then
             echo "::error::root fs still ${USE}% blocks / ${IUSE}% inodes after prune (see df dump above for the full mount) — aborting"
             exit 1
@@ -285,6 +291,9 @@ jobs:
           sudo apt-get clean 2>/dev/null || true
           sudo rm -rf /var/cache/apt/archives/partial/* 2>/dev/null || true
           for tdir in /tmp /var/tmp; do sudo find "$tdir" -mindepth 1 -maxdepth 1 -mtime +1 -exec rm -rf {} + 2>/dev/null || true; done
+          # Re-measure AFTER the apt/temp cleanup above — otherwise we'd abort
+          # on the pre-cleanup numbers even though the cleanup just freed space.
+          USE="$(root_pct)"; IUSE="$(root_ipct)"
           if hot "${USE:-0}" 90 || hot "${IUSE:-0}" 90; then
             echo "::error::root fs still ${USE}% blocks / ${IUSE}% inodes after prune (see df dump above for the full mount) — aborting"
             exit 1

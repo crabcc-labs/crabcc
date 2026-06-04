@@ -406,7 +406,10 @@ if [ "$GC_ONLY" = 1 ]; then
   # is a permanent no-op. Best-effort: a still-full host logs a clear warning.
   if ! command -v mold >/dev/null 2>&1 || ! command -v rg >/dev/null 2>&1; then
     echo "[runner] --gc-only: baking CI build tools (mold, ripgrep)"
-    bash "$(dirname "${BASH_SOURCE[0]}")/runner-gc.sh" --deep 2>/dev/null || true
+    # Non-deep: runner-gc.sh internally auto-escalates to a deep
+    # `docker system prune -af` ONLY when the host is idle. Forcing --deep here
+    # could delete an image a concurrent sibling job still needs.
+    bash "$(dirname "${BASH_SOURCE[0]}")/runner-gc.sh" 2>/dev/null || true
     apt-get update -qq 2>/dev/null || true
     apt-get install -y --no-install-recommends mold ripgrep 2>/dev/null \
       || echo "[runner] WARN: mold/ripgrep install failed (apt ENOSPC?) — inspect 'df -h; df -i' on this host; CI will keep apt-get'ing per job until it succeeds"
