@@ -415,7 +415,13 @@ fn bare_name(name: &str) -> &str {
 }
 
 fn compact_snippet(s: &str) -> String {
-    let one_line: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let one_line = s.split_whitespace().fold(String::new(), |mut acc, w| {
+        if !acc.is_empty() {
+            acc.push(' ');
+        }
+        acc.push_str(w);
+        acc
+    });
     if one_line.len() > 80 {
         format!("{}…", &one_line[..80])
     } else {
