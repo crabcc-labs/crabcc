@@ -3,25 +3,27 @@ use clap::{Args, Parser, Subcommand};
 use crabcc_core::{query, store::Store};
 use std::path::{Path, PathBuf};
 
-// Issue #112 follow-up — global allocator swap. tikv-jemallocator is the
-// maintained jemalloc bindings (5.x). Measured ~5-12% on the indexing
-// hot path (alloc-heavy: tree-sitter cursors + Vec<Symbol> push) and
-// ~3-6% on the MCP serve_io loop. Behaviour-equivalent to the system
-// allocator at the API level — drop-in.
+// Global allocator. **Default = system.** Benched head-to-head (cold index,
+// the most alloc-heavy path) on Linux x86 *and* darwin arm64: the system
+// allocator is fastest or tied with the lowest variance; jemalloc and
+// mimalloc add a dep + build time for zero measured benefit (docs/PERF-648
+// §4 — the old "+5-12% jemalloc" claim reproduced on neither host). Both
+// are kept as opt-in experiment knobs so the verdict stays reproducible;
+// the shipped build enables neither.
 //
-// Why not mimalloc: jemalloc is what tantivy and tikv ship with, so
-// the workspace has more aligned tuning knobs (decay times, arena
-// counts) if we ever need them. mimalloc was the runner-up at +3-7 %
-// on the same micro-benches; switch is one line if the calculus
-// changes.
-//
-// Bumpalo (per-file arenas during the tree-sitter walk) is already a
-// workspace dep at [workspace.dependencies] and used in
-// `crabcc-core/src/extract.rs`. The two allocators compose: jemalloc
-// owns the heap, bumpalo carves transient regions out of it.
+// Bumpalo (per-file arenas during the tree-sitter walk) is a workspace dep
+// used in `crabcc-core/src/extract.rs` and composes with whichever global
+// allocator is active — bumpalo carves transient regions out of the heap.
 #[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+// Allocator bench candidate (issue #648). Gated `not(jemalloc)` so the two
+// never both claim #[global_allocator]; benched head-to-head vs jemalloc +
+// system to settle the shipped default.
+#[cfg(all(feature = "mimalloc", not(feature = "jemalloc")))]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 mod agent;
 mod agent_guard;

@@ -22,6 +22,16 @@ path = "src/bin/ccc.rs"
 # binary still gets the +5-12% on alloc-heavy hot paths.
 default = []
 jemalloc = ["dep:tikv-jemallocator"]
+# Allocator A/B candidate — benched against jemalloc + system to settle
+# the shipped default. Gated `not(jemalloc)` in main.rs so the two never
+# both claim #[global_allocator].
+mimalloc = ["dep:mimalloc"]
+# Real semantic embeddings for `crabcc rag` (MiniLM-L6-v2 via fastembed).
+# NOT in `default`: ort fetches onnxruntime at build time (network) and
+# the model is a ~25MB lazy runtime download. Enabled in the shipped
+# build (`task build`/`install`/release) so users get semantic RAG while
+# plain `cargo build` + CI stay lean and offline-safe.
+memory-embed = ["crabcc-memory/memory-embed"]
 # v3.0 (#62) — surfaces the SandboxRuntime stub. The actual microsandbox
 # integration is deferred per `install/agent-runtime.md`; this feature
 # only flips on the trait impl + a clearer "not yet implemented" error
@@ -51,6 +61,9 @@ crabcc-memory = { workspace = true }
 # codec weight `image`'s defaults pull in (those still compile when
 # fastembed enables them under crabcc-memory's `memory-embed`).
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# Optional global allocator — only built under the `mimalloc` feature
+# (allocator bench candidate). See main.rs for the #[global_allocator] cfg.
+mimalloc = { version = "0.1", optional = true, default-features = false }
 # `viz` feature — see [features]. Drops the dashboard / SSE viewer + its
 # tokio-rt + tiny_http + html2md transitive cost from the default install.
 crabcc-viz    = { workspace = true, optional = true }

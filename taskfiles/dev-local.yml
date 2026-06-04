@@ -216,7 +216,7 @@ tasks:
       # ── 1: release binary ─────────────────────────────────────────────────
       - |
         echo "[dev:local:build-prod] 1/5  cargo build --release"
-        {{.CARGO}} build --release -p crabcc-cli --features jemalloc
+        {{.CARGO}} build --release -p crabcc-cli --features memory-embed
         BIN_SIZE="$(du -sh target/release/crabcc 2>/dev/null | cut -f1 || echo '?')"
         echo "  ✓ target/release/crabcc  ($BIN_SIZE stripped)"
 
