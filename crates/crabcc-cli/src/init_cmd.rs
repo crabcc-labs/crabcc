@@ -61,6 +61,9 @@ pub fn run(root: &Path) -> Result<()> {
     // Bounded loop so a stale-lock takeover retries without spinning.
     for _ in 0..3 {
         if done.exists() {
+            // Backfill artifacts a newer crabcc adds (e.g. research-plan.json)
+            // for repos onboarded by an older version — no re-crawl.
+            backfill_artifacts(root, &onboard_dir);
             return reuse(&onboard_dir, "already onboarded");
         }
         match try_acquire(&lock)? {
@@ -162,21 +165,56 @@ pub fn run_inject(root: &Path) -> Result<()> {
     let Some(onboard) = find_onboard_dir(root) else {
         return Ok(());
     };
-    let counter = onboard.join(".injected");
-    let count = std::fs::read_to_string(&counter)
-        .ok()
-        .and_then(|s| s.trim().parse::<u32>().ok())
-        .unwrap_or(0);
-    if count >= INJECT_LIMIT {
-        return Ok(()); // oriented — stay silent
-    }
-    // The overview always exists here (find_onboard_dir requires it), but
-    // guard anyway and only consume a slot when we actually emit.
-    if let Ok(text) = std::fs::read_to_string(onboard.join("overview.md")) {
+    // Read the overview first so a not-yet-ready onboarding consumes no slot.
+    let Ok(text) = std::fs::read_to_string(onboard.join("overview.md")) else {
+        return Ok(());
+    };
+    // Atomically claim one of INJECT_LIMIT slots; concurrent hooks can't
+    // exceed the cap because each slot file is created exactly once.
+    if claim_inject_slot(&onboard, INJECT_LIMIT) {
         print!("{text}");
-        let _ = std::fs::write(&counter, (count + 1).to_string());
     }
     Ok(())
+}
+
+/// Atomically consume one injection slot via `create_new` on `.injected.<i>`.
+/// Returns true if a slot was claimed — at most `limit` claims ever succeed,
+/// even across concurrent SessionStart hooks (each slot file created once).
+fn claim_inject_slot(onboard: &Path, limit: u32) -> bool {
+    for i in 0..limit {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(onboard.join(format!(".injected.{i}")))
+        {
+            Ok(_) => return true,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return false,
+        }
+    }
+    false
+}
+
+/// Ensure the cheap onboarding artifacts exist, regenerating any missing one
+/// (e.g. research-plan.json for a repo onboarded by an older crabcc) without
+/// re-crawling. Idempotent, best-effort.
+fn backfill_artifacts(root: &Path, onboard_dir: &Path) {
+    let md = onboard_dir.join("research-plan.md");
+    let json = onboard_dir.join("research-plan.json");
+    let overview = onboard_dir.join("overview.md");
+    if md.exists() && json.exists() && overview.exists() {
+        return;
+    }
+    let topics = detect_topics(root);
+    if !md.exists() {
+        let _ = std::fs::write(&md, render_research_plan(&topics));
+    }
+    if !json.exists() {
+        let _ = std::fs::write(&json, render_research_plan_json(&topics));
+    }
+    if !overview.exists() {
+        let _ = std::fs::write(&overview, render_overview(root, &topics));
+    }
 }
 
 /// Walk up from `start` to the nearest ancestor whose
@@ -765,6 +803,14 @@ mod tests {
         assert!(!v["tasks"][0]["queries"].as_array().unwrap().is_empty());
     }
 
+    fn slot_count(onboard: &std::path::Path) -> usize {
+        std::fs::read_dir(onboard)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".injected."))
+            .count()
+    }
+
     #[test]
     fn inject_emits_first_few_then_taps_off() {
         let dir = tempfile::tempdir().unwrap();
@@ -774,19 +820,22 @@ mod tests {
         for _ in 0..INJECT_LIMIT + 2 {
             run_inject(dir.path()).unwrap();
         }
-        let count: u32 = std::fs::read_to_string(onboard.join(".injected"))
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
-        assert_eq!(count, INJECT_LIMIT); // capped — tapered off after first few
+        assert_eq!(slot_count(&onboard) as u32, INJECT_LIMIT); // capped
+    }
+
+    #[test]
+    fn inject_slots_are_atomic_and_capped() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(claim_inject_slot(dir.path(), 2));
+        assert!(claim_inject_slot(dir.path(), 2));
+        assert!(!claim_inject_slot(dir.path(), 2)); // cap reached
     }
 
     #[test]
     fn inject_is_silent_without_an_overview() {
         let dir = tempfile::tempdir().unwrap();
         run_inject(dir.path()).unwrap(); // no onboarding artifacts yet
-        assert!(!dir.path().join(".crabcc/onboard/.injected").exists());
+        assert!(!dir.path().join(".crabcc/onboard/.injected.0").exists());
     }
 
     #[test]
@@ -799,12 +848,21 @@ mod tests {
         std::fs::create_dir_all(&subdir).unwrap();
         // Launched from a subdir, inject still finds the ancestor onboarding.
         run_inject(&subdir).unwrap();
-        let count: u32 = std::fs::read_to_string(onboard.join(".injected"))
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
-        assert_eq!(count, 1);
+        assert!(onboard.join(".injected.0").exists());
+    }
+
+    #[test]
+    fn reuse_backfills_missing_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let onboard = dir.path().join(".crabcc").join("onboard");
+        std::fs::create_dir_all(&onboard).unwrap();
+        // Simulate an older onboarding: done + overview, but no JSON handoff.
+        std::fs::write(onboard.join(".done"), "1").unwrap();
+        std::fs::write(onboard.join("overview.md"), "ctx").unwrap();
+        std::fs::write(onboard.join("research-plan.md"), "x").unwrap();
+        run(dir.path()).unwrap(); // done → backfill + reuse (no crawl/lock)
+        assert!(onboard.join("research-plan.json").exists());
+        assert!(!onboard.join(".lock").exists());
     }
 
     #[test]
