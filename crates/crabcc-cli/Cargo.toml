@@ -45,6 +45,12 @@ crabcc-core   = { workspace = true }
 crabcc-fetch  = { workspace = true }
 crabcc-mcp    = { workspace = true }
 crabcc-memory = { workspace = true }
+# Image downscaling for the Read hook (`crabcc media downscale`): bound
+# oversized screenshots/photos to Anthropic's effective vision resolution
+# before the model reads them. png+jpeg only -> avoids the avif/exr/webp
+# codec weight `image`'s defaults pull in (those still compile when
+# fastembed enables them under crabcc-memory's `memory-embed`).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 # `viz` feature — see [features]. Drops the dashboard / SSE viewer + its
 # tokio-rt + tiny_http + html2md transitive cost from the default install.
 crabcc-viz    = { workspace = true, optional = true }
