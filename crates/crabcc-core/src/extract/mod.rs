@@ -1091,7 +1091,7 @@ fn signature_for(node: &Node, src: &[u8], lang: &str) -> Option<String> {
     // or past the buffer. Slice through `get()` so a bad range degrades to
     // "no signature" instead of panicking — a panic here would poison the
     // caller's store mutex and wedge all further indexing.
-    let tail = src.get(start..)?;
+    let _tail = src.get(start..)?;
     let end = body.map(|b| b.start_byte()).unwrap_or_else(|| {
         // No body — take just the first line. Reuse the bounds-checked
         // `tail` (start <= len already guaranteed by the `?` above) instead
