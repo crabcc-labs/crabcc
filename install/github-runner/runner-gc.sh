@@ -58,12 +58,16 @@ root_ipct() { df --output=ipcent / 2>/dev/null | tail -1 | tr -dc '0-9'; }
 # Early exit when called by the disk-watchdog timer and disk is healthy.
 # The 15-min watchdog uses --if-above 75; the 4h full-GC timer omits it.
 if [ -n "${THRESHOLD:-}" ]; then
-  THRESHOLD_CHECK="$(root_pct)"
-  if [ -n "${THRESHOLD_CHECK:-}" ] && [ "$THRESHOLD_CHECK" -lt "$THRESHOLD" ]; then
-    log "disk at ${THRESHOLD_CHECK}% — below threshold ${THRESHOLD}%, nothing to do"
+  TC_BLK="$(root_pct)"; TC_INO="$(root_ipct)"
+  # Skip only when BOTH blocks AND inodes are below threshold. The 15-min
+  # watchdog runs `--if-above 75`; a host at 17% blocks / 96% inodes must
+  # still GC, or inode-only ENOSPC goes unhandled until a full/manual run.
+  if [ -n "${TC_BLK:-}" ] && [ "$TC_BLK" -lt "$THRESHOLD" ] && \
+     { [ -z "${TC_INO:-}" ] || [ "$TC_INO" -lt "$THRESHOLD" ]; }; then
+    log "disk at ${TC_BLK}% blocks / ${TC_INO:-?}% inodes — both below ${THRESHOLD}%, nothing to do"
     exit 0
   fi
-  log "disk at ${THRESHOLD_CHECK}% ≥ threshold ${THRESHOLD}% — running GC"
+  log "disk at ${TC_BLK}% blocks / ${TC_INO:-?}% inodes — at/above ${THRESHOLD}% — running GC"
 fi
 
 log "host $(hostname) — disk before:"

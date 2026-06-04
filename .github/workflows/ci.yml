@@ -81,16 +81,16 @@ jobs:
             docker builder prune -af --filter "until=2h" 2>/dev/null || true
             sudo apt-get clean 2>/dev/null || true
             sudo journalctl --vacuum-time=1d 2>/dev/null || true
-            # Inode pressure → clear cargo's regenerable extracted sources
-            # (cargo re-extracts from registry/cache on demand). mtime +1 spares
-            # very-recent files a sibling compile may still be reading.
-            if hot "${IUSE:-0}" 75; then
-              find "${CARGO_HOME:-/var/runner-data/cargo}/registry/src" -mindepth 1 -maxdepth 1 -mtime +1 -exec rm -rf {} + 2>/dev/null || true
-            fi
+            # Inode reclamation (clearing cargo registry/src etc.) is NOT done
+            # here: two runner services share a host, so deleting Cargo sources
+            # at job start can yank files from under a SIBLING compile
+            # (-mtime +1 means extracted-earlier, not unused). That heavy sweep
+            # is idle-gated in runner-gc.sh; here we only run prunes safe during
+            # active builds (above), then re-measure and fail fast if needed.
             USE="$(root_pct)"; IUSE="$(root_ipct)"
           fi
           if hot "${USE:-0}" 90 || hot "${IUSE:-0}" 90; then
-            echo "::error::root fs still ${USE}% blocks / ${IUSE}% inodes after prune — aborting to avoid mid-job ENOSPC"
+            echo "::error::root fs still ${USE}% blocks / ${IUSE}% inodes after safe prune — aborting to avoid mid-job ENOSPC (run: runner-gc --deep on this host)"
             exit 1
           fi
           echo "disk: ${USE}% blocks / ${IUSE}% inodes — OK"
@@ -130,16 +130,16 @@ jobs:
             docker builder prune -af --filter "until=2h" 2>/dev/null || true
             sudo apt-get clean 2>/dev/null || true
             sudo journalctl --vacuum-time=1d 2>/dev/null || true
-            # Inode pressure → clear cargo's regenerable extracted sources
-            # (cargo re-extracts from registry/cache on demand). mtime +1 spares
-            # very-recent files a sibling compile may still be reading.
-            if hot "${IUSE:-0}" 75; then
-              find "${CARGO_HOME:-/var/runner-data/cargo}/registry/src" -mindepth 1 -maxdepth 1 -mtime +1 -exec rm -rf {} + 2>/dev/null || true
-            fi
+            # Inode reclamation (clearing cargo registry/src etc.) is NOT done
+            # here: two runner services share a host, so deleting Cargo sources
+            # at job start can yank files from under a SIBLING compile
+            # (-mtime +1 means extracted-earlier, not unused). That heavy sweep
+            # is idle-gated in runner-gc.sh; here we only run prunes safe during
+            # active builds (above), then re-measure and fail fast if needed.
             USE="$(root_pct)"; IUSE="$(root_ipct)"
           fi
           if hot "${USE:-0}" 90 || hot "${IUSE:-0}" 90; then
-            echo "::error::root fs still ${USE}% blocks / ${IUSE}% inodes after prune — aborting to avoid mid-job ENOSPC"
+            echo "::error::root fs still ${USE}% blocks / ${IUSE}% inodes after safe prune — aborting to avoid mid-job ENOSPC (run: runner-gc --deep on this host)"
             exit 1
           fi
           echo "disk: ${USE}% blocks / ${IUSE}% inodes — OK"
@@ -277,16 +277,16 @@ jobs:
             docker builder prune -af --filter "until=2h" 2>/dev/null || true
             sudo apt-get clean 2>/dev/null || true
             sudo journalctl --vacuum-time=1d 2>/dev/null || true
-            # Inode pressure → clear cargo's regenerable extracted sources
-            # (cargo re-extracts from registry/cache on demand). mtime +1 spares
-            # very-recent files a sibling compile may still be reading.
-            if hot "${IUSE:-0}" 75; then
-              find "${CARGO_HOME:-/var/runner-data/cargo}/registry/src" -mindepth 1 -maxdepth 1 -mtime +1 -exec rm -rf {} + 2>/dev/null || true
-            fi
+            # Inode reclamation (clearing cargo registry/src etc.) is NOT done
+            # here: two runner services share a host, so deleting Cargo sources
+            # at job start can yank files from under a SIBLING compile
+            # (-mtime +1 means extracted-earlier, not unused). That heavy sweep
+            # is idle-gated in runner-gc.sh; here we only run prunes safe during
+            # active builds (above), then re-measure and fail fast if needed.
             USE="$(root_pct)"; IUSE="$(root_ipct)"
           fi
           if hot "${USE:-0}" 90 || hot "${IUSE:-0}" 90; then
-            echo "::error::root fs still ${USE}% blocks / ${IUSE}% inodes after prune — aborting to avoid mid-job ENOSPC"
+            echo "::error::root fs still ${USE}% blocks / ${IUSE}% inodes after safe prune — aborting to avoid mid-job ENOSPC (run: runner-gc --deep on this host)"
             exit 1
           fi
           echo "disk: ${USE}% blocks / ${IUSE}% inodes — OK"
