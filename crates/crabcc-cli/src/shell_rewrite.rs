@@ -154,8 +154,26 @@ pub fn plan(cmd: &str, is_symbol: &dyn Fn(&str) -> bool) -> Option<Rewrite> {
         "grep" => plan_grep(rest, is_symbol),
         "rg" => plan_rg(rest, is_symbol),
         "find" => plan_find(rest),
+        "cat" => plan_cat(rest),
         _ => None,
     }
+}
+
+/// `cat <one file>.json` -> `jq -c . <file>`: minified JSON, lossless,
+/// strips the indentation tokens a pretty-printed file wastes. Multiple
+/// files or any flag -> passthrough (plain `cat` is still compaction-worthy).
+fn plan_cat(args: &[String]) -> Option<Rewrite> {
+    let [file] = args else { return None };
+    if file.starts_with('-') || !file.ends_with(".json") {
+        return None;
+    }
+    Some(Rewrite {
+        inner: format!("jq -c . {}", shq(file)),
+        rule: "cat-json->jq",
+        key: file.clone(),
+        note: Some("minified JSON (jq -c); pipe to `jq '<filter>'` to select fields".into()),
+        track_op: "rewrite",
+    })
 }
 
 #[derive(Default)]
@@ -345,10 +363,6 @@ fn on_path(bin: &str) -> bool {
         .is_some_and(|p| std::env::split_paths(&p).any(|dir| dir.join(bin).is_file()))
 }
 
-fn rg_on_path() -> bool {
-    on_path("rg")
-}
-
 /// Programs whose output is large/unstructured enough that a compaction
 /// stage (RTK / Morph) pays off. Symbol queries are already tiny, so the
 /// crabcc engine rewrites that produce them are never compacted.
@@ -445,10 +459,14 @@ pub fn run(root: &Path, db: &Path, command: &str, session_id: Option<&str>) -> R
         }
     };
 
-    // ── Stage 1: engine rewrite (grep/find -> rg / crabcc lookup refs).
-    // Dropped if it would emit `rg` without rg on PATH.
-    let planned =
-        plan(command, &is_symbol).filter(|rw| !rw.inner.starts_with("rg ") || rg_on_path());
+    // ── Stage 1: engine rewrite (grep/find -> rg / lookup refs / jq).
+    // Dropped if the emitted tool (rg, jq, ...) isn't on PATH — never
+    // hand the agent a command its environment can't run. `crabcc` is
+    // always present (we are it).
+    let planned = plan(command, &is_symbol).filter(|rw| {
+        let prog = rw.inner.split_whitespace().next().unwrap_or("");
+        prog == "crabcc" || on_path(prog)
+    });
 
     // Open the dev-debug ledger only for an actual rewrite candidate, so
     // the hot path (the vast majority of Bash commands, which don't
@@ -704,6 +722,19 @@ mod tests {
                 .inner,
             "rg --files --iglob '*.RS' src"
         );
+    }
+
+    #[test]
+    fn cat_json_minifies_via_jq() {
+        assert_eq!(
+            plan("cat config.json", &never).unwrap().inner,
+            "jq -c . config.json"
+        );
+        assert_eq!(plan("cat src/a.json", &never).unwrap().rule, "cat-json->jq");
+        // Non-json, flags, or multiple files are left to plain `cat`.
+        assert_eq!(plan("cat README.md", &never), None);
+        assert_eq!(plan("cat -n a.json", &never), None);
+        assert_eq!(plan("cat a.json b.json", &never), None);
     }
 
     #[test]
