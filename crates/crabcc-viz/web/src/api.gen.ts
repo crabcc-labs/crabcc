@@ -78,6 +78,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/savings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Live token-savings aggregate (session / last 24h / all-time + per-op). */
+        get: operations["getSavings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agents": {
         parameters: {
             query?: never;
@@ -357,7 +374,14 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Seed nodes for the graph viewer (legacy). */
+        /**
+         * Seed nodes for the graph viewer.
+         * @description Returns a bounded subgraph of the cached call graph rooted on
+         *     the highest-degree symbols. Each node carries optional symbol
+         *     metadata (kind / file / line / signature) when the id resolves
+         *     in the symbol index — added in #301 so the desktop drawer can
+         *     render symbol detail without a follow-up RPC.
+         */
         get: operations["seedGraph"];
         put?: never;
         post?: never;
@@ -418,6 +442,108 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/forge/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** GitHub/Gitea forge configuration — repo slug, token presence. */
+        get: operations["getForgeConfig"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/forge/prs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List pull requests from the configured GitHub/Gitea repo. */
+        get: operations["listForgePrs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/forge/prs/{number}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get a single PR with its changed-files diff. */
+        get: operations["getForgePr"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/forge/prs/{number}/impact": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Blast-radius graph for a PR: changed symbols + their callers/callees. */
+        get: operations["getForgePrImpact"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/analytics/hotspots": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** High-churn files ranked by commit count (fast single git-log pass). */
+        get: operations["getAnalyticsHotspots"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/analytics/deadcode": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Functions with zero callers in the symbol index. */
+        get: operations["getAnalyticsDeadcode"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -447,6 +573,11 @@ export interface components {
         ActivityResponse: {
             items: components["schemas"]["ActivityHit"][];
         };
+        SavingsBucket: {
+            queries: number;
+            used_tokens: number;
+            saved_tokens: number;
+        };
         AgentSummary: {
             id: string;
             /** @enum {string} */
@@ -470,6 +601,13 @@ export interface components {
             model?: string;
             /** @enum {string} */
             backend?: "ollama" | "anthropic";
+            /**
+             * @description Profile id (bare filename without `.profile.toml`). When
+             *     set, the server forwards `--profile internal/<id>` to the
+             *     spawned CLI. Validated against `[A-Za-z0-9_-]+` server-
+             *     side; pre-#306 servers silently ignore the field.
+             */
+            profile?: string;
         };
         AgentLaunchResponse: {
             id: string;
@@ -579,6 +717,142 @@ export interface components {
             op: string;
             symbol: string;
         };
+        GraphNode: {
+            /** @description Symbol name as the call graph stores it. */
+            id: string;
+            /** @description BFS depth from the seed set (0 = seed). */
+            depth: number;
+            /**
+             * @description Symbol kind from the index — one of `function`, `method`,
+             *     `class`, `struct`, `enum`, `trait`, `interface`, `const`,
+             *     `var`, `type`, `macro`. Omitted when `id` doesn't resolve
+             *     in the symbol index (extern crate, std, dynamic dispatch
+             *     target).
+             * @enum {string}
+             */
+            kind?: "function" | "method" | "class" | "struct" | "enum" | "trait" | "interface" | "const" | "var" | "type" | "macro";
+            /** @description Repo-relative path of the defining site. */
+            file?: string;
+            /** @description 1-based line number of the defining site. */
+            line?: number;
+            /** @description Single-line signature (e.g. `pub fn open(path: &Path) -> Result<Store>`). */
+            signature?: string;
+        };
+        GraphEdge: {
+            /** @description Caller symbol name. */
+            src: string;
+            /** @description Callee symbol name. */
+            dst: string;
+        };
+        SeedSnapshot: {
+            nodes: components["schemas"]["GraphNode"][];
+            edges: components["schemas"]["GraphEdge"][];
+            /** @description Subset of node ids that were chosen as seeds (depth 0). */
+            seeds: string[];
+        };
+        ForgeConfig: {
+            repo: string;
+            configured: boolean;
+            token_present: boolean;
+            forge_kind: string;
+            rate_limit_remaining?: number | null;
+            rate_limit_reset?: number | null;
+        };
+        PrAuthor: {
+            login: string;
+            avatar_url: string;
+        };
+        PrLabel: {
+            name: string;
+            color: string;
+        };
+        PrSummary: {
+            number: number;
+            title: string;
+            state: string;
+            draft: boolean;
+            merged: boolean;
+            author: components["schemas"]["PrAuthor"];
+            head_ref: string;
+            base_ref: string;
+            created_at: string;
+            updated_at: string;
+            labels: components["schemas"]["PrLabel"][];
+            additions: number;
+            deletions: number;
+            changed_files: number;
+            html_url: string;
+            body?: string;
+        };
+        PrFile: {
+            filename: string;
+            status: string;
+            additions: number;
+            deletions: number;
+            patch?: string;
+            previous_filename?: string;
+        };
+        PrDetail: {
+            pr: components["schemas"]["PrSummary"];
+            files: components["schemas"]["PrFile"][];
+            /** @description True when the PR has >300 changed files and the list is capped. */
+            files_truncated: boolean;
+        };
+        PrListResponse: {
+            prs: components["schemas"]["PrSummary"][];
+            repo: string;
+            total: number;
+            page: number;
+        };
+        ImpactNode: {
+            id: string;
+            label: string;
+            file: string;
+            kind: string;
+            changed: boolean;
+            depth: number;
+            line?: number;
+        };
+        ImpactEdge: {
+            src: string;
+            dst: string;
+        };
+        PrImpactGraph: {
+            pr_number: number;
+            changed_files: string[];
+            nodes: components["schemas"]["ImpactNode"][];
+            edges: components["schemas"]["ImpactEdge"][];
+            direct_symbols: number;
+            impacted_symbols: number;
+            truncated: boolean;
+        };
+        HotspotFile: {
+            file: string;
+            commits: number;
+            /** @description Total lines added + removed (null until numstat is wired). */
+            churn_lines?: number | null;
+            authors: number;
+            first_seen: string;
+            last_seen: string;
+        };
+        HotspotsResponse: {
+            hotspots: components["schemas"]["HotspotFile"][];
+            head_sha: string;
+            computed_at: number;
+            total_commits_scanned: number;
+            total_files_seen: number;
+        };
+        DeadSymbol: {
+            name: string;
+            kind: string;
+            file: string;
+            line: number;
+        };
+        DeadcodeResponse: {
+            dead_code: components["schemas"]["DeadSymbol"][];
+            head_sha: string;
+            computed_at: number;
+        };
     };
     responses: never;
     parameters: {
@@ -674,6 +948,33 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ActivityResponse"];
+                };
+            };
+        };
+    };
+    getSavings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Token usage + savings buckets from ~/.crabcc/usage.log. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        session?: components["schemas"]["SavingsBucket"];
+                        last_24h?: components["schemas"]["SavingsBucket"];
+                        all_time?: components["schemas"]["SavingsBucket"];
+                        by_op?: {
+                            [key: string]: components["schemas"]["SavingsBucket"];
+                        };
+                    };
                 };
             };
         };
@@ -1027,22 +1328,23 @@ export interface operations {
     };
     seedGraph: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Number of seed (high-degree) symbols. Clamped to [2, 32]. */
+                limit?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Seed nodes (free-form JSON for now). */
+            /** @description Seed snapshot. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
+                    "application/json": components["schemas"]["SeedSnapshot"];
                 };
             };
         };
@@ -1107,6 +1409,137 @@ export interface operations {
                 };
                 content: {
                     "text/event-stream": string;
+                };
+            };
+        };
+    };
+    getForgeConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Forge configuration snapshot. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ForgeConfig"];
+                };
+            };
+        };
+    };
+    listForgePrs: {
+        parameters: {
+            query?: {
+                state?: "open" | "closed" | "all";
+                page?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description PR list. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrListResponse"];
+                };
+            };
+        };
+    };
+    getForgePr: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                number: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description PR detail. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrDetail"];
+                };
+            };
+        };
+    };
+    getForgePrImpact: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                number: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description PR impact graph. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PrImpactGraph"];
+                };
+            };
+        };
+    };
+    getAnalyticsHotspots: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Hotspot list. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HotspotsResponse"];
+                };
+            };
+        };
+    };
+    getAnalyticsDeadcode: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Dead code list. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeadcodeResponse"];
                 };
             };
         };
