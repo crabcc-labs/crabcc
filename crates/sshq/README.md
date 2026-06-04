@@ -51,8 +51,13 @@ sshq db1.internal
 
 ## Caveats
 
-- Targets POSIX remotes (the env-prefix and pipeline assume an `sh`-like
-  remote shell and `grep`/`tail`/`wc`).
+- Targets POSIX remotes (the env-prefix assumes an `sh`-like remote
+  shell and `grep`/`tail`/`wc`).
+- When a filter (`--tail`/`--grep`/`--count`) is active, the remote
+  command runs under `bash -c` and re-exits with `${PIPESTATUS[0]}` so
+  the **user command's** exit status propagates — not the trailing
+  filter's. (Otherwise `--tail` would mask a failed command and `--grep`
+  would report failure on no match.) Requires `bash` on the remote.
 - `--script` runs the script under `bash` on the remote.
 - This optimizes a **self-hosted local → remote** workflow; it has no
   bearing on hosted environments that don't reach your code over SSH.

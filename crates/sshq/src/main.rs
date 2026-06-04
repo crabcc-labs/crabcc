@@ -158,26 +158,39 @@ fn build_remote_command(cli: &Cli, interactive: bool) -> Option<String> {
         s.push_str(&cli.command.join(" "));
     }
 
-    // Item 2: remote-side filtering pipeline. Order is fixed and
-    // documented: merge stderr → grep → tail → count.
+    // No filter → the command (or `bash -s`) is the last statement, so
+    // ssh already returns its exit status. Hand it over untouched.
     let has_filter = cli.tail.is_some() || cli.grep.is_some() || cli.count;
-    if has_filter {
-        if !cli.no_merge {
-            s.push_str(" 2>&1");
-        }
-        if let Some(pat) = &cli.grep {
-            s.push_str(" | grep -e ");
-            s.push_str(&shell_quote(pat));
-        }
-        if let Some(n) = cli.tail {
-            s.push_str(&format!(" | tail -n {n}"));
-        }
-        if cli.count {
-            s.push_str(" | wc -l");
-        }
+    if !has_filter {
+        return Some(s);
     }
 
-    Some(s)
+    // Item 2: remote-side filtering pipeline. Order is fixed and
+    // documented: merge stderr → grep → tail → count.
+    if !cli.no_merge {
+        s.push_str(" 2>&1");
+    }
+    if let Some(pat) = &cli.grep {
+        s.push_str(" | grep -e ");
+        s.push_str(&shell_quote(pat));
+    }
+    if let Some(n) = cli.tail {
+        s.push_str(&format!(" | tail -n {n}"));
+    }
+    if cli.count {
+        s.push_str(" | wc -l");
+    }
+
+    // A pipeline's exit status is its *last* stage's, which would mask
+    // the user command's result — `tail` always succeeds (hiding a
+    // failed `cargo test`), and `grep` exits 1 on no match (turning a
+    // success into a failure). Re-exit with the first stage's status
+    // (`PIPESTATUS[0]`, the user command) so the advertised
+    // exit-code propagation holds. `PIPESTATUS` is a bashism, so run the
+    // whole thing under `bash -c` rather than trust the remote login
+    // shell.
+    s.push_str("; exit ${PIPESTATUS[0]}");
+    Some(format!("bash -c {}", shell_quote(&s)))
 }
 
 /// Assemble the full `ssh` argv: optimization flags, multiplexing,
@@ -300,14 +313,29 @@ mod tests {
     fn filter_pipeline_order() {
         let c = cli(&["--grep", "ERROR", "--tail", "5", "--count", "host", "make"]);
         let r = build_remote_command(&c, false).unwrap();
-        assert!(r.ends_with("make 2>&1 | grep -e ERROR | tail -n 5 | wc -l"));
+        // Filtering wraps in `bash -c` and re-exits with the user
+        // command's status so the pipeline doesn't mask it.
+        assert!(r.starts_with("bash -c "));
+        assert!(r.contains("make 2>&1 | grep -e ERROR | tail -n 5 | wc -l; exit ${PIPESTATUS[0]}"));
+    }
+
+    #[test]
+    fn unfiltered_command_keeps_its_own_exit_status() {
+        // No filter → no pipeline, no bash -c wrapper: ssh returns the
+        // command's status directly.
+        let c = cli(&["host", "cargo", "test"]);
+        let r = build_remote_command(&c, false).unwrap();
+        assert!(!r.contains("PIPESTATUS"));
+        assert!(!r.starts_with("bash -c"));
     }
 
     #[test]
     fn grep_pattern_is_quoted() {
         let c = cli(&["--grep", "a b|c", "host", "make"]);
         let r = build_remote_command(&c, false).unwrap();
-        assert!(r.contains("grep -e 'a b|c'"));
+        // The pattern survives the (now nested) quoting verbatim.
+        assert!(r.contains("a b|c"));
+        assert!(r.starts_with("bash -c "));
     }
 
     #[test]
