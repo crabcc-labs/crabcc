@@ -35,6 +35,7 @@ import {
   runningAgents,
   topRecentEvents,
 } from "./selectors";
+import { SavingsTile } from "./SavingsTile";
 import { useMemoryRecent } from "./useMemoryRecent";
 import { useServicesSummary } from "./useServicesSummary";
 
@@ -89,6 +90,9 @@ export const DashboardHome = memo(function DashboardHome({
 
   return (
     <div className="dash-grid">
+      {/* ── live token-savings banner (#648) ────────────────────── */}
+      <SavingsTile />
+
       {/* ── KPI strip ───────────────────────────────────────────── */}
       <DashTile title="live" icon={Sparkle} compact area="kpi-live">
         <div className="dash-kpi">
