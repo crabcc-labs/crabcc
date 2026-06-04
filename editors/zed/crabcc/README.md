@@ -2,8 +2,8 @@
 
 A [Zed](https://zed.dev) extension that wires **`ucracc-lsp`** — crabcc's
 navigation + retrieval language server — into Zed as an *additional* server
-for Rust, TypeScript/TSX, JavaScript, Python, Ruby, Go, Swift, Java, YAML,
-and Markdown.
+for Rust, TypeScript/TSX, JavaScript, Python, Ruby, Go, Swift, Java, Shell,
+YAML, and Markdown.
 
 It runs **alongside** the semantic server for each language
 (rust-analyzer, pyright, gopls, …). Zed merges results from every server
@@ -24,49 +24,60 @@ gain, on top:
 > it tells Zed how to launch `ucracc-lsp` and forwards your
 > `lsp.ucracc-lsp.*` settings to it.
 
+## About this repository
+
+This repo is the **published, registry-ready mirror** of the extension. The
+source of truth lives in the crabcc repository at
+[`editors/zed/crabcc`](https://github.com/crabcc-labs/crabcc/tree/main/editors/zed/crabcc);
+this copy is kept in sync so the [Zed extension registry](https://github.com/zed-industries/extensions)
+can build from a public location (crabcc itself is a private monorepo).
+Licensed **GPLv3** — see [License](#license).
+
 ## Prerequisites
 
-1. **Install the server binary** so it's on your `$PATH`:
+### 1. Install the `ucracc-lsp` server binary
 
-   ```bash
-   cargo install --path crates/ucracc-lsp   # from a crabcc checkout
-   # or grab `ucracc-lsp` from a crabcc release tarball
-   ```
+The extension launches `ucracc-lsp`; it must be resolvable on the host where
+Zed runs the language server. In resolution order, the extension uses:
 
-> **Once published to the Zed registry**, the extension will
-> auto-download a prebuilt `ucracc-lsp` for your platform, so step 1
-> becomes optional. Until then (and for remote/SSH hosts), install the
-> binary yourself as below.
+1. an explicit `lsp.ucracc-lsp.binary.path` in your Zed settings, then
+2. `ucracc-lsp` on the worktree `$PATH`, then
+3. a prebuilt binary auto-downloaded from this repo's GitHub releases
+   (`crabcc-labs/zed-crabcc`) — zero-setup, once release assets are
+   published here.
 
-2. **Build the index** once per project (and let crabcc keep it fresh):
-
-   ```bash
-   cd /path/to/your/project
-   crabcc index
-   ```
-
-## Quick install (script)
-
-From a crabcc checkout, one command does the automatable parts — installs
-the `ucracc-lsp` binary, builds your project index, and build-checks the
-extension:
+Until prebuilt assets are published, put the binary on your `$PATH`:
 
 ```bash
-bash install/zed.sh                       # nav-only build
-bash install/zed.sh --features memory,fetch,rerank   # + AI execute-commands
+cargo install ucracc-lsp                       # from crates.io, if published
+# or, from a crabcc checkout:
+cargo install --path crates/ucracc-lsp
+# or download `ucracc-lsp` from a crabcc release:
+#   https://github.com/crabcc-labs/crabcc/releases
 ```
 
-It finishes by printing the single Zed action to register the extension
-(or pass `--headless` to attempt a fully UI-free drop-in — experimental;
-see `install/zed.sh --help`). Manual steps below.
+### 2. Build the project index
 
-## Install the extension (dev)
+Once per project (and let crabcc keep it fresh):
 
-Until this ships to the Zed extension registry, install it as a dev
-extension:
+```bash
+cd /path/to/your/project
+crabcc index            # builds .crabcc/index.db + the tantivy/ sidecar
+```
 
-1. Open Zed → command palette → **`zed: install dev extension`**.
-2. Pick this directory (`editors/zed/crabcc`).
+## Install the extension
+
+### From the Zed extension registry
+
+Once published: open Zed → **Extensions** (`zed: extensions`) → search
+**crabcc** → Install. Zed downloads and builds the extension for you.
+
+### As a dev extension (before/without the registry)
+
+1. Clone this repository (or use `editors/zed/crabcc` from a crabcc checkout).
+2. Open Zed → command palette → **`zed: install dev extension`**.
+3. Pick the extension directory — the **root of this repo** if you cloned
+   `zed-crabcc`, or `editors/zed/crabcc` inside a crabcc checkout.
 
 Zed builds the WASM component (needs the `wasm32-wasip1` Rust target, which
 `rustup target add wasm32-wasip1` provides) and loads `ucracc-lsp` for the
@@ -115,35 +126,36 @@ Zed lets you disable a server per-language without uninstalling:
 
 ## Remote development (Zed SSH)
 
-Zed runs language servers on the **remote** host, not your Mac. So when you
-open a project over SSH (e.g. a `hester`-style dev box):
+Zed runs language servers on the **remote** host, not your local machine. So
+when you open a project over SSH:
 
-- Install `ucracc-lsp` **on the remote host** (`cargo install` there, or
-  ship the release binary) so it lands on the remote `$PATH`.
+- Install `ucracc-lsp` **on the remote host** (`cargo install` there, or ship
+  the release binary) so it lands on the remote `$PATH`.
 - Run `crabcc index` **on the remote host**, against the remote checkout.
-- The extension itself only needs to be installed once in your local Zed;
-  Zed handles launching the server on the remote side.
+- The extension itself only needs to be installed once in your local Zed; Zed
+  handles launching the server on the remote side.
 
 If the index lives somewhere non-standard on the remote, set
-`initialization_options.indexPath` (relative paths resolve against the
-remote worktree root).
+`initialization_options.indexPath` (relative paths resolve against the remote
+worktree root).
 
 ## Troubleshooting
 
 - **"`ucracc-lsp` was not found on $PATH"** — install the binary (above) or
   set `lsp.ucracc-lsp.binary.path`. Check the resolved env with Zed's
   **`zed: open log`**.
-- **No workspace symbols / empty go-to-definition** — the index is missing
-  or stale. Run `crabcc index` (it builds both `index.db` and the
-  `tantivy/` sidecar that `workspace/symbol` needs).
-- **Server logs** — set `"env": { "UCRACC_LOG": "debug" }` under
-  `binary`; output shows up in Zed's LSP logs (`dev: open language server
-  logs`).
+- **No workspace symbols / empty go-to-definition** — the index is missing or
+  stale. Run `crabcc index` (it builds both `index.db` and the `tantivy/`
+  sidecar that `workspace/symbol` needs).
+- **Server logs** — set `"env": { "UCRACC_LOG": "debug" }` under `binary`;
+  output shows up in Zed's LSP logs (`dev: open language server logs`).
 
 ## License
 
 GPLv3 — see [`LICENSE`](./LICENSE) and [`NOTICE.md`](./NOTICE.md) for what
-that means for forks and commercial use (copyleft + attribution). © crabcc-labs.
+that means for forks and commercial use (copyleft + attribution).
+© crabcc-labs.
 
-See [`crates/ucracc-lsp/docs/ZED.md`](../../../crates/ucracc-lsp/docs/ZED.md)
-for the deeper guide.
+For the deeper server-side guide, see
+[`crates/ucracc-lsp/docs/ZED.md`](https://github.com/crabcc-labs/crabcc/blob/main/crates/ucracc-lsp/docs/ZED.md)
+in the crabcc repository.
