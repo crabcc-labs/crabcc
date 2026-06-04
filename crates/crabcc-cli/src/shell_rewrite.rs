@@ -181,6 +181,24 @@ fn plan_cat(args: &[String]) -> Option<Rewrite> {
             track_op: "rewrite",
         });
     }
+    if let Some(fmt) = structured_data_format(file) {
+        // yaml/toml/xml -> compact JSON via dasel: one dense, uniform,
+        // jq-queryable shape regardless of source format (a big win for
+        // tag-heavy XML; normalises the rest). Dropped to plain `cat` when
+        // `dasel` isn't on PATH (run() filters on the emitted program).
+        // NOT byte-exact: comments are dropped, key order may change — so
+        // the note points back to raw `cat`.
+        return Some(Rewrite {
+            inner: format!("dasel -f {} -w json --pretty=false", shq(file)),
+            rule: "cat->dasel-json",
+            key: file.clone(),
+            note: Some(format!(
+                "{fmt} -> compact JSON (dasel; comments dropped - `cat {}` for raw); query with `dasel`/`jq`",
+                shq(file)
+            )),
+            track_op: "rewrite",
+        });
+    }
     if is_source_file(file) {
         // Resolve to the absolute path when the file exists so the read
         // binds to the agent's cwd (cat's frame of reference), not
@@ -202,6 +220,22 @@ fn plan_cat(args: &[String]) -> Option<Rewrite> {
         });
     }
     None
+}
+
+/// Structured-data extensions dasel can transcode to compact JSON.
+/// Returns the source-format label for the header note, or `None`.
+fn structured_data_format(file: &str) -> Option<&'static str> {
+    match Path::new(file)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("yaml" | "yml") => Some("yaml"),
+        Some("toml") => Some("toml"),
+        Some("xml") => Some("xml"),
+        _ => None,
+    }
 }
 
 /// Source extensions where `crabcc read`'s outline stub is meaningful.
@@ -801,9 +835,29 @@ mod tests {
         assert_eq!(plan("cat src/a.json", &never).unwrap().rule, "cat-json->jq");
         // Non-source text, flags, or multiple files are left to plain `cat`.
         assert_eq!(plan("cat README.md", &never), None);
-        assert_eq!(plan("cat config.yaml", &never), None);
         assert_eq!(plan("cat -n a.json", &never), None);
         assert_eq!(plan("cat a.json b.json", &never), None);
+    }
+
+    #[test]
+    fn cat_structured_data_transcodes_via_dasel() {
+        // yaml/yml/toml/xml -> compact JSON via dasel (dropped to plain cat
+        // by run() when dasel isn't on PATH). plan() is pure so it emits the
+        // rewrite regardless of local install.
+        for (f, label) in [
+            ("config.yaml", "yaml"),
+            ("k8s.yml", "yaml"),
+            ("Cargo.toml", "toml"),
+            ("pom.xml", "xml"),
+        ] {
+            let r = plan(&format!("cat {f}"), &never).unwrap();
+            assert_eq!(r.inner, format!("dasel -f {f} -w json --pretty=false"));
+            assert_eq!(r.rule, "cat->dasel-json");
+            assert!(r.note.as_deref().unwrap().contains(label), "{:?}", r.note);
+        }
+        // .md / .csv are not transcoded (left to plain cat).
+        assert_eq!(plan("cat notes.md", &never), None);
+        assert_eq!(plan("cat data.csv", &never), None);
     }
 
     #[test]
