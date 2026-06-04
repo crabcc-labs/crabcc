@@ -98,32 +98,38 @@ pub fn run(root: &Path, cmd: ResearchCmd) -> Result<()> {
 }
 
 /// Locate `.crabcc/onboard/research-plan.json`, walking up from `start` so
-/// `crabcc research` works from a subdirectory of the onboarded repo.
-fn find_plan(start: &Path) -> Option<PathBuf> {
+/// `crabcc research` works from a subdirectory of the onboarded repo. Returns
+/// `(plan_path, repo_root)` — `repo_root` is the directory that holds
+/// `.crabcc`, so the Palace opens against the *same* memory DB that `enrich`
+/// / `status` read (`Palace::open` keys the DB off the root's basename, so a
+/// subdir path would otherwise scope findings to a different DB).
+fn find_plan(start: &Path) -> Option<(PathBuf, PathBuf)> {
     let mut dir = Some(start);
     while let Some(d) = dir {
         let p = d.join(".crabcc").join("onboard").join("research-plan.json");
         if p.is_file() {
-            return Some(p);
+            return Some((p, d.to_path_buf()));
         }
         dir = d.parent();
     }
     None
 }
 
-fn load_plan(root: &Path) -> Result<Plan> {
-    let path = find_plan(root).context(
+/// Load the plan and resolve the repo root that contains it.
+fn load_plan(start: &Path) -> Result<(Plan, PathBuf)> {
+    let (path, root) = find_plan(start).context(
         "no research-plan.json found — run `crabcc init` first to generate the onboarding plan",
     )?;
     let raw = std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
-    serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))
+    let plan = serde_json::from_str(&raw).with_context(|| format!("parse {}", path.display()))?;
+    Ok((plan, root))
 }
 
 fn brief(root: &Path, json: bool) -> Result<()> {
     if json {
         // Byte-identical passthrough of the plan file — no re-serialization
         // drift for the programmatic consumer.
-        let path = find_plan(root).context(
+        let (path, _) = find_plan(root).context(
             "no research-plan.json found — run `crabcc init` first to generate the onboarding plan",
         )?;
         let raw =
@@ -131,7 +137,7 @@ fn brief(root: &Path, json: bool) -> Result<()> {
         print!("{raw}");
         return Ok(());
     }
-    let plan = load_plan(root)?;
+    let (plan, _) = load_plan(root)?;
     print!("{}", render_brief(&plan));
     Ok(())
 }
@@ -203,13 +209,21 @@ fn ingest(root: &Path, topic: &str, file: Option<&Path>, wing: Option<&str>) -> 
     if body.trim().is_empty() {
         anyhow::bail!("empty finding body — pass `--file PATH` or pipe the report on stdin");
     }
+    // Resolve the plan (for its result_wing) AND the repo root it lives under,
+    // so findings land in the same memory DB `enrich` / `status` read — not a
+    // subdirectory-scoped one when invoked from a subdir.
+    let plan = load_plan(root).ok();
+    let palace_root = plan
+        .as_ref()
+        .map(|(_, r)| r.clone())
+        .unwrap_or_else(|| root.to_path_buf());
     // Wing precedence: explicit `--wing` > the plan's result_wing > default.
     let wing = wing
         .map(String::from)
-        .or_else(|| load_plan(root).ok().map(|p| p.result_wing))
+        .or_else(|| plan.map(|(p, _)| p.result_wing))
         .unwrap_or_else(default_wing);
 
-    let palace = Palace::open(root)?;
+    let palace = Palace::open(&palace_root)?;
     let source = format!("research:{topic}");
     let session = std::env::var("TERM_SESSION_ID").ok();
     let id = palace.remember_in_session(&wing, Some(topic), &source, &body, session.as_deref())?;
@@ -221,8 +235,10 @@ fn ingest(root: &Path, topic: &str, file: Option<&Path>, wing: Option<&str>) -> 
 }
 
 fn status(root: &Path, json: bool) -> Result<()> {
-    let plan = load_plan(root)?;
-    let palace = Palace::open(root)?;
+    // Open the Palace at the plan's repo root (same DB as `ingest` / `enrich`),
+    // not a subdir the command may have been invoked from.
+    let (plan, palace_root) = load_plan(root)?;
+    let palace = Palace::open(&palace_root)?;
     // Rooms in the result wing that already hold at least one finding.
     let drawers = palace.list_drawers(Some(&plan.result_wing), 10_000)?;
     let done: std::collections::HashSet<&str> =
@@ -324,7 +340,14 @@ mod tests {
         .unwrap();
         let sub = tmp.path().join("crates").join("deep").join("src");
         std::fs::create_dir_all(&sub).unwrap();
-        assert!(find_plan(&sub).is_some());
+        let (plan_path, root) = find_plan(&sub).expect("plan found via walk-up");
+        assert!(plan_path.ends_with("research-plan.json"));
+        // The resolved root is the repo root (holds .crabcc), NOT the subdir —
+        // so the Palace opens against the repo's memory DB, not a subdir one.
+        assert_eq!(
+            std::fs::canonicalize(&root).unwrap(),
+            std::fs::canonicalize(tmp.path()).unwrap()
+        );
         // No plan above an unrelated dir.
         let other = tempfile::tempdir().unwrap();
         assert!(find_plan(other.path()).is_none());
