@@ -37,6 +37,7 @@ mod compress_cmd;
 mod crawl_cmd;
 mod debug_network;
 mod doctor;
+mod enrich_cmd;
 mod fetch_cmd;
 mod go;
 mod install;
@@ -518,6 +519,17 @@ enum Cmd {
         /// untrusted; never crawl authenticated targets through them.
         #[arg(long, value_name = "PROTOCOL")]
         proxify: Option<String>,
+    },
+    /// Token-bounded documentation context from memory (crawler-ingested
+    /// docs). Returns the most-relevant cached concept plus one
+    /// semi-relevant one, trimmed to `--max-tokens`, for prompt
+    /// context-gathering. The assembled context is cached on disk.
+    Enrich {
+        /// What to pull docs for (a concept / library / topic).
+        query: String,
+        /// Soft token budget for the returned context (~4 chars/token).
+        #[arg(long = "max-tokens", default_value_t = 2000)]
+        max_tokens: usize,
     },
     /// Start the localhost call-graph viewer (issue #64). Binds to 127.0.0.1
     /// by default — pass `--bind 0.0.0.0` only on a trusted LAN; the server
@@ -1204,6 +1216,12 @@ fn main() -> Result<()> {
         );
     }
 
+    // `enrich` reads only the memory Palace (like `memory`), so it's handled
+    // before the symbol Store is opened.
+    if let Some(Cmd::Enrich { query, max_tokens }) = cli.cmd.as_ref() {
+        return enrich_cmd::run(&root, query, *max_tokens);
+    }
+
     // `serve` boots crabcc-viz; doesn't need the symbol Store opened
     // here (the viz server lazy-opens its own). Gated behind the `viz`
     // feature so the default install doesn't pull in the dashboard.
@@ -1668,6 +1686,7 @@ fn main() -> Result<()> {
         Cmd::Go => unreachable!("go handled before store init"),
         Cmd::Fetch { .. } => unreachable!("fetch handled before store init"),
         Cmd::Crawl { .. } => unreachable!("crawl handled before store init"),
+        Cmd::Enrich { .. } => unreachable!("enrich handled before store init"),
         Cmd::Serve { .. } => unreachable!("serve handled before store init"),
         Cmd::Agent { .. } => unreachable!("agent handled before store init"),
         Cmd::Stack { .. } => unreachable!("stack handled before store init"),
@@ -2289,6 +2308,7 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::Go => "go",
         Cmd::Fetch { .. } => "fetch",
         Cmd::Crawl { .. } => "crawl",
+        Cmd::Enrich { .. } => "enrich",
         Cmd::Serve { .. } => "serve",
         Cmd::Read { .. } => "read",
     }
