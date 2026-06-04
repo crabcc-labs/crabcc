@@ -152,6 +152,16 @@ impl LanguageServer for Backend {
             })
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
 
+        // Honor an editor-supplied `initialization_options.indexPath`
+        // (Zed forwards `lsp.ucracc-lsp.initialization_options` from
+        // settings.json). It points at the `.crabcc` directory that holds
+        // `index.db` + `tantivy/`. Relative paths resolve against the repo
+        // root. Absent → the default `<root>/.crabcc` auto-discovery, so
+        // existing clients (Neovim, the tests) are unaffected.
+        let crabcc_dir = init_options_index_path(params.initialization_options.as_ref())
+            .map(|p| if p.is_absolute() { p } else { root.join(p) })
+            .unwrap_or_else(|| root.join(".crabcc"));
+
         // Record paths; do NOT open Store/Fts yet. They're lazy-opened
         // on first use (or prefetched from the `initialized` notification
         // below). This keeps `initialize` in the tens-of-microseconds
@@ -160,8 +170,8 @@ impl LanguageServer for Backend {
         let mut cfg = self.root_config.lock().await;
         *cfg = Arc::new(RootConfig {
             repo_root: root.clone(),
-            db_path: root.join(".crabcc/index.db"),
-            fts_dir: root.join(".crabcc/tantivy"),
+            db_path: crabcc_dir.join("index.db"),
+            fts_dir: crabcc_dir.join("tantivy"),
         });
         drop(cfg);
 
@@ -730,6 +740,19 @@ impl Backend {
     }
 }
 
+/// Pull `indexPath` out of the LSP `initialization_options` blob, if the
+/// client sent one. Accepts both `indexPath` and the snake_case
+/// `index_path` spelling so config copy/paste is forgiving. Returns the
+/// path to the `.crabcc` directory (containing `index.db` + `tantivy/`).
+fn init_options_index_path(opts: Option<&serde_json::Value>) -> Option<PathBuf> {
+    let obj = opts?.as_object()?;
+    obj.get("indexPath")
+        .or_else(|| obj.get("index_path"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+}
+
 fn word_at(open_docs: &DashMap<Url, Arc<String>>, uri: &Url, pos: Position) -> Option<String> {
     let text = open_docs.get(uri).map(|e| e.value().clone())?;
     let line = text.lines().nth(pos.line as usize)?;
@@ -751,4 +774,38 @@ fn word_at(open_docs: &DashMap<Url, Arc<String>>, uri: &Url, pos: Position) -> O
         return None;
     }
     Some(line[start..end].to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::init_options_index_path;
+    use serde_json::json;
+    use std::path::PathBuf;
+
+    #[test]
+    fn index_path_absent_is_none() {
+        assert_eq!(init_options_index_path(None), None);
+        assert_eq!(init_options_index_path(Some(&json!({}))), None);
+        assert_eq!(init_options_index_path(Some(&json!({"other": 1}))), None);
+        // Empty string is treated as "not set" so it can't silently
+        // redirect the index to the repo root.
+        assert_eq!(
+            init_options_index_path(Some(&json!({"indexPath": ""}))),
+            None
+        );
+    }
+
+    #[test]
+    fn index_path_accepts_both_spellings() {
+        let camel = json!({"indexPath": "/srv/repo/.crabcc"});
+        assert_eq!(
+            init_options_index_path(Some(&camel)),
+            Some(PathBuf::from("/srv/repo/.crabcc"))
+        );
+        let snake = json!({"index_path": "build/.crabcc"});
+        assert_eq!(
+            init_options_index_path(Some(&snake)),
+            Some(PathBuf::from("build/.crabcc"))
+        );
+    }
 }

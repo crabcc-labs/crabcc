@@ -6,6 +6,29 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Zed editor integration.** A new `editors/zed` extension registers
+  `ucracc-lsp` as an additional language server for Rust, the TS/JS
+  family, Python, Ruby, Go, Swift, Java, YAML, and Markdown — running
+  alongside the semantic server for each language (rust-analyzer, pyright,
+  gopls, …). Zed can't bind a new LSP binary to a language from
+  `settings.json` alone, so the extension is the supported path. It honors
+  `lsp.ucracc-lsp.binary.path` and forwards `initialization_options` /
+  `settings`. Guide: `crates/ucracc-lsp/docs/ZED.md`.
+- **`ucracc-lsp` honors `initialization_options.indexPath`.** Clients (the
+  Zed extension, or any LSP client) can point the server at a `.crabcc`
+  directory other than `<root>/.crabcc` — useful for monorepos, out-of-tree
+  indexes, and remote/SSH hosts where the checkout path differs. Relative
+  paths resolve against the workspace root; absent → unchanged default
+  behavior. Both `indexPath` and `index_path` spellings accepted.
+- **`install/zed.sh`** — one-shot installer for the Zed integration.
+  Installs the `ucracc-lsp` binary, builds the project index, ensures the
+  `wasm32-wasip1` toolchain, and build-checks the extension; finishes with
+  the single Zed palette action (or an opt-in experimental `--headless`
+  drop-in that compiles the wasm component and places it in Zed's
+  installed-extensions dir).
+
 ## [5.0.0] — 2026-06-01 — *stable baseline*
 
 Promotes the battle-tested v4.5 sharpening line to a stable **v5.0** major, so

@@ -142,6 +142,15 @@ Swift and Bash used to be features here; in v0.2.0 they moved into
 - **No diagnostics.** If you expected red squiggles, that's
   rust-analyzer / sourcekit-lsp / pyright's job. ucracc-lsp's value is
   *speed of navigation*, not type-checking.
+- **Editor setup.** Neovim wires up via `lspconfig` (see the README);
+  Zed needs the [`editors/zed`](../../../editors/zed) extension (Zed can't
+  bind a new LSP binary from `settings.json` alone). Full Zed guide:
+  [`ZED.md`](ZED.md).
+- **`initialization_options.indexPath`.** Clients can override where the
+  server looks for the index (the `.crabcc` dir). Relative paths resolve
+  against the workspace root; absent → `<root>/.crabcc`. Both `indexPath`
+  and `index_path` spellings work. Useful for monorepos / out-of-tree /
+  remote indexes.
 
 ---
 

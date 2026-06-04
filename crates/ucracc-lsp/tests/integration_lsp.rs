@@ -547,3 +547,64 @@ async fn call_hierarchy_incoming_from_call_edge() {
         "expected at least one incoming caller of say_hello, got none"
     );
 }
+
+/// A client (e.g. the Zed extension forwarding
+/// `lsp.ucracc-lsp.initialization_options`) can point the server at a
+/// `.crabcc` directory that is NOT the default `<root>/.crabcc`. We build
+/// the index *only* at a custom location and assert `documentSymbol`
+/// still resolves — proving `indexPath` is honored and isn't silently
+/// falling back to the default path (which doesn't exist here).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn initialization_options_index_path_override() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path().to_path_buf();
+    write_fixtures(&root);
+
+    // Build the index under `<root>/out/.crabcc`, leaving `<root>/.crabcc`
+    // deliberately absent.
+    let crabcc_dir = root.join("out/.crabcc");
+    let db_path = crabcc_dir.join("index.db");
+    std::fs::create_dir_all(&crabcc_dir).unwrap();
+    let store = Store::open(&db_path).expect("open store");
+    crabcc_core::index::full_index(&root, &store).expect("full_index");
+    let fts = crabcc_core::fts::Fts::open(&crabcc_dir.join("tantivy")).expect("open fts");
+    fts.rebuild(&store).expect("fts rebuild");
+    assert!(
+        !root.join(".crabcc").exists(),
+        "default path must be absent"
+    );
+
+    // Boot with an explicit relative `indexPath`.
+    let (service, _socket) = LspService::new(ucracc_lsp::server::Backend::new);
+    let backend = service.inner();
+    backend
+        .initialize(InitializeParams {
+            root_uri: Some(Url::from_file_path(&root).unwrap()),
+            initialization_options: Some(serde_json::json!({ "indexPath": "out/.crabcc" })),
+            ..Default::default()
+        })
+        .await
+        .expect("initialize");
+    backend.initialized(InitializedParams {}).await;
+
+    let uri = uri_for(&root, "ucracc.rs");
+    open_doc(&service, uri.clone(), "rust", fixtures::RUST_SRC).await;
+
+    let resp = service
+        .inner()
+        .document_symbol(DocumentSymbolParams {
+            text_document: TextDocumentIdentifier { uri },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+            partial_result_params: PartialResultParams::default(),
+        })
+        .await
+        .expect("document_symbol");
+    let syms = match resp.expect("Some(response)") {
+        DocumentSymbolResponse::Nested(s) => s,
+        DocumentSymbolResponse::Flat(_) => panic!("expected nested document symbols"),
+    };
+    assert!(
+        !syms.is_empty(),
+        "expected symbols resolved via custom indexPath, got none"
+    );
+}

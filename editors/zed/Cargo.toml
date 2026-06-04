@@ -1,0 +1,16 @@
+[package]
+name = "zed-crabcc"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+# This crate compiles to a WebAssembly component (wasm32-wasip1) that Zed
+# loads as an extension. It is deliberately OUTSIDE the main cargo
+# workspace (see the root Cargo.toml `exclude` list) so the wasm target +
+# `zed_extension_api` deps never touch the native `crabcc` build matrix.
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+zed_extension_api = "0.6"

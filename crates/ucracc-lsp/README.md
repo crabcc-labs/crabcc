@@ -72,6 +72,16 @@ cargo build --release -p ucracc-lsp
 # the binary lives at target/release/ucracc-lsp; it speaks LSP over stdio
 ```
 
+**Zed** — install the [`editors/zed`](../../editors/zed) extension
+(`zed: install dev extension` → pick that dir). Zed can't bind a new LSP
+binary to a language from `settings.json` alone, so the extension is the
+supported path. Full guide: [`docs/ZED.md`](docs/ZED.md). TL;DR:
+
+```bash
+cargo install --path crates/ucracc-lsp   # binary on $PATH
+crabcc index                             # build the index in your project
+```
+
 Editor config — Neovim example (alongside rust-analyzer):
 
 ```lua
@@ -88,6 +98,19 @@ require("lspconfig").ucracc_lsp.setup({})
 
 ucracc-lsp expects `.crabcc/index.db` (and `.crabcc/tantivy/` for
 workspace symbol) to exist. Run `crabcc index` in the repo once.
+
+### `initialization_options`
+
+Clients can override where the server looks for the index via the
+standard LSP `initialization_options` blob:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `indexPath` (a.k.a. `index_path`) | string | Path to the `.crabcc` dir holding `index.db` + `tantivy/`. Relative paths resolve against the workspace root; absolute paths are used as-is. Default: `<root>/.crabcc`. |
+
+Handy for monorepos, out-of-tree indexes, and remote hosts where the
+checkout path differs from the client's. In Zed, set it under
+`lsp.ucracc-lsp.initialization_options`.
 
 ## Performance
 
