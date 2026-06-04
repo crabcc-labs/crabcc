@@ -3,6 +3,7 @@
 //! mapping is unit-testable.
 
 use crabcc_core::types::{Hit, Symbol, SymbolKind as CcKind};
+use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use tower_lsp::lsp_types::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, DocumentSymbol, Hover,
@@ -121,18 +122,17 @@ pub fn hover_for(symbols: &[Symbol]) -> Option<Hover> {
         md.push_str(&s.name);
     }
     md.push_str("\n```\n\n");
-    md.push_str(&format!(
-        "**{:?}** in `{}:{}`",
-        s.kind, s.file, s.line_start
-    ));
+    write!(md, "**{:?}** in `{}:{}`", s.kind, s.file, s.line_start).unwrap();
     if let Some(parent) = &s.parent {
-        md.push_str(&format!("\n\nParent: `{}`", parent));
+        write!(md, "\n\nParent: `{}`", parent).unwrap();
     }
     if symbols.len() > 1 {
-        md.push_str(&format!(
+        write!(
+            md,
             "\n\n_{} definitions match this name; showing the first._",
             symbols.len()
-        ));
+        )
+        .unwrap();
     }
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {

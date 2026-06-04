@@ -20,6 +20,7 @@
 //! for one element.
 
 use anyhow::Result;
+use std::fmt::Write as _;
 use crabcc_memory::Palace;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -455,14 +456,12 @@ fn render_reddit_json(body: &str) -> Option<(String, String)> {
     let score = post.get("score").and_then(|s| s.as_i64()).unwrap_or(0);
 
     let mut md = String::new();
-    md.push_str(&format!(
-        "**r/{subreddit}**  \\| u/{author} \\| score {score}\n\n"
-    ));
+    write!(md, "**r/{subreddit}**  \\| u/{author} \\| score {score}\n\n").unwrap();
     if !selftext.is_empty() {
         md.push_str(selftext);
         md.push_str("\n\n");
     } else if !post_url.is_empty() {
-        md.push_str(&format!("link: {post_url}\n\n"));
+        write!(md, "link: {post_url}\n\n").unwrap();
     }
 
     // Comments — top 5 first-level only, no recursion (tight token budget).
@@ -489,7 +488,7 @@ fn render_reddit_json(body: &str) -> Option<(String, String)> {
             if cbody.is_empty() {
                 continue;
             }
-            md.push_str(&format!("**u/{cauthor}** ({cscore}):\n{cbody}\n\n"));
+            write!(md, "**u/{cauthor}** ({cscore}):\n{cbody}\n\n").unwrap();
         }
     }
 

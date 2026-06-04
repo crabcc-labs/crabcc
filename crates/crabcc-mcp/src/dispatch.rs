@@ -25,7 +25,7 @@ pub fn handle(req: &Value, root: &Path) -> Value {
 /// tests exercising the default vs. dev surfaces use this.
 pub fn handle_with(req: &Value, root: &Path, dev: bool) -> Value {
     let id = req.get("id").cloned();
-    let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
+    let method = req.get("method").and_then(|m| m.as_str()).unwrap_or_default();
 
     match method {
         "initialize" => json!({

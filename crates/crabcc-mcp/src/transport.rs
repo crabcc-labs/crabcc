@@ -171,7 +171,7 @@ fn check_bearer(req: &Request, expected: Option<&str>) -> bool {
         .iter()
         .find(|h| h.field.equiv("authorization"))
         .map(|h| h.value.as_str())
-        .unwrap_or("");
+        .unwrap_or_default();
     // Constant-time comparison would be ideal; we accept naive ==
     // for phase 1 since loopback-only mitigates timing attacks. The
     // bot is the only intended caller and runs on the same host.
