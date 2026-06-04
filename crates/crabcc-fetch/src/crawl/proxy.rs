@@ -58,6 +58,22 @@ impl Protocol {
     }
 }
 
+impl std::str::FromStr for Protocol {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "http" => Ok(Protocol::Http),
+            "https" => Ok(Protocol::Https),
+            "socks4" => Ok(Protocol::Socks4),
+            "socks5" => Ok(Protocol::Socks5),
+            other => Err(format!(
+                "unknown proxy protocol `{other}` (want http|https|socks4|socks5)"
+            )),
+        }
+    }
+}
+
 /// Where a [`ProxyPool`] sources candidate proxies. The endpoint is
 /// fetched by the engine; `parse` turns the body into proxy URLs.
 pub trait ProxySource: Send + Sync {
@@ -279,6 +295,13 @@ mod tests {
     fn endpoint_includes_protocol_segment() {
         let ep = ProxiflySource::new(Protocol::Http).endpoint();
         assert!(ep.ends_with("/protocols/http/data.txt"), "{ep}");
+    }
+
+    #[test]
+    fn protocol_parses_case_insensitively_and_rejects_garbage() {
+        assert_eq!("SOCKS5".parse::<Protocol>().unwrap(), Protocol::Socks5);
+        assert_eq!("http".parse::<Protocol>().unwrap(), Protocol::Http);
+        assert!("ftp".parse::<Protocol>().is_err());
     }
 
     #[test]
