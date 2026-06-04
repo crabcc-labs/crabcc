@@ -186,24 +186,17 @@ pub fn incoming_calls(
     hits.into_iter()
         .filter_map(|h| {
             let uri = to_url(root, &h.file)?;
+            // `range` and `selection_range` are the same span here; compute it
+            // once (Range is Copy) instead of building the Hit twice.
+            let range = hit_range(&h);
             let item = CallHierarchyItem {
                 name: caller_name.to_string(),
                 kind: LspKind::FUNCTION,
                 tags: None,
                 detail: Some(h.snippet),
                 uri,
-                range: hit_range(&Hit {
-                    file: h.file.clone(),
-                    line: h.line,
-                    col: h.col,
-                    snippet: String::new(),
-                }),
-                selection_range: hit_range(&Hit {
-                    file: h.file.clone(),
-                    line: h.line,
-                    col: h.col,
-                    snippet: String::new(),
-                }),
+                range,
+                selection_range: range,
                 data: None,
             };
             Some(CallHierarchyIncomingCall {

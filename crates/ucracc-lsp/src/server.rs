@@ -12,7 +12,6 @@ use crabcc_core::{
 };
 use dashmap::DashMap;
 use std::path::PathBuf;
-use std::sync::Arc as StdArc;
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::Mutex;
@@ -43,44 +42,41 @@ pub struct Backend {
     pub stats: Arc<crate::stats::Stats>,
 }
 
-fn ensure_store(store: &std::sync::Mutex<Option<Store>>, db_path: &std::path::Path) -> bool {
-    let mut g = store.lock().unwrap();
+/// Lazily open a `T` into `slot` the first time it's needed, returning
+/// whether `slot` ends up populated. `ensure_store`/`ensure_fts` share this
+/// exact lock → already-open? → exists? → open → log-on-error shape; only the
+/// opener and the log label differ.
+fn ensure_open<T>(
+    slot: &std::sync::Mutex<Option<T>>,
+    path: &std::path::Path,
+    open: impl FnOnce(&std::path::Path) -> anyhow::Result<T>,
+    label: &str,
+) -> bool {
+    let mut g = slot.lock().unwrap();
     if g.is_some() {
         return true;
     }
-    if !db_path.exists() {
+    if !path.exists() {
         return false;
     }
-    match Store::open(db_path) {
-        Ok(s) => {
-            *g = Some(s);
+    match open(path) {
+        Ok(v) => {
+            *g = Some(v);
             true
         }
         Err(e) => {
-            tracing::warn!(target: "ucracc_lsp", error = %e, "ensure_store failed");
+            tracing::warn!(target: "ucracc_lsp", error = %e, "{} failed", label);
             false
         }
     }
 }
 
+fn ensure_store(store: &std::sync::Mutex<Option<Store>>, db_path: &std::path::Path) -> bool {
+    ensure_open(store, db_path, Store::open, "ensure_store")
+}
+
 fn ensure_fts(fts: &std::sync::Mutex<Option<Fts>>, fts_dir: &std::path::Path) -> bool {
-    let mut g = fts.lock().unwrap();
-    if g.is_some() {
-        return true;
-    }
-    if !fts_dir.exists() {
-        return false;
-    }
-    match Fts::open(fts_dir) {
-        Ok(f) => {
-            *g = Some(f);
-            true
-        }
-        Err(e) => {
-            tracing::warn!(target: "ucracc_lsp", error = %e, "ensure_fts failed");
-            false
-        }
-    }
+    ensure_open(fts, fts_dir, Fts::open, "ensure_fts")
 }
 
 impl Backend {
@@ -322,7 +318,7 @@ impl LanguageServer for Backend {
         let syms = store.symbols_in_file(&rel).unwrap_or_default();
         let dsyms = handlers::document_symbols(syms);
         self.cache
-            .put(key, CacheValue::DocumentSymbols(StdArc::new(dsyms.clone())));
+            .put(key, CacheValue::DocumentSymbols(Arc::new(dsyms.clone())));
         Ok(Some(DocumentSymbolResponse::Nested(dsyms)))
     }
 
@@ -357,7 +353,7 @@ impl LanguageServer for Backend {
         let hits = find_symbol(store, &word).unwrap_or_default();
         let locs = handlers::definition_locations(&cfg.repo_root, hits);
         self.cache
-            .put(key, CacheValue::Definition(StdArc::new(locs.clone())));
+            .put(key, CacheValue::Definition(Arc::new(locs.clone())));
         if locs.is_empty() {
             return Ok(None);
         }
@@ -416,7 +412,7 @@ impl LanguageServer for Backend {
         hits.dedup_by(|a, b| a.file == b.file && a.line == b.line && a.col == b.col);
         let locs = handlers::reference_locations(&root, hits);
         self.cache
-            .put(cache_key, CacheValue::References(StdArc::new(locs.clone())));
+            .put(cache_key, CacheValue::References(Arc::new(locs.clone())));
         Ok(Some(locs))
     }
 
@@ -443,8 +439,7 @@ impl LanguageServer for Backend {
         };
         let hits = find_symbol(store, &word).unwrap_or_default();
         let h = handlers::hover_for(&hits);
-        self.cache
-            .put(key, CacheValue::Hover(StdArc::new(h.clone())));
+        self.cache.put(key, CacheValue::Hover(Arc::new(h.clone())));
         Ok(h)
     }
 
@@ -493,7 +488,7 @@ impl LanguageServer for Backend {
         syms.truncate(200);
         let out = handlers::workspace_symbol_legacy(&cfg.repo_root, syms);
         self.cache
-            .put(key, CacheValue::WorkspaceSymbol(StdArc::new(out.clone())));
+            .put(key, CacheValue::WorkspaceSymbol(Arc::new(out.clone())));
         Ok(Some(out))
     }
 
