@@ -520,6 +520,11 @@ enum Cmd {
         /// untrusted; never crawl authenticated targets through them.
         #[arg(long, value_name = "PROTOCOL")]
         proxify: Option<String>,
+        /// Resume from a persistent on-disk frontier at this path (created
+        /// if absent) so an interrupted crawl picks up where it left off.
+        /// Default is an ephemeral in-memory frontier.
+        #[arg(long, value_name = "PATH")]
+        state: Option<std::path::PathBuf>,
     },
     /// Token-bounded documentation context from memory (crawler-ingested
     /// docs). Returns the most-relevant cached concept plus one
@@ -1221,6 +1226,7 @@ fn main() -> Result<()> {
         remember,
         format,
         proxify,
+        state,
     }) = cli.cmd.as_ref()
     {
         return crawl_cmd::run(
@@ -1233,6 +1239,7 @@ fn main() -> Result<()> {
             *remember,
             format,
             proxify.as_deref(),
+            state.as_deref(),
         );
     }
 
