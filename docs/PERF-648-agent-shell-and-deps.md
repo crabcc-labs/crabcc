@@ -81,7 +81,11 @@ SQLite bulk-resolution refactor (~88k per-edge point queries → in-memory
 ## 4. Global allocator — measured, not guessed
 
 Hypothesis was "mimalloc is a lot faster." Benchmarked the most alloc-heavy
-path (cold index), clean prepare, 10 runs each:
+path (cold index), clean `--prepare 'rm -rf .crabcc'`, on **two** hosts to
+settle it once and for all. All three allocators built as separate release
+binaries (`--features jemalloc` / `--features mimalloc` / none).
+
+**bench-node** (Linux x86_64, glibc), 10 runs:
 
 | Allocator | Mean | Relative |
 |---|---|---|
@@ -89,17 +93,30 @@ path (cold index), clean prepare, 10 runs each:
 | jemalloc | 1.266 s ± 0.019 | 1.01× |
 | mimalloc | 1.292 s ± 0.019 | 1.03× (slowest) |
 
+**darwin arm64** (M-series, libmalloc/nano), 10 runs, `hyperfine`:
+
+| Allocator | Mean | Relative |
+|---|---|---|
+| system | 1.580 s ± 0.008 | **1.00 (fastest, lowest σ)** |
+| mimalloc | 1.599 s ± 0.082 | 1.01× |
+| jemalloc | 1.611 s ± 0.085 | 1.02× |
+
 ```
-cold index (lower is better)
-system    ████████████████████████████████████████ 1.257s
-jemalloc  ████████████████████████████████████████▏1.266s
-mimalloc  █████████████████████████████████████████ 1.292s
+cold index, darwin arm64 (lower is better)
+system    ████████████████████████████████████████ 1.580s  σ=0.008
+mimalloc  ████████████████████████████████████████▍1.599s  σ=0.082
+jemalloc  ████████████████████████████████████████▊1.611s  σ=0.085
 ```
 
-**Verdict:** statistical tie (<3%, direction inconsistent across runs). The
-allocator is irrelevant for crabcc's hot path on Linux. **Kept jemalloc**
-(status quo, what tantivy/tikv ship with); **mimalloc reverted** — no measured
-benefit. The in-tree "+5–12% jemalloc" claim did not reproduce.
+**Verdict (final):** the **system allocator is the default**. It is fastest
+(or tied) on *both* platforms and has the lowest variance on macOS; jemalloc
+and mimalloc add a dependency, build time (jemalloc compiles its 5.x C source,
+~60 s) and binary weight for **zero** measured benefit. The in-tree "+5-12%
+jemalloc" claim reproduces on neither host. `--features jemalloc` /
+`--features mimalloc` are kept as opt-in experiment knobs (gated, off by
+default; mimalloc is `not(jemalloc)`-gated so only one ever owns
+`#[global_allocator]`) so the verdict stays reproducible — but the shipped
+`task build` / `install` / release binaries no longer enable either.
 
 ## 5. Agent-shell protector — rewrite token savings
 
