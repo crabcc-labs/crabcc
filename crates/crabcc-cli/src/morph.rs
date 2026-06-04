@@ -183,12 +183,24 @@ pub fn run_compact(query: Option<&str>, ratio: f64, min_bytes: usize) -> Result<
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
     // Don't pay a network round-trip for output that's already small.
-    let out = if api_key().is_some() && input.len() >= min_bytes {
-        compact(&input, query, ratio)
+    if api_key().is_some() && input.len() >= min_bytes {
+        let out = compact(&input, query, ratio);
+        // Record the realized reduction so `crabcc track` reflects real
+        // session Morph savings (best-effort; only when it actually shrank).
+        if out.len() < input.len() {
+            crabcc_core::track::record_saved(
+                "morph",
+                query.unwrap_or(""),
+                0,
+                "morph",
+                crabcc_core::track::tokens_for_bytes(out.len()),
+                crabcc_core::track::tokens_for_bytes(input.len() - out.len()),
+            );
+        }
+        print!("{out}");
     } else {
-        input
-    };
-    print!("{out}");
+        print!("{input}");
+    }
     Ok(())
 }
 
