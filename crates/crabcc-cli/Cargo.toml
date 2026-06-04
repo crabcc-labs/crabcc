@@ -43,7 +43,7 @@ telemetry = ["dep:tracing-subscriber", "dep:tracing-appender"]
 [dependencies]
 walkdir = "2.5.0"
 crabcc-core   = { workspace = true, features = ["jobs"] }
-crabcc-fetch  = { workspace = true }
+crabcc-fetch  = { workspace = true, features = ["crawl"] }
 crabcc-mcp    = { workspace = true }
 crabcc-memory = { workspace = true }
 # `viz` feature — see [features]. Drops the dashboard / SSE viewer + its

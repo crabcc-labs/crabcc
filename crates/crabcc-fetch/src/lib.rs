@@ -24,7 +24,14 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 use std::time::Duration;
 
-const USER_AGENT: &str = concat!("crabcc-fetch/", env!("CARGO_PKG_VERSION"));
+/// Multi-page crawler (frontier, link-following, politeness) built on
+/// top of the single-shot fetch primitives in this crate. Gated behind
+/// the `crawl` feature so the base fetch library (used by `crabcc-viz`
+/// and the CLI `fetch` path) stays free of the SQLite/url deps it pulls.
+#[cfg(feature = "crawl")]
+pub mod crawl;
+
+pub(crate) const USER_AGENT: &str = concat!("crabcc-fetch/", env!("CARGO_PKG_VERSION"));
 
 /// Default per-URL timeout for the CLI path.
 pub const DEFAULT_PER_URL_TIMEOUT: Duration = Duration::from_secs(20);
@@ -339,6 +346,38 @@ pub fn make_client(per_url_timeout: Duration) -> reqwest::Result<reqwest::Client
         .build()
 }
 
+/// Clean a raw HTML document into `(title, markdown)` using the same
+/// per-domain rules as [`fetch_one`]: article/main extraction for the
+/// hosts in [`host_uses_article_extractor`], whole-page conversion
+/// otherwise. Pure (no I/O) so the crawler can hold onto the raw HTML
+/// for link extraction while still producing exactly the cleaned body
+/// the single-shot path returns.
+///
+/// We use `htmd` (turndown.js-inspired, Apache-2.0) instead of
+/// `html2md` because `html2md 0.2.x` ships
+/// `crate-type = ["rlib", "dylib", "staticlib"]`, and the `dylib` link
+/// forces a `panic_unwind` runtime that conflicts with the workspace's
+/// `panic = "abort"` release profile. `htmd::convert` returns
+/// `io::Result<String>`; on parse failure we fall back to an empty
+/// body. `.skip_tags(...)` drops style/script/noscript content
+/// (html2md silently dropped style; htmd defaults to serializing it as
+/// text) so the output stays close to the prior shape for downstream
+/// consumers.
+pub fn clean_html(host: &str, html: &str) -> (Option<String>, String) {
+    let title = extract_title(html);
+    let body_html = if host_uses_article_extractor(host) {
+        extract_main_content(html).unwrap_or(html)
+    } else {
+        html
+    };
+    let markdown = htmd::HtmlToMarkdown::builder()
+        .skip_tags(vec!["script", "style", "noscript"])
+        .build()
+        .convert(body_html)
+        .unwrap_or_default();
+    (title, markdown)
+}
+
 /// Fetch one URL and clean it. Same per-domain branching as the CLI:
 ///   - Reddit hosts → `.json` API
 ///   - Medium/BBC/telex → `<article>`/`<main>` extraction
@@ -356,7 +395,6 @@ pub async fn fetch_one(
         return fetch_reddit_json(client, url, max_body_bytes).await;
     }
     let host = url_host(url).unwrap_or_default();
-    let prefer_main = host_uses_article_extractor(host);
     match client.get(url).send().await {
         Err(e) => {
             tracing::warn!(target: "crabcc_fetch", url = %url, host = %host, error = %e, "fetch failed");
@@ -381,29 +419,7 @@ pub async fn fetch_one(
                     error: Some(e),
                 },
                 Ok(html) => {
-                    let title = extract_title(&html);
-                    let body_html = if prefer_main {
-                        extract_main_content(&html).unwrap_or(&html)
-                    } else {
-                        &html
-                    };
-                    // We use `htmd` (turndown.js-inspired, Apache-2.0)
-                    // instead of `html2md` because `html2md 0.2.x` ships
-                    // `crate-type = ["rlib", "dylib", "staticlib"]`, and
-                    // the `dylib` link forces a `panic_unwind` runtime
-                    // that conflicts with the workspace's
-                    // `panic = "abort"` release profile. `htmd::convert`
-                    // returns `io::Result<String>`; on parse failure we
-                    // fall back to an empty body. `.skip_tags(...)` drops
-                    // style/script/noscript content (html2md silently
-                    // dropped style; htmd defaults to serializing it as
-                    // text) so the output stays close to the prior
-                    // shape for the downstream consumers.
-                    let markdown = htmd::HtmlToMarkdown::builder()
-                        .skip_tags(vec!["script", "style", "noscript"])
-                        .build()
-                        .convert(body_html)
-                        .unwrap_or_default();
+                    let (title, markdown) = clean_html(host, &html);
                     FetchResult {
                         url: url.into(),
                         status,
@@ -476,7 +492,7 @@ async fn fetch_reddit_json(
 /// hit we drop the connection and return an error rather than
 /// silently truncating — silent truncation produced corrupted HTML
 /// that the HTML→Markdown converter couldn't parse cleanly.
-async fn read_body_capped(
+pub(crate) async fn read_body_capped(
     resp: reqwest::Response,
     max_body_bytes: Option<usize>,
 ) -> std::result::Result<String, String> {

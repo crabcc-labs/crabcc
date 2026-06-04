@@ -11,6 +11,18 @@ repository.workspace   = true
 # `/api/memory/ingest` HTTP handler) depend on this so per-domain
 # extractors / SSRF guards / size caps live in exactly one place.
 
+[features]
+# Multi-page crawler: frontier + link-following + politeness on top of
+# the single-shot fetch primitives. Pulls `rusqlite` (the local SQLite
+# frontier — zero-infra fallback when the Hetzner Postgres backend is
+# unreachable) and `url` (robust relative→absolute link resolution).
+crawl = ["dep:rusqlite", "dep:url"]
+# Lightpanda CDP rendered-DOM transport (spawn-and-manage-locally browser,
+# persistent profile/cookies). Adds the process lifecycle today; the CDP
+# driver dep lands with the fetch impl. Kept separate so `crawl` stays
+# free of browser deps for the lib/viz consumers.
+crawl-lightpanda = ["crawl"]
+
 [dependencies]
 anyhow      = { workspace = true }
 serde       = { workspace = true }
@@ -20,6 +32,10 @@ reqwest     = { workspace = true }
 linkify     = { workspace = true }
 htmd        = { workspace = true }
 tracing     = { workspace = true }
+# crawl-only: local frontier store + URL resolution. Optional so the
+# base library doesn't pull SQLite into `crabcc-viz` / CLI fetch builds.
+rusqlite    = { workspace = true, optional = true }
+url         = { version = "2", optional = true }
 # Used by the streamed-body cap in fetch_one. Pulled transitively via
 # reqwest, but pinned explicitly so a reqwest bump that drops the
 # re-export breaks here, not at use sites.
@@ -27,3 +43,10 @@ bytes       = "1"
 
 [dev-dependencies]
 tempfile   = { workspace = true }
+
+# The smoke example imports `crabcc_fetch::crawl`, which only exists under
+# the `crawl` feature. Without this, a default `--all-targets` build (the
+# lint/test gate) would try to compile it featureless and fail.
+[[example]]
+name = "crawl_smoke"
+required-features = ["crawl"]
