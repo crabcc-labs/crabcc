@@ -88,6 +88,9 @@ fn bench_fuzzy(c: &mut Criterion) {
             s
         }),
         ("nomatch", |_| "zzzzzzzzzz".to_string()),
+        // Matches the `sym` token of *every* row at distance 0 — the dense
+        // case the fast-bail targets (should stay flat as the corpus grows).
+        ("dense", |_| "sym".to_string()),
     ];
 
     let mut group = c.benchmark_group("fuzzy");

@@ -19,7 +19,6 @@ use crate::store::Store;
 use crate::types::SymbolKind;
 use anyhow::Result;
 use serde::Serialize;
-use std::cmp::Ordering;
 
 /// In-memory view of the indexed symbols, ready for name lookups.
 pub struct Fts {
@@ -58,6 +57,18 @@ pub struct FuzzyHit {
 /// (it's exactly at the budget), and only transposition-plus-another-edit
 /// drops out relative to the old behavior. Distance ≤ 2.
 const MAX_EDIT_DISTANCE: usize = 2;
+
+/// Fuzzy stops scanning once it has gathered `max(limit * FUZZY_SCAN_FACTOR,
+/// FUZZY_SCAN_FLOOR)` candidates (or `limit` exact, distance-0 hits). This
+/// bounds latency when a short/common query matches a large slice of the
+/// corpus — the dominant cost there is computing the DP for every matching
+/// row, and once the result `limit` can be filled there's no point continuing.
+/// The trade-off is approximate ranking *only* in that plentiful-match case
+/// (the top `limit` come from the rows scanned before the bail, not a global
+/// ranking); when matches are sparse the cap is never hit and results are
+/// exact. The floor keeps a healthy pool even for small `limit`s.
+const FUZZY_SCAN_FACTOR: usize = 32;
+const FUZZY_SCAN_FLOOR: usize = 512;
 
 impl Fts {
     /// Build the in-memory index from the live SQLite store. Uses the name-only
@@ -99,19 +110,36 @@ impl Fts {
     /// dotted name still matches. Ranked closest-first.
     pub fn fuzzy(&self, query: &str, limit: usize) -> Result<Vec<FuzzyHit>> {
         let q = query.to_lowercase();
+        // One scratch reused across every row + token comparison in this scan.
+        let mut lev = Lev::default();
         let mut scored: Vec<(usize, &Row)> = Vec::new();
+        // Fast-bail thresholds (see FUZZY_SCAN_* docs): `limit` exact hits is
+        // already an optimal top-`limit`, and a full candidate pool is enough
+        // to fill `limit` after sorting.
+        let cap = limit
+            .saturating_mul(FUZZY_SCAN_FACTOR)
+            .max(FUZZY_SCAN_FLOOR);
+        let mut exact = 0usize;
         for row in &self.rows {
-            let mut best = bounded_levenshtein(&q, &row.name_lower, MAX_EDIT_DISTANCE);
+            let mut best = lev.distance(&q, &row.name_lower, MAX_EDIT_DISTANCE);
             for t in &row.tokens {
                 if best == Some(0) {
                     break;
                 }
-                if let Some(d) = bounded_levenshtein(&q, t, MAX_EDIT_DISTANCE) {
+                if let Some(d) = lev.distance(&q, t, MAX_EDIT_DISTANCE) {
                     best = Some(best.map_or(d, |b| b.min(d)));
                 }
             }
             if let Some(d) = best {
+                if d == 0 {
+                    exact += 1;
+                }
                 scored.push((d, row));
+                // Bail once we can't do better (`limit` exact hits) or we have
+                // a full pool — bounds latency on dense-match queries.
+                if exact >= limit || scored.len() >= cap {
+                    break;
+                }
             }
         }
         // Closest match first; ties broken by name for stable output.
@@ -217,37 +245,80 @@ fn name_tokens(name_lower: &str) -> Vec<String> {
     }
 }
 
-/// Levenshtein distance between `a` and `b`, bounded by `max`. Returns `None`
-/// as soon as it's provable that the distance exceeds `max` (length gap too
-/// large, or every cell in a DP row already over budget), which lets the
-/// common "no match" case bail early.
-fn bounded_levenshtein(a: &str, b: &str, max: usize) -> Option<usize> {
-    let a: Vec<char> = a.chars().collect();
-    let b: Vec<char> = b.chars().collect();
-    let (la, lb) = (a.len(), b.len());
-    if la.abs_diff(lb) > max {
-        return None;
-    }
-    // Classic two-row DP. `prev[j]` = edit distance between a[..i-1] and b[..j].
-    let mut prev: Vec<usize> = (0..=lb).collect();
-    let mut cur: Vec<usize> = vec![0; lb + 1];
-    for i in 1..=la {
-        cur[0] = i;
-        let mut row_min = cur[0];
-        for j in 1..=lb {
-            let cost = usize::from(a[i - 1] != b[j - 1]);
-            cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
-            row_min = row_min.min(cur[j]);
+/// Reusable scratch for bounded Levenshtein. Holds the two DP rows (and, for
+/// the rare non-ASCII path, char buffers) so a whole fuzzy scan — millions of
+/// distance calls — allocates them once instead of four heap Vecs per call,
+/// which profiling showed dominated fuzzy (~34% of instructions in the
+/// allocator, ~40% in the DP itself).
+#[derive(Default)]
+struct Lev {
+    prev: Vec<usize>,
+    cur: Vec<usize>,
+    a_chars: Vec<char>,
+    b_chars: Vec<char>,
+}
+
+impl Lev {
+    /// Bounded Levenshtein distance between `a` and `b`, or `None` if it
+    /// provably exceeds `max`. ASCII (the overwhelming case for code symbols)
+    /// runs allocation-free over bytes; anything else falls back to a char DP.
+    fn distance(&mut self, a: &str, b: &str, max: usize) -> Option<usize> {
+        if a.is_ascii() && b.is_ascii() {
+            self.dp(a.as_bytes(), b.as_bytes(), max)
+        } else {
+            // Cold path: materialize chars (reusing buffers) then DP over them.
+            self.a_chars.clear();
+            self.a_chars.extend(a.chars());
+            self.b_chars.clear();
+            self.b_chars.extend(b.chars());
+            // Take the buffers out to satisfy the borrow checker, then DP.
+            let a = std::mem::take(&mut self.a_chars);
+            let b = std::mem::take(&mut self.b_chars);
+            let out = self.dp(&a, &b, max);
+            self.a_chars = a;
+            self.b_chars = b;
+            out
         }
-        if row_min > max {
+    }
+
+    /// Two-row bounded DP over any sequence of `Eq` items, reusing `self.{prev,
+    /// cur}`. `prev[j]` = edit distance between `a[..i-1]` and `b[..j]`.
+    fn dp<T: Eq>(&mut self, a: &[T], b: &[T], max: usize) -> Option<usize> {
+        let (la, lb) = (a.len(), b.len());
+        // Cheap length-gap prune FIRST, before touching the DP buffers — most
+        // token comparisons fail here and now skip all buffer work.
+        if la.abs_diff(lb) > max {
             return None;
         }
-        std::mem::swap(&mut prev, &mut cur);
+        let (prev, cur) = (&mut self.prev, &mut self.cur);
+        prev.clear();
+        prev.extend(0..=lb);
+        cur.clear();
+        cur.resize(lb + 1, 0);
+        for i in 1..=la {
+            cur[0] = i;
+            let mut row_min = i;
+            let ai = &a[i - 1];
+            for j in 1..=lb {
+                let cost = usize::from(*ai != b[j - 1]);
+                cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
+                row_min = row_min.min(cur[j]);
+            }
+            if row_min > max {
+                return None;
+            }
+            std::mem::swap(prev, cur);
+        }
+        let d = prev[lb];
+        (d <= max).then_some(d)
     }
-    match prev[lb].cmp(&max) {
-        Ordering::Greater => None,
-        _ => Some(prev[lb]),
-    }
+}
+
+/// One-shot bounded Levenshtein (allocates a fresh scratch). Test helper; the
+/// hot paths build a [`Lev`] once and call `distance` in a loop instead.
+#[cfg(test)]
+fn bounded_levenshtein(a: &str, b: &str, max: usize) -> Option<usize> {
+    Lev::default().distance(a, b, max)
 }
 
 fn kind_str(k: SymbolKind) -> &'static str {
@@ -380,6 +451,28 @@ mod tests {
             .map(|h| h.name)
             .collect();
         assert!(f.iter().any(|n| n == "get_user_profile"), "fuzzy: {f:?}");
+    }
+
+    #[test]
+    fn fuzzy_bails_on_dense_matches() {
+        // 5000 rows whose `user` token matches the query exactly. The scan must
+        // bail early and still return exactly `limit` valid (distance-0) hits.
+        let sym = |i: usize| crate::types::Symbol {
+            name: format!("get_user_{i:05}"),
+            kind: SymbolKind::Function,
+            signature: None,
+            parent: None,
+            file: "a.rs".into(),
+            line_start: i as u32,
+            line_end: i as u32,
+            visibility: None,
+        };
+        let fts = Fts::from_symbols((0..5000).map(sym));
+        let hits = fts.fuzzy("user", 20).unwrap();
+        assert_eq!(hits.len(), 20, "dense match should fill exactly the limit");
+        assert!(hits.iter().all(|h| h.name.starts_with("get_user_")));
+        // All are token-exact (distance 0 → score 1.0).
+        assert!(hits.iter().all(|h| h.score == 1.0), "expected exact hits");
     }
 
     #[test]
