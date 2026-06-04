@@ -7,8 +7,12 @@
 # the `runner-gc` GitHub workflow.
 #
 # Prunes only unused / regenerable data — Docker images/build cache, cargo
-# registry sources, apt + journald, and stale temp from completed jobs — so
-# a build running concurrently on the host is never disturbed.
+# registry sources, apt + journald, and stale temp from completed jobs.
+# Docker/apt/journald/old-temp pruning only ever touch unused data, so they
+# are safe during a build; the cargo-cache prune is mtime-based and Cargo
+# does NOT bump mtimes on in-use deps, so it is skipped while a job is
+# running (see runner_busy) to avoid deleting sources out from under a
+# concurrent compile.
 #
 # Usage: runner-gc.sh [--deep]   (--deep ignores age filters on Docker)
 set -uo pipefail
@@ -16,6 +20,10 @@ set -uo pipefail
 DEEP=0
 [ "${1:-}" = "--deep" ] && DEEP=1
 log() { echo "[runner-gc] $*"; }
+
+# A job in progress spawns a `Runner.Worker` process. Used to hold off the
+# cargo-cache prune while the host is compiling.
+runner_busy() { pgrep -f 'Runner\.Worker' >/dev/null 2>&1; }
 
 log "host $(hostname) — disk before:"
 df -h / 2>/dev/null || true
@@ -39,11 +47,19 @@ else
 fi
 
 # ── Cargo: regenerable registry sources + git checkouts ────────────────
-for d in "$HOME/.cargo/registry/src" "$HOME/.cargo/registry/cache"; do
-  [ -d "$d" ] && find "$d" -mindepth 1 -maxdepth 1 -mtime +7 -exec rm -rf {} + 2>/dev/null || true
-done
-[ -d "$HOME/.cargo/git/checkouts" ] &&
-  find "$HOME/.cargo/git/checkouts" -mindepth 1 -maxdepth 1 -mtime +14 -exec rm -rf {} + 2>/dev/null || true
+# Only when the runner is idle — a concurrent compile may be reading a dep
+# whose mtime is >7d (Cargo never refreshes it), and deleting it mid-build
+# fails the job. The disk hog is Docker (pruned above) anyway; cargo is a
+# bonus reclaim when safe.
+if runner_busy; then
+  log "runner busy (job in progress) — skipping cargo cache prune"
+else
+  for d in "$HOME/.cargo/registry/src" "$HOME/.cargo/registry/cache"; do
+    [ -d "$d" ] && find "$d" -mindepth 1 -maxdepth 1 -mtime +7 -exec rm -rf {} + 2>/dev/null || true
+  done
+  [ -d "$HOME/.cargo/git/checkouts" ] &&
+    find "$HOME/.cargo/git/checkouts" -mindepth 1 -maxdepth 1 -mtime +14 -exec rm -rf {} + 2>/dev/null || true
+fi
 
 # ── System caches: apt + journald ──────────────────────────────────────
 sudo apt-get clean 2>/dev/null || true
