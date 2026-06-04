@@ -56,15 +56,29 @@ jobs:
           df -h "$CACHE_BASE" || true
 
           echo "=== verifying unit patch ==="
-          grep "TMPDIR" /etc/systemd/system/actions-runner.service && echo "unit patched OK"
+          UNIT_PATH=$(find /etc/systemd/system -maxdepth 1 \
+            \( -name 'actions-runner.service' -o -name 'actions.runner.*.service' \) \
+            2>/dev/null | head -1)
+          if [ -n "$UNIT_PATH" ]; then
+            grep "TMPDIR" "$UNIT_PATH" && echo "unit patched OK: $UNIT_PATH" \
+              || echo "WARN: TMPDIR not found in $UNIT_PATH"
+          else
+            echo "WARN: no runner unit file found"
+          fi
 
           echo "=== scheduling runner restart in 60 s ==="
+          # Detect the live service name: our install.sh writes 'actions-runner';
+          # GitHub's own svc.sh uses 'actions.runner.<owner>-<repo>.<name>'.
+          SVC_NAME=$(systemctl list-units --type=service --no-legend 2>/dev/null \
+            | awk '/actions/ && /runner/ { gsub(/\.service$/, "", $1); print $1; exit }')
+          [ -z "$SVC_NAME" ] && SVC_NAME="actions-runner"
+          echo "Detected runner service: ${SVC_NAME}"
           # systemd-run creates a transient timer that fires after this job
           # exits, so the restart happens cleanly without killing this job.
           sudo systemd-run --on-active=60 \
             --description="post-provision actions-runner restart" \
-            sudo systemctl restart actions-runner
-          echo "restart scheduled"
+            sudo systemctl restart "${SVC_NAME}"
+          echo "restart scheduled for ${SVC_NAME}"
 
       - name: summary
         if: always()
@@ -76,6 +90,8 @@ jobs:
             echo "\`\`\`"
             df -h /var/runner-data 2>/dev/null || echo "/var/runner-data not mounted"
             echo ""
-            grep -E "^Environment=" /etc/systemd/system/actions-runner.service 2>/dev/null || true
+            find /etc/systemd/system -maxdepth 1 \
+              \( -name 'actions-runner.service' -o -name 'actions.runner.*.service' \) \
+              2>/dev/null | head -1 | xargs -I{} grep -E "^Environment=" {} 2>/dev/null || true
             echo "\`\`\`"
           } >> "$GITHUB_STEP_SUMMARY"

@@ -63,16 +63,31 @@ fi
 
 RUNNER_UNIT=/etc/systemd/system/actions-runner.service
 
+# Locate the live runner service unit. Our own install.sh writes it at
+# RUNNER_UNIT above; GitHub's own svc.sh uses the naming convention
+# actions.runner.<owner>-<repo>.<runner-name>.service. Try ours first,
+# then fall back to the first matching actions.runner.*.service unit.
+find_runner_unit() {
+  if [ -f "$RUNNER_UNIT" ]; then echo "$RUNNER_UNIT"; return 0; fi
+  local f
+  f=$(find /etc/systemd/system -maxdepth 1 -name 'actions.runner.*.service' 2>/dev/null | head -1)
+  [ -n "$f" ] && echo "$f"
+}
+
 # In --gc-only mode, a `sudo ... --gc-only` invoked as root would default
 # RUNNER_USER to root and target /root — missing the cache/_work of the
 # account the runner actually runs as (e.g. a `deploy` user). Recover the
 # real user + working dir from the existing runner service unit, unless the
 # operator pinned --user explicitly.
-if [ "$GC_ONLY" = 1 ] && [ "$USER_EXPLICIT" = 0 ] && [ -f "$RUNNER_UNIT" ]; then
-  unit_user="$(awk -F= '/^User=/{print $2; exit}' "$RUNNER_UNIT")"
-  unit_wd="$(awk -F= '/^WorkingDirectory=/{print $2; exit}' "$RUNNER_UNIT")"
-  [ -n "$unit_user" ] && RUNNER_USER="$unit_user"
-  [ -n "$unit_wd" ] && INSTALL_DIR_OVERRIDE="$unit_wd"
+if [ "$GC_ONLY" = 1 ] && [ "$USER_EXPLICIT" = 0 ]; then
+  _actual_unit="$(find_runner_unit)"
+  if [ -n "$_actual_unit" ]; then
+    unit_user="$(awk -F= '/^User=/{print $2; exit}' "$_actual_unit")"
+    unit_wd="$(awk -F= '/^WorkingDirectory=/{print $2; exit}' "$_actual_unit")"
+    [ -n "$unit_user" ] && RUNNER_USER="$unit_user"
+    [ -n "$unit_wd" ] && INSTALL_DIR_OVERRIDE="$unit_wd"
+  fi
+  unset _actual_unit
 fi
 
 RUNNER_HOME="$(eval echo "~${RUNNER_USER}")"
@@ -138,9 +153,10 @@ setup_cache_volume() {
 # the old TMPDIR/CARGO_HOME, leaving rustup/cargo writing to the root fs.
 # Idempotent: skips the rewrite if the vars are already present.
 patch_runner_unit() {
-  local unit=/etc/systemd/system/actions-runner.service
-  if [ ! -f "$unit" ]; then
-    echo "[runner] no runner unit at ${unit} — skipping env patch (full install will write it)"
+  local unit
+  unit="$(find_runner_unit)"
+  if [ -z "$unit" ]; then
+    echo "[runner] no runner unit found — skipping env patch (full install will write it)"
     return 0
   fi
   if grep -q "TMPDIR=${CACHE_BASE}/tmp" "$unit"; then
@@ -164,7 +180,7 @@ patch_runner_unit() {
   ' "$unit" > "$tmp"
   mv "$tmp" "$unit"
   systemctl daemon-reload
-  echo "[runner] unit patched — run 'sudo systemctl restart actions-runner' to apply"
+  echo "[runner] unit patched — runner will pick up new env vars on next restart"
 }
 
 # ── Disk-GC timer ───────────────────────────────────────────────────────
