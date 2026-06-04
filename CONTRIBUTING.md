@@ -24,6 +24,30 @@ task ci        # build + test + lint + fmt-check, in one shot
 
 Or open the repo in **GitHub Codespaces** — `.devcontainer/` ships a Rust + Node + gh + docker-in-docker container with rust-analyzer, clippy on save, and ports 7878 (viz) / 8080 (litellm) forwarded. `cargo build` and `crabcc index` run automatically on `postCreate`.
 
+### Nix dev shell (optional)
+
+If you use Nix, `flake.nix` provides a devShell with the Rust toolchain plus the
+[`.tools`](./.tools) CLI fleet (rg, fd, ast-grep, qsv, tokei, sccache, ...) and
+`rtk` from [`numtide/llm-agents.nix`](https://github.com/numtide/llm-agents.nix):
+
+```bash
+nix develop          # drop into the shell
+# or, with nix-direnv: `direnv allow` (auto-enters on cd; see .envrc)
+```
+
+The `nix` CI workflow runs `nix flake check` on every PR, so the shell stays
+buildable. Agent runtimes (claude-code, the *claw bench profiles) live in the
+same upstream flake: `nix run github:numtide/llm-agents.nix#<tool>`.
+
+### Claude Code plugins
+
+`.claude/settings.json` enables the [`superpowers`](https://github.com/obra/superpowers)
+skills plugin (TDD / systematic-debugging / writing-plans, MIT) from the
+**official** Claude plugin marketplace for everyone who opens the repo. It
+activates only after you accept the standard workspace-trust prompt — committing
+the setting never runs plugin code without that consent. To opt out locally, set
+`"superpowers@claude-plugins-official": false` in `.claude/settings.local.json`.
+
 ## Workflow
 
 1. **Open an issue first** for anything non-trivial. Use one of the templates: bug, feature, performance, rfc, epic, chore. The template pre-fills the labels and the title prefix (`feat(scope):`, `perf(scope):`, etc.).
