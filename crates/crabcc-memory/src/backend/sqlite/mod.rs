@@ -123,6 +123,23 @@ impl SqliteBackend {
             )?;
         }
 
+        // diff-on-re-read (#1a) — `session_reads.content` holds the last full
+        // body served to a (path, session_id) so a re-read of an edited file
+        // can return a unified diff instead of the whole file. Older dbs that
+        // predate the column ALTER it in (nullable; old rows get NULL = no
+        // baseline, which correctly degrades the next re-read to a full read).
+        let has_sr_content: bool = conn
+            .query_row(
+                "SELECT 1 FROM pragma_table_info('session_reads') WHERE name = 'content'",
+                [],
+                |_| Ok(true),
+            )
+            .optional()?
+            .unwrap_or_default();
+        if !has_sr_content {
+            conn.execute("ALTER TABLE session_reads ADD COLUMN content TEXT", [])?;
+        }
+
         // FTS5 backfill — `drawers_fts` is a CREATE-IF-NOT-EXISTS virtual
         // table, so v2.1 / v2.2.1 databases (no FTS at write time) will own an
         // empty index after the first upgraded open. If drawers > 0 but FTS

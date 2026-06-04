@@ -138,6 +138,11 @@ CREATE TABLE IF NOT EXISTS session_reads (
     served_at       INTEGER NOT NULL,
     bytes_returned  INTEGER NOT NULL,
     read_count      INTEGER NOT NULL DEFAULT 1,
+    -- Last full content actually served to this (path, session_id), kept so a
+    -- later re-read of an edited file can return a unified diff vs what the
+    -- caller last saw instead of the whole file. Populated only on full/diff
+    -- reads (the caller has the bytes); NULL after a stub/entropy-only read.
+    content         TEXT,
     UNIQUE (path, session_id)
 );
 CREATE INDEX IF NOT EXISTS idx_session_reads_session   ON session_reads(session_id);
