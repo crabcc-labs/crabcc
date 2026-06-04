@@ -396,8 +396,13 @@ impl Store {
             "DELETE FROM edges WHERE src_symbol_id IN (SELECT id FROM symbols WHERE file_id = ?1)",
             params![file_id],
         )?;
+        // INSERT OR IGNORE: the v4 WITHOUT-ROWID composite PK
+        // (src_symbol_id, dst_symbol_id, kind, line) defines edge identity, so
+        // the extractor emitting the same logical edge twice — e.g. a symbol
+        // referenced multiple times on one line (`-> Self { Self { .. } }`) —
+        // collapses to a single row instead of failing the unique constraint.
         let mut insert = tx.prepare_cached(
-            "INSERT INTO edges(src_symbol_id, dst_symbol_id, kind, line)
+            "INSERT OR IGNORE INTO edges(src_symbol_id, dst_symbol_id, kind, line)
              VALUES (?1, ?2, ?3, ?4)",
         )?;
         for e in edges {
@@ -1279,6 +1284,48 @@ mod tests {
             edges.iter().any(|(s, d, _)| *s == src_id && *d == dst_id),
             "replace_edges did not persist a row resolvable via v4 columns; got {edges:?}"
         );
+    }
+
+    /// Regression: the extractor legitimately emits the *same* logical edge
+    /// twice when a symbol is referenced multiple times on one line — e.g.
+    /// `pub fn make(n: u64) -> Self { Self { n } }` yields two identical
+    /// `(make, Self, ref, line)` edges. Under the v4 WITHOUT-ROWID composite
+    /// PK `(src_symbol_id, dst_symbol_id, kind, line)` those collapse to one
+    /// edge, so `replace_edges` must be idempotent (INSERT OR IGNORE) rather
+    /// than fail with `UNIQUE constraint failed: edges...`. (This panic took
+    /// down full_index in the ucracc-lsp concurrency tests.)
+    #[test]
+    fn replace_edges_tolerates_duplicate_edges() {
+        let (_dir, store) = tmp_store();
+        let fid = store.upsert_file("a.rs", "h", 0, "rust").unwrap();
+        store
+            .insert_symbol(
+                fid,
+                "make",
+                None,
+                SymbolKind::Function,
+                None,
+                4,
+                4,
+                None,
+                None,
+            )
+            .unwrap();
+
+        let dup = || Edge {
+            src_file: "a.rs".into(),
+            src_symbol: Some("make".into()),
+            dst_name: "Self".into(), // unresolved → sentinel; same id both times
+            kind: "ref".into(),
+            line: 4,
+        };
+
+        store
+            .replace_edges(fid, &[dup(), dup()])
+            .expect("replace_edges must tolerate duplicate (src,dst,kind,line) edges");
+
+        // The duplicate collapses to exactly one persisted edge row.
+        assert_eq!(store.edge_count().unwrap(), 1);
     }
 
     /// CRIT-3: `replace_symbols` must persist `parent_id` when the input
