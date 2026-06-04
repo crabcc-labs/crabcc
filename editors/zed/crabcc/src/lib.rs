@@ -21,9 +21,7 @@
 //! been built for this same workspace root).
 
 use zed_extension_api::{
-    self as zed,
-    settings::LspSettings,
-    Command, LanguageServerId, Result, Worktree,
+    self as zed, settings::LspSettings, Command, LanguageServerId, Result, Worktree,
 };
 
 const SERVER_BINARY: &str = "ucracc-lsp";
@@ -92,11 +90,7 @@ impl zed::Extension for CrabccExtension {
             env.extend(extra);
         }
 
-        Ok(Command {
-            command,
-            args,
-            env,
-        })
+        Ok(Command { command, args, env })
     }
 
     /// Forward `lsp.ucracc-lsp.initialization_options` (e.g. `indexPath`)

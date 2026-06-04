@@ -99,9 +99,11 @@ jobs:
 
       # Optional cosign signing of the release tarballs (key-based). Inert
       # until COSIGN_PRIVATE_KEY (+ COSIGN_PASSWORD) repo secrets are set, so
-      # the default release still ships tarballs + SHA-256 only. Produces a
-      # detached `.sig` + `.pem` (cert) per tarball, bundled into the release.
-      # Verify: cosign verify-blob --key cosign.pub --signature X.sig X.tar.gz
+      # the default release still ships tarballs + SHA-256 only. Writes a
+      # `.cosign.bundle` per tarball (current cosign `sign-blob` emits
+      # verification material via --bundle; the old --output-signature/
+      # --output-certificate flags were dropped). Verify:
+      #   cosign verify-blob --key cosign.pub --bundle X.tar.gz.cosign.bundle X.tar.gz
       # (full setup in docs/COSIGN-SETUP.md).
       - name: install cosign
         if: env.COSIGN_PRIVATE_KEY != ''
@@ -114,8 +116,7 @@ jobs:
           printf '%s' "$COSIGN_PRIVATE_KEY" > cosign.key
           for f in dist/*.tar.gz; do
             cosign sign-blob --yes --key cosign.key \
-              --output-signature "$f.sig" \
-              --output-certificate "$f.pem" \
+              --bundle "$f.cosign.bundle" \
               "$f"
           done
           rm -f cosign.key
@@ -126,8 +127,7 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/*.sha256
-            dist/*.sig
-            dist/*.pem
+            dist/*.cosign.bundle
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}

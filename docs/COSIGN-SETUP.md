@@ -91,8 +91,10 @@ gh secret set COSIGN_PASSWORD    --repo crabcc-labs/crabcc --body 'the-password'
 ```
 
 With these set:
-- `release-ucracc-lsp.yml` runs `cosign sign-blob` on every `*.tar.gz` and
-  attaches a `.sig` + `.pem` per tarball to the GitHub release.
+- `release-ucracc-lsp.yml` runs `cosign sign-blob --bundle` on every
+  `*.tar.gz` and attaches a `.cosign.bundle` per tarball to the GitHub
+  release. (Current cosign emits verification material via `--bundle`; the
+  older `--output-signature`/`--output-certificate` flags were removed.)
 - `release-ucracc-lsp-image.yml` switches from keyless to key-based image
   signing automatically (it prefers `COSIGN_PRIVATE_KEY` when present).
 
@@ -104,7 +106,7 @@ verify. **Do not commit `cosign.key`.**
 ```bash
 cosign verify-blob \
   --key cosign.pub \
-  --signature ucracc-lsp-v0.4.0-aarch64-apple-darwin.tar.gz.sig \
+  --bundle ucracc-lsp-v0.4.0-aarch64-apple-darwin.tar.gz.cosign.bundle \
   ucracc-lsp-v0.4.0-aarch64-apple-darwin.tar.gz
 ```
 

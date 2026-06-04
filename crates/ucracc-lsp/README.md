@@ -79,7 +79,7 @@ cargo install --path crates/ucracc-lsp
 Each `ucracc-lsp-v*` tag publishes a [GitHub release](https://github.com/crabcc-labs/crabcc/releases)
 with per-target tarballs (linux x86_64 / aarch64, macOS aarch64), each
 accompanied by a `.sha256` checksum — and, once signing is enabled, a cosign
-`.sig` + `.pem`. A multi-arch **Docker image** is also published:
+`.cosign.bundle`. A multi-arch **Docker image** is also published:
 
 ```bash
 docker pull crabcc-labs/ucracc-lsp:0.4.0     # or :latest
