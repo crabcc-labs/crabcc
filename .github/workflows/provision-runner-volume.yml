@@ -89,7 +89,7 @@ jobs:
           # 'actions.runner.<owner>-<repo>.<name>' (one per runner process).
           # mapfile collects every match; fall back to the default name if none.
           mapfile -t SVC_NAMES < <(systemctl list-units --type=service --no-legend 2>/dev/null \
-            | awk '/actions/ && /runner/ { gsub(/\.service$/, "", $1); print $1 }')
+            | awk '$1 ~ /^actions[.-]runner[^-]/ { gsub(/\.service$/, "", $1); print $1 }')
           if [ ${#SVC_NAMES[@]} -eq 0 ]; then
             SVC_NAMES=("actions-runner")
           fi

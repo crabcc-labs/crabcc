@@ -119,16 +119,20 @@ setup_cache_volume() {
     exit 1
   fi
 
-  # Format only if the device carries no recognised filesystem yet.
-  # Uses -F to allow formatting even if it looks mounted (e.g. after a
-  # failed previous attempt); blkid is checked first as the safer guard.
+  # Format only when the device carries no recognised filesystem.
+  # If blkid finds a non-ext4 type (XFS, Btrfs, existing data, …), refuse
+  # rather than silently destroying contents with mkfs.ext4 -F.
   local fstype
   fstype="$(blkid -s TYPE -o value "$dev" 2>/dev/null || true)"
-  if [ "$fstype" != "ext4" ]; then
-    echo "[runner] formatting ${dev} as ext4 (label=runner-data)..."
+  if [ -z "$fstype" ]; then
+    echo "[runner] no filesystem on ${dev} — formatting as ext4 (label=runner-data)..."
     mkfs.ext4 -L runner-data -F "$dev"
-  else
+  elif [ "$fstype" = "ext4" ]; then
     echo "[runner] ${dev} already ext4 — skipping mkfs"
+  else
+    echo "ERROR: ${dev} contains a ${fstype} filesystem — refusing to reformat." >&2
+    echo "ERROR: Detach or wipe the volume manually, then retry --cache-volume." >&2
+    exit 1
   fi
 
   mkdir -p "${CACHE_BASE}"
