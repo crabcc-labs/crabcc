@@ -54,6 +54,7 @@ mod rewrite_log;
 mod root_resolver;
 mod shell_context;
 mod shell_rewrite;
+mod squeeze;
 mod status;
 #[cfg(feature = "telemetry")]
 mod telemetry;
@@ -538,6 +539,15 @@ enum Cmd {
     Csv {
         #[command(subcommand)]
         op: CsvCmd,
+    },
+    /// Collapse streaming/progress noise from stdin (carriage-return redraws,
+    /// repeated lines), keeping errors/warnings. A cheap filter for build /
+    /// install / test / log output: `noisy-cmd 2>&1 | crabcc squeeze`.
+    Squeeze {
+        /// Keep first/last N/2 lines and elide the middle (errors still
+        /// surfaced). 0 = no window, only the lossless reductions.
+        #[arg(long, default_value_t = 0)]
+        max_lines: usize,
     },
     /// Start the localhost call-graph viewer (issue #64). Binds to 127.0.0.1
     /// by default — pass `--bind 0.0.0.0` only on a trusted LAN; the server
@@ -1272,6 +1282,11 @@ fn main() -> Result<()> {
         };
     }
 
+    // `squeeze` is a pure stdin->stdout filter; no symbol Store needed.
+    if let Some(Cmd::Squeeze { max_lines }) = cli.cmd.as_ref() {
+        return squeeze::run(*max_lines);
+    }
+
     // `serve` boots crabcc-viz; doesn't need the symbol Store opened
     // here (the viz server lazy-opens its own). Gated behind the `viz`
     // feature so the default install doesn't pull in the dashboard.
@@ -1747,6 +1762,7 @@ fn main() -> Result<()> {
         Cmd::Crawl { .. } => unreachable!("crawl handled before store init"),
         Cmd::Enrich { .. } => unreachable!("enrich handled before store init"),
         Cmd::Csv { .. } => unreachable!("csv handled before store init"),
+        Cmd::Squeeze { .. } => unreachable!("squeeze handled before store init"),
         Cmd::Serve { .. } => unreachable!("serve handled before store init"),
         Cmd::Agent { .. } => unreachable!("agent handled before store init"),
         Cmd::Stack { .. } => unreachable!("stack handled before store init"),
@@ -2370,6 +2386,7 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::Crawl { .. } => "crawl",
         Cmd::Enrich { .. } => "enrich",
         Cmd::Csv { .. } => "csv",
+        Cmd::Squeeze { .. } => "squeeze",
         Cmd::Serve { .. } => "serve",
         Cmd::Read { .. } => "read",
         Cmd::Edit { .. } => "edit",

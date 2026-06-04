@@ -9,6 +9,7 @@
     {"name": "delta",        "summary": "Pretty git diff viewer",       "replaces": "git diff"},
     {"name": "sd",           "summary": "Fast sed replacement",         "replaces": "sed"},
     {"name": "choose",       "summary": "Fast field selector",          "replaces": "cut, awk"},
+    {"name": "qsv",          "summary": "Fast CSV toolkit (stats/sample)", "replaces": "csvkit, xsv"},
     {"name": "dust",         "summary": "Fast du replacement",          "replaces": "du"},
     {"name": "procs",        "summary": "Modern ps replacement",        "replaces": "ps"},
     {"name": "bottom",       "summary": "Fast top replacement",         "replaces": "top, htop"},
