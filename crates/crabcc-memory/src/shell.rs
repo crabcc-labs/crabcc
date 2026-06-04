@@ -71,7 +71,7 @@ pub fn record_shell(
         opt.unwrap_or_else(|| ShellRecord {
             command: command.to_string(),
             cwd: cwd.to_string(),
-            session_id: session_id.map(|s| s.to_string()),
+            session_id: session_id.map(str::to_string),
             last_run_at: now,
             run_count: 1,
         })

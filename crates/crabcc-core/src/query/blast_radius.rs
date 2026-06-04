@@ -42,7 +42,7 @@ pub fn blast_radius(
     max_depth: usize,
     kinds: &[&str],
 ) -> Result<BlastRadiusResult> {
-    let kinds_used: Vec<String> = kinds.iter().map(|s| s.to_string()).collect();
+    let kinds_used: Vec<String> = kinds.iter().copied().map(str::to_string).collect();
     let mut depth_map: HashMap<i64, usize> = HashMap::new();
     let mut seen: HashSet<i64> = HashSet::new();
     seen.insert(root_symbol_id);

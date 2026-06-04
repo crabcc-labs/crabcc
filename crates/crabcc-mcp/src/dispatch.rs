@@ -302,7 +302,7 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
             let session_id = args
                 .get("session_id")
                 .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
+                .map(str::to_string)
                 .filter(|s| !s.trim().is_empty());
             let threshold = args
                 .get("threshold")

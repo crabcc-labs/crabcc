@@ -127,7 +127,7 @@ fn list_available_profiles(dir: &Path) -> Result<Vec<String>> {
             let name = e.file_name();
             name.to_string_lossy()
                 .strip_suffix(".profile.toml")
-                .map(|s| s.to_string())
+                .map(str::to_string)
         })
         .collect();
     out.sort();
