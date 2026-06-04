@@ -1,0 +1,91 @@
+name: Style hints
+
+# Advisory-only scan of PR diff lines for known improvable Rust patterns.
+# Never blocks merge — results appear in the workflow step summary only.
+on:
+  pull_request:
+
+concurrency:
+  group: style-hints-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quick-win-hints:
+    name: quick-win hints (advisory)
+    runs-on: [self-hosted, linux, hetzner]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Scan PR diff for improvable patterns
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          # Extract only newly-added lines from .rs files (strip leading +,
+          # skip the +++ file-header lines).
+          ADDED=$(git diff "${BASE}..${HEAD}" -- '*.rs' \
+            | grep '^+' | grep -v '^+++' | sed 's/^+//' || true)
+
+          if [ -z "$ADDED" ]; then
+            echo "## ✅ No Rust lines added — nothing to check" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          TOTAL=0
+          REPORT=$(mktemp)
+
+          # hit LABEL GREP_PATTERN SUGGESTION
+          # Appends a section to $REPORT and increments $TOTAL when matches exist.
+          hit() {
+            local label="$1" pattern="$2" suggestion="$3"
+            local lines n
+            lines=$(printf '%s\n' "$ADDED" | grep -E "$pattern" || true)
+            [ -z "$lines" ] && return
+            n=$(printf '%s\n' "$lines" | wc -l)
+            TOTAL=$((TOTAL + n))
+            {
+              printf '### `%s` — %d hit%s\n\n' \
+                "$label" "$n" "$([ "$n" -gt 1 ] && printf s)"
+              printf '> 💡 %s\n\n' "$suggestion"
+              printf '```rust\n%s\n```\n\n' "$lines"
+            } >> "$REPORT"
+          }
+
+          hit 'push_str(&format!())' \
+              'push_str\(&format!\(' \
+              'Replace with `write!(buf, …).unwrap()` — avoids an intermediate String allocation per call'
+
+          hit '.to_string_lossy().to_string()' \
+              'to_string_lossy\(\)\.to_string\(\)' \
+              'Replace with `.to_string_lossy().into_owned()` — skips a redundant clone when the Cow is already Owned'
+
+          hit '.unwrap_or("")' \
+              '\.unwrap_or\(""' \
+              'Replace with `.unwrap_or_default()` for `Option<&str>` / `Option<String>`'
+
+          hit '.map(|x| x.to_string()) — single-var closure' \
+              '\.map\(\|[a-z]\| [a-z]\.to_string\(\)\)' \
+              'Consider `map(str::to_string)` for `&str` iterators (avoids a redundant closure)'
+
+          hit '.map(|x| x.clone()) — single-var closure' \
+              '\.map\(\|[a-z]\| [a-z]\.clone\(\)\)' \
+              'Replace with `.map(Clone::clone)` or `.cloned()` when iterating over references'
+
+          {
+            if [ "$TOTAL" -eq 0 ]; then
+              printf '## ✅ No improvable style patterns in this diff\n'
+            else
+              printf '## 💡 %d improvable pattern%s detected (advisory — does not block merge)\n\n' \
+                "$TOTAL" "$([ "$TOTAL" -gt 1 ] && printf s)"
+              printf 'These are quick Rust-idiomatic improvements. Fix in a follow-up or in the same PR.\n\n'
+              cat "$REPORT"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          rm -f "$REPORT"
+          # Always exit 0 — this job is informational only.
+          exit 0
