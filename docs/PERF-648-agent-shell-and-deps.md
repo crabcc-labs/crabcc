@@ -154,14 +154,23 @@ no `target/`); tokens ≈ output bytes / 4.
 | list files (`find *.rs` → `rg --files`+rtk) | 1,736 | 507 | **−70%** |
 | read JSON (`cat *.json` → `jq -c`) | 1,149 | 537 | **−53%** |
 | text search (`grep 'pub fn'` → rg+rtk+Morph) | 15,509 | 7,192 | **−53%** |
-| read source (`cat store.rs` → Morph) | 14,790 | 7,752 | **−47%** |
+| read source, re-read (`cat store.rs` → `crabcc read`) | 14,790 | 3,715 | **−75%** |
+| read source, first read (`cat store.rs` → `crabcc read`) | 14,790 | 15,343 | +4% |
 
 Symbol-aware ops are the standout (−96/−97%: precise refs vs every
-textual hit); raw dumps (source/text/files/JSON) land −47 to −70% via
-gitignore-aware search + RTK + Morph. Tiny outputs (a handful of hits)
-see a small *negative* (~+20 tok) from the provenance header — the chain
-is for volume, not trivia. Numbers are flow-invariant to the underlying
-crab version (the reductions come from the rewrite layer, not the index).
+textual hit); raw text/file/JSON dumps land −53 to −70% via
+gitignore-aware search + RTK + Morph. **Reading source is the one place
+we trade Morph for accuracy**: `cat <src>` now rewrites to `crabcc read`,
+which serves the *byte-exact* file on the first read (+4% from the JSON
+envelope) and a session-cached outline **stub** on every re-read in that
+session (−75%), instead of a lossy Morph compaction. Agents re-read the
+same files repeatedly across reasoning steps, so the session-amortized
+cost drops sharply while accuracy stays perfect (freshness gated on
+mtime + content-hash, race-safe via SQLite WAL). Tiny outputs (a handful
+of hits) see a small *negative* (~+20 tok) from the provenance header —
+the chain is for volume, not trivia. Numbers are flow-invariant to the
+underlying crab version (the reductions come from the rewrite layer, not
+the index).
 
 ## 7. Which features benefit AI agents most (measured)
 

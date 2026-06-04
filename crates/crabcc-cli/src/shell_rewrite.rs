@@ -159,21 +159,84 @@ pub fn plan(cmd: &str, is_symbol: &dyn Fn(&str) -> bool) -> Option<Rewrite> {
     }
 }
 
-/// `cat <one file>.json` -> `jq -c . <file>`: minified JSON, lossless,
-/// strips the indentation tokens a pretty-printed file wastes. Multiple
-/// files or any flag -> passthrough (plain `cat` is still compaction-worthy).
+/// `cat <one file>` -> a cheaper, lossless reader. A `.json` file becomes
+/// `jq -c .` (minified JSON, strips the indentation tokens a pretty-printed
+/// file wastes). A source file becomes `crabcc read`: full content on the
+/// first read, a session-cached outline *stub* on a re-read.
+/// Accuracy-preserving and race-safe (mtime+hash freshness, SQLite WAL), so
+/// it is never compacted — the read cache *is* the optimization. Multiple
+/// files or any flag -> passthrough (plain `cat` is still compaction-worthy
+/// via the post-stage chain).
 fn plan_cat(args: &[String]) -> Option<Rewrite> {
     let [file] = args else { return None };
-    if file.starts_with('-') || !file.ends_with(".json") {
+    if file.starts_with('-') {
         return None;
     }
-    Some(Rewrite {
-        inner: format!("jq -c . {}", shq(file)),
-        rule: "cat-json->jq",
-        key: file.clone(),
-        note: Some("minified JSON (jq -c); pipe to `jq '<filter>'` to select fields".into()),
-        track_op: "rewrite",
-    })
+    if file.ends_with(".json") {
+        return Some(Rewrite {
+            inner: format!("jq -c . {}", shq(file)),
+            rule: "cat-json->jq",
+            key: file.clone(),
+            note: Some("minified JSON (jq -c); pipe to `jq '<filter>'` to select fields".into()),
+            track_op: "rewrite",
+        });
+    }
+    if is_source_file(file) {
+        // Resolve to the absolute path when the file exists so the read
+        // binds to the agent's cwd (cat's frame of reference), not
+        // crabcc's repo root; fall back to the literal path otherwise
+        // (where a missing file makes both `cat` and `read` error alike).
+        let target = std::fs::canonicalize(file)
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| file.clone());
+        return Some(Rewrite {
+            inner: format!("crabcc read {}", shq(&target)),
+            rule: "cat->crabcc-read",
+            key: file.clone(),
+            note: Some(
+                "outline-aware read; a re-read in the same session returns the outline stub - add `--mode=full` for raw content"
+                    .into(),
+            ),
+            track_op: "read",
+        });
+    }
+    None
+}
+
+/// Source extensions where `crabcc read`'s outline stub is meaningful.
+/// Data / markup formats (yaml, toml, md, csv, ...) are left to plain
+/// `cat` + the compaction chain, since their outline is empty.
+fn is_source_file(file: &str) -> bool {
+    let ext = Path::new(file)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    matches!(
+        ext.as_deref(),
+        Some(
+            "rs" | "ts"
+                | "tsx"
+                | "js"
+                | "jsx"
+                | "mjs"
+                | "cjs"
+                | "py"
+                | "go"
+                | "java"
+                | "kt"
+                | "c"
+                | "h"
+                | "cc"
+                | "cpp"
+                | "hpp"
+                | "rb"
+                | "php"
+                | "swift"
+                | "scala"
+                | "cs"
+        )
+    )
 }
 
 #[derive(Default)]
@@ -486,13 +549,16 @@ pub fn run(root: &Path, db: &Path, command: &str, session_id: Option<&str>) -> R
     });
 
     // Base command + whether its output is worth compacting + the compact
-    // query. Symbol upgrades (track_op "refs") are already tiny -> never
-    // compacted; passthrough commands are compacted only when compactable.
+    // query. Only faithful raw swaps (track_op "rewrite": rg/jq/find) are
+    // compacted; crabcc's own structured outputs (refs symbol upgrades,
+    // read outline stubs) are already tiny and accuracy-critical, so they
+    // are never sent through RTK/Morph. Passthrough commands are compacted
+    // only when compactable.
     let (base, compact_query, compact_worthy) = match &engine {
         Some(rw) => (
             rw.inner.clone(),
             (rw.rule == "grep->rg").then(|| rw.key.clone()),
-            rw.track_op != "refs",
+            rw.track_op == "rewrite",
         ),
         None => (
             command.to_string(),
@@ -731,10 +797,27 @@ mod tests {
             "jq -c . config.json"
         );
         assert_eq!(plan("cat src/a.json", &never).unwrap().rule, "cat-json->jq");
-        // Non-json, flags, or multiple files are left to plain `cat`.
+        // Non-source text, flags, or multiple files are left to plain `cat`.
         assert_eq!(plan("cat README.md", &never), None);
+        assert_eq!(plan("cat config.yaml", &never), None);
         assert_eq!(plan("cat -n a.json", &never), None);
         assert_eq!(plan("cat a.json b.json", &never), None);
+    }
+
+    #[test]
+    fn cat_source_file_becomes_outline_aware_read() {
+        // A source file -> `crabcc read` (full content first, session
+        // outline stub on re-read; accuracy-preserving, never compacted).
+        // Non-existent paths canonicalise to the literal fallback, so the
+        // assertion is deterministic regardless of the test's cwd.
+        let r = plan("cat nope_xyz.rs", &never).unwrap();
+        assert_eq!(r.inner, "crabcc read nope_xyz.rs");
+        assert_eq!(r.rule, "cat->crabcc-read");
+        assert_eq!(r.track_op, "read");
+        assert_eq!(
+            plan("cat src/missing_zzz.go", &never).unwrap().rule,
+            "cat->crabcc-read"
+        );
     }
 
     #[test]
