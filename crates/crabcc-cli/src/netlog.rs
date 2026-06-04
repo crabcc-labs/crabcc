@@ -117,7 +117,13 @@ impl Allowlist {
 /// Log + (in deny mode) enforce an outbound request to `url` by `caller`.
 /// Returns `Err` only when the mode is [`Mode::Deny`] and the host is unlisted.
 pub fn guard(caller: &str, url: &str) -> Result<()> {
-    guard_with(caller, url, Mode::from_env(), Allowlist::seed())
+    let allow = Allowlist::seed();
+    // Phase 1 collection: persist an egress record for later allowlist auditing
+    // (best-effort; never blocks the request).
+    if let Some((host, port)) = host_port_of(url) {
+        record(caller, &host, port, "request", allow.allows(&host));
+    }
+    guard_with(caller, url, Mode::from_env(), allow)
 }
 
 /// Testable core of [`guard`] with explicit mode + allowlist.
@@ -141,13 +147,82 @@ pub fn guard_with(caller: &str, url: &str, mode: Mode, allow: &Allowlist) -> Res
     Ok(())
 }
 
-/// Extract the host from a URL via reqwest's bundled `url` parser (handles
-/// ports, userinfo, IPv6, IDNA). `None` if it doesn't parse or has no host.
+/// Host + port from a URL via reqwest's bundled `url` parser (handles userinfo,
+/// IPv6, IDNA). Port falls back to the scheme default (443/80); 0 if unknown.
+fn host_port_of(url: &str) -> Option<(String, u16)> {
+    let u = reqwest::Url::parse(url).ok()?;
+    let host = u.host_str()?.to_string();
+    Some((host, u.port_or_known_default().unwrap_or(0)))
+}
+
+/// Just the host (used by [`guard_with`]).
 fn host_of(url: &str) -> Option<String> {
-    reqwest::Url::parse(url)
-        .ok()?
-        .host_str()
-        .map(|h| h.to_string())
+    host_port_of(url).map(|(h, _)| h)
+}
+
+/// Egress-log size cap. Past this the log rotates to `netlog.jsonl.1` (one
+/// backup kept), bounding disk to ~2× this.
+const NETLOG_CAP_BYTES: u64 = 4 * 1024 * 1024;
+
+/// `$CRABCC_HOME/netlog.jsonl` (or `~/.crabcc/netlog.jsonl`).
+fn netlog_path() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    std::env::var_os("CRABCC_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".crabcc")))
+        .map(|home| home.join("netlog.jsonl"))
+}
+
+/// Best-effort append of an egress record (issue #160 Phase 1 collection) —
+/// `{ts, caller, op, host, port, ok}` JSONL. Never errors into the caller; this
+/// is what grounds the allowlist in real usage (run callers under
+/// `CRABCC_NETLOG_DENY=audit`, then build the allowlist from the captured log).
+fn record(caller: &str, host: &str, port: u16, op: &str, ok: bool) {
+    if let Some(path) = netlog_path() {
+        record_to(&path, caller, host, port, op, ok, NETLOG_CAP_BYTES);
+    }
+}
+
+/// Testable core of [`record`] with an explicit path + cap.
+fn record_to(
+    path: &std::path::Path,
+    caller: &str,
+    host: &str,
+    port: u16,
+    op: &str,
+    ok: bool,
+    cap: u64,
+) {
+    use std::io::Write;
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    // Rotate before appending once the log reaches the cap.
+    if std::fs::metadata(path).map(|m| m.len()).unwrap_or(0) >= cap {
+        let _ = std::fs::rename(path, path.with_file_name("netlog.jsonl.1"));
+    }
+    let line = serde_json::json!({
+        "ts": now_unix(),
+        "caller": caller,
+        "op": op,
+        "host": host,
+        "port": port,
+        "ok": ok,
+    });
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
+fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// Whether a redirect hop to `host` should be followed. A redirect from an
@@ -242,6 +317,55 @@ mod tests {
             Some("localhost")
         );
         assert_eq!(host_of("not a url"), None);
+    }
+
+    #[test]
+    fn host_port_extraction() {
+        assert_eq!(
+            host_port_of("https://api.morphllm.com/v1").unwrap(),
+            ("api.morphllm.com".to_string(), 443)
+        );
+        assert_eq!(
+            host_port_of("http://localhost:11434/api").unwrap(),
+            ("localhost".to_string(), 11434)
+        );
+        assert_eq!(
+            host_port_of("http://example.com/").unwrap(),
+            ("example.com".to_string(), 80) // scheme default
+        );
+        assert!(host_port_of("not a url").is_none());
+    }
+
+    #[test]
+    fn record_to_appends_jsonl_and_rotates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("netlog.jsonl");
+        record_to(
+            &path,
+            "morph",
+            "api.morphllm.com",
+            443,
+            "request",
+            true,
+            1_000_000,
+        );
+
+        let v: serde_json::Value =
+            serde_json::from_str(std::fs::read_to_string(&path).unwrap().trim()).unwrap();
+        assert_eq!(v["caller"], "morph");
+        assert_eq!(v["host"], "api.morphllm.com");
+        assert_eq!(v["port"], 443);
+        assert_eq!(v["ok"], true);
+        assert_eq!(v["op"], "request");
+        assert!(v["ts"].as_u64().unwrap() > 0);
+
+        // A tiny cap forces the existing log to rotate before the next append.
+        record_to(&path, "x", "evil.com", 80, "request", false, 1);
+        assert!(
+            path.with_file_name("netlog.jsonl.1").exists(),
+            "rotated backup should exist"
+        );
+        assert!(std::fs::read_to_string(&path).unwrap().contains("evil.com"));
     }
 
     #[test]
