@@ -6,6 +6,13 @@
       "env": {
         "AXINT_TELEMETRY": "0"
       }
+    },
+    "crabcc": {
+      "command": "crabcc",
+      "args": ["--mcp"],
+      "env": {
+        "CRABCC_NO_TELEMETRY": "1"
+      }
     }
   }
 }

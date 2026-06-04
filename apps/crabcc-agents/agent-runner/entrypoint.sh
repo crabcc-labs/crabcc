@@ -45,6 +45,25 @@ else
   echo "[crabcc-agent] WARN: axint missing — axint MCP tools will be unavailable" >&2
 fi
 
+# --- crabcc ------------------------------------------------------------
+# crabcc gives the agent code intelligence (sym/refs/callers/outline/memory)
+# via its stdio MCP server, wired in mcp.json. Best-effort index the workspace
+# at startup so the first symbol queries are warm. The tmpfs workspace means
+# the index is per-container (cheap for a single repo). Never fatal (Type-4):
+# a failed/absent crabcc must not block the agent run. Disable with CRABCC_INDEX=0.
+if command -v crabcc >/dev/null 2>&1; then
+  echo "[crabcc-agent] crabcc available — $(crabcc --version 2>/dev/null || echo 'unknown')" >&2
+  if [[ "${CRABCC_INDEX:-1}" == "1" && -d /workspace ]]; then
+    if ( cd /workspace && crabcc index >/dev/null 2>&1 ); then
+      echo "[crabcc-agent] crabcc index built for /workspace" >&2
+    else
+      echo "[crabcc-agent] crabcc index skipped/failed (non-fatal)" >&2
+    fi
+  fi
+else
+  echo "[crabcc-agent] WARN: crabcc missing — code-intel MCP tools will be unavailable" >&2
+fi
+
 # --- sandbox flags translated to Claude Code CLI args ----------------
 CLAUDE_ARGS=()
 if [[ "${CLAUDE_DISABLE_BASH:-0}" == "1" ]]; then
@@ -85,6 +104,11 @@ if [[ -n "${AXINT_MCP_URL:-}" ]]; then
     "axint": {
       "type": "http",
       "url": "${AXINT_MCP_URL}"
+    },
+    "crabcc": {
+      "command": "crabcc",
+      "args": ["--mcp"],
+      "env": { "CRABCC_NO_TELEMETRY": "1" }
     }
   }
 }
