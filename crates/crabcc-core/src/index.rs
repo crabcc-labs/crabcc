@@ -1,8 +1,11 @@
 use crate::{extract, hash, store::Store, walker};
 use ahash::HashSet;
 use anyhow::Result;
+use rayon::prelude::*;
 use serde::Serialize;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
 #[derive(Debug, Default, Serialize)]
@@ -48,66 +51,107 @@ pub struct RefreshDelta {
 
 const MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
 
+/// A single file's extracted content, ready to write into SQLite.
+struct ExtractedFile {
+    rel: String,
+    sha: String,
+    mtime: i64,
+    lang: &'static str,
+    symbols: Vec<crate::types::Symbol>,
+    edges: Vec<crate::types::Edge>,
+}
+
+enum FileOutcome {
+    Extracted(ExtractedFile),
+    SkippedUnsupported,
+    SkippedUnreadable,
+    SkippedTooLarge,
+    SkippedParseError,
+}
+
 pub fn build_index(root: &Path, store: &Store) -> Result<IndexStats> {
+    build_index_with_progress(root, store, None)
+}
+
+pub fn build_index_with_progress(
+    root: &Path,
+    store: &Store,
+    progress: Option<Arc<AtomicUsize>>,
+) -> Result<IndexStats> {
+    let files: Vec<_> = walker::walk_repo(root).collect();
+    let total = files.len();
+
+    // Phase 1 — parallel extraction (CPU-bound tree-sitter parsing).
+    // SQLite writes are NOT here; Store is not Sync.
+    let outcomes: Vec<FileOutcome> = files
+        .into_par_iter()
+        .map(|path| {
+            let lang = match extract::detect_lang(&path) {
+                Some(l) => l,
+                None => return FileOutcome::SkippedUnsupported,
+            };
+            let bytes = match std::fs::read(&path) {
+                Ok(b) => b,
+                Err(_) => return FileOutcome::SkippedUnreadable,
+            };
+            if bytes.len() > MAX_FILE_BYTES {
+                return FileOutcome::SkippedTooLarge;
+            }
+            let src = match std::str::from_utf8(&bytes) {
+                Ok(s) => s,
+                Err(_) => return FileOutcome::SkippedUnreadable,
+            };
+            let rel = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .into_owned();
+            let (symbols, edges) = match extract::extract_file_with_edges(&rel, src, lang) {
+                Ok(pair) => pair,
+                Err(_) => return FileOutcome::SkippedParseError,
+            };
+            let sha = hash::sha256_hex(&bytes);
+            let mtime = std::fs::metadata(&path)
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or_default();
+            FileOutcome::Extracted(ExtractedFile {
+                rel,
+                sha,
+                mtime,
+                lang,
+                symbols,
+                edges,
+            })
+        })
+        .collect();
+
+    // Phase 2 — sequential SQLite writes.
     let mut stats = IndexStats::default();
-
-    for path in walker::walk_repo(root) {
-        let lang = match extract::detect_lang(&path) {
-            Some(l) => l,
-            None => {
-                stats.skipped_unsupported += 1;
-                continue;
+    let mut done = 0usize;
+    for outcome in outcomes {
+        match outcome {
+            FileOutcome::Extracted(f) => {
+                let file_id = store.upsert_file(&f.rel, &f.sha, f.mtime, f.lang)?;
+                store.replace_symbols(file_id, &f.symbols)?;
+                store.replace_edges(file_id, &f.edges)?;
+                stats.files_indexed += 1;
+                stats.symbols += f.symbols.len();
+                stats.edges += f.edges.len();
             }
-        };
-        let bytes = match std::fs::read(&path) {
-            Ok(b) => b,
-            Err(_) => {
-                stats.skipped_unreadable += 1;
-                continue;
-            }
-        };
-        if bytes.len() > MAX_FILE_BYTES {
-            stats.skipped_too_large += 1;
-            continue;
+            FileOutcome::SkippedUnsupported => stats.skipped_unsupported += 1,
+            FileOutcome::SkippedUnreadable => stats.skipped_unreadable += 1,
+            FileOutcome::SkippedTooLarge => stats.skipped_too_large += 1,
+            FileOutcome::SkippedParseError => stats.skipped_parse_error += 1,
         }
-        let src = match std::str::from_utf8(&bytes) {
-            Ok(s) => s,
-            Err(_) => {
-                stats.skipped_unreadable += 1;
-                continue;
-            }
-        };
-
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .into_owned();
-
-        let (symbols, edges) = match extract::extract_file_with_edges(&rel, src, lang) {
-            Ok(pair) => pair,
-            Err(_) => {
-                stats.skipped_parse_error += 1;
-                continue;
-            }
-        };
-
-        let sha = hash::sha256_hex(&bytes);
-        let mtime = std::fs::metadata(&path)
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or_default();
-
-        let file_id = store.upsert_file(&rel, &sha, mtime, lang)?;
-        store.replace_symbols(file_id, &symbols)?;
-        store.replace_edges(file_id, &edges)?;
-        stats.files_indexed += 1;
-        stats.symbols += symbols.len();
-        stats.edges += edges.len();
+        done += 1;
+        if let Some(ref p) = progress {
+            p.store(done, Ordering::Relaxed);
+        }
     }
-
+    let _ = total; // reported via progress or caller
     Ok(stats)
 }
 
@@ -123,7 +167,41 @@ pub fn full_index(root: &Path, store: &Store) -> Result<IndexStats> {
     let started = std::time::Instant::now();
     tracing::info!(target: "crabcc_core::index", path = %root.display(), "full_index: start");
     store.clear_all()?;
-    let stats = build_index(root, store)?;
+
+    // Progress ticker — prints to stderr every 500 ms while indexing.
+    // Gated by CRABCC_PROGRESS env var: "0"/"false" suppresses it,
+    // anything else (or absent) enables it when stderr is a tty.
+    let show_progress = std::env::var("CRABCC_PROGRESS")
+        .map(|v| !matches!(v.as_str(), "0" | "false" | "no"))
+        .unwrap_or(true)
+        && atty::is(atty::Stream::Stderr);
+
+    let progress = Arc::new(AtomicUsize::new(0));
+    let ticker = if show_progress {
+        let p = Arc::clone(&progress);
+        let ticker = std::thread::spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            let n = p.load(Ordering::Relaxed);
+            if n == usize::MAX {
+                break;
+            }
+            eprint!("\r  indexing… {} files", n);
+            let _ = std::io::Write::flush(&mut std::io::stderr());
+        });
+        Some(ticker)
+    } else {
+        None
+    };
+
+    let stats = build_index_with_progress(root, store, Some(Arc::clone(&progress)))?;
+
+    // Signal ticker to stop, clear progress line.
+    progress.store(usize::MAX, Ordering::Relaxed);
+    if let Some(t) = ticker {
+        let _ = t.join();
+        eprint!("\r\x1b[K"); // erase line
+    }
+
     store.meta_set("edges_populated", "1")?;
     tracing::info!(
         target: "crabcc_core::index",

@@ -6,7 +6,7 @@ pub fn build_report(sessions: &[SessionFile], findings: Vec<WasteFinding>) -> Au
     let wasted_tokens = findings.iter().map(|f| f.tokens).sum();
 
     let mut sorted_findings = findings;
-    sorted_findings.sort_by_key(|b| std::cmp::Reverse(b.tokens));
+    sorted_findings.sort_unstable_by_key(|b| std::cmp::Reverse(b.tokens));
 
     AuditReport {
         sessions_scanned,

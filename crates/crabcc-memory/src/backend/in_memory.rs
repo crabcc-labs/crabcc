@@ -105,7 +105,7 @@ impl Backend for InMemoryBackend {
             })
             .map(|s| (cosine(&q.embedding, &s.embedding), s))
             .collect();
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_unstable_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(q.limit);
         Ok(QueryResult {
             hits: scored
@@ -154,7 +154,7 @@ impl Backend for InMemoryBackend {
                 }
             })
             .collect();
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_unstable_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(q.limit);
         Ok(QueryResult {
             hits: scored
@@ -253,7 +253,7 @@ impl Backend for InMemoryBackend {
             .filter(|s| wing.is_none_or(|w| s.drawer.wing == w))
             .map(|s| s.drawer.clone())
             .collect();
-        rows.sort_by_key(|d| d.id);
+        rows.sort_unstable_by_key(|d| d.id);
         if limit > 0 {
             rows.truncate(limit);
         }

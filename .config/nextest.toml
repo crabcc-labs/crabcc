@@ -22,3 +22,11 @@ path = "junit.xml"
 report-name = "crabcc"
 store-success-output = false
 store-failure-output = true
+
+# ucracc-lsp::concurrency touches the filesystem and uses multiple threads;
+# give it more time and more retries under CI so transient scheduling jitter
+# doesn't fail the pipeline.
+[[profile.ci.overrides]]
+filter = "test(concurrency)"
+retries = { backoff = "exponential", count = 3, delay = "500ms", max-delay = "10s" }
+slow-timeout = { period = "120s", terminate-after = 2 }

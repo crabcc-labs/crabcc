@@ -175,7 +175,7 @@ pub fn list(home: &Path, repo_root: &Path) -> Result<Vec<BackupEntry>> {
             })
         })
         .collect();
-    out.sort_by_key(|a| std::cmp::Reverse(a.timestamp));
+    out.sort_unstable_by_key(|a| std::cmp::Reverse(a.timestamp));
     Ok(out)
 }
 

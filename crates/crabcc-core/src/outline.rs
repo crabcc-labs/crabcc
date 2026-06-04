@@ -40,7 +40,7 @@ export function omega(){return 2}
         // Must be ordered by line.
         let lines: Vec<u32> = syms.iter().map(|s| s.line_start).collect();
         let mut sorted = lines.clone();
-        sorted.sort();
+        sorted.sort_unstable();
         assert_eq!(lines, sorted, "outline must be line-sorted");
 
         let names: Vec<&str> = syms.iter().map(|s| s.name.as_str()).collect();

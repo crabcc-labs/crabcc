@@ -104,7 +104,7 @@ pub(crate) fn discover_with_home(
         });
     }
     // Deterministic order so tests and agent diffs are stable.
-    out.sort_by(|a, b| a.key.cmp(&b.key));
+    out.sort_unstable_by(|a, b| a.key.cmp(&b.key));
     Ok(out)
 }
 

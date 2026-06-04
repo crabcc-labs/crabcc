@@ -42,7 +42,7 @@ members = [
 ]
 
 [workspace.package]
-version = "5.2.0"
+version = "5.2.1"
 edition = "2021"
 rust-version = "1.86"
 license = "MIT"
@@ -57,6 +57,8 @@ crabcc-viz = { path = "crates/crabcc-viz" }
 
 anyhow = "1"
 ahash = "0.8"
+rayon = "1"
+atty = "0.2"
 clap = { version = "4", features = ["derive"] }
 markdown = { version = "1", default-features = false }
 rusqlite = { version = "0.39", features = ["bundled"] }

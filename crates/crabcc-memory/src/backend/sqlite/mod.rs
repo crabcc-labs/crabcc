@@ -436,7 +436,7 @@ impl Backend for SqliteBackend {
                 },
             ));
         }
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_unstable_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(q.limit);
         Ok(QueryResult {
             hits: scored.into_iter().map(|(_, h)| h).collect(),

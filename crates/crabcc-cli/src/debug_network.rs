@@ -524,7 +524,7 @@ mod tests {
         assert!(hosts.iter().any(|h| h == "host.containers.internal"));
         // Dedupe sanity check — no host should appear twice.
         let mut sorted = hosts.clone();
-        sorted.sort();
+        sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(sorted.len(), hosts.len(), "duplicates in {hosts:?}");
     }
