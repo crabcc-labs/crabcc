@@ -42,7 +42,7 @@ members = [
 ]
 
 [workspace.package]
-version = "5.3.4"
+version = "6.0.0"
 edition = "2021"
 rust-version = "1.86"
 license = "MIT"
@@ -79,8 +79,8 @@ tree-sitter-python = "0.25"
 tree-sitter-swift = "0.7"
 tree-sitter-bash = "0.25"
 tree-sitter-java = "0.23"
-ast-grep-core = "0.42"
-ast-grep-language = "0.42"
+ast-grep-core = "0.43"
+ast-grep-language = "0.43"
 sha2 = "0.11"
 tempfile = "3"
 toml = "1.1"
@@ -88,19 +88,17 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 tracing-appender = "0.2"
 libc = "0.2"
-notify-debouncer-mini = "0.4"
-parking_lot = "0.12"
+notify-debouncer-mini = "0.7"
 sonic-rs = "0.5"
 bumpalo = { version = "3", features = ["collections"] }
 moka = { version = "0.12", features = ["sync"] }
 fastembed = "5"
 tiny_http = "0.12"
-serde_yml = "0.0.12"
+serde_yml = "0.0.13"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
-redis   = { version = "0.28", default-features = false, features = ["tokio-comp", "aio"] }
 # `socks` so `crabcc crawl --proxify socks4|socks5` can actually route
 # through SOCKS proxies (without it reqwest::Proxy::all rejects socks:// URLs).
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "socks"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "webpki-roots", "socks"] }
 linkify = "0.11"
 # html2md 0.2.x ships with `crate-type = ["rlib", "dylib", "staticlib"]`,
 # which forces a `panic_unwind` runtime link and is incompatible with

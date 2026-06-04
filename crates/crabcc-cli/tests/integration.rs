@@ -16,7 +16,13 @@
 mod agent_dry_run;
 #[path = "integration/auto_index.rs"]
 mod auto_index;
+#[path = "integration/cross_module_e2e.rs"]
+mod cross_module_e2e;
 #[path = "integration/e2e_walkdir.rs"]
 mod e2e_walkdir;
 #[path = "integration/graph_v4.rs"]
 mod graph_v4;
+#[path = "integration/shell_context_e2e.rs"]
+mod shell_context_e2e;
+#[path = "integration/shell_rewrite_e2e.rs"]
+mod shell_rewrite_e2e;

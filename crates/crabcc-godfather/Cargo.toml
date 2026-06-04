@@ -49,7 +49,7 @@ sha2 = { workspace = true }
 # C deps. Cross-platform (macOS / Linux / Windows). We only use the
 # `process` + `system` features today; `network` / `disk` are
 # off-default and would bloat the binary if enabled.
-sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 tracing = "0.1"
 # Daemon mode + the CLI's structured logging surface.
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
@@ -68,7 +68,7 @@ tempfile = "3"
 # `record_resource_sample` + `list_recent_events` so the PR
 # can post before/after numbers. `default-features = false` drops
 # rayon (we don't run parallel sub-bench groups).
-criterion = { version = "0.5", default-features = false }
+criterion = { version = "0.8", default-features = false }
 
 [[bench]]
 name = "insert_path"

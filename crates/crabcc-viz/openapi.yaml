@@ -104,6 +104,26 @@ paths:
               schema:
                 $ref: "#/components/schemas/ActivityResponse"
 
+  /api/savings:
+    get:
+      tags: [activity]
+      summary: Live token-savings aggregate (session / last 24h / all-time + per-op).
+      operationId: getSavings
+      responses:
+        "200":
+          description: Token usage + savings buckets from ~/.crabcc/usage.log.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  session: { $ref: "#/components/schemas/SavingsBucket" }
+                  last_24h: { $ref: "#/components/schemas/SavingsBucket" }
+                  all_time: { $ref: "#/components/schemas/SavingsBucket" }
+                  by_op:
+                    type: object
+                    additionalProperties: { $ref: "#/components/schemas/SavingsBucket" }
+
   /api/agents:
     get:
       tags: [agents]
@@ -589,6 +609,14 @@ components:
           type: array
           items: { $ref: "#/components/schemas/ActivityHit" }
 
+    SavingsBucket:
+      type: object
+      required: [queries, used_tokens, saved_tokens]
+      properties:
+        queries: { type: integer }
+        used_tokens: { type: integer }
+        saved_tokens: { type: integer }
+
     AgentSummary:
       type: object
       required: [id, status]
@@ -871,7 +899,7 @@ components:
           description: 1-based line number of the defining site.
         signature:
           type: string
-          description: Single-line signature (e.g. `pub fn open(path: &Path) -> Result<Store>`).
+          description: "Single-line signature (e.g. `pub fn open(path: &Path) -> Result<Store>`)."
 
     GraphEdge:
       type: object

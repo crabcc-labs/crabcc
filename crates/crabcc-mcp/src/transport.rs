@@ -5,9 +5,10 @@
 //! delimited JSON over stdio, HTTP request/response shapes, bearer
 //! auth, response serialisation).
 
-use crate::dispatch::handle_with;
+use crate::dispatch::{handle_with, handle_with_session};
 use crate::error_response;
 use anyhow::Result;
+use crabcc_core::store::Store;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::net::SocketAddr;
@@ -59,6 +60,9 @@ where
     W: Write,
 {
     let mut buf: Vec<u8> = Vec::with_capacity(4096);
+    // One Store for the whole stdio session, reused across tool calls instead
+    // of re-opening SQLite per request (that open was the per-call latency floor).
+    let mut store: Option<Store> = None;
     loop {
         buf.clear();
         match reader.read_until(b'\n', &mut buf) {
@@ -84,7 +88,7 @@ where
                 continue;
             }
         };
-        let resp = handle_with(&req, root, dev);
+        let resp = handle_with_session(&req, root, dev, &mut store);
         // Spec: notifications get no response. Skip empty/Null
         // (notifications/initialized in particular).
         if resp.is_null() {

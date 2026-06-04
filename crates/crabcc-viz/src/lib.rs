@@ -248,6 +248,14 @@ fn handle(request: Request, root: &Path) -> Result<()> {
             Ok(activity) => respond_json(request, &activity),
             Err(e) => respond_status(request, 400, &format!("bad request: {e}")),
         },
+        // Live token-savings block for the dashboard: aggregate
+        // used/saved tokens (session / last 24h / all-time + per-op,
+        // including the `media`, `read`, `refs`, `rewrite`, `morph` ops)
+        // straight from ~/.crabcc/usage.log. Polled ~1Hz by live.html.
+        "/api/savings" => match crabcc_core::track::report() {
+            Ok(report) => respond_json(request, &report),
+            Err(e) => respond_status(request, 500, &format!("savings report failed: {e}")),
+        },
         "/api/bootstrap" => match bootstrap_snapshot(root) {
             Ok(snap) => respond_json(request, &snap),
             Err(e) => respond_status(request, 500, &format!("bootstrap failed: {e}")),
@@ -2829,6 +2837,7 @@ mod tests {
         "/api/openapi.yaml",
         "/api/bootstrap",
         "/api/activity",
+        "/api/savings",
         "/api/agents",
         "/api/agents/{id}/log",
         "/api/agents/{id}/tail",

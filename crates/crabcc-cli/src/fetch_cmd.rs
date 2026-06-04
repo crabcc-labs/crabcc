@@ -83,7 +83,7 @@ pub fn extract_urls(prompt: &str) -> Vec<String> {
 }
 
 /// Public entry — runs the fetch under a current-thread tokio runtime so
-/// the CLI handler stays sync. Mirrors the pattern in `jobs_cmd.rs`.
+/// the CLI handler stays sync.
 ///
 /// `remember` pipes each successful fetch into `<root>/.crabcc/memory.db`
 /// (BM25 ⊕ vector embedding) under wing="fetch", room=host, source_id=url.

@@ -152,16 +152,22 @@ impl HttpFetcher {
     }
 
     pub(crate) async fn fetch(&self, url: &str) -> FetchedPage {
+        let (client, proxy) = self.select();
         // Reddit resolves to a JSON API with no crawlable HTML; defer to
-        // the single-shot fetcher (direct client) and surface no links.
+        // the single-shot fetcher — but still through the pooled client,
+        // and still reporting that proxy's health, so `--proxify` covers
+        // Reddit URLs too. Surfaces no links.
         if is_reddit_url(url) {
+            let result = crate::fetch_one(&client, url, self.max_body).await;
+            if let Some(p) = &proxy {
+                self.report(p, result.error.is_none());
+            }
             return FetchedPage {
-                result: crate::fetch_one(&self.client, url, self.max_body).await,
+                result,
                 raw_html: None,
                 final_url: url.into(),
             };
         }
-        let (client, proxy) = self.select();
         match client.get(url).send().await {
             Err(e) => {
                 if let Some(p) = &proxy {
