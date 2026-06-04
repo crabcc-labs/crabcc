@@ -21,6 +21,7 @@ members = [
     "crates/crabcc-mcp",
     "crates/crabcc-memory",
     "crates/crabcc-memory-bench",
+    "crates/sshq",
     "crates/ucracc-lsp",
     # crates/crabcc-viz: excluded from workspace — v4 CallGraph moved from
     # `BTreeMap<String, …>` to `BTreeMap<i64, …>` and the viz HTML/HTMX
