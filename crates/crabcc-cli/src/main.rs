@@ -49,6 +49,7 @@ mod media;
 mod memory;
 mod model_info;
 mod morph;
+mod netlog;
 mod rag;
 mod read;
 mod research_cmd;

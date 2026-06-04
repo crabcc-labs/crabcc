@@ -99,12 +99,17 @@ pub fn api_key() -> Option<String> {
 }
 
 fn post_json(path: &str, key: &str, body: serde_json::Value) -> Result<serde_json::Value> {
+    let url = format!("{BASE}{path}");
+    // Egress allowlist + logging: api.morphllm.com is seeded, so this is a
+    // no-op in normal operation; an unlisted host (e.g. a misconfigured BASE)
+    // fails loudly before the request leaves the machine. (issue #160)
+    crate::netlog::guard("morph", &url)?;
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     rt.block_on(async {
         let resp = reqwest::Client::new()
-            .post(format!("{BASE}{path}"))
+            .post(&url)
             .bearer_auth(key)
             .json(&body)
             .send()
