@@ -1992,9 +1992,23 @@ fn run_shell(root: &Path, db: &Path, op: &ShellOp) -> Result<()> {
     match op {
         ShellOp::Rewrite {
             command,
-            cwd: _,
+            cwd,
             session_id,
-        } => shell_rewrite::run(root, db, command, session_id.as_deref()),
+        } => {
+            // Use the hook-supplied cwd to resolve root/db so rewrites
+            // consult the correct index when the tool call runs from a
+            // different directory (e.g. a subdirectory or a different repo).
+            let (eff_root, eff_db);
+            let (rw_root, rw_db) = if let Some(hook_cwd) = cwd {
+                let resolved = root_resolver::resolve(Some(hook_cwd.as_path()))?;
+                eff_root = resolved.source_dir.clone();
+                eff_db = resolved.db();
+                (eff_root.as_path(), eff_db.as_path())
+            } else {
+                (root, db)
+            };
+            shell_rewrite::run(rw_root, rw_db, command, session_id.as_deref())
+        }
         ShellOp::RewriteMeasure => shell_rewrite::run_measure(),
         ShellOp::Context { session_id } => shell_context::run(root, db, session_id.as_deref()),
         ShellOp::Record {

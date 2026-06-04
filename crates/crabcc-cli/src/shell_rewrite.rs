@@ -526,10 +526,19 @@ pub fn run(root: &Path, db: &Path, command: &str, session_id: Option<&str>) -> R
     // Dropped if the emitted tool (rg, jq, ...) isn't on PATH — never
     // hand the agent a command its environment can't run. `crabcc` is
     // always present (we are it).
-    let planned = plan(command, &is_symbol).filter(|rw| {
+    let mut planned = plan(command, &is_symbol).filter(|rw| {
         let prog = rw.inner.split_whitespace().next().unwrap_or("");
         prog == "crabcc" || on_path(prog)
     });
+    // Propagate session_id into `crabcc read` rewrites so the session-reads
+    // cache in the target process sees the same session as the hook. Without
+    // this the re-read outline-stub optimisation never fires in hook-driven
+    // usage (the read process starts with no session and bypasses the cache).
+    if let (Some(rw), Some(sid)) = (planned.as_mut(), session_id) {
+        if rw.inner.starts_with("crabcc read ") && !rw.inner.contains("--session-id") {
+            rw.inner = format!("{} --session-id {}", rw.inner, shq(sid));
+        }
+    }
 
     // Open the dev-debug ledger only for an actual rewrite candidate, so
     // the hot path (the vast majority of Bash commands, which don't
