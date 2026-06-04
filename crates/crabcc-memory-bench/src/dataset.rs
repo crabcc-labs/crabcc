@@ -275,7 +275,7 @@ fn sq(
         question: question.into(),
         answer: answer.into(),
         haystack: haystack.to_vec(),
-        answer_session_ids: gold_ids.iter().map(|s| s.to_string()).collect(),
+        answer_session_ids: gold_ids.iter().copied().map(str::to_string).collect(),
     }
 }
 

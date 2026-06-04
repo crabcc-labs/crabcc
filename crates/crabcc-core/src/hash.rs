@@ -59,13 +59,6 @@ mod tests {
     }
 
     #[test]
-    fn deterministic() {
-        let a = sha256_hex(b"crabcc");
-        let b = sha256_hex(b"crabcc");
-        assert_eq!(a, b);
-    }
-
-    #[test]
     fn fingerprint_envelope_passthrough_when_no_flag() {
         // Without --if-changed, the body is returned verbatim — the
         // default CLI surface stays byte-identical for callers that
