@@ -22,12 +22,6 @@ path = "src/bin/ccc.rs"
 # binary still gets the +5-12% on alloc-heavy hot paths.
 default = []
 jemalloc = ["dep:tikv-jemallocator"]
-# Dispatch agent runs through the BullMQ-backed crabcc-agents worker
-# instead of the in-process subprocess runtime. Pulls in bullmq-rs +
-# redis. Off by default — vanilla CLI users don't pay the dep cost.
-# See apps/crabcc-agents/README.md for the worker side and
-# `--transport bullmq` / `CRABCC_AGENT_TRANSPORT=bullmq` to opt in.
-agents-bullmq = ["dep:bullmq-rs", "dep:redis", "dep:futures-util"]
 # Optional dashboard / SSE viewer (`crabcc serve`). Pulls in tiny_http +
 # tokio-rt + the entire `crabcc-viz` crate (~3500 LOC). Off by default
 # so `cargo install crabcc-cli` is fast for users who only want the
@@ -49,7 +43,7 @@ crawl-lightpanda = ["crabcc-fetch/crawl-lightpanda"]
 
 [dependencies]
 walkdir = "2.5.0"
-crabcc-core   = { workspace = true, features = ["jobs"] }
+crabcc-core   = { workspace = true }
 crabcc-fetch  = { workspace = true, features = ["crawl"] }
 crabcc-mcp    = { workspace = true }
 crabcc-memory = { workspace = true }
@@ -58,7 +52,6 @@ crabcc-memory = { workspace = true }
 crabcc-viz    = { workspace = true, optional = true }
 ahash         = { workspace = true }
 anyhow        = { workspace = true }
-parking_lot   = { workspace = true }
 clap          = { workspace = true }
 tokio                    = { workspace = true }
 reqwest                  = { workspace = true }
@@ -84,18 +77,13 @@ toml          = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"], optional = true }
 tracing-appender   = { workspace = true, optional = true }
-
-# agents-bullmq feature — see [features].
-bullmq-rs    = { version = "1", optional = true }
-redis        = { version = "0.28", default-features = false, features = ["tokio-comp", "connection-manager", "streams"], optional = true }
-futures-util = { version = "0.3", optional = true }
 # Issue #112 follow-up — jemalloc as the global allocator on the binary
 # crate. ~5-12% on alloc-heavy paths (extract.rs, MCP serve_io). MSVC
 # targets fall back to system allocator (cfg gate in main.rs). Optional
 # behind the `jemalloc` feature so dev builds skip the 60s C-source
 # build script; release/install paths enable it.
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
-tikv-jemallocator = { version = "0.6", optional = true }
+tikv-jemallocator = { version = "0.7", optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
