@@ -1,0 +1,55 @@
+name: PR Smoke Review
+
+# Tier 1 of the two-tier reviewer: a FAST, low-noise sanity pass on every PR.
+# The deep "almost-perfect" review (PR-Agent, security + tests) is reserved for
+# PRs targeting `main` — see pr-agent.yml.
+#
+# Auth: Claude Max OAuth (same CLAUDE_* secrets as claude.yml) — no API key.
+# Model: Sonnet, low effort, terse output. Goal is fast feedback, not depth.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# Supersede an in-flight smoke run when a new commit lands on the same PR.
+# (Safe here — unlike claude.yml, this workflow posts no tracking comment that
+# could re-trigger itself, so cancel-in-progress won't self-cancel.)
+concurrency:
+  group: pr-smoke-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    # Skip drafts; the deep tier (pr-agent) additionally covers base==main.
+    if: ${{ github.event.pull_request.draft == false && github.event.sender.type != 'Bot' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: grll/claude-code-action@beta
+        with:
+          use_oauth: true
+          claude_access_token: ${{ secrets.CLAUDE_ACCESS_TOKEN }}
+          claude_refresh_token: ${{ secrets.CLAUDE_REFRESH_TOKEN }}
+          claude_expires_at: ${{ secrets.CLAUDE_EXPIRES_AT }}
+          secrets_admin_pat: ${{ secrets.SECRETS_ADMIN_PAT }}
+          model: claude-sonnet-4-6
+          timeout_minutes: "10"
+          direct_prompt: |
+            Do a FAST smoke / sanity review of this PR's diff only. Be terse and
+            low-noise: post exactly ONE short comment.
+
+            - Lead with a verdict: `smoke: LGTM` or `smoke: needs-attention`.
+            - If needs-attention, list AT MOST 3 concrete problems (real bugs,
+              obvious breakage, security). One line each, with file:line.
+            - Skip style nits, praise, and summaries. No multi-section reports.
+            - Keep the whole comment under 120 words.
+
+            This is a quick first pass; a deeper review runs separately on PRs
+            into main. Don't duplicate that — just catch the obvious stuff fast.

@@ -1,14 +1,12 @@
 //! `crabcc agent --run <prompt>` — drive an LLM agent through one round
 //! of tool-use against the crabcc MCP surface.
 //!
-//! The runtime sits behind an [`AgentRuntime`] trait so we can swap the
-//! current-day "exec claude as a subprocess on the host" implementation
-//! for a sandboxed one (issue #62, v3.0). The default keeps trust scoped
-//! exactly like `crabcc go` already does — agent processes run with the
-//! invoking user's privileges, full filesystem + network access. The
-//! sandbox impl will reduce that to "this temp dir + crabcc MCP socket
-//! only" once microsandbox (or an alternative) stabilizes; see
-//! `install/agent-runtime.md` for the v3.0 plan.
+//! The runtime sits behind an [`AgentRuntime`] trait so additional backends
+//! (sandboxed, remote, etc.) can be wired in without touching the dispatch
+//! logic. The only current impl is `SubprocessRuntime`: agent processes run
+//! with the invoking user's privileges, full filesystem + network access —
+//! identical to `crabcc go`. See `install/agent-runtime.md` for the design
+//! and threat model.
 //!
 //! Each run gets its own state directory at `~/.crabcc/agents/<id>/`:
 //!
@@ -91,16 +89,11 @@ impl Backend {
 }
 
 /// Where the agent process actually runs. Orthogonal to [`Backend`] —
-/// transport is the WHERE, backend is the WHAT-LLM. Default is
-/// `Subprocess` (host-side spawn, current behaviour). `Bullmq` enqueues
-/// the run on the crabcc-agents BullMQ queue and tails the per-job
-/// Redis Stream back into this run's log file; behind the
-/// `agents-bullmq` Cargo feature.
+/// transport is the WHERE, backend is the WHAT-LLM. Only `Subprocess`
+/// (host-side spawn) is supported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentTransport {
     Subprocess,
-    #[cfg(feature = "agents-bullmq")]
-    Bullmq,
 }
 
 impl AgentTransport {
@@ -110,31 +103,6 @@ impl AgentTransport {
     pub fn as_str(self) -> &'static str {
         match self {
             AgentTransport::Subprocess => "subprocess",
-            #[cfg(feature = "agents-bullmq")]
-            AgentTransport::Bullmq => "bullmq",
-        }
-    }
-    pub fn from_str(s: &str) -> Result<Self> {
-        match s {
-            "subprocess" | "host" | "local" => Ok(AgentTransport::Subprocess),
-            "bullmq" | "queue" | "agents" => {
-                #[cfg(not(feature = "agents-bullmq"))]
-                {
-                    Err(anyhow!(
-                        "transport `bullmq` requires this binary to be built with the \
-                         `agents-bullmq` Cargo feature. \
-                         Rebuild with `cargo install --path crates/crabcc-cli \
-                         --features agents-bullmq`."
-                    ))
-                }
-                #[cfg(feature = "agents-bullmq")]
-                {
-                    Ok(AgentTransport::Bullmq)
-                }
-            }
-            other => Err(anyhow!(
-                "unknown agent transport `{other}`; supported: subprocess (default), bullmq"
-            )),
         }
     }
 }
@@ -213,7 +181,7 @@ impl RunDir {
         let started = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
-            .unwrap_or(0);
+            .unwrap_or_default();
         // Truncate the prompt for the meta record — full prompts can be
         // huge (`--run "$(cat huge.md)"` is a real call shape) and we
         // don't want meta.json to grow unbounded.
@@ -260,7 +228,7 @@ fn generate_id() -> String {
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0);
+            .unwrap_or_default();
         let pid = std::process::id() as u64;
         let mix = ts ^ (pid.wrapping_mul(0x9E37_79B9_7F4A_7C15));
         bytes.copy_from_slice(&mix.to_le_bytes());
@@ -342,10 +310,8 @@ impl AgentRuntime for SubprocessRuntime {
         cmd.current_dir(req.root);
 
         // Auth pass-through. `Command` already inherits env by default,
-        // so HOME is forwarded — but be explicit because it's a contract:
-        // a future `SandboxRuntime` will need to bind-mount $HOME/.claude/
-        // into the sandbox, and grepping for the env-var names here is
-        // how that future code will know which vars to plumb.
+        // so HOME is forwarded — but be explicit: this list documents the
+        // exact variables any future sandboxed runtime will need to plumb.
         let mut auth_vars: Vec<&str> = vec![
             "HOME",
             "XDG_CONFIG_HOME",
@@ -516,23 +482,6 @@ fn tee<R: Read, A: Write, B: Write>(mut src: R, mut log: A, mut out: B) {
             }
             Err(_) => break,
         }
-    }
-}
-
-#[cfg(feature = "agent-sandbox")]
-pub struct SandboxRuntime;
-
-#[cfg(feature = "agent-sandbox")]
-impl AgentRuntime for SandboxRuntime {
-    fn label(&self) -> &'static str {
-        "microsandbox (v3.0 — stub)"
-    }
-    fn run(&self, _req: &AgentRequest<'_>, _run: &RunDir) -> Result<i32> {
-        anyhow::bail!(
-            "sandbox runtime is not yet implemented — see \
-             https://github.com/peterlodri-sec/crabcc/issues/62 (v3.0). \
-             For v2.5.x, omit `--sandbox` to use the host subprocess runtime."
-        )
     }
 }
 
@@ -782,8 +731,6 @@ pub fn run(req: AgentRequest<'_>) -> Result<()> {
 
     let result = match req.transport {
         AgentTransport::Subprocess => SubprocessRuntime.run(&req, &run_dir),
-        #[cfg(feature = "agents-bullmq")]
-        AgentTransport::Bullmq => crate::agent_bullmq::BullmqRuntime.run(&req, &run_dir),
     };
     run_dir.finalize();
 

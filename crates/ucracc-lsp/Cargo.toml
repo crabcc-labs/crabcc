@@ -64,7 +64,7 @@ path = "src/main.rs"
 
 [dev-dependencies]
 tempfile = { workspace = true }
-criterion = "0.5"
+criterion = "0.8"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util", "sync", "io-std", "time"] }
 serde_json = { workspace = true }
 
@@ -74,5 +74,9 @@ harness = false
 
 [[bench]]
 name = "extractor_cost"
+harness = false
+
+[[bench]]
+name = "fixture_scale"
 harness = false
 

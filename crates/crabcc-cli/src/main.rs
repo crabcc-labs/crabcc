@@ -3,47 +3,60 @@ use clap::{Args, Parser, Subcommand};
 use crabcc_core::{query, store::Store};
 use std::path::{Path, PathBuf};
 
-// Issue #112 follow-up — global allocator swap. tikv-jemallocator is the
-// maintained jemalloc bindings (5.x). Measured ~5-12% on the indexing
-// hot path (alloc-heavy: tree-sitter cursors + Vec<Symbol> push) and
-// ~3-6% on the MCP serve_io loop. Behaviour-equivalent to the system
-// allocator at the API level — drop-in.
+// Global allocator. **Default = system.** Benched head-to-head (cold index,
+// the most alloc-heavy path) on Linux x86 *and* darwin arm64: the system
+// allocator is fastest or tied with the lowest variance; jemalloc and
+// mimalloc add a dep + build time for zero measured benefit (docs/PERF-648
+// §4 — the old "+5-12% jemalloc" claim reproduced on neither host). Both
+// are kept as opt-in experiment knobs so the verdict stays reproducible;
+// the shipped build enables neither.
 //
-// Why not mimalloc: jemalloc is what tantivy and tikv ship with, so
-// the workspace has more aligned tuning knobs (decay times, arena
-// counts) if we ever need them. mimalloc was the runner-up at +3-7 %
-// on the same micro-benches; switch is one line if the calculus
-// changes.
-//
-// Bumpalo (per-file arenas during the tree-sitter walk) is already a
-// workspace dep at [workspace.dependencies] and used in
-// `crabcc-core/src/extract.rs`. The two allocators compose: jemalloc
-// owns the heap, bumpalo carves transient regions out of it.
+// Bumpalo (per-file arenas during the tree-sitter walk) is a workspace dep
+// used in `crabcc-core/src/extract.rs` and composes with whichever global
+// allocator is active — bumpalo carves transient regions out of the heap.
 #[cfg(all(feature = "jemalloc", not(target_env = "msvc")))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
+// Allocator bench candidate (issue #648). Gated `not(jemalloc)` so the two
+// never both claim #[global_allocator]; benched head-to-head vs jemalloc +
+// system to settle the shipped default.
+#[cfg(all(feature = "mimalloc", not(feature = "jemalloc")))]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod agent;
-#[cfg(feature = "agents-bullmq")]
-mod agent_bullmq;
 mod agent_guard;
 mod agent_profile;
 mod agent_runs_db;
 mod audit;
 mod auto_index;
 mod backup;
+mod cli_config;
 mod compress_cmd;
+mod crawl_cmd;
+mod csv;
 mod debug_network;
 mod doctor;
+mod edit;
+mod enrich_cmd;
 mod fetch_cmd;
 mod go;
+mod init_cmd;
 mod install;
 mod install_integrations;
-mod jobs_cmd;
+mod media;
 mod memory;
 mod model_info;
+mod morph;
+mod rag;
 mod read;
+mod rewrite_log;
 mod root_resolver;
+mod run_cmd;
+mod shell_context;
+mod shell_rewrite;
+mod squeeze;
 mod status;
 #[cfg(feature = "telemetry")]
 mod telemetry;
@@ -164,6 +177,12 @@ enum LookupOp {
         ext: Option<String>,
         #[arg(long, default_value_t = 0)]
         limit: usize,
+        /// Group basenames under their directory
+        /// (`{"<dir>":["a.rs","b.rs"],…}`) instead of a flat array of full
+        /// paths. Eliminates the repeated directory prefixes — far fewer
+        /// tokens for a large file list.
+        #[arg(long)]
+        group: bool,
     },
     /// Symbol-aware grep wrapper.
     Grep { pattern: String },
@@ -395,6 +414,28 @@ enum Cmd {
         #[command(subcommand)]
         op: ShellOp,
     },
+    /// Optional Morph LLM (https://morphllm.com) helpers. Off unless
+    /// `MORPH_API_KEY` is set — nothing leaves the machine otherwise.
+    Morph {
+        #[command(subcommand)]
+        op: MorphOp,
+    },
+    /// Media helpers for the `Read` hook. `downscale` bounds an oversized
+    /// image to Anthropic's effective vision resolution before the model
+    /// reads it (vision tokens scale with area). On by default; set
+    /// `CRABCC_NO_MEDIA=1` to disable.
+    Media {
+        #[command(subcommand)]
+        op: MediaOp,
+    },
+    /// Symbol-aware code retrieval (RAG) over the index, on the
+    /// crabcc-memory backend (BM25 + sqlite-vec, RRF-fused). `build`
+    /// chunks every indexed symbol; `query` returns the top relevant
+    /// snippets. Complements — never replaces — `lookup sym/refs`.
+    Rag {
+        #[command(subcommand)]
+        op: RagOp,
+    },
     /// Loop detector (lean-ctx integration #5). Surfaces
     /// `(path, session_id)` / `(command, cwd, session_id)` pairs
     /// whose `read_count` / `run_count` cross a threshold (default
@@ -408,9 +449,6 @@ enum Cmd {
         #[command(subcommand)]
         op: BackupOp,
     },
-    /// BullMQ job queue — submit / inspect / cancel jobs.
-    #[command(subcommand)]
-    Jobs(JobsCmd),
     /// Setup operations: install-claude, install-integrations, upgrade, completions, openapi.
     Setup {
         #[command(subcommand)]
@@ -452,6 +490,116 @@ enum Cmd {
         /// Search later via `crabcc memory search <query> --wing fetch`.
         #[arg(long)]
         remember: bool,
+    },
+    /// Crawl from a seed URL: follow links, clean each page to markdown,
+    /// and (with --remember) stream every page into memory under
+    /// wing=`crawl`, room=host. Built on the crawl engine — bounded by
+    /// `--max-pages`/`--depth` with per-host politeness.
+    Crawl {
+        /// Seed URL to start the crawl from.
+        url: String,
+        /// Hops to follow from the seed (0 = fetch the seed only).
+        #[arg(long, default_value_t = 1)]
+        depth: usize,
+        /// Hard cap on the number of pages fetched.
+        #[arg(long = "max-pages", default_value_t = 20)]
+        max_pages: usize,
+        /// Follow off-host links too (default: stay on the seed's host).
+        #[arg(long = "all-hosts")]
+        all_hosts: bool,
+        /// Max concurrent in-flight fetches across the crawl.
+        #[arg(long, default_value_t = 4)]
+        concurrency: usize,
+        /// Stream each successful page into memory (wing=crawl, room=host).
+        /// Search later via `crabcc memory search <query> --wing crawl`.
+        #[arg(long)]
+        remember: bool,
+        /// Output format: `json` (default) or `text`.
+        #[arg(long, default_value = "json")]
+        format: String,
+        /// Route fetches through a rotating pool of free public proxies of
+        /// this protocol (`http`|`https`|`socks4`|`socks5`), self-healing
+        /// as dead ones are found. Off by default. Free proxies are flaky
+        /// and can MITM — every fetched page is already treated as
+        /// untrusted; never crawl authenticated targets through them.
+        #[arg(long, value_name = "PROTOCOL")]
+        proxify: Option<String>,
+        /// Resume from a persistent on-disk frontier at this path (created
+        /// if absent) so an interrupted crawl picks up where it left off.
+        /// Default is an ephemeral in-memory frontier.
+        #[arg(long, value_name = "PATH")]
+        state: Option<std::path::PathBuf>,
+    },
+    /// Token-bounded documentation context from memory (crawler-ingested
+    /// docs). Returns the most-relevant cached concept plus one
+    /// semi-relevant one, trimmed to `--max-tokens`, for prompt
+    /// context-gathering. The assembled context is cached on disk.
+    Enrich {
+        /// What to pull docs for (a concept / library / topic).
+        query: String,
+        /// Soft token budget for the returned context (~4 chars/token).
+        #[arg(long = "max-tokens", default_value_t = 2000)]
+        max_tokens: usize,
+    },
+    /// Token-cheap CSV summaries via qsv (an explicit alternative to `cat`ting
+    /// a large CSV into context). Summaries, not the raw rows.
+    Csv {
+        #[command(subcommand)]
+        op: CsvCmd,
+    },
+    /// Collapse streaming/progress noise from stdin (carriage-return redraws,
+    /// repeated lines), keeping errors/warnings. A cheap filter for build /
+    /// install / test / log output: `noisy-cmd 2>&1 | crabcc squeeze`.
+    Squeeze {
+        /// Keep first/last N/2 lines and elide the middle (errors still
+        /// surfaced). 0 = no window, only the lossless reductions.
+        #[arg(long, default_value_t = 0)]
+        max_lines: usize,
+    },
+    /// Run a command, capture its output, and squeeze the noise
+    /// (build/install/test/log). A long/blocking command (`tail -f`, a server,
+    /// a slow build) DETACHES to the background instead of being killed: you
+    /// get an instant squeezed snapshot + a `run <id>` handle, and the command
+    /// keeps running. Follow/manage with `--follow <id>` / `--list` / `--kill`.
+    Run {
+        /// Squeeze head/tail window (passed through to `squeeze`).
+        #[arg(long, default_value_t = 0)]
+        max_lines: usize,
+        /// Detach to the background after this many seconds with no output
+        /// (0 = off). The command is NOT killed; it keeps running.
+        #[arg(long, default_value_t = 0)]
+        idle: u64,
+        /// Detach to the background after this many seconds total (0 = off).
+        #[arg(long, default_value_t = 0)]
+        timeout: u64,
+        /// Cap captured output bytes (drains the rest; default 8 MiB).
+        #[arg(long, default_value_t = 8 * 1024 * 1024)]
+        max_bytes: usize,
+        /// Start detached immediately: return a run handle without waiting.
+        #[arg(long)]
+        bg: bool,
+        /// Show a squeezed snapshot of a background run's output + status.
+        #[arg(long, value_name = "ID")]
+        follow: Option<String>,
+        /// Kill a background run by id.
+        #[arg(long, value_name = "ID")]
+        kill: Option<String>,
+        /// List background runs.
+        #[arg(long)]
+        list: bool,
+        /// The command to run (everything after `--`).
+        #[arg(last = true)]
+        cmd: Vec<String>,
+    },
+    /// Onboard onto a fresh codebase: detect the stack from dependency
+    /// manifests, crawl each dependency's docs into memory in the
+    /// background, and write a research plan + codebase overview +
+    /// SessionStart-hook snippet under `.crabcc/onboard/`.
+    Init {
+        /// SessionStart-hook mode: emit onboarding context for the first few
+        /// prompts then go silent. Does NOT run onboarding (no crawl/lock).
+        #[arg(long)]
+        inject: bool,
     },
     /// Start the localhost call-graph viewer (issue #64). Binds to 127.0.0.1
     /// by default — pass `--bind 0.0.0.0` only on a trusted LAN; the server
@@ -497,6 +645,25 @@ enum Cmd {
         /// only drops near-constant lines.
         #[arg(long, default_value_t = 2.5)]
         threshold: f64,
+    },
+    /// AST-targeted edit: rewrite one symbol's exact span via the index, so
+    /// the agent sends just the symbol (FILE#SYMBOL), not the whole file.
+    Edit {
+        /// `FILE#SYMBOL` (e.g. `crates/crabcc-core/src/store.rs#Store::open`).
+        target: String,
+        /// New symbol body / lazy edit. Read from stdin when omitted.
+        #[arg(long)]
+        update: Option<String>,
+        /// Splice the update verbatim as the new symbol body (deterministic).
+        #[arg(long, conflicts_with = "lazy")]
+        replace: bool,
+        /// Merge a lazy edit into the symbol via Morph Fast Apply
+        /// (requires `MORPH_API_KEY`).
+        #[arg(long)]
+        lazy: bool,
+        /// Splice the result into the file in place (default: preview only).
+        #[arg(long)]
+        write: bool,
     },
     /// Audit Claude session logs for token waste.
     Audit {
@@ -561,6 +728,86 @@ enum LoopOp {
 }
 
 #[derive(Subcommand)]
+enum CsvCmd {
+    /// Per-column stats (`qsv stats`): type, min/max, mean, etc.
+    Stats { file: PathBuf },
+    /// `n` random rows (`qsv sample`).
+    Sample {
+        file: PathBuf,
+        #[arg(long, default_value_t = 10)]
+        n: usize,
+    },
+    /// Row count (`qsv count`).
+    Count { file: PathBuf },
+}
+
+#[derive(Subcommand)]
+enum RagOp {
+    /// Chunk every indexed symbol into the `code` wing (idempotent).
+    Build {
+        /// Clear existing code chunks first so renamed/deleted symbols
+        /// don't leave stale entries.
+        #[arg(long)]
+        rebuild: bool,
+    },
+    /// Search the code chunks; returns the top relevant snippets as JSON.
+    Query {
+        query: String,
+        #[arg(long, default_value_t = 8)]
+        limit: usize,
+    },
+}
+
+#[derive(Subcommand)]
+enum MediaOp {
+    /// Print the path the `Read` tool should open: a bounded copy when
+    /// `<path>` is an oversized png/jpg, else the original path unchanged.
+    /// Never fails the read — any error falls back to the original.
+    Downscale {
+        path: PathBuf,
+        /// Longest-edge cap in pixels (default 1568, Anthropic's effective
+        /// vision resolution).
+        #[arg(long)]
+        max_edge: Option<u32>,
+    },
+}
+
+#[derive(Subcommand)]
+enum MorphOp {
+    /// Read stdin and emit a query-conditioned, byte-verbatim compacted
+    /// version via Morph Compact. Passthrough (prints input unchanged) when
+    /// `MORPH_API_KEY` is unset, the input is below `--min-bytes`, or the
+    /// API errors — the agent never loses output.
+    Compact {
+        /// What the agent is looking for; sharpens the compression. Omitted
+        /// => Morph auto-detects.
+        #[arg(long)]
+        query: Option<String>,
+        /// Fraction of text to retain (0.05–1.0).
+        #[arg(long, default_value_t = 0.5)]
+        ratio: f64,
+        /// Skip the network round-trip for inputs smaller than this.
+        #[arg(long, default_value_t = 2000)]
+        min_bytes: usize,
+    },
+    /// Merge a lazy edit snippet into a file via Morph Fast Apply
+    /// (`morph-v3-fast`). Errors if `MORPH_API_KEY` is unset.
+    Apply {
+        #[arg(long)]
+        file: PathBuf,
+        /// The lazy edit snippet (use `// ... existing code ...` markers).
+        #[arg(long)]
+        update: String,
+        /// One-line description of the edit (improves ambiguous merges).
+        #[arg(long, default_value = "")]
+        instruction: String,
+        /// Write the merged result back to the file instead of stdout.
+        #[arg(long)]
+        write: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum ShellOp {
     /// UPSERT a row into `session_shells`. Idempotent — repeats on
     /// the same `(command, cwd, session_id)` bump `run_count`. Used
@@ -578,6 +825,41 @@ enum ShellOp {
         /// `$CRABCC_SESSION_ID`; when both are empty, the row is
         /// keyed against an empty-session sentinel so repeat
         /// detection still works for ungated callers.
+        #[arg(long)]
+        session_id: Option<String>,
+    },
+    /// Plan a safe rewrite of a Claude Code Bash command into a cheaper
+    /// modern equivalent (`rg`, `crabcc refs`). Prints the PreToolUse
+    /// `hookSpecificOutput.updatedInput` envelope on stdout when a
+    /// provably safe rewrite exists, otherwise prints nothing (the
+    /// original command runs unchanged). Set `CRABCC_NO_REWRITE=1` to
+    /// disable. Called by the PreToolUse Bash hook.
+    Rewrite {
+        /// The shell command Claude Code is about to fire.
+        #[arg(long)]
+        command: String,
+        /// Working directory the command will run in (accepted for hook
+        /// parity; rewrite resolves the repo from the process cwd).
+        #[arg(long)]
+        cwd: Option<PathBuf>,
+        /// Session id, used only to correlate the rewrite trace event.
+        #[arg(long)]
+        session_id: Option<String>,
+    },
+    /// PostToolUse counterpart of `rewrite`. Reads the hook payload on
+    /// stdin and records the rewritten command's actual output size into
+    /// `_internal.db`, flagging + suppressing rewrites that did not
+    /// reduce tokens (META_ERROR_OPERATOR_NEEDED). Best-effort.
+    RewriteMeasure,
+    /// Inject smart standing context for the SessionStart hook. Prints a
+    /// SessionStart `hookSpecificOutput.additionalContext` carrying the
+    /// repo's most-referenced symbols + densest files (from the index) +
+    /// a `crabcc lookup` example + context7/MCP nudge. On by default; set
+    /// `CRABCC_NO_CTX_INJECT=1` to disable. Override the text per-repo via
+    /// `.crabcc/ctx-inject.md`.
+    Context {
+        /// Session id (accepted for hook parity; not required since
+        /// SessionStart fires once per session).
         #[arg(long)]
         session_id: Option<String>,
     },
@@ -603,64 +885,6 @@ enum ModelInfoOp {
     Ls {
         #[arg(long)]
         json: bool,
-    },
-}
-
-/// `crabcc jobs` — submit, inspect, and cancel BullMQ jobs (issue #109).
-#[derive(Subcommand)]
-#[allow(clippy::large_enum_variant)]
-enum JobsCmd {
-    /// Submit a job to a queue.
-    Submit {
-        /// Queue name: agent:run | agent:flow | repo:index | repo:reindex
-        #[arg(long)]
-        queue: String,
-        /// Job name (label for the worker).
-        #[arg(long)]
-        name: String,
-        /// Job data as JSON (e.g. '{"prompt":"audit this repo"}').
-        #[arg(long, default_value = "{}")]
-        data: String,
-        /// Optional delay in milliseconds before the job becomes active.
-        #[arg(long)]
-        delay_ms: Option<u64>,
-        /// Job priority (lower = higher priority).
-        #[arg(long)]
-        priority: Option<u32>,
-        /// Max retry attempts.
-        #[arg(long)]
-        attempts: Option<u32>,
-        /// Human-readable agent identifier (shown in Bull Board / /live).
-        #[arg(long)]
-        agent_name: Option<String>,
-        /// Repo path this job operates on.
-        #[arg(long)]
-        repo_path: Option<String>,
-        /// GitHub URL for this repo (surfaced in dashboard links).
-        #[arg(long)]
-        github_url: Option<String>,
-        /// Agent run-dir path (contains lock, pid, log — for correlation).
-        #[arg(long)]
-        agent_folder: Option<String>,
-    },
-    /// Query the current state of a job.
-    Status {
-        #[arg(long)]
-        queue: String,
-        #[arg(long)]
-        id: String,
-    },
-    /// List waiting jobs in a queue (shows depth, not full payloads).
-    List {
-        /// Queue to inspect. Omit to list all queues.
-        queue: Option<String>,
-    },
-    /// Cancel (remove) a waiting or delayed job.
-    Cancel {
-        #[arg(long)]
-        queue: String,
-        #[arg(long)]
-        id: String,
     },
 }
 
@@ -699,9 +923,6 @@ enum DoctorOp {
     /// `OLLAMA_BASE_URL`+`OLLAMA_API_KEY` env vars set. Doesn't invoke
     /// the agent — use `crabcc agent --dry-run` for that.
     Agent,
-    /// Jobs queue reachability: shells out to `redis-cli ping` against
-    /// `$REDIS_URL` (default `redis://127.0.0.1:6379`). Issue #109.
-    Jobs,
 }
 
 /// Shaping flags for refs/callers. `--files-only`, `--summary`, and
@@ -830,6 +1051,33 @@ fn main() -> Result<()> {
             anyhow::bail!("--workspace is not supported with --mcp/--mcp-http in v4.5");
         }
         return run_workspace(cli);
+    }
+
+    // morph group — optional external LLM filter; needs neither a repo
+    // root nor the Store, so dispatch before resolution (compact is a
+    // generic stdin pipe usable anywhere).
+    if let Some(Cmd::Morph { op }) = &cli.cmd {
+        return match op {
+            MorphOp::Compact {
+                query,
+                ratio,
+                min_bytes,
+            } => morph::run_compact(query.as_deref(), *ratio, *min_bytes),
+            MorphOp::Apply {
+                file,
+                update,
+                instruction,
+                write,
+            } => morph::run_apply(file, instruction, update, *write),
+        };
+    }
+
+    // media group — pure file -> file transform for the Read hook; needs
+    // neither a repo root nor the Store, so dispatch before resolution.
+    if let Some(Cmd::Media { op }) = &cli.cmd {
+        return match op {
+            MediaOp::Downscale { path, max_edge } => media::run_downscale(path, *max_edge),
+        };
     }
 
     // Resolve `--root` to a concrete source dir + index-artifact dir.
@@ -1045,6 +1293,90 @@ fn main() -> Result<()> {
         return fetch_cmd::run(&root, prompt, *no_chrome, format, *remember);
     }
 
+    // `crawl` is the multi-page sibling of `fetch`; also pure I/O, handled
+    // before the symbol Store is opened.
+    if let Some(Cmd::Crawl {
+        url,
+        depth,
+        max_pages,
+        all_hosts,
+        concurrency,
+        remember,
+        format,
+        proxify,
+        state,
+    }) = cli.cmd.as_ref()
+    {
+        return crawl_cmd::run(
+            &root,
+            url,
+            *depth,
+            *max_pages,
+            *all_hosts,
+            *concurrency,
+            *remember,
+            format,
+            proxify.as_deref(),
+            state.as_deref(),
+        );
+    }
+
+    // `enrich` reads only the memory Palace (like `memory`), so it's handled
+    // before the symbol Store is opened.
+    if let Some(Cmd::Enrich { query, max_tokens }) = cli.cmd.as_ref() {
+        return enrich_cmd::run(&root, query, *max_tokens);
+    }
+
+    // `csv` only shells out to qsv; no symbol Store needed.
+    if let Some(Cmd::Csv { op }) = cli.cmd.as_ref() {
+        return match op {
+            CsvCmd::Stats { file } => csv::run(csv::CsvOp::Stats, file, 0),
+            CsvCmd::Sample { file, n } => csv::run(csv::CsvOp::Sample, file, *n),
+            CsvCmd::Count { file } => csv::run(csv::CsvOp::Count, file, 0),
+        };
+    }
+
+    // `squeeze` is a pure stdin->stdout filter; no symbol Store needed.
+    if let Some(Cmd::Squeeze { max_lines }) = cli.cmd.as_ref() {
+        return squeeze::run(*max_lines);
+    }
+
+    // `run` spawns a child + captures/squeezes its output; no symbol Store.
+    if let Some(Cmd::Run {
+        max_lines,
+        idle,
+        timeout,
+        max_bytes,
+        bg,
+        follow,
+        kill,
+        list,
+        cmd,
+    }) = cli.cmd.as_ref()
+    {
+        return run_cmd::run(
+            cmd,
+            *max_lines,
+            *idle,
+            *timeout,
+            *max_bytes,
+            *bg,
+            follow.as_deref(),
+            kill.as_deref(),
+            *list,
+        );
+    }
+
+    // `init` reads dependency manifests + writes onboarding artifacts +
+    // spawns background crawls; no symbol Store needed.
+    if let Some(Cmd::Init { inject }) = cli.cmd.as_ref() {
+        return if *inject {
+            init_cmd::run_inject(&root)
+        } else {
+            init_cmd::run(&root)
+        };
+    }
+
     // `serve` boots crabcc-viz; doesn't need the symbol Store opened
     // here (the viz server lazy-opens its own). Gated behind the `viz`
     // feature so the default install doesn't pull in the dashboard.
@@ -1114,11 +1446,6 @@ fn main() -> Result<()> {
         return run_backup(&root, op);
     }
 
-    // jobs group
-    if let Some(Cmd::Jobs(op)) = cli.cmd.as_ref() {
-        return jobs_cmd::run(op);
-    }
-
     // doctor group
     if let Some(Cmd::Doctor { op, text }) = cli.cmd.as_ref() {
         return match op {
@@ -1127,7 +1454,6 @@ fn main() -> Result<()> {
             Some(DoctorOp::Stack) => doctor::run_stack(*text),
             Some(DoctorOp::Keys) => doctor::run_keys(*text),
             Some(DoctorOp::Agent) => doctor::run_agent(*text),
-            Some(DoctorOp::Jobs) => doctor::run_jobs(*text),
         };
     }
 
@@ -1161,9 +1487,10 @@ fn main() -> Result<()> {
         return memory::run(&root, sub);
     }
 
-    // shell group — observation-only ledger; no Store::open needed.
+    // shell group — record is observation-only; rewrite reads the index
+    // (read-only) to gate symbol upgrades.
     if let Some(Cmd::Shell { op }) = &cli.cmd {
-        return run_shell(&root, op);
+        return run_shell(&root, &db, op);
     }
 
     // loop-detector group — pure read; no Store::open needed.
@@ -1339,6 +1666,7 @@ fn main() -> Result<()> {
                 lang,
                 ext,
                 limit,
+                group,
             } => {
                 let files = list_files(
                     &store,
@@ -1347,7 +1675,11 @@ fn main() -> Result<()> {
                     ext.as_deref(),
                     limit,
                 )?;
-                let body = sonic_rs::to_string(&files)?;
+                let body = if group {
+                    sonic_rs::to_string(&group_by_dir(&files))?
+                } else {
+                    sonic_rs::to_string(&files)?
+                };
                 crabcc_core::track::record(
                     "files",
                     "list",
@@ -1499,19 +1831,39 @@ fn main() -> Result<()> {
                 threshold,
             )?;
         }
+        Cmd::Edit {
+            target,
+            update,
+            replace,
+            lazy,
+            write,
+        } => {
+            edit::run(&root, &store, &target, update, replace, lazy, write)?;
+        }
+        Cmd::Rag { op } => match op {
+            RagOp::Build { rebuild } => rag::run_build(&root, &store, rebuild)?,
+            RagOp::Query { query, limit } => rag::run_query(&root, &query, limit)?,
+        },
         // All other variants were handled in the early-return block above.
         Cmd::Setup { .. } => unreachable!("setup handled before store init"),
         Cmd::Info { .. } => unreachable!("info handled before store init"),
         Cmd::Go => unreachable!("go handled before store init"),
         Cmd::Fetch { .. } => unreachable!("fetch handled before store init"),
+        Cmd::Crawl { .. } => unreachable!("crawl handled before store init"),
+        Cmd::Enrich { .. } => unreachable!("enrich handled before store init"),
+        Cmd::Csv { .. } => unreachable!("csv handled before store init"),
+        Cmd::Squeeze { .. } => unreachable!("squeeze handled before store init"),
+        Cmd::Run { .. } => unreachable!("run handled before store init"),
+        Cmd::Init { .. } => unreachable!("init handled before store init"),
         Cmd::Serve { .. } => unreachable!("serve handled before store init"),
         Cmd::Agent { .. } => unreachable!("agent handled before store init"),
         Cmd::Stack { .. } => unreachable!("stack handled before store init"),
         Cmd::Backup { .. } => unreachable!("backup handled before store init"),
         Cmd::Doctor { .. } => unreachable!("doctor handled before store init"),
-        Cmd::Jobs(_) => unreachable!("jobs handled before store init"),
         Cmd::Memory { .. } => unreachable!("memory handled before store init"),
         Cmd::Shell { .. } => unreachable!("shell handled before store init"),
+        Cmd::Morph { .. } => unreachable!("morph handled before store init"),
+        Cmd::Media { .. } => unreachable!("media handled before store init"),
         Cmd::Audit { .. } => unreachable!("audit handled before store init"),
         Cmd::Loop { .. } => unreachable!("loop handled before store init"),
     }
@@ -1677,7 +2029,7 @@ fn run_model_info(op: &ModelInfoOp) -> Result<()> {
                     (n.starts_with(".model.") && n.ends_with(".info")).then_some(n)
                 })
                 .collect();
-            rows.sort();
+            rows.sort_unstable();
             if *json {
                 let dir_s = dir.display().to_string();
                 let arr: Vec<String> = rows.iter().map(|n| format!("\"{n}\"")).collect();
@@ -1832,8 +2184,33 @@ fn run_workspace(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-fn run_shell(root: &Path, op: &ShellOp) -> Result<()> {
+fn run_shell(root: &Path, db: &Path, op: &ShellOp) -> Result<()> {
     match op {
+        ShellOp::Rewrite {
+            command,
+            cwd,
+            session_id,
+        } => {
+            // Use the hook-supplied cwd to resolve root/db so rewrites
+            // consult the correct index when the tool call runs from a
+            // different directory (e.g. a subdirectory or a different repo).
+            let (eff_root, eff_db);
+            let (rw_root, rw_db, rw_cwd) = if let Some(hook_cwd) = &cwd {
+                let resolved = root_resolver::resolve(Some(hook_cwd.as_path()))?;
+                eff_root = resolved.source_dir.clone();
+                eff_db = resolved.db();
+                (
+                    eff_root.as_path(),
+                    eff_db.as_path(),
+                    Some(hook_cwd.as_path()),
+                )
+            } else {
+                (root, db, None)
+            };
+            shell_rewrite::run(rw_root, rw_db, command, session_id.as_deref(), rw_cwd)
+        }
+        ShellOp::RewriteMeasure => shell_rewrite::run_measure(),
+        ShellOp::Context { session_id } => shell_context::run(root, db, session_id.as_deref()),
         ShellOp::Record {
             command,
             cwd,
@@ -1995,11 +2372,26 @@ fn list_files(
         })
         .map(|(p, _)| p)
         .collect();
-    out.sort();
+    out.sort_unstable();
     if limit > 0 && out.len() > limit {
         out.truncate(limit);
     }
     Ok(out)
+}
+
+/// Fold a flat list of repo-relative paths into `{ "<dir>": ["base", …] }`,
+/// eliminating the directory prefix repeated on every path. Root-level
+/// files group under ".". `BTreeMap` keeps the output deterministic.
+fn group_by_dir(paths: &[String]) -> std::collections::BTreeMap<&str, Vec<&str>> {
+    let mut map: std::collections::BTreeMap<&str, Vec<&str>> = std::collections::BTreeMap::new();
+    for p in paths {
+        let (dir, base) = match p.rfind('/') {
+            Some(i) => (&p[..i], &p[i + 1..]),
+            None => (".", p.as_str()),
+        };
+        map.entry(dir).or_default().push(base);
+    }
+    map
 }
 
 /// True for commands that read the symbol index but don't build it
@@ -2015,7 +2407,14 @@ fn needs_auto_index(c: &Option<Cmd>) -> bool {
         // Implicit default = `index` — no auto-index needed (we're about
         // to index anyway).
         None => false,
-        Some(cmd) => matches!(cmd, Cmd::Lookup { .. } | Cmd::Graph { .. }),
+        Some(cmd) => matches!(
+            cmd,
+            Cmd::Lookup { .. }
+                | Cmd::Graph { .. }
+                | Cmd::Rag {
+                    op: RagOp::Build { .. }
+                }
+        ),
     }
 }
 
@@ -2068,14 +2467,23 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::Graph { .. } => "graph",
         Cmd::Memory { .. } => "memory",
         Cmd::Shell { .. } => "shell",
+        Cmd::Morph { .. } => "morph",
+        Cmd::Media { .. } => "media",
+        Cmd::Rag { .. } => "rag",
         Cmd::Loop { .. } => "loop",
         Cmd::Backup { .. } => "backup",
         Cmd::Doctor { .. } => "doctor",
-        Cmd::Jobs(_) => "jobs",
         Cmd::Go => "go",
         Cmd::Fetch { .. } => "fetch",
+        Cmd::Crawl { .. } => "crawl",
+        Cmd::Enrich { .. } => "enrich",
+        Cmd::Csv { .. } => "csv",
+        Cmd::Squeeze { .. } => "squeeze",
+        Cmd::Run { .. } => "run",
+        Cmd::Init { .. } => "init",
         Cmd::Serve { .. } => "serve",
         Cmd::Read { .. } => "read",
+        Cmd::Edit { .. } => "edit",
     }
 }
 
@@ -2090,13 +2498,7 @@ fn run_agent_run(
     root: &Path,
 ) -> Result<()> {
     let backend = agent::Backend::from_str(backend)?;
-    // Transport: opt-in via env (Phase 1). A `--transport` CLI flag is
-    // intentionally deferred — wiring through clap's deeply-nested
-    // command tree is a separate cleanup.
-    let transport = match std::env::var("CRABCC_AGENT_TRANSPORT").ok().as_deref() {
-        None | Some("") => agent::AgentTransport::Subprocess,
-        Some(t) => agent::AgentTransport::from_str(t)?,
-    };
+    let transport = agent::AgentTransport::Subprocess;
     let loaded_profile = match profile.as_deref() {
         None => None,
         Some(p) => {

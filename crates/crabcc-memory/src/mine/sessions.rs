@@ -61,7 +61,7 @@ fn collect_jsonl_files(dir: &Path) -> Result<Vec<PathBuf>> {
             out.push(entry);
         }
     }
-    out.sort();
+    out.sort_unstable();
     Ok(out)
 }
 
@@ -102,7 +102,11 @@ fn process_file(
                 continue;
             }
         };
-        let role = evt.message.as_ref().map(|m| m.role.as_str()).unwrap_or_default();
+        let role = evt
+            .message
+            .as_ref()
+            .map(|m| m.role.as_str())
+            .unwrap_or_default();
         let text = evt.message.as_ref().map(|m| m.text()).unwrap_or_default();
         if text.is_empty() {
             report.record_skip();

@@ -25,7 +25,9 @@ use rusqlite::Connection;
 
 /// Bumped only when migrations land — used by future tooling
 /// (`crabcc-godfather migrate`) to gate behaviour on schema age.
-pub const SCHEMA_VERSION: i64 = 1;
+/// v1 → initial tables.
+/// v2 → `_crab_event.severity_int` INTEGER column + index (#488).
+pub const SCHEMA_VERSION: i64 = 2;
 
 pub fn apply(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -247,6 +249,7 @@ mod tests {
             "idx_event_ts",
             "idx_event_session",
             "idx_event_severity",
+            "idx_event_severity_int",
             "idx_resource_session_ts",
             "idx_crash_session",
             "idx_crash_ts",

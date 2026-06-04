@@ -20,13 +20,13 @@ set -uo pipefail
 
 BASE=""
 QUIET=0
-for arg in "$@"; do
-    case "$arg" in
-        --base)  shift; BASE="${1:-origin/main}" ;;
-        --quiet) QUIET=1 ;;
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --base)  BASE="${2:-origin/main}"; shift 2 ;;
+        --quiet) QUIET=1; shift ;;
         --help|-h)
             sed -n '2,17p' "$0" | sed 's/^# \?//'; exit 0 ;;
-        *) echo "gen-summary: unknown arg $arg" >&2; exit 1 ;;
+        *) echo "gen-summary: unknown arg $1" >&2; exit 1 ;;
     esac
 done
 
@@ -49,10 +49,13 @@ if [ -z "$BASE" ]; then
 fi
 [ -z "$BASE" ] && BASE="origin/main"
 
-# Resolve to a commit; if the base ref doesn't exist, fall back gently.
+# Resolve to a commit; if the named ref doesn't exist use git merge-base so
+# the summary covers exactly the commits on this branch, not a fixed window.
 if ! git rev-parse --verify "$BASE" >/dev/null 2>&1; then
-    BASE="origin/main"
-    git rev-parse --verify "$BASE" >/dev/null 2>&1 || BASE="HEAD~10"
+    BASE="$(git merge-base HEAD origin/main 2>/dev/null \
+           || git merge-base HEAD main 2>/dev/null \
+           || git rev-parse HEAD~10 2>/dev/null \
+           || echo HEAD)"
 fi
 
 MERGE_BASE="$(git merge-base "$BASE" HEAD 2>/dev/null)" || MERGE_BASE="$BASE"

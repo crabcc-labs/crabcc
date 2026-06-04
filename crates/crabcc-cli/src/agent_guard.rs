@@ -99,7 +99,7 @@ pub fn run(cfg: GuardConfig) -> Result<()> {
         if let Some(lp) = &row.log_path {
             if log_idle_secs(lp)
                 .map(|s| s > cfg.idle_secs)
-                .unwrap_or(false)
+                .unwrap_or_default()
             {
                 let detail = format!(
                     "log mtime older than idle_secs={} (path={})",
@@ -124,7 +124,7 @@ pub fn run(cfg: GuardConfig) -> Result<()> {
         }
     }
 
-    // Persist + write per-run kill log files + cancel orphaned BullMQ jobs.
+    // Persist + write per-run kill log files.
     for act in &actions {
         let _ = write_kill_log(&home, &act.run_id, act);
         let ev = agent_runs_db::KillEvent {
@@ -135,11 +135,6 @@ pub fn run(cfg: GuardConfig) -> Result<()> {
             detail: act.detail.clone(),
         };
         let _ = agent_runs_db::record_kill(&conn, &ev);
-
-        // If the run-dir has a `job_id` file (written by `crabcc jobs submit`),
-        // cancel the corresponding BullMQ job so it doesn't stay stuck in
-        // the queue forever after the agent died.
-        cancel_orphaned_job(&home, &act.run_id);
     }
 
     let killed = actions.len();
@@ -172,50 +167,6 @@ pub fn run(cfg: GuardConfig) -> Result<()> {
     Ok(())
 }
 
-/// Cancel the BullMQ job linked to an agent run-dir, if one exists.
-/// Reads `~/.crabcc/agents/<id>/job_id` (written by `crabcc jobs submit`).
-/// File format: first line = job_id, second line = queue name.
-/// Best-effort — logs on failure but never propagates errors.
-fn cancel_orphaned_job(home: &Path, run_id: &str) {
-    let job_id_file = home
-        .join(".crabcc")
-        .join("agents")
-        .join(run_id)
-        .join("job_id");
-    if !job_id_file.exists() {
-        return;
-    }
-    let content = match std::fs::read_to_string(&job_id_file) {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    let mut lines = content.lines();
-    let job_id = match lines.next() {
-        Some(id) if !id.is_empty() => id.to_owned(),
-        _ => return,
-    };
-    let queue = lines.next().unwrap_or("agent:run").to_owned();
-
-    use crabcc_core::jobs;
-    let opts = jobs::Options::default();
-    match jobs::cancel(&opts, &queue, &job_id) {
-        Ok(_) => tracing::info!(
-            event = "agent_guard.bullmq_cancel",
-            run_id = %run_id,
-            job_id = %job_id,
-            queue = %queue,
-            "cancelled orphaned BullMQ job"
-        ),
-        Err(e) => tracing::debug!(
-            event = "agent_guard.bullmq_cancel_fail",
-            run_id = %run_id,
-            job_id = %job_id,
-            error = %e,
-            "could not cancel BullMQ job (Redis may not be running)"
-        ),
-    }
-}
-
 #[cfg(unix)]
 fn pid_alive(pid: Option<i64>) -> bool {
     match pid {
@@ -243,7 +194,7 @@ fn write_kill_log(home: &Path, run_id: &str, act: &Action) -> Result<()> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .unwrap_or_default();
     let body = format!(
         "killed_at_unix: {now}\nreason: {}\npid: {}\ndetail: {}\n",
         act.reason,

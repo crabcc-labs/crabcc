@@ -11,7 +11,8 @@
 //!   cargo bench -p ucracc-lsp --bench baseline_vs_lsp
 
 use crabcc_core::{fts::Fts, query::find_symbol, store::Store};
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
+use std::hint::black_box;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tempfile::TempDir;

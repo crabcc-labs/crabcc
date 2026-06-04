@@ -99,7 +99,7 @@ fn build_report(service: Option<&str>, max_hops: u8) -> NetworkReport {
     let started_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .unwrap_or_default();
     let os = std::env::consts::OS.to_string();
 
     let hosts: Vec<String> = match service {
@@ -524,7 +524,7 @@ mod tests {
         assert!(hosts.iter().any(|h| h == "host.containers.internal"));
         // Dedupe sanity check — no host should appear twice.
         let mut sorted = hosts.clone();
-        sorted.sort();
+        sorted.sort_unstable();
         sorted.dedup();
         assert_eq!(sorted.len(), hosts.len(), "duplicates in {hosts:?}");
     }

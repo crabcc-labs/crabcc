@@ -24,6 +24,20 @@ pub fn handle(req: &Value, root: &Path) -> Value {
 /// integration tests stay on `handle()` (which reads the env var); new
 /// tests exercising the default vs. dev surfaces use this.
 pub fn handle_with(req: &Value, root: &Path, dev: bool) -> Value {
+    // One-shot callers (HTTP transport, tests) open a fresh Store per call.
+    handle_with_session(req, root, dev, &mut None)
+}
+
+/// Same as [`handle_with`] but reuses a caller-owned [`Store`] across calls.
+/// `serve_io` (the long-lived stdio session) holds one `Option<Store>` for the
+/// whole session so each `tools/call` skips the per-call `Store::open` (SQLite
+/// open + sqlite-vec load + pragmas), which dominated per-call latency.
+pub fn handle_with_session(
+    req: &Value,
+    root: &Path,
+    dev: bool,
+    store: &mut Option<Store>,
+) -> Value {
     let id = req.get("id").cloned();
     let method = req
         .get("method")
@@ -49,7 +63,7 @@ pub fn handle_with(req: &Value, root: &Path, dev: bool) -> Value {
             "id": id,
             "result": { "tools": tools_def_for(dev) }
         }),
-        "tools/call" => match dispatch_tool_with(req.get("params"), root, dev) {
+        "tools/call" => match dispatch_tool_with(req.get("params"), root, dev, store) {
             Ok(content) => json!({
                 "jsonrpc": "2.0",
                 "id": id,
@@ -82,7 +96,12 @@ fn dispatch_meta(tool: &str, _args: &Value) -> Result<Option<String>> {
     }
 }
 
-fn dispatch_tool_with(params: Option<&Value>, root: &Path, dev: bool) -> Result<String> {
+fn dispatch_tool_with(
+    params: Option<&Value>,
+    root: &Path,
+    dev: bool,
+    store: &mut Option<Store>,
+) -> Result<String> {
     let started = std::time::Instant::now();
     let p = params.ok_or_else(|| anyhow::anyhow!("missing params"))?;
     let tool = p
@@ -91,7 +110,7 @@ fn dispatch_tool_with(params: Option<&Value>, root: &Path, dev: bool) -> Result<
         .ok_or_else(|| anyhow::anyhow!("missing tool name"))?;
     let args = p.get("arguments").cloned().unwrap_or(json!({}));
     tracing::debug!(target: "crabcc_mcp", tool, "dispatch: enter");
-    let result = dispatch_tool_inner(tool, args, root, dev);
+    let result = dispatch_tool_inner(tool, args, root, dev, store);
     let elapsed_ms = started.elapsed().as_millis() as u64;
     match &result {
         Ok(_) => tracing::info!(target: "crabcc_mcp", tool, elapsed_ms, "dispatch: ok"),
@@ -102,7 +121,13 @@ fn dispatch_tool_with(params: Option<&Value>, root: &Path, dev: bool) -> Result<
     result
 }
 
-fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Result<String> {
+fn dispatch_tool_inner(
+    tool: &str,
+    args: Value,
+    root: &Path,
+    dev: bool,
+    cache: &mut Option<Store>,
+) -> Result<String> {
     // Meta tools are dispatched before any filesystem work: they describe
     // the server itself (OpenAPI surface, version, tool count) and must
     // succeed even on a non-repo cwd. Gated behind the dev surface — a
@@ -113,9 +138,9 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
             return Ok(meta);
         }
     } else if matches!(tool, "_openapi" | "_health") {
-        return Err(anyhow::anyhow!(
+        anyhow::bail!(
             "tool {tool:?} is dev-only; restart the MCP server with --dev or CRABCC_MCP_DEV=1"
-        ));
+        );
     }
 
     // `ctx` is a meta-tool that dispatches by `tool` arg name. Re-enter
@@ -128,10 +153,10 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("ctx: missing `tool` arg"))?;
         if inner_tool == "ctx" {
-            return Err(anyhow::anyhow!("ctx: cannot dispatch ctx -> ctx"));
+            anyhow::bail!("ctx: cannot dispatch ctx -> ctx");
         }
         let inner_args = args.get("args").cloned().unwrap_or_else(|| json!({}));
-        return dispatch_tool_inner(inner_tool, inner_args, root, dev);
+        return dispatch_tool_inner(inner_tool, inner_args, root, dev, cache);
     }
 
     // Memory tools open .crabcc/memory.db directly via Palace; no symbol
@@ -141,17 +166,20 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
         return memory::dispatch(tool, &args, root);
     }
 
-    let db = root.join(".crabcc").join("index.db");
-    std::fs::create_dir_all(db.parent().unwrap())?;
-    let store = Store::open(&db)?;
+    if cache.is_none() {
+        let db = root.join(".crabcc").join("index.db");
+        std::fs::create_dir_all(db.parent().unwrap())?;
+        *cache = Some(Store::open(&db)?);
+    }
+    let store: &Store = cache.as_ref().unwrap();
 
-    match tool {
+    let result = match tool {
         "sym" => {
             let name = arg_str(&args, "name")?;
             let since_files = since_filter(&args, root)?;
             let r = match since_files.as_ref() {
-                Some(set) => query::find_symbol_in_files(&store, name, set)?,
-                None => query::find_symbol(&store, name)?,
+                Some(set) => query::find_symbol_in_files(store, name, set)?,
+                None => query::find_symbol(store, name)?,
             };
             memory::auto_capture(root, "sym", name, r.len(), &args);
             Ok(serde_json::to_string(&r)?)
@@ -160,7 +188,7 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
             let name = arg_str(&args, "name")?;
             let mode = parse_mode(&args);
             let since_files = since_filter(&args, root)?;
-            let r = query::query_refs(&store, root, name, mode, since_files.as_ref())?;
+            let r = query::query_refs(store, root, name, mode, since_files.as_ref())?;
             memory::auto_capture(root, "refs", name, r.count(), &args);
             if want_stream(&args) {
                 return hits_to_ndjson(&r);
@@ -175,7 +203,7 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
             let name = arg_str(&args, "name")?;
             let mode = parse_mode(&args);
             let since_files = since_filter(&args, root)?;
-            let r = query::query_callers(&store, root, name, mode, since_files.as_ref())?;
+            let r = query::query_callers(store, root, name, mode, since_files.as_ref())?;
             memory::auto_capture(root, "callers", name, r.count(), &args);
             if want_stream(&args) {
                 return hits_to_ndjson(&r);
@@ -187,7 +215,7 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
             ))
         }
         "outline" => {
-            let r = outline::outline(&store, arg_str(&args, "file")?)?;
+            let r = outline::outline(store, arg_str(&args, "file")?)?;
             Ok(serde_json::to_string(&r)?)
         }
         "test_context" => {
@@ -204,7 +232,7 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
                 .unwrap_or(2) as usize;
 
             // Resolve the symbol — prefer file-scoped lookup when provided.
-            let symbols = query::find_symbol(&store, name)?;
+            let symbols = query::find_symbol(store, name)?;
             let symbol = match file_arg {
                 Some(f) => symbols.into_iter().find(|s| s.file == f),
                 None => symbols.into_iter().next(),
@@ -213,11 +241,11 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
                 symbol.ok_or_else(|| anyhow::anyhow!("test_context: symbol {name:?} not found"))?;
 
             // Outline of the symbol's file
-            let outline_items = outline::outline(&store, &symbol.file)?;
+            let outline_items = outline::outline(store, &symbol.file)?;
 
             // All callers (capped)
             let callers_output =
-                query::query_callers(&store, root, name, query::Mode::Hits { limit: None }, None)?;
+                query::query_callers(store, root, name, query::Mode::Hits { limit: None }, None)?;
             let callers: Vec<_> = match callers_output {
                 query::Output::Hits(h) => h.into_iter().take(max_callers).collect(),
                 _ => Vec::new(),
@@ -225,7 +253,7 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
 
             // All refs (capped)
             let refs_output =
-                query::query_refs(&store, root, name, query::Mode::Hits { limit: None }, None)?;
+                query::query_refs(store, root, name, query::Mode::Hits { limit: None }, None)?;
             let refs: Vec<_> = match refs_output {
                 query::Output::Hits(h) => h.into_iter().take(max_refs).collect(),
                 _ => Vec::new(),
@@ -235,8 +263,8 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
             // Use blast_radius if available; fall back to empty array on
             // any error so the tool stays useful when the call-graph
             // sidecar hasn't been built yet.
-            let blast = match resolve_symbol_id(&store, &symbol.name) {
-                Ok(id) => match query::blast_radius::blast_radius(&store, id, blast_depth, &[]) {
+            let blast = match resolve_symbol_id(store, &symbol.name) {
+                Ok(id) => match query::blast_radius::blast_radius(store, id, blast_depth, &[]) {
                     Ok(v) => serde_json::to_value(v).unwrap_or(json!([])),
                     Err(_) => json!([]),
                 },
@@ -263,10 +291,10 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| anyhow::anyhow!("write_file: missing arg `content`"))?;
             if std::path::Path::new(path).is_absolute() {
-                return Err(anyhow::anyhow!("write_file: path must be repo-relative"));
+                anyhow::bail!("write_file: path must be repo-relative");
             }
             if path.split('/').any(|c| c == "..") {
-                return Err(anyhow::anyhow!("write_file: `..` in path is rejected"));
+                anyhow::bail!("write_file: `..` in path is rejected");
             }
             let abs = root.join(path);
             if let Some(parent) = abs.parent() {
@@ -274,12 +302,12 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
             }
             let before = store.symbols_in_file(path).unwrap_or_default();
             std::fs::write(&abs, content.as_bytes())?;
-            let (after, parse_err) = crabcc_core::validate::reindex_file(&store, path, content)?;
+            let (after, parse_err) = crabcc_core::validate::reindex_file(store, path, content)?;
             let diff = crabcc_core::validate::diff_symbols(path, &before, &after);
             let removed = diff.removed_names();
             let broken: std::collections::BTreeSet<String> = removed
                 .iter()
-                .filter_map(|name| query::find_callers(&store, root, name).ok())
+                .filter_map(|name| query::find_callers(store, root, name).ok())
                 .flatten()
                 .map(|h| h.file)
                 .collect();
@@ -309,25 +337,32 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
                 .and_then(|v| v.as_f64())
                 .unwrap_or(2.5);
             let value =
-                crabcc_memory::read::compute(root, &store, path, mode, session_id, threshold)?;
+                crabcc_memory::read::compute(root, store, path, mode, session_id, threshold)?;
             Ok(serde_json::to_string(&value)?)
         }
         "files" => {
             let under = args.get("under").and_then(|v| v.as_str());
             let lang = args.get("lang").and_then(|v| v.as_str());
             let ext = args.get("ext").and_then(|v| v.as_str());
-            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-            let r = list_indexed_files(&store, under, lang, ext, limit)?;
+            let limit = args
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .unwrap_or_default() as usize;
+            let r = list_indexed_files(store, under, lang, ext, limit)?;
             Ok(serde_json::to_string(&r)?)
         }
         "index" => {
             let started = std::time::Instant::now();
-            let r = index::full_index(root, &store)?;
+            let r = index::full_index(root, store)?;
             // Logs flag: when truthy, return an envelope with stats +
             // elapsed_ms + (empty here — in-process logs aren't piped).
             // Mirrors the shape of /api/reindex from crabcc-viz so the
             // /live dashboard and MCP clients consume identical JSON.
-            if args.get("logs").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if args
+                .get("logs")
+                .and_then(|v| v.as_bool())
+                .unwrap_or_default()
+            {
                 let env = serde_json::json!({
                     "stats": r,
                     "elapsed_ms": started.elapsed().as_millis() as u64,
@@ -338,12 +373,15 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
             Ok(serde_json::to_string(&r)?)
         }
         "refresh" => {
-            let want_delta = args.get("delta").and_then(|v| v.as_bool()).unwrap_or(false);
+            let want_delta = args
+                .get("delta")
+                .and_then(|v| v.as_bool())
+                .unwrap_or_default();
             if want_delta {
-                let d = index::refresh_delta(root, &store)?;
+                let d = index::refresh_delta(root, store)?;
                 Ok(serde_json::to_string(&d)?)
             } else {
-                let r = index::refresh(root, &store)?;
+                let r = index::refresh(root, store)?;
                 Ok(serde_json::to_string(&r)?)
             }
         }
@@ -368,8 +406,8 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
                 .and_then(|v| v.as_str())
                 .unwrap_or("callers");
             let depth = args.get("depth").and_then(|v| v.as_u64()).unwrap_or(2) as usize;
-            let symbol_id = resolve_symbol_id(&store, &name)?;
-            let g = load_or_build_graph(&store, root)?;
+            let symbol_id = resolve_symbol_id(store, &name)?;
+            let g = load_or_build_graph(store, root)?;
             let hits = if dir == "callees" {
                 g.outgoing(symbol_id, depth)
             } else {
@@ -378,11 +416,11 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
             Ok(serde_json::to_string(&hits)?)
         }
         "graph_cycles" => {
-            let g = load_or_build_graph(&store, root)?;
+            let g = load_or_build_graph(store, root)?;
             Ok(serde_json::to_string(&g.cycles())?)
         }
         "graph_orphans" => {
-            let g = load_or_build_graph(&store, root)?;
+            let g = load_or_build_graph(store, root)?;
             Ok(serde_json::to_string(&g.orphans())?)
         }
         "graph.blast_radius" => {
@@ -393,13 +431,13 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
                 .map(|n| n as usize)
                 .unwrap_or(5);
             let kind = args.get("kind").and_then(|v| v.as_str()).map(String::from);
-            let symbol_id = resolve_symbol_id(&store, &symbol)?;
+            let symbol_id = resolve_symbol_id(store, &symbol)?;
             let kinds: &[&str] = match kind.as_deref() {
                 Some(k) => &[k][..],
                 None => &[][..],
             };
             let hits =
-                crabcc_core::query::blast_radius::blast_radius(&store, symbol_id, depth, kinds)?;
+                crabcc_core::query::blast_radius::blast_radius(store, symbol_id, depth, kinds)?;
             Ok(serde_json::to_string(&hits)?)
         }
         "graph.why" => {
@@ -410,9 +448,9 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
                 .and_then(|v| v.as_u64())
                 .map(|n| n as usize)
                 .unwrap_or(8);
-            let src_id = resolve_symbol_id(&store, &src)?;
-            let dst_id = resolve_symbol_id(&store, &dst)?;
-            let path = crabcc_core::query::why::why(&store, src_id, dst_id, max_depth)?;
+            let src_id = resolve_symbol_id(store, &src)?;
+            let dst_id = resolve_symbol_id(store, &dst)?;
+            let path = crabcc_core::query::why::why(store, src_id, dst_id, max_depth)?;
             Ok(serde_json::to_string(&path)?)
         }
         "graph.hot_symbols" => {
@@ -426,7 +464,7 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
                 Some(k) => &[k][..],
                 None => &[][..],
             };
-            let hits = crabcc_core::query::hot_symbols::hot_symbols(&store, top, kinds)?;
+            let hits = crabcc_core::query::hot_symbols::hot_symbols(store, top, kinds)?;
             Ok(serde_json::to_string(&hits)?)
         }
         "graph.importers" => {
@@ -436,7 +474,7 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
                 .and_then(|v| v.as_u64())
                 .map(|n| n as usize)
                 .unwrap_or(3);
-            let hits = crabcc_core::query::importers::importers(&store, &path, depth)?;
+            let hits = crabcc_core::query::importers::importers(store, &path, depth)?;
             Ok(serde_json::to_string(&hits)?)
         }
         "upgrade" => {
@@ -449,13 +487,24 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
             // The MCP path treats `apply` as opt-in just like the CLI. The
             // index store is re-opened by callers on the next tool invocation
             // — we don't try to invalidate it from here.
-            if args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if args
+                .get("apply")
+                .and_then(|v| v.as_bool())
+                .unwrap_or_default()
+            {
                 let _ = crabcc_core::upgrade::cleanup_index(root);
             }
             Ok(serde_json::to_string(&report)?)
         }
         other => Err(anyhow::anyhow!("unknown tool: {other}")),
+    };
+    // Index-lifecycle tools rebuild or remove the index artifacts; drop the
+    // cached Store so the next call re-opens against the new state (matches the
+    // prior open-per-call semantics for these tools).
+    if matches!(tool, "index" | "refresh" | "upgrade") {
+        *cache = None;
     }
+    result
 }
 
 /// Resolve a user-typed symbol name to a `symbols.id`. Mirrors the CLI

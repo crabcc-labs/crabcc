@@ -15,13 +15,17 @@
 # Returns 0 always; caller checks stdout for emptiness.
 enumerate_audit_repos() {
   local repos name denied ex
+  # Include primaryLanguage to filter Rust repos in jq instead of making a
+  # per-repo `gh api .../Cargo.toml` existence check (N+1 calls → 1 call).
   repos="$(gh repo list peterlodri-sec \
     --no-archived \
     --limit 200 \
-    --json name,defaultBranch 2>/dev/null \
+    --json name,defaultBranch,primaryLanguage 2>/dev/null \
     || echo '[]')"
 
-  while IFS= read -r name; do
+  while IFS= read -r item; do
+    name="$(jq -r '.name' <<<"$item")"
+    primary="$(jq -r '.primaryLanguage.name // empty' <<<"$item")"
     [[ -z "$name" ]] && continue
 
     # Denylist check.
@@ -31,10 +35,16 @@ enumerate_audit_repos() {
     done
     (( denied == 1 )) && continue
 
-    # Rust repo check: does Cargo.toml exist at root?
-    if gh api "/repos/peterlodri-sec/${name}/contents/Cargo.toml" >/dev/null 2>&1; then
+    if [[ "$primary" == "Rust" ]]; then
+      # Fast path: GitHub detected Rust as primary — no extra API call needed.
       printf '%s\n' "$name"
+    elif [[ -z "$primary" ]]; then
+      # Unknown primary language (new/tiny/polyglot repo) — fall back to the
+      # authoritative Cargo.toml existence check to avoid false negatives.
+      gh api "repos/peterlodri-sec/$name/contents/Cargo.toml" &>/dev/null \
+        && printf '%s\n' "$name"
     fi
-  done < <(jq -r '.[].name' <<<"$repos")
+    # Any other known primary language → not a Rust project, skip.
+  done < <(jq -c '.[]' <<<"$repos")
   return 0
 }

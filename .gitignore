@@ -1,6 +1,11 @@
 /target
 **/*.rs.bk
 .crabcc/
+
+# Nix: flake build symlinks + nix-direnv cache.
+/result
+/result-*
+.direnv/
 # DMG installer build outputs (scripts/build-dmg.sh)
 /dist/
 /build/
@@ -67,9 +72,13 @@ __pycache__/
 # go in `*.env.example` next to whatever consumes them.
 .env
 **/.env
-# Claude Code per-project agent state lands in `.claude/`. Local-only.
-.claude/
-**/.claude/
+# Claude Code per-project agent state in `.claude/` is local-only, EXCEPT the
+# committed project settings.json (shared plugin/marketplace config). List
+# contents (`*`) + negate the one tracked file; a bare `.claude/` would block
+# the negation. Personal overrides go in the still-ignored settings.local.json.
+.claude/*
+**/.claude/*
+!.claude/settings.json
 # Per-run setup logs from interactive scripts.
 *_setup.log
 # esbuild metafile is internal to the build (used for analysis, regenerated

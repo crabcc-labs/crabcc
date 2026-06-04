@@ -25,7 +25,7 @@ use encoding::{blob_to_vec, fts_match_string, now_secs, vec_to_blob};
 #[cfg(feature = "memory-vec")]
 use ensure::register_sqlite_vec_once;
 use ensure::{ensure_room, ensure_wing};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::Mutex;
@@ -82,7 +82,7 @@ impl SqliteBackend {
                 |_| Ok(true),
             )
             .optional()?
-            .unwrap_or(false);
+            .unwrap_or_default();
         if !has_enc {
             conn.execute(
                 "ALTER TABLE drawers ADD COLUMN body_enc INTEGER NOT NULL DEFAULT 0",
@@ -101,7 +101,7 @@ impl SqliteBackend {
                 |_| Ok(true),
             )
             .optional()?
-            .unwrap_or(false);
+            .unwrap_or_default();
         if !has_emb_model {
             conn.execute(
                 "ALTER TABLE drawer_embeddings ADD COLUMN embedding_model TEXT NOT NULL DEFAULT 'hash-m0'",
@@ -115,12 +115,29 @@ impl SqliteBackend {
                 |_| Ok(true),
             )
             .optional()?
-            .unwrap_or(false);
+            .unwrap_or_default();
         if !has_emb_at {
             conn.execute(
                 "ALTER TABLE drawer_embeddings ADD COLUMN embedded_at INTEGER NOT NULL DEFAULT 0",
                 [],
             )?;
+        }
+
+        // diff-on-re-read (#1a) — `session_reads.content` holds the last full
+        // body served to a (path, session_id) so a re-read of an edited file
+        // can return a unified diff instead of the whole file. Older dbs that
+        // predate the column ALTER it in (nullable; old rows get NULL = no
+        // baseline, which correctly degrades the next re-read to a full read).
+        let has_sr_content: bool = conn
+            .query_row(
+                "SELECT 1 FROM pragma_table_info('session_reads') WHERE name = 'content'",
+                [],
+                |_| Ok(true),
+            )
+            .optional()?
+            .unwrap_or_default();
+        if !has_sr_content {
+            conn.execute("ALTER TABLE session_reads ADD COLUMN content TEXT", [])?;
         }
 
         // FTS5 backfill — `drawers_fts` is a CREATE-IF-NOT-EXISTS virtual
@@ -131,10 +148,10 @@ impl SqliteBackend {
         // route through `body_from_row` (same decoder query() uses).
         let drawer_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM drawers", [], |r| r.get(0))
-            .unwrap_or(0);
+            .unwrap_or_default();
         let fts_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM drawers_fts", [], |r| r.get(0))
-            .unwrap_or(0);
+            .unwrap_or_default();
         if drawer_count > 0 && fts_count == 0 {
             // Open codec early just for the backfill — needs the same
             // decode path that `body_from_row` uses. We can't call
@@ -190,19 +207,130 @@ impl SqliteBackend {
 
         let _ = conn.execute_batch("PRAGMA optimize;");
 
-        // v2.5.1 (#17) — sqlite-vec virtual table for ANN search. Empty
-        // until #20 wires the search path. Dim is fixed at 384 to match
-        // MiniLM-L6-v2 (M1 default in #18). M0 hash embeddings continue to
-        // live in `drawer_embeddings.bytes`; only M1+ vectors will land in
-        // this table. `IF NOT EXISTS` makes re-open idempotent.
+        // Make conn mutable for the vec resync transaction below.
+        // Without memory-vec, all preceding calls take &self so mut is unused.
         #[cfg(feature = "memory-vec")]
-        conn.execute_batch(
-            "CREATE VIRTUAL TABLE IF NOT EXISTS drawers_vec USING vec0(
-                drawer_id INTEGER PRIMARY KEY,
-                embedding FLOAT[384]
-             );",
-        )
-        .context("create drawers_vec virtual table")?;
+        let mut conn = conn;
+
+        // v2.5.1 (#17) + #20 — sqlite-vec virtual table for ANN search.
+        // Dim is fixed at 384 (MiniLM-L6-v2 / HashEmbedder default).
+        // `drawers_vec_state` stores the last-synced generation counter.
+        // Triggers on drawer_embeddings (installed here; fire on ALL
+        // connections regardless of feature flags) increment 'generation'
+        // on every dim=384 INSERT or DELETE.  Generation-counter diffing
+        // correctly handles the rowid-reuse scenario (INTEGER PRIMARY KEY
+        // without AUTOINCREMENT) where count+sum stays identical while
+        // embedding bytes changed: the delete trigger ticks the counter up
+        // before the reused-id insert ticks it up again.
+        #[cfg(feature = "memory-vec")]
+        {
+            conn.execute_batch(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS drawers_vec USING vec0(
+                     drawer_id INTEGER PRIMARY KEY,
+                     embedding FLOAT[384]
+                 );
+                 CREATE TABLE IF NOT EXISTS drawers_vec_state (
+                     key   TEXT PRIMARY KEY,
+                     value TEXT NOT NULL
+                 );
+                 -- Generation counter: incremented on every dim=384 INSERT or
+                 -- DELETE in drawer_embeddings, regardless of which build wrote
+                 -- the row.  Triggers are database-level objects; once installed
+                 -- here they fire on all subsequent connections, including those
+                 -- compiled without the memory-vec feature.
+                 CREATE TRIGGER IF NOT EXISTS emb_gen_ins
+                 AFTER INSERT ON drawer_embeddings WHEN NEW.dim = 384
+                 BEGIN
+                     INSERT OR REPLACE INTO drawers_vec_state(key, value)
+                     VALUES ('generation', COALESCE(
+                         (SELECT CAST(value AS INTEGER) + 1
+                          FROM drawers_vec_state WHERE key = 'generation'), 1
+                     ));
+                 END;
+                 CREATE TRIGGER IF NOT EXISTS emb_gen_del
+                 AFTER DELETE ON drawer_embeddings WHEN OLD.dim = 384
+                 BEGIN
+                     INSERT OR REPLACE INTO drawers_vec_state(key, value)
+                     VALUES ('generation', COALESCE(
+                         (SELECT CAST(value AS INTEGER) + 1
+                          FROM drawers_vec_state WHERE key = 'generation'), 1
+                     ));
+                 END;",
+            )
+            .context("create drawers_vec virtual table")?;
+
+            let synced_raw: String = conn
+                .query_row(
+                    "SELECT value FROM drawers_vec_state WHERE key = 'backfilled'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or_default();
+            // Migrate from old "count:sum" format: any stored value containing
+            // ':' is from a pre-generation-counter build.  Treat it as -1 to
+            // force a resync on this first open with the new code.
+            let synced_gen: i64 = if synced_raw.contains(':') {
+                -1
+            } else {
+                synced_raw.parse().unwrap_or(-1)
+            };
+
+            let current_gen: i64 = conn
+                .query_row(
+                    "SELECT CAST(value AS INTEGER) FROM drawers_vec_state \
+                     WHERE key = 'generation'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+
+            if synced_gen != current_gen {
+                // Re-sync: DROP+CREATE the virtual table then re-insert all
+                // 384-dim embeddings.  Handles initial backfill and recovery
+                // when feature-off writes mutated drawer_embeddings without
+                // updating drawers_vec, including the rowid-reuse edge case
+                // where count+sum fingerprints collide.
+                let rows: Vec<(i64, Vec<u8>)> = {
+                    let mut stmt = conn
+                        .prepare("SELECT drawer_id, bytes FROM drawer_embeddings WHERE dim = 384")
+                        .context("prepare drawers_vec backfill")?;
+                    let collected = stmt
+                        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                        .context("collect drawers_vec backfill rows")?;
+                    collected
+                };
+                let tx = conn
+                    .transaction_with_behavior(TransactionBehavior::Immediate)
+                    .context("begin drawers_vec backfill transaction")?;
+                // Recreate the virtual table to clear ALL rows atomically.
+                // A per-id DELETE loop only removes ids that are still in
+                // drawer_embeddings; rows left by a non-vec delete (stale
+                // ids no longer in drawer_embeddings) remain and waste top-k
+                // slots in MATCH queries. vec0 doesn't support enumeration
+                // without MATCH, so DROP+CREATE is the only clean purge path.
+                tx.execute_batch(
+                    "DROP TABLE IF EXISTS drawers_vec;
+                     CREATE VIRTUAL TABLE drawers_vec USING vec0(
+                         drawer_id INTEGER PRIMARY KEY,
+                         embedding FLOAT[384]
+                     );",
+                )
+                .context("recreate drawers_vec for resync")?;
+                for (id, bytes) in &rows {
+                    tx.execute(
+                        "INSERT INTO drawers_vec(drawer_id, embedding) VALUES (?1, ?2)",
+                        params![id, bytes],
+                    )?;
+                }
+                tx.execute(
+                    "INSERT OR REPLACE INTO drawers_vec_state(key, value) \
+                     VALUES ('backfilled', ?1)",
+                    params![current_gen.to_string()],
+                )?;
+                tx.commit().context("commit drawers_vec backfill")?;
+            }
+        }
 
         // Codec discovery — sibling `fsst.symbols` next to the DB. Same shape
         // as the symbol-store's discovery so a single `.crabcc/fsst.symbols`
@@ -296,12 +424,120 @@ impl SqliteBackend {
         )?;
         Ok(())
     }
+
+    /// Brute-force cosine path: full table scan over `drawer_embeddings`,
+    /// compute cosine in Rust, return top-K. Used when `memory-vec` is
+    /// disabled or when the query embedding isn't 384-dim.
+    fn query_brute(&self, q: &Query) -> Result<QueryResult> {
+        let conn = self.conn.lock().map_err(|_| anyhow!("poisoned mutex"))?;
+        let mut sql = String::from(
+            "SELECT d.id, d.body, d.body_enc, d.source_id, w.name AS wing, r.name AS room, e.bytes
+             FROM drawers d
+             JOIN wings w ON w.id = d.wing_id
+             LEFT JOIN rooms r ON r.id = d.room_id
+             JOIN drawer_embeddings e ON e.drawer_id = d.id
+             WHERE 1=1",
+        );
+        let mut args: Vec<rusqlite::types::Value> = Vec::new();
+        if let Some(w) = &q.wing {
+            sql.push_str(" AND w.name = ?");
+            args.push(w.clone().into());
+        }
+        if let Some(r) = &q.room {
+            sql.push_str(" AND r.name = ?");
+            args.push(r.clone().into());
+        }
+        let mut stmt = conn.prepare(&sql)?;
+        let params_refs: Vec<&dyn rusqlite::ToSql> =
+            args.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+        let rows = stmt.query_map(params_refs.as_slice(), |row| {
+            let id: i64 = row.get(0)?;
+            let body = self.body_from_row(row, 1, 2)?;
+            let source: String = row.get(3)?;
+            let wing: String = row.get(4)?;
+            let room: Option<String> = row.get(5)?;
+            let bytes: Vec<u8> = row.get(6)?;
+            Ok((id, body, source, wing, room, bytes))
+        })?;
+
+        // `scored` capacity hint: `q.limit.max(64)` skips early Vec doublings
+        // in the common case without over-allocating on small queries.
+        let mut scored: Vec<(f32, DrawerHit)> = Vec::with_capacity(q.limit.max(64));
+        for row in rows {
+            let (id, body, source, wing, room, bytes) = row?;
+            let emb = blob_to_vec(&bytes);
+            let score = cosine(&q.embedding, &emb);
+            scored.push((
+                score,
+                DrawerHit {
+                    id,
+                    score,
+                    source_id: source,
+                    body,
+                    wing,
+                    room,
+                },
+            ));
+        }
+        scored.sort_unstable_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(q.limit);
+        Ok(QueryResult {
+            hits: scored.into_iter().map(|(_, h)| h).collect(),
+        })
+    }
+
+    /// sqlite-vec ANN path for unfiltered 384-dim queries. Only reached when
+    /// `q.wing.is_none() && q.room.is_none()` — see `query()` dispatch.
+    ///
+    /// Distance metric: L2 (Euclidean). For unit-norm vectors
+    /// (MiniLM-L6-v2, HashEmbedder), `cosine ≈ 1 − d²/2`.
+    #[cfg(feature = "memory-vec")]
+    fn query_vec(&self, q: &Query) -> Result<QueryResult> {
+        let conn = self.conn.lock().map_err(|_| anyhow!("poisoned mutex"))?;
+        let emb_blob = vec_to_blob(&q.embedding);
+        let limit = q.limit as i64;
+        let mut stmt = conn.prepare(
+            "SELECT v.drawer_id, d.body, d.body_enc, d.source_id, \
+                    w.name AS wing, r.name AS room, v.distance \
+             FROM drawers_vec v \
+             JOIN drawers d ON d.id = v.drawer_id \
+             JOIN wings w ON w.id = d.wing_id \
+             LEFT JOIN rooms r ON r.id = d.room_id \
+             WHERE v.embedding MATCH ?1 AND v.k = ?2 \
+             ORDER BY v.distance LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![emb_blob, limit, limit], |row| {
+            let id: i64 = row.get(0)?;
+            let body = self.body_from_row(row, 1, 2)?;
+            let source: String = row.get(3)?;
+            let wing: String = row.get(4)?;
+            let room: Option<String> = row.get(5)?;
+            let distance: f32 = row.get(6)?;
+            Ok((id, body, source, wing, room, distance))
+        })?;
+
+        let mut hits = Vec::with_capacity(q.limit);
+        for row in rows {
+            let (id, body, source, wing, room, distance) = row?;
+            // L2 → cosine-equivalent score for unit-norm vectors.
+            let score = (1.0_f32 - (distance * distance) / 2.0).max(0.0);
+            hits.push(DrawerHit {
+                id,
+                score,
+                source_id: source,
+                body,
+                wing,
+                room,
+            });
+        }
+        Ok(QueryResult { hits })
+    }
 }
 
 impl Backend for SqliteBackend {
     fn add(&self, drawers: &[DrawerInsert]) -> Result<Vec<DrawerId>> {
         let mut conn = self.conn.lock().map_err(|_| anyhow!("poisoned mutex"))?;
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut ids = Vec::with_capacity(drawers.len());
         let now = now_secs();
         for d in drawers {
@@ -363,6 +599,14 @@ impl Backend for SqliteBackend {
                 "INSERT INTO drawer_embeddings(drawer_id, dim, bytes) VALUES (?1, ?2, ?3)",
                 params![id, d.embedding.len() as i64, vec_to_blob(&d.embedding)],
             )?;
+            // Mirror 384-dim embeddings into the sqlite-vec ANN index.
+            #[cfg(feature = "memory-vec")]
+            if d.embedding.len() == 384 {
+                tx.execute(
+                    "INSERT INTO drawers_vec(drawer_id, embedding) VALUES (?1, ?2)",
+                    params![id, vec_to_blob(&d.embedding)],
+                )?;
+            }
             // FTS5 index uses the drawer's id as rowid so KNN ids and BM25
             // ids share the same namespace — RRF fusion in Palace blends
             // by drawer id directly. Plaintext body is indexed regardless
@@ -373,74 +617,44 @@ impl Backend for SqliteBackend {
             )?;
             ids.push(id);
         }
+        // Advance the backfilled generation pointer so next open() skips a
+        // full DROP+CREATE resync for insertions made just above.  The INSERT
+        // triggers on drawer_embeddings already updated 'generation'; reading
+        // it here gives the post-insert value.  If all drawers were deduped
+        // (no new embeddings), generation is unchanged and this is a no-op.
+        #[cfg(feature = "memory-vec")]
+        {
+            let new_gen: i64 = tx
+                .query_row(
+                    "SELECT CAST(value AS INTEGER) FROM drawers_vec_state \
+                     WHERE key = 'generation'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            tx.execute(
+                "INSERT OR REPLACE INTO drawers_vec_state(key, value) \
+                 VALUES ('backfilled', ?1)",
+                params![new_gen.to_string()],
+            )?;
+        }
         tx.commit()?;
         Ok(ids)
     }
 
     fn query(&self, q: &Query) -> Result<QueryResult> {
-        let conn = self.conn.lock().map_err(|_| anyhow!("poisoned mutex"))?;
-        // Brute force: scan all drawers (filtered by wing/room) + embedding,
-        // compute cosine in Rust, top-K by score. Replaced by sqlite-vec MATCH
-        // in M0.5.
-        let mut sql = String::from(
-            "SELECT d.id, d.body, d.body_enc, d.source_id, w.name AS wing, r.name AS room, e.bytes
-             FROM drawers d
-             JOIN wings w ON w.id = d.wing_id
-             LEFT JOIN rooms r ON r.id = d.room_id
-             JOIN drawer_embeddings e ON e.drawer_id = d.id
-             WHERE 1=1",
-        );
-        let mut args: Vec<rusqlite::types::Value> = Vec::new();
-        if let Some(w) = &q.wing {
-            sql.push_str(" AND w.name = ?");
-            args.push(w.clone().into());
+        // ANN path only for unfiltered 384-dim queries within sqlite-vec's
+        // k limit.  Filtered queries (wing/room) use brute-force: SQL
+        // applies the predicate before ranking, so the result set is correct
+        // regardless of total DB size.  Oversized limits (> 4096) also use
+        // brute-force: vec0 rejects k > 4096 with an error.  Note that
+        // Palace::search_hybrid passes limit * 2 as the candidate pool, so
+        // the effective fallback boundary for hybrid callers is limit > 2048.
+        #[cfg(feature = "memory-vec")]
+        if q.embedding.len() == 384 && q.wing.is_none() && q.room.is_none() && q.limit <= 4096 {
+            return self.query_vec(q);
         }
-        if let Some(r) = &q.room {
-            sql.push_str(" AND r.name = ?");
-            args.push(r.clone().into());
-        }
-        let mut stmt = conn.prepare(&sql)?;
-        let params_refs: Vec<&dyn rusqlite::ToSql> =
-            args.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-        let rows = stmt.query_map(params_refs.as_slice(), |row| {
-            let id: i64 = row.get(0)?;
-            let body = self.body_from_row(row, 1, 2)?;
-            let source: String = row.get(3)?;
-            let wing: String = row.get(4)?;
-            let room: Option<String> = row.get(5)?;
-            let bytes: Vec<u8> = row.get(6)?;
-            Ok((id, body, source, wing, room, bytes))
-        })?;
-
-        // `scored` accumulates one entry per matching drawer row before
-        // sorting + truncating to `q.limit`. The eventual ceiling is the
-        // total drawer count (unknown here without an extra COUNT), so
-        // the capacity hint is a heuristic: `q.limit.max(64)` skips the
-        // early 0 → 4 → 8 → 16 → 32 → 64 doubling chain in the common
-        // case. Larger result sets still pay re-allocs, but those are
-        // amortised under the cosine compute on each row.
-        let mut scored: Vec<(f32, DrawerHit)> = Vec::with_capacity(q.limit.max(64));
-        for row in rows {
-            let (id, body, source, wing, room, bytes) = row?;
-            let emb = blob_to_vec(&bytes);
-            let score = cosine(&q.embedding, &emb);
-            scored.push((
-                score,
-                DrawerHit {
-                    id,
-                    score,
-                    source_id: source,
-                    body,
-                    wing,
-                    room,
-                },
-            ));
-        }
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        scored.truncate(q.limit);
-        Ok(QueryResult {
-            hits: scored.into_iter().map(|(_, h)| h).collect(),
-        })
+        self.query_brute(q)
     }
 
     fn get(&self, ids: &[DrawerId]) -> Result<GetResult> {
@@ -458,7 +672,7 @@ impl Backend for SqliteBackend {
             placeholders
         );
         let mut stmt = conn.prepare(&sql)?;
-        let id_vals: Vec<rusqlite::types::Value> = ids.iter().map(|i| (*i).into()).collect();
+        let id_vals: Vec<rusqlite::types::Value> = ids.iter().copied().map(Into::into).collect();
         let id_refs: Vec<&dyn rusqlite::ToSql> =
             id_vals.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
         let rows = stmt.query_map(id_refs.as_slice(), |row| {
@@ -484,7 +698,7 @@ impl Backend for SqliteBackend {
         // delete from drawers (which cascades drawer_embeddings), then
         // emit one FTS delete per id under the same transaction so the
         // pair is atomic.
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let ids: Vec<DrawerId> = match sel {
             DeleteSel::All => {
                 let mut stmt = tx.prepare("SELECT id FROM drawers")?;
@@ -498,7 +712,7 @@ impl Backend for SqliteBackend {
                     let placeholders = vec!["?"; want.len()].join(",");
                     let sql = format!("SELECT id FROM drawers WHERE id IN ({})", placeholders);
                     let id_vals: Vec<rusqlite::types::Value> =
-                        want.iter().map(|i| (*i).into()).collect();
+                        want.iter().copied().map(Into::into).collect();
                     let id_refs: Vec<&dyn rusqlite::ToSql> =
                         id_vals.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
                     let mut stmt = tx.prepare(&sql)?;
@@ -530,7 +744,7 @@ impl Backend for SqliteBackend {
                     let placeholders = vec!["?"; want.len()].join(",");
                     let sql = format!("DELETE FROM drawers WHERE id IN ({})", placeholders);
                     let id_vals: Vec<rusqlite::types::Value> =
-                        want.iter().map(|i| (*i).into()).collect();
+                        want.iter().copied().map(Into::into).collect();
                     let id_refs: Vec<&dyn rusqlite::ToSql> =
                         id_vals.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
                     tx.execute(&sql, id_refs.as_slice())?
@@ -547,10 +761,33 @@ impl Backend for SqliteBackend {
             )?,
         };
         // FTS5 contentless delete idiom: INSERT a 'delete' command row.
+        // sqlite-vec vec0 uses a standard DELETE (FK cascade doesn't apply to vtables).
         for id in &ids {
             tx.execute(
                 "INSERT INTO drawers_fts(drawers_fts, rowid, body) VALUES('delete', ?1, '')",
                 params![id],
+            )?;
+            #[cfg(feature = "memory-vec")]
+            tx.execute("DELETE FROM drawers_vec WHERE drawer_id = ?1", params![id])?;
+        }
+        // Advance the backfilled generation pointer so next open() skips a
+        // full resync.  The CASCADE-triggered DELETE on drawer_embeddings
+        // already incremented 'generation'; reading it here gives the
+        // post-delete value.
+        #[cfg(feature = "memory-vec")]
+        {
+            let new_gen: i64 = tx
+                .query_row(
+                    "SELECT CAST(value AS INTEGER) FROM drawers_vec_state \
+                     WHERE key = 'generation'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            tx.execute(
+                "INSERT OR REPLACE INTO drawers_vec_state(key, value) \
+                 VALUES ('backfilled', ?1)",
+                params![new_gen.to_string()],
             )?;
         }
         tx.commit()?;
@@ -620,6 +857,15 @@ impl Backend for SqliteBackend {
         // is preserved (sqlite restores pragmas across the rewrite).
         let conn = self.conn.lock().map_err(|_| anyhow!("poisoned mutex"))?;
         conn.execute("VACUUM", [])?;
+        Ok(())
+    }
+
+    fn vacuum_into(&self, dest: &Path) -> Result<()> {
+        let dest_str = dest
+            .to_str()
+            .ok_or_else(|| anyhow!("vacuum_into: dest path is not valid UTF-8"))?;
+        let conn = self.conn.lock().map_err(|_| anyhow!("poisoned mutex"))?;
+        conn.execute("VACUUM INTO ?1", rusqlite::params![dest_str])?;
         Ok(())
     }
 
@@ -1095,6 +1341,98 @@ mod tests {
             let _ = SqliteBackend::open(&path).unwrap();
             let _ = SqliteBackend::open(&path).unwrap();
         }
+
+        #[test]
+        fn query_vec_falls_back_to_brute_for_oversized_limit() {
+            // sqlite-vec rejects k > 4096.  query() must route oversized
+            // limit requests to query_brute so they don't error.
+            let dir = tempdir().unwrap();
+            let b = SqliteBackend::open(&dir.path().join("memory.db")).unwrap();
+            let e = HashEmbedder::new();
+            b.add(&[ins(&e, "1", "alpha", "w")]).unwrap();
+
+            // limit = 4097 must not return an error (brute-force fallback).
+            let q = Query {
+                embedding: e.embed_one("alpha").unwrap(),
+                limit: 4097,
+                wing: None,
+                room: None,
+            };
+            let r = b.query(&q).unwrap();
+            assert_eq!(
+                r.hits.len(),
+                1,
+                "oversized-limit query should still return results"
+            );
+        }
+
+        #[test]
+        fn drawers_vec_resyncs_after_rowid_reuse() {
+            // Regression: INTEGER PRIMARY KEY without AUTOINCREMENT lets SQLite
+            // reuse the same rowid after a delete+insert.  A count+sum
+            // fingerprint stays identical while embedding bytes change, so the
+            // old resync gate would silently serve a stale ANN index.
+            // The generation-counter triggers must detect the change and force
+            // a full DROP+CREATE resync on the next open.
+            use crate::backend::Backend;
+            use encoding::vec_to_blob;
+
+            let dir = tempdir().unwrap();
+            let path = dir.path().join("memory.db");
+            let e = HashEmbedder::new();
+
+            // Step 1: insert one drawer via the vec-enabled backend.
+            let drawer_id = {
+                let b = SqliteBackend::open(&path).unwrap();
+                b.add(&[ins(&e, "src1", "fox jumps over fence", "w")])
+                    .unwrap()[0]
+            };
+            // After add(), backfilled == generation == 1.
+
+            // Step 2: use a plain connection to simulate a --no-default-features
+            // build doing delete+reinsert with the SAME drawer_id (rowid reuse)
+            // but different embedding bytes.
+            {
+                let conn = Connection::open(&path).unwrap();
+                // Disable FKs so we can touch drawer_embeddings directly.
+                conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
+                conn.execute(
+                    "DELETE FROM drawer_embeddings WHERE drawer_id = ?1",
+                    params![drawer_id],
+                )
+                .unwrap();
+                // SQLite reuses the rowid (no AUTOINCREMENT); insert replacement.
+                let replacement_emb = e.embed_one("cat sleeps on mat").unwrap();
+                conn.execute(
+                    "INSERT INTO drawer_embeddings(drawer_id, dim, bytes) \
+                     VALUES (?1, 384, ?2)",
+                    params![drawer_id, vec_to_blob(&replacement_emb)],
+                )
+                .unwrap();
+                // Triggers are database-level: emb_gen_del fires on DELETE and
+                // emb_gen_ins fires on INSERT, so generation is now 3 (was 1
+                // after the vec open's add(); +1 del +1 ins = 3).
+            }
+
+            // Step 3: reopen with the vec-enabled backend — must resync.
+            // (synced_gen=1, current_gen=3 → mismatch → DROP+CREATE+backfill)
+            let b = SqliteBackend::open(&path).unwrap();
+
+            // Step 4: querying with the REPLACEMENT embedding must hit.
+            let q = Query {
+                embedding: e.embed_one("cat sleeps on mat").unwrap(),
+                limit: 5,
+                wing: None,
+                room: None,
+            };
+            let r = b.query(&q).unwrap();
+            assert_eq!(r.hits.len(), 1, "ANN should return the resynced row");
+            assert!(
+                r.hits[0].score > 0.9,
+                "top hit should match replacement embedding after resync; got {}",
+                r.hits[0].score
+            );
+        }
     }
 
     #[cfg(feature = "compress")]
@@ -1249,7 +1587,7 @@ mod tests {
                     )
                     .optional()
                     .unwrap()
-                    .unwrap_or(false);
+                    .unwrap_or_default();
                 assert!(!has_enc, "test fixture should lack body_enc to begin with");
             }
             // Open via SqliteBackend — schema apply is idempotent (CREATE
@@ -1264,7 +1602,7 @@ mod tests {
                 )
                 .optional()
                 .unwrap()
-                .unwrap_or(false);
+                .unwrap_or_default();
             assert!(has_enc, "Store::open must add body_enc to pre-existing DBs");
         }
     }

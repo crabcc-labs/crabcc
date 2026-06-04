@@ -13,7 +13,7 @@
 //! resolver hasn't been implemented yet and by tests that want sentinel
 //! behaviour deterministically.
 
-use std::collections::HashMap;
+use ahash::HashMap;
 
 /// Newtype around a `symbols.id` (i64). Hands-off — the resolver receives
 /// these from pass 1 and hands them back to pass 2 unchanged.
@@ -103,7 +103,7 @@ mod tests {
     use super::*;
 
     fn empty_scope() -> (HashMap<String, SymbolId>, Vec<ImportSpec>) {
-        (HashMap::new(), Vec::new())
+        (HashMap::default(), Vec::new())
     }
 
     #[test]
@@ -120,7 +120,7 @@ mod tests {
 
     #[test]
     fn name_only_resolver_returns_none_for_calls() {
-        let mut defs = HashMap::new();
+        let mut defs = HashMap::default();
         defs.insert("foo".to_string(), SymbolId(42));
         let imports = vec![ImportSpec {
             local: "Bar".into(),

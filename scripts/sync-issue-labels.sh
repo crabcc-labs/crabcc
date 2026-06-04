@@ -22,7 +22,10 @@ is_dry() { [[ "$DRY" == "--dry-run" ]]; }
 
 ensure_label() {
   local name="$1" color="$2" desc="$3"
-  if gh label list --repo "$REPO" --limit 200 --json name --jq '.[].name' | grep -Fxq "$name"; then
+  # --search filters server-side; pipe names and exact-match to avoid false
+  # positives when a label like "testing" matches a search for "test".
+  if gh label list --repo "$REPO" --search "$name" --limit 10 --json name \
+       --jq '.[].name' 2>/dev/null | grep -Fxq "$name"; then
     echo "  label $name already exists, skip"
     return 0
   fi

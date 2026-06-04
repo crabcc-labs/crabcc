@@ -248,7 +248,7 @@ fn in_repo_dotcrabcc_wins_when_present() {
     );
     // crabcc_home/repos/* must remain empty (or absent).
     let repos = home.path().join("repos");
-    let pollution = repos.read_dir().map(|it| it.count()).unwrap_or(0);
+    let pollution = repos.read_dir().map(|it| it.count()).unwrap_or_default();
     assert_eq!(
         pollution,
         0,

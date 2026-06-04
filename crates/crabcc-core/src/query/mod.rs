@@ -2,10 +2,10 @@ use crate::pattern;
 use crate::refs;
 use crate::store::{EdgeHit, Store};
 use crate::types::{Hit, Symbol, SymbolKind};
-use ahash::AHashMap;
+use ahash::{AHashMap, HashSet};
 use anyhow::Result;
 use serde::Serialize;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 pub mod blast_radius;
@@ -328,7 +328,7 @@ fn edge_hits_to_output(
             count: edge_hits.len(),
         }),
         Mode::FilesOnly { limit } => {
-            let mut seen: HashSet<&str> = HashSet::new();
+            let mut seen: HashSet<&str> = HashSet::default();
             let mut files: Vec<String> = Vec::new();
             for h in &edge_hits {
                 if seen.insert(h.file.as_str()) {
@@ -492,7 +492,7 @@ where
     let needle = name.as_bytes();
     let mut hits: Vec<Hit> = Vec::new();
     let mut files: Vec<String> = Vec::new();
-    let mut seen_files: HashSet<String> = HashSet::new();
+    let mut seen_files: HashSet<String> = HashSet::default();
     let mut summary_hits: Vec<(String, u32)> = Vec::new();
     let mut count: usize = 0;
 
@@ -814,7 +814,7 @@ mod tests {
 
         // Empty filter set drops everything — used by `--since` when no
         // files have changed in the window.
-        let empty: HashSet<String> = HashSet::new();
+        let empty: HashSet<String> = HashSet::default();
         let syms = find_symbol_in_files(&store, "greet", &empty).unwrap();
         assert!(syms.is_empty());
     }
@@ -850,7 +850,7 @@ mod tests {
         // none of the indexed files have changed. Both code paths
         // (edges + walker) must return zero hits without erroring.
         let (dir, store) = fixture_repo();
-        let empty: HashSet<String> = HashSet::new();
+        let empty: HashSet<String> = HashSet::default();
         let out = query_callers(&store, dir.path(), "greet", Mode::Count, Some(&empty)).unwrap();
         match out {
             Output::Count { count } => assert_eq!(count, 0),
@@ -935,7 +935,7 @@ mod tests {
                 // greet has callers in both a.ts and b.ts.
                 assert!(files.contains(&"a.ts".to_string()) || files.contains(&"b.ts".to_string()));
                 // No duplicates per file.
-                let mut seen = std::collections::HashSet::new();
+                let mut seen: HashSet<String> = HashSet::default();
                 for f in &files {
                     assert!(seen.insert(f.clone()), "duplicate file: {f}");
                 }

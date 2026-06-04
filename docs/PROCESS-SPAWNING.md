@@ -5,8 +5,8 @@ Reference audit: [Kobzol, "Process spawning performance in Rust" (2024)](https:/
 This document captures *deliberate* deviations from the article's
 recommendations, plus low-priority polish that's been deferred. The
 audit was done in May 2026 against the agent-runner code in
-`crabcc-cli`, `crabcc-viz`, and `apps/crabcc-agents`. Scorecard at the
-time was 5 ✅ / 2 ⚠️ / 2 ❌.
+`crabcc-cli` and `crabcc-viz`. Scorecard at the
+time was 4 ✅ / 2 ⚠️ / 2 ❌.
 
 ## TL;DR
 
@@ -38,9 +38,9 @@ to copy the full parent env into the child's address space.
 - Inherited `TERM`/`COLORTERM`/`SHELL` keeps the agent's own coloured
   output / prompt rendering aligned with the user's terminal, which
   the user has already configured.
-- The future `SandboxRuntime` (issue #62) will use `env_clear()` —
-  sandboxing is the right place for that level of control. Non-sandbox
-  is the "you trust your shell" path.
+- A future sandboxed runtime would use `env_clear()` — sandboxing is the
+  right place for that level of control. The subprocess path is "you
+  trust your shell".
 
 **When to revisit:** if we ever spawn agents in tight loops (e.g. a
 parallel-evaluation sweep, or a CI matrix that fans out across
@@ -96,9 +96,6 @@ unsafe { libc::killpg(child.id() as i32, libc::SIGTERM) };
   parent's cwd.
 - ✅ `Stdio::piped()` + tee threads instead of blocking writes — log
   growth doesn't backpressure the agent.
-- ✅ `apps/crabcc-agents` uses async `bollard` for Docker, not shell
-  spawning. Container init has `--init`/`--read-only`/`cap-drop=ALL`
-  and hard ulimits.
 - ✅ Selective auth-var forwarding rather than blind blacklisting.
 - ✅ Rust's stdlib auto-CLOEXEC-marks inherited FDs before exec, so
   we don't leak file descriptors into the child.

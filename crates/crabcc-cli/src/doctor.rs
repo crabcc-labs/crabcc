@@ -21,7 +21,6 @@
 //!   (the operational variants overlap with ` crabcc ollama-stack`)
 //! - ` doctor agent` — needs a structured dry-run from agent.rs
 //! - ` doctor extension` / ` doctor menubar` — wait on #107 Parts A/B
-//! - ` doctor jobs` — waits on #109 BullMQ wire-protocol encoder
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -86,13 +85,7 @@ impl DoctorReport {
 // ---------------------------------------------------------------------
 
 pub fn run_all(text: bool) -> Result<()> {
-    let checks = vec![
-        check_docker(),
-        check_stack(),
-        check_keys(),
-        check_agent(),
-        check_jobs(),
-    ];
+    let checks = vec![check_docker(), check_stack(), check_keys(), check_agent()];
     let report = DoctorReport::from_checks(checks);
     if text {
         print_text_report(&report);
@@ -119,10 +112,6 @@ pub fn run_keys(text: bool) -> Result<()> {
 
 pub fn run_agent(text: bool) -> Result<()> {
     emit_one(check_agent(), text)
-}
-
-pub fn run_jobs(text: bool) -> Result<()> {
-    emit_one(check_jobs(), text)
 }
 
 fn emit_one(check: CheckResult, text: bool) -> Result<()> {
@@ -370,86 +359,6 @@ fn check_agent() -> CheckResult {
     }
 }
 
-/// Probe Redis reachability for the BullMQ-backed jobs surface (issue
-/// #109). Shells out to `redis-cli ping` against `$REDIS_URL` (default
-/// `redis://127.0.0.1:6379`) — no Rust redis dep needed for this
-/// diagnostic check, keeps the binary lean.
-fn check_jobs() -> CheckResult {
-    let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".into());
-
-    if !cmd_available("redis-cli") {
-        return CheckResult {
-            check: "jobs".into(),
-            status: CheckStatus::Warn,
-            details: serde_json::json!({
-                "redis_url": redis_url,
-                "redis_cli_on_path": false,
-            }),
-            hint: Some(
-                "redis-cli missing — install via `brew install redis` (macOS) or \
-                 `apt install redis-tools` (Debian/Ubuntu). Without it the doctor \
-                 can't probe the jobs queue. Stack itself runs fine without."
-                    .into(),
-            ),
-        };
-    }
-
-    let out = std::process::Command::new("redis-cli")
-        .arg("-u")
-        .arg(&redis_url)
-        .arg("ping")
-        .output();
-
-    match out {
-        Ok(o) if o.status.success() => {
-            let body = String::from_utf8_lossy(&o.stdout);
-            let pong = body.trim() == "PONG";
-            CheckResult {
-                check: "jobs".into(),
-                status: if pong {
-                    CheckStatus::Ok
-                } else {
-                    CheckStatus::Warn
-                },
-                details: serde_json::json!({
-                    "redis_url": redis_url,
-                    "redis_cli_on_path": true,
-                    "ping_response": body.trim(),
-                }),
-                hint: if pong {
-                    None
-                } else {
-                    Some(format!("unexpected redis ping response: {}", body.trim()))
-                },
-            }
-        }
-        Ok(o) => CheckResult {
-            check: "jobs".into(),
-            status: CheckStatus::Warn,
-            details: serde_json::json!({
-                "redis_url": redis_url,
-                "redis_cli_on_path": true,
-                "exit_code": o.status.code(),
-                "stderr": String::from_utf8_lossy(&o.stderr).to_string(),
-            }),
-            hint: Some(
-                "redis not reachable — bring it up: \
-                 `docker compose -f install/dev/docker-compose.yml --profile jobs up -d`"
-                    .into(),
-            ),
-        },
-        Err(e) => CheckResult {
-            check: "jobs".into(),
-            status: CheckStatus::Fail,
-            details: serde_json::json!({
-                "redis_url": redis_url,
-                "spawn_error": e.to_string(),
-            }),
-            hint: None,
-        },
-    }
-}
-
 // ---------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------
@@ -464,7 +373,7 @@ fn cmd_available(name: &str) -> bool {
         .stderr(std::process::Stdio::null())
         .status()
         .map(|s| s.success())
-        .unwrap_or(false)
+        .unwrap_or_default()
 }
 
 fn inspect_key_file(path: &std::path::Path, _expected_mode: u32) -> serde_json::Value {
@@ -697,18 +606,5 @@ mod tests {
         if let Some(key) = prev_key {
             std::env::set_var("OLLAMA_API_KEY", key);
         }
-    }
-
-    #[test]
-    fn check_jobs_returns_warn_when_redis_cli_missing() {
-        // We can't *un*-install redis-cli for the test, so we can only
-        // assert the surface contract: `check` field, `redis_url` echoed.
-        let r = check_jobs();
-        assert_eq!(r.check, "jobs");
-        assert!(r
-            .details
-            .get("redis_url")
-            .and_then(|v| v.as_str())
-            .is_some());
     }
 }

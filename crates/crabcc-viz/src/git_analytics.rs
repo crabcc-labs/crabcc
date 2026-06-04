@@ -109,7 +109,7 @@ fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .unwrap_or_default()
 }
 
 // ── Core computation ───────────────────────────────────────────────────────
@@ -172,14 +172,14 @@ fn compute_hotspots(root: &Path, limit: usize) -> Result<(Vec<HotspotFile>, u32,
         if let Some(rest) = line.strip_prefix('|') {
             // Header line: |sha|email|date
             let parts: Vec<&str> = rest.splitn(3, '|').collect();
-            current_author = parts.get(1).copied().unwrap_or("").to_string();
+            current_author = parts.get(1).copied().unwrap_or_default().to_string();
             current_date = parts
                 .get(2)
                 .copied()
-                .unwrap_or("")
+                .unwrap_or_default()
                 .split(' ')
                 .next()
-                .unwrap_or("")
+                .unwrap_or_default()
                 .to_string();
             total_commits += 1;
         } else if !line.starts_with(' ') {
@@ -242,7 +242,7 @@ fn compute_dead_code(root: &Path, limit: usize) -> Result<Vec<DeadSymbol>> {
             [],
             |r| r.get::<_, i64>(0),
         )
-        .unwrap_or(0)
+        .unwrap_or_default()
         > 0;
 
     if table_exists {
@@ -267,7 +267,7 @@ fn compute_dead_code(root: &Path, limit: usize) -> Result<Vec<DeadSymbol>> {
                     name: r.get(0)?,
                     kind: r.get(1)?,
                     file: r.get(2)?,
-                    line: r.get::<_, Option<i64>>(3)?.unwrap_or(0) as u32,
+                    line: r.get::<_, Option<i64>>(3)?.unwrap_or_default() as u32,
                 })
             })?
             .filter_map(|r| r.ok())
@@ -317,7 +317,7 @@ fn compute_dead_code(root: &Path, limit: usize) -> Result<Vec<DeadSymbol>> {
                 name,
                 kind,
                 file,
-                line: line.unwrap_or(0) as u32,
+                line: line.unwrap_or_default() as u32,
             });
         }
     }

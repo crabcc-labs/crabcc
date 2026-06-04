@@ -57,8 +57,11 @@ pub fn ensure_initialized(root: &Path) -> Result<InitOutcome> {
         out.symbols = stats.symbols;
     } else {
         let _ = crabcc_core::index::refresh(root, &store)?;
-        out.files = store.list_files().map(|v| v.len()).unwrap_or(0);
-        out.symbols = store.iter_all_symbols().map(|v| v.len()).unwrap_or(0);
+        out.files = store.list_files().map(|v| v.len()).unwrap_or_default();
+        out.symbols = store
+            .iter_all_symbols()
+            .map(|v| v.len())
+            .unwrap_or_default();
     }
 
     // Graph sidecar — rebuild on cold init, leave the cached version
@@ -79,7 +82,7 @@ pub fn ensure_initialized(root: &Path) -> Result<InitOutcome> {
     let memory_path = crabcc_dir.join("memory.db");
     out.created_memory = !memory_path.exists();
     if let Ok(palace) = crabcc_memory::palace::Palace::open(root) {
-        out.drawers = palace.count().unwrap_or(0);
+        out.drawers = palace.count().unwrap_or_default();
     }
 
     // Service-discovery sidecar (issue #143). Best-effort — readonly fs

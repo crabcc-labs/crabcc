@@ -145,7 +145,7 @@ impl Render for ToastStrip {
         // `push_toast` to trigger a GC). The deque-side GC is the
         // primary path; this just guarantees no expired toast is
         // visible past its second.
-        let now = state.last_event_ts.unwrap_or(0);
+        let now = state.last_event_ts.unwrap_or_default();
         let any_visible = state.toasts.iter().any(|t| t.is_active(now));
         let history_len = state.toast_history.len();
         if !any_visible && history_len == 0 {

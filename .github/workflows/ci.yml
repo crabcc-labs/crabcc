@@ -52,7 +52,12 @@ env:
 jobs:
   fmt:
     name: fmt
-    runs-on: [self-hosted, linux, hetzner]
+    # Requires the 'gh-runner' label on runner-01 and runner-01b (Ubuntu).
+    # bench-node (NixOS, full disk) does not carry this label and must never
+    # pick up build jobs.  Jobs queue here until an eligible runner is ready.
+    # One-time setup: GitHub Settings → Actions → Runners → add 'gh-runner'
+    # label to runner-01 and runner-01b.
+    runs-on: [self-hosted, linux, hetzner, gh-runner]
     env:
       RUSTC_WRAPPER: ""  # override global; cargo fmt never invokes rustc
     steps:
@@ -70,7 +75,7 @@ jobs:
 
   lint:
     name: lint (clippy)
-    runs-on: [self-hosted, linux, hetzner]
+    runs-on: [self-hosted, linux, hetzner, gh-runner]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -87,9 +92,13 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.10
 
       # mold linker — Apache-2.0, ~3-5x faster link than lld on big
-      # debug + ci profile builds. Apt install is sub-second.
+      # debug + ci profile builds. Apt install is sub-second. The
+      # `command -v mold ||` guard makes this runner-agnostic: on a
+      # self-hosted runner that already provides mold (e.g. the NixOS
+      # bench-node), the apt-get is skipped instead of erroring on a
+      # box with no apt.
       - name: install mold linker
-        run: sudo apt-get install -y --no-install-recommends mold
+        run: command -v mold >/dev/null 2>&1 || sudo apt-get install -y --no-install-recommends mold
 
       # rust-cache caches `~/.cargo` (registry index + cache + git
       # deps) AND `target/` keyed off Cargo.lock + rustc + env-var
@@ -180,7 +189,7 @@ jobs:
 
   test:
     name: test (ubuntu, scoped)
-    runs-on: [self-hosted, linux, hetzner]
+    runs-on: [self-hosted, linux, hetzner, gh-runner]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -195,7 +204,7 @@ jobs:
       - uses: mozilla-actions/sccache-action@v0.0.10
 
       - name: install mold linker
-        run: sudo apt-get install -y --no-install-recommends mold
+        run: command -v mold >/dev/null 2>&1 || sudo apt-get install -y --no-install-recommends mold
 
       # See lint-job comment above for why this is the only cache
       # layer needed at the dependency-blob level. The `ci-ubuntu`
@@ -210,9 +219,14 @@ jobs:
           cache-all-crates: "true"
 
       - name: install cargo-nextest (JUnit reporter)
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-nextest
+        run: |
+          # Use the cached binary if present; compile from source otherwise.
+          # taiki-e/install-action@v2 was consistently failing on this runner
+          # (exit 1 in <100ms before any output) — cargo install is slower but
+          # always works from the registry without hitting GitHub Releases.
+          if ! cargo nextest --version &>/dev/null 2>&1; then
+            cargo install cargo-nextest --locked
+          fi
 
       # Scope policy:
       #   - push to main → full workspace (covers any cross-crate fallout)

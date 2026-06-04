@@ -1,8 +1,9 @@
 name: index-publish
 
 on:
+  # Manual + release-tag only. Dropped the push-to-main trigger so the slow
+  # fat-LTO release build no longer rebuilds on every merge (runner-load cut).
   push:
-    branches: [main]
     tags: ['v*']
   workflow_dispatch:
     inputs:

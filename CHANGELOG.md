@@ -6,7 +6,32 @@ All notable changes to crabcc are documented here. Format follows
 
 ## [Unreleased]
 
+## [6.1.0] — 2026-06-04
+
 ### Added
+
+- **Agent token-optimization commands.** `crabcc edit FILE#SYMBOL` (AST-targeted
+  symbol rewrite — `--replace` verbatim splice or `--lazy` Morph Fast Apply;
+  reindexes the touched file after `--write`; CRLF-preserving), `crabcc csv
+  stats|sample|count` (qsv-backed CSV summaries; explicit + opt-in, never drops
+  rows), and `crabcc squeeze` (collapse carriage-return/progress redraws +
+  repeated lines from stdin, surfacing errors/warnings, with a self-describing
+  stderr disclosure). `crabcc read` gains **diff-on-re-read**: re-reading a file
+  edited in-session returns a unified diff vs the last-seen version (additive
+  `session_reads.content`). `crabcc run -- <cmd>` captures+squeezes a command's
+  output and **detaches long/blocking commands to the background instead of
+  killing them** (own session, output to `~/.crabcc/runs/<id>/log`), returning
+  an instant snapshot + a `run <id>` handle; `--follow`/`--list`/`--kill`
+  manage background runs. The PreToolUse rewrite hook routes blocking follows
+  (`tail -f`, `watch`, `journalctl -f`) through `crabcc run --timeout` so they
+  bound + detach instead of hanging, and pagers (`less`/`more <file>`) through
+  the `cat` path.
+- **Nix dev shell.** `flake.nix` devShell (Rust toolchain + the `.tools` CLI
+  fleet + `rtk` from numtide/llm-agents.nix), `.envrc` for nix-direnv, and a
+  `nix flake check` CI job that verifies it on GitHub-hosted runners.
+- **superpowers plugin enabled repo-wide** via project `.claude/settings.json`
+  (official Claude plugin marketplace), activating after the workspace-trust
+  prompt.
 
 - **`ucracc-lsp` 0.4.0 + signed Docker/release pipeline.** The LSP crate is
   bumped to 0.4.0 (Zed integration + `indexPath`). New
@@ -37,6 +62,31 @@ All notable changes to crabcc are documented here. Format follows
   the single Zed palette action (or an opt-in experimental `--headless`
   drop-in that compiles the wasm component and places it in Zed's
   installed-extensions dir).
+- **`ucracc-lsp` concurrency + scaling test coverage.** New
+  `tests/concurrency.rs` drives one shared `Backend` from many parallel
+  Tokio tasks (interleaved `did_open`/`did_change`/`did_save`/`did_close`
+  against `hover`/`definition`/`references`/`documentSymbol`/
+  `workspaceSymbol` on overlapping URIs) and asserts no panic, no deadlock
+  (timeout-bounded), and last-write-wins consistency. New
+  `benches/fixture_scale.rs` (criterion) parameterizes the fixture size
+  (64/256/1024 symbols) across the read and write paths. A
+  `scripts/lsp-race-tsan.sh` / `task lsp-race` runner re-runs the
+  concurrency suite under ThreadSanitizer (opt-in; nightly + rust-src).
+
+### Fixed
+
+- **`ucracc-lsp`: data race / potential server abort on concurrent edits.**
+  `index_uri` reused a cached per-document tree-sitter `Tree` as an
+  incremental-parse hint, but tower-lsp dispatches notifications
+  concurrently, so a racing `did_change` could leave that tree's
+  `InputEdit`s inconsistent with the text being reparsed. Feeding such a
+  tree to `Parser::parse` makes tree-sitter panic — fatal under the release
+  `panic = "abort"` profile. The LSP now always does a full parse on
+  re-index (the cheap, sound choice) and drops the per-document tree cache.
+  `crabcc-core`'s `signature_for` extractor also slices defensively so a
+  malformed/mismatched tree degrades to "no signature" instead of
+  panicking (which had been poisoning the shared store mutex). Surfaced by
+  the new `tests/concurrency.rs`.
 
 ## [5.0.0] — 2026-06-01 — *stable baseline*
 

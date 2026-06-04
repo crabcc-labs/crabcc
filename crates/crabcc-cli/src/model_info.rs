@@ -174,10 +174,15 @@ mod tests {
 
     #[test]
     fn round_trip_writes_and_reads_toml() {
+        // Unique provider/name on purpose: `default_dir` honors a globally
+        // pinned `$CRABCC_HOME` (test_support::ensure_test_crabcc_home) over
+        // the passed `tmp`, so reusing the seeded default ("ollama",
+        // "qwen2.5-coder") would clobber / be clobbered by
+        // `seed_default_ollama_is_idempotent` in the shared models dir.
         let tmp = tempdir().unwrap();
         let info = ModelInfo {
-            provider: "ollama".into(),
-            name: "qwen2.5-coder".into(),
+            provider: "testprov".into(),
+            name: "round-trip-fixture".into(),
             params: Some("7B".into()),
             context: Some(32768),
             flags: vec![ModelFlag {
@@ -194,10 +199,10 @@ mod tests {
             .unwrap()
             .to_string_lossy()
             .starts_with(".model."));
-        let round = read(tmp.path(), "ollama", "qwen2.5-coder")
+        let round = read(tmp.path(), "testprov", "round-trip-fixture")
             .unwrap()
             .unwrap();
-        assert_eq!(round.provider, "ollama");
+        assert_eq!(round.provider, "testprov");
         assert_eq!(round.flags.len(), 1);
         assert_eq!(round.context, Some(32768));
     }

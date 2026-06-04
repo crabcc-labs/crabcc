@@ -60,7 +60,7 @@ pub fn build_report(godfather: &Godfather, crash_id: i64) -> Result<String> {
             |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
-                    row.get::<_, Option<i64>>(1)?.unwrap_or(0),
+                    row.get::<_, Option<i64>>(1)?.unwrap_or_default(),
                     row.get::<_, Option<f64>>(2)?.unwrap_or(0.0),
                 ))
             },

@@ -148,7 +148,7 @@ pub fn seed_demo_events(state: &mut crate::state::AppState) {
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
+        .unwrap_or_default();
 
     // Allocate ids upfront so parent_id wiring is straightforward.
     let id_list = CallEvent::next_id();
@@ -485,7 +485,7 @@ fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
+        .unwrap_or_default()
 }
 
 /// Truncate `s` to [`MAX_PAYLOAD_INLINE`] bytes on a UTF-8 char

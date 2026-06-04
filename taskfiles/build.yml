@@ -11,12 +11,14 @@ tasks:
   build:
     desc: Release build (LTO=fat — slower compile, ~5–10% faster runtime)
     summary: |
-      Enables the `jemalloc` feature on `crabcc-cli` so the shipped
-      binary uses tikv-jemallocator (+5-12% on alloc-heavy hot paths).
-      Dev builds skip the feature to avoid the ~60s C-source build of
-      jemalloc 5.x.
+      Shipped binary uses the SYSTEM allocator — benched fastest (or tied,
+      lowest variance) vs jemalloc + mimalloc on both Linux x86 and darwin
+      arm64 (docs/PERF-648 §4), so neither alloc feature is enabled.
+      Enables `memory-embed` so `crabcc rag` ships with semantic MiniLM
+      retrieval (ort fetches onnxruntime at build time; dev `build-fast`
+      skips it to stay lean + offline).
     cmds:
-      - "{{.CARGO}} build --release -p crabcc-cli --features jemalloc"
+      - "{{.CARGO}} build --release -p crabcc-cli --features memory-embed"
       - "{{.CARGO}} build --release"
 
   build-fast:
@@ -192,6 +194,17 @@ tasks:
     desc: Compile-check the cargo-fuzz target (full run requires nightly + cargo-fuzz)
     cmds:
       - "(cd crates/crabcc-core/fuzz && {{.CARGO}} check)"
+
+  lsp-race:
+    desc: Run the ucracc-lsp concurrency suite under ThreadSanitizer (nightly + rust-src)
+    summary: |
+      Data-race (UB) detection for the LSP's shared Backend state
+      (open_docs / store / fts / cache). Opt-in: needs a nightly toolchain
+      with the rust-src component (TSan rebuilds std), so it is NOT part of
+      CI — the same tests also run race-free under the normal `task test`.
+      See scripts/lsp-race-tsan.sh. Override the target with TARGET=...
+    cmds:
+      - bash scripts/lsp-race-tsan.sh
 
   coverage:
     desc: Generate code-coverage report (cargo-llvm-cov). FORMAT=html (default), lcov, text, or json

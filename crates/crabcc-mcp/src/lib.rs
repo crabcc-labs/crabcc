@@ -64,10 +64,7 @@ pub(crate) fn load_or_build_graph(
 /// `gitdiff::changed_files_since`. Returns `Ok(None)` when the arg is
 /// absent so callers can use `Option::as_ref()` to drive the filter
 /// path. A bad git revision surfaces as a tool error per JSON-RPC.
-pub(crate) fn since_filter(
-    args: &Value,
-    root: &Path,
-) -> Result<Option<std::collections::HashSet<String>>> {
+pub(crate) fn since_filter(args: &Value, root: &Path) -> Result<Option<ahash::HashSet<String>>> {
     match args.get("since").and_then(|v| v.as_str()) {
         Some(rev) => Ok(Some(crabcc_core::gitdiff::changed_files_since(root, rev)?)),
         None => Ok(None),
@@ -82,7 +79,7 @@ pub(crate) fn since_filter(
 pub(crate) fn want_stream(args: &Value) -> bool {
     args.get("stream")
         .and_then(|v| v.as_bool())
-        .unwrap_or(false)
+        .unwrap_or_default()
 }
 
 /// Serialize an `Output::Hits` payload as newline-delimited JSON — one
@@ -92,9 +89,7 @@ pub(crate) fn hits_to_ndjson(out: &query::Output) -> Result<String> {
     let hits = match out {
         query::Output::Hits(h) => h,
         _ => {
-            return Err(anyhow::anyhow!(
-                "stream=true requires hits-mode output (got non-Hits shape)"
-            ));
+            anyhow::bail!("stream=true requires hits-mode output (got non-Hits shape)");
         }
     };
     let mut buf = String::new();
@@ -135,7 +130,7 @@ pub(crate) fn list_indexed_files(
         })
         .map(|(p, _)| p)
         .collect();
-    out.sort();
+    out.sort_unstable();
     if limit > 0 && out.len() > limit {
         out.truncate(limit);
     }
@@ -304,7 +299,7 @@ mod tests {
         });
         let resp = handle(&req, dir.path());
         assert!(
-            resp["error"].is_object() || resp["result"]["isError"].as_bool().unwrap_or(false),
+            resp["error"].is_object() || resp["result"]["isError"].as_bool().unwrap_or_default(),
             "expected error on ctx → ctx self-dispatch, got: {resp}"
         );
     }

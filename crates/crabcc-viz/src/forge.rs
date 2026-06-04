@@ -210,9 +210,9 @@ fn gh_pr_to_summary(p: GhPr) -> PrSummary {
                 color: l.color,
             })
             .collect(),
-        additions: p.additions.unwrap_or(0),
-        deletions: p.deletions.unwrap_or(0),
-        changed_files: p.changed_files.unwrap_or(0),
+        additions: p.additions.unwrap_or_default(),
+        deletions: p.deletions.unwrap_or_default(),
+        changed_files: p.changed_files.unwrap_or_default(),
         html_url: p.html_url,
         body: p.body,
     }

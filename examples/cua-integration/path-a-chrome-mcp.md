@@ -12,10 +12,22 @@
 {
   "mcpServers": {
     "crabcc":          { "command": "crabcc", "args": ["--mcp"] },
-    "chrome-devtools": { "command": "npx",    "args": ["chrome-devtools-mcp@latest"] }
+    // Pin the version (not @latest): npx then resolves once and serves the
+    // cached package on every later launch instead of re-fetching it.
+    "chrome-devtools": { "command": "npx",    "args": ["chrome-devtools-mcp@1.1.1"] }
   }
 }
 ```
+
+> **Browser provisioning — prebuilt, downloaded once at runtime, never at
+> build time.** crabcc itself bundles/builds no browser (the agent-runner
+> image is deliberately browser-free; nothing in `build.rs` fetches one).
+> `chrome-devtools-mcp` downloads a pinned *Chrome for Testing* build lazily
+> on first use into its puppeteer cache (`~/.cache/puppeteer/`, or set
+> `PUPPETEER_CACHE_DIR`) and reuses it thereafter — so the browser is a
+> one-time on-demand download, not a per-run or build-time cost. To
+> pre-provision it in CI/containers, run `npx puppeteer browsers install
+> chrome` once into a cached layer.
 
 ## Trace
 

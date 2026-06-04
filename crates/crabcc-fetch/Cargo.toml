@@ -11,6 +11,26 @@ repository.workspace   = true
 # `/api/memory/ingest` HTTP handler) depend on this so per-domain
 # extractors / SSRF guards / size caps live in exactly one place.
 
+[features]
+# Multi-page crawler: frontier + link-following + politeness on top of
+# the single-shot fetch primitives. Pulls `rusqlite` (the local SQLite
+# frontier — zero-infra fallback when the Hetzner Postgres backend is
+# unreachable) and `url` (robust relative→absolute link resolution).
+crawl = ["dep:rusqlite", "dep:url"]
+# Lightpanda CDP rendered-DOM transport (spawn-and-manage-locally browser,
+# persistent profile/cookies). Pulls a minimal ws:// CDP client
+# (tokio-tungstenite, no TLS) + futures-util. The browser is spawned with
+# std::process (sync, at fetcher construction), so no tokio `process`
+# feature is needed. Kept separate so `crawl` stays free of browser deps
+# for the lib/viz consumers.
+crawl-lightpanda = ["crawl", "dep:tokio-tungstenite", "dep:futures-util"]
+# Postgres-backed crawl frontier — a shared queue so multiple workers can
+# split one crawl (atomic claim via FOR UPDATE SKIP LOCKED).
+# open_frontier() prefers it when $CRABCC_CRAWL_PG is set and reachable,
+# falling back to the local SQLite frontier otherwise. Async
+# (tokio-postgres); the Frontier enum's methods are async.
+crawl-postgres = ["crawl", "dep:tokio-postgres"]
+
 [dependencies]
 anyhow      = { workspace = true }
 serde       = { workspace = true }
@@ -20,10 +40,24 @@ reqwest     = { workspace = true }
 linkify     = { workspace = true }
 htmd        = { workspace = true }
 tracing     = { workspace = true }
+# crawl-only: local frontier store + URL resolution. Optional so the
+# base library doesn't pull SQLite into `crabcc-viz` / CLI fetch builds.
+rusqlite    = { workspace = true, optional = true }
+url         = { version = "2", optional = true }
 # Used by the streamed-body cap in fetch_one. Pulled transitively via
 # reqwest, but pinned explicitly so a reqwest bump that drops the
 # re-export breaks here, not at use sites.
 bytes       = "1"
+tokio-tungstenite = { version = "0.29.0", default-features = false, features = ["connect", "handshake"], optional = true }
+futures-util = { version = "0.3.32", default-features = false, features = ["std", "sink"], optional = true }
+tokio-postgres = { version = "0.7.17", optional = true }
 
 [dev-dependencies]
 tempfile   = { workspace = true }
+
+# The smoke example imports `crabcc_fetch::crawl`, which only exists under
+# the `crawl` feature. Without this, a default `--all-targets` build (the
+# lint/test gate) would try to compile it featureless and fail.
+[[example]]
+name = "crawl_smoke"
+required-features = ["crawl"]

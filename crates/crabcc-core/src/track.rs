@@ -98,17 +98,31 @@ fn log_path() -> Option<PathBuf> {
 pub fn record(op: &str, query: &str, results: usize, repo: &str, output_bytes: usize) {
     let used = tokens_for_bytes(output_bytes);
     let saved = estimate_saved(op, results, used);
+    record_saved(op, query, results, repo, used, saved);
+}
+
+/// Like [`record`] but with an explicit, already-measured `saved_tokens`
+/// (e.g. Morph compaction, where we know real input-vs-output bytes
+/// rather than estimating from an op heuristic). Best-effort append.
+pub fn record_saved(
+    op: &str,
+    query: &str,
+    results: usize,
+    repo: &str,
+    used_tokens: usize,
+    saved_tokens: usize,
+) {
     let entry = Entry {
         ts: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
-            .unwrap_or(0),
+            .unwrap_or_default(),
         op: op.into(),
         query: query.chars().take(200).collect(),
         results,
         repo: repo.into(),
-        used_tokens: used,
-        saved_tokens: saved,
+        used_tokens,
+        saved_tokens,
         agent_id: current_agent_id(),
     };
     let Some(path) = log_path() else { return };
@@ -156,7 +170,7 @@ pub fn report() -> Result<Report> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .unwrap_or_default();
     let session_cutoff = now.saturating_sub(30 * 60);
     let day_cutoff = now.saturating_sub(24 * 60 * 60);
 

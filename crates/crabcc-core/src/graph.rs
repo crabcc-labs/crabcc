@@ -19,9 +19,10 @@
 //!   `orphans()` returns symbol-IDs with outgoing edges but no incoming.
 
 use crate::store::Store;
+use ahash::HashSet;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -108,9 +109,9 @@ impl CallGraph {
         let mut sccs = tarjan_scc(&self.callees);
         sccs.retain(|c| c.len() >= 2);
         for c in &mut sccs {
-            c.sort();
+            c.sort_unstable();
         }
-        sccs.sort_by(|a, b| a[0].cmp(&b[0]));
+        sccs.sort_unstable_by(|a, b| a[0].cmp(&b[0]));
         tracing::info!(
             target: "crabcc_core::graph",
             kpi = "graph.cycles",
@@ -131,7 +132,7 @@ impl CallGraph {
             .copied()
             .filter(|k| !self.callers.contains_key(k))
             .collect();
-        out.sort();
+        out.sort_unstable();
         tracing::info!(
             target: "crabcc_core::graph",
             kpi = "graph.orphans",
@@ -168,7 +169,7 @@ impl CallGraph {
 
 fn bfs(adj: &BTreeMap<i64, BTreeSet<i64>>, start: i64, depth: usize) -> Vec<GraphHit> {
     let mut out = Vec::new();
-    let mut seen: HashSet<i64> = HashSet::new();
+    let mut seen: HashSet<i64> = HashSet::default();
     let mut q: VecDeque<(i64, usize)> = VecDeque::new();
     q.push_back((start, 0));
     seen.insert(start);
@@ -198,7 +199,7 @@ fn bfs(adj: &BTreeMap<i64, BTreeSet<i64>>, start: i64, depth: usize) -> Vec<Grap
 fn tarjan_scc(adj: &BTreeMap<i64, BTreeSet<i64>>) -> Vec<Vec<i64>> {
     let mut idx: BTreeMap<i64, usize> = BTreeMap::new();
     let mut lowlink: BTreeMap<i64, usize> = BTreeMap::new();
-    let mut on_stack: HashSet<i64> = HashSet::new();
+    let mut on_stack: HashSet<i64> = HashSet::default();
     let mut stack: Vec<i64> = Vec::new();
     let mut next_index: usize = 0;
     let mut sccs: Vec<Vec<i64>> = Vec::new();
@@ -213,7 +214,7 @@ fn tarjan_scc(adj: &BTreeMap<i64, BTreeSet<i64>>) -> Vec<Vec<i64>> {
     }
 
     let mut nodes: Vec<i64> = adj.keys().copied().collect();
-    nodes.sort();
+    nodes.sort_unstable();
     for start in nodes {
         if idx.contains_key(&start) {
             continue;

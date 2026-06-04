@@ -12,10 +12,11 @@ default = ["compress", "memory-vec"]
 # graph) or at runtime by opening the backend without a sibling fsst.symbols
 # file present.
 compress = ["crabcc-core/compress"]
-# v2.5.1 (#17) — load the bundled sqlite-vec C extension at Backend::open
-# and create a `drawers_vec` virtual table for ANN search. Default OFF —
-# pulls in the sqlite-vec FFI dep + ~few hundred KB of compiled extension.
-# #20 wires the actual search path; until then the table stays empty.
+# v2.5.1 (#17) / #20 — load the bundled sqlite-vec C extension at
+# Backend::open, create + backfill `drawers_vec`, and route vector queries
+# through it instead of the brute-force cosine scan. Default ON (same as
+# the crate default). Disable with `--no-default-features` if you want a
+# pure-Rust build without the sqlite-vec C extension.
 memory-vec = ["dep:sqlite-vec"]
 # v2.5.x (#40) — std::simd-backed cosine helper. Default OFF because
 # `portable_simd` (rust-lang/rust#86656) is still nightly-only. Enable
@@ -42,6 +43,7 @@ markdown = ["crabcc-core/markdown"]
 # `compress` is forwarded so the same Codec used for symbol signatures handles
 # drawer bodies — no second symbol table to maintain.
 crabcc-core = { workspace = true }
+ahash = { workspace = true }
 anyhow = { workspace = true }
 rusqlite = { workspace = true }
 serde = { workspace = true }
@@ -49,6 +51,10 @@ serde_json = { workspace = true }
 sha2 = { workspace = true }
 tracing = { workspace = true }
 moka = { workspace = true }
+# Myers line-diff for `read` diff-on-re-read: when an agent re-reads a file
+# it just edited, serve a unified diff vs the last-seen version instead of the
+# whole file. Pure-Rust, no build script (offline-safe).
+similar = "2"
 # Optional — only built when the `memory-vec` feature is on. Bundles the
 # sqlite-vec C extension; we register it via sqlite3_auto_extension so every
 # rusqlite Connection inherits it.
