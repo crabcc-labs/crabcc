@@ -9,6 +9,8 @@ use std::path::Path;
 pub const MEMORY_SEARCH: &str = "ucracc.memory.search";
 pub const WEBFETCH: &str = "ucracc.webfetch";
 pub const RERANK: &str = "ucracc.rerank";
+/// Always available: returns a JSON usage/error/perf snapshot.
+pub const STATS: &str = "ucracc.stats";
 
 pub fn known_commands() -> Vec<String> {
     let mut v = Vec::new();
@@ -21,6 +23,7 @@ pub fn known_commands() -> Vec<String> {
     if cfg!(feature = "rerank") {
         v.push(RERANK.to_string());
     }
+    v.push(STATS.to_string());
     v
 }
 
