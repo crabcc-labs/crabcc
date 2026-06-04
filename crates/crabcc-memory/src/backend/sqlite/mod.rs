@@ -247,9 +247,20 @@ impl SqliteBackend {
                 let tx = conn
                     .transaction_with_behavior(TransactionBehavior::Immediate)
                     .context("begin drawers_vec backfill transaction")?;
-                for (id, _) in &rows {
-                    tx.execute("DELETE FROM drawers_vec WHERE drawer_id = ?1", params![id])?;
-                }
+                // Recreate the virtual table to clear ALL rows atomically.
+                // A per-id DELETE loop only removes ids that are still in
+                // drawer_embeddings; rows left by a non-vec delete (stale
+                // ids no longer in drawer_embeddings) remain and waste top-k
+                // slots in MATCH queries. vec0 doesn't support enumeration
+                // without MATCH, so DROP+CREATE is the only clean purge path.
+                tx.execute_batch(
+                    "DROP TABLE IF EXISTS drawers_vec;
+                     CREATE VIRTUAL TABLE drawers_vec USING vec0(
+                         drawer_id INTEGER PRIMARY KEY,
+                         embedding FLOAT[384]
+                     );",
+                )
+                .context("recreate drawers_vec for resync")?;
                 for (id, bytes) in &rows {
                     tx.execute(
                         "INSERT INTO drawers_vec(drawer_id, embedding) VALUES (?1, ?2)",
