@@ -548,15 +548,21 @@ def archive_run(built, meta, out: Path, work: Path, flame_dir: Path,
 
     shutil.copy(out / "opt-bin-REPORT.md", rd / "REPORT.md")
     shutil.copy(out / "opt-bin.ndjson", rd / "opt-bin.ndjson")
+    # Copy only THIS run's per-leg artifacts by id — `work` defaults to a
+    # reused dir, so globbing would sweep stale hyperfine/SVG files from prior
+    # runs into this manifest (e.g. a --quick smoke after a full run).
     for leg in built:
         lg = work / leg.id / "build.log"
         if lg.exists():
             shutil.copy(lg, rd / "logs" / f"{leg.id}.log")
-    for pat in ("*.hyperfine.json", "*.query.json"):
-        for j in work.glob(pat):
-            shutil.copy(j, rd / "hyperfine" / j.name)
-    if flame_dir.exists() and any(flame_dir.iterdir()):
-        shutil.copytree(flame_dir, rd / "flamegraphs", dirs_exist_ok=True)
+        for suf in (".hyperfine.json", ".query.json"):
+            j = work / f"{leg.id}{suf}"
+            if j.exists():
+                shutil.copy(j, rd / "hyperfine" / j.name)
+        svg = flame_dir / f"{leg.id}.svg"
+        if svg.exists():
+            (rd / "flamegraphs").mkdir(exist_ok=True)
+            shutil.copy(svg, rd / "flamegraphs" / svg.name)
 
     artifacts = {str(p.relative_to(rd)): {"bytes": p.stat().st_size,
                                           "sha256": _sha256(p)}
