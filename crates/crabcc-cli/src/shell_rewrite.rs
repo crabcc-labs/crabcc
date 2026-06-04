@@ -808,8 +808,12 @@ mod tests {
 
     #[test]
     fn find_name_maps_to_ripgrep_files() {
+        // -type f required: without it, find may return matching directories
+        // that rg --files would silently drop — so we pass through instead.
+        assert!(plan("find . -name '*.rs'", &never).is_none());
+
         assert_eq!(
-            plan("find . -name '*.rs'", &never).unwrap().inner,
+            plan("find . -name '*.rs' -type f", &never).unwrap().inner,
             "rg --files -g '*.rs' ."
         );
         assert_eq!(
