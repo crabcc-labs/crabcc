@@ -49,6 +49,12 @@ runner_busy() { pgrep -f 'Runner\.Worker' >/dev/null 2>&1; }
 # Current root-fs fill percentage as an integer (empty string on failure).
 root_pct() { df --output=pcent / 2>/dev/null | tail -1 | tr -dc '0-9'; }
 
+# Current root-fs INODE fill percentage. The block-% checks below were blind
+# to inode exhaustion: a host at 17% by blocks still ENOSPCs at `apt-get
+# install` once inodes hit 100% (millions of tiny cargo registry/src +
+# sccache files). Every escalation/warning now considers blocks OR inodes.
+root_ipct() { df --output=ipcent / 2>/dev/null | tail -1 | tr -dc '0-9'; }
+
 # Early exit when called by the disk-watchdog timer and disk is healthy.
 # The 15-min watchdog uses --if-above 75; the 4h full-GC timer omits it.
 if [ -n "${THRESHOLD:-}" ]; then
@@ -62,6 +68,7 @@ fi
 
 log "host $(hostname) — disk before:"
 df -h / "${CACHE_BASE}" 2>/dev/null || df -h / 2>/dev/null || true
+df -ih / "${CACHE_BASE}" 2>/dev/null || df -ih / 2>/dev/null || true   # inodes too
 
 # ── Docker: unused images / build cache / stopped containers ─────────────
 prune_docker() {
@@ -93,13 +100,15 @@ prune_docker "$DEEP"
 # eligible, so a later step's `docker run` can fail.
 # Skipped when --deep was already passed (prune_docker already ran deep).
 if [ "$DEEP" = 0 ]; then
-  USE_MID="$(root_pct)"
-  if [ -n "${USE_MID:-}" ] && [ "$USE_MID" -ge 80 ]; then
+  USE_MID="$(root_pct)"; IUSE_MID="$(root_ipct)"
+  if { [ -n "${USE_MID:-}" ] && [ "$USE_MID" -ge 80 ]; } || \
+     { [ -n "${IUSE_MID:-}" ] && [ "$IUSE_MID" -ge 80 ]; }; then
     if runner_busy; then
-      log "root fs at ${USE_MID}% but runner busy — deferring deep Docker prune until idle"
+      log "root fs at ${USE_MID}% blocks / ${IUSE_MID}% inodes but runner busy — deferring deep prune until idle"
     else
-      log "root fs at ${USE_MID}% after normal Docker prune — auto-escalating to deep"
+      log "root fs at ${USE_MID}% blocks / ${IUSE_MID}% inodes after normal prune — auto-escalating to deep"
       prune_docker 1
+      DEEP=1   # also trigger the aggressive inode sweep below
     fi
   fi
 fi
@@ -129,6 +138,22 @@ SCCACHE_DIR_PATH="${SCCACHE_DIR:-${CACHE_BASE}/sccache}"
 if [ -d "$SCCACHE_DIR_PATH" ] && ! runner_busy; then
   find "${SCCACHE_DIR_PATH}" -mindepth 1 -atime +14 -delete 2>/dev/null || true
   log "sccache: pruned objects not accessed in 14d from ${SCCACHE_DIR_PATH}"
+fi
+
+# ── Inode reclamation ─────────────────────────────────────────────────────
+# Docker/byte prunes free bytes but few inodes; when the host is short on
+# INODES the offenders are the millions of tiny files under cargo registry/src
+# and sccache. registry/src is fully regenerable (cargo re-extracts from the
+# .crate tarballs in registry/cache, themselves re-downloadable), so on inode
+# pressure we clear it wholesale instead of by mtime. Idle-only — a concurrent
+# compile may be reading a source file. Triggers at ≥80% inodes, or whenever
+# --deep / the auto-escalation above set DEEP=1.
+IUSE_NOW="$(root_ipct)"
+if ! runner_busy && { [ "$DEEP" = 1 ] || { [ -n "${IUSE_NOW:-}" ] && [ "$IUSE_NOW" -ge 80 ]; }; }; then
+  log "inode reclamation (inodes at ${IUSE_NOW:-?}%): clearing regenerable cargo src + sccache"
+  rm -rf "${EFFECTIVE_CARGO_HOME}/registry/src"/* 2>/dev/null || true
+  # registry/cache (the .crate tarballs) is kept: few inodes, saves re-download.
+  [ -d "$SCCACHE_DIR_PATH" ] && find "$SCCACHE_DIR_PATH" -mindepth 1 -atime +2 -delete 2>/dev/null || true
 fi
 
 # ── tool-cache: prune downloaded toolchain entries older than 30 days ──────
@@ -189,11 +214,12 @@ fi
 
 log "disk after:"
 df -h / "${CACHE_BASE}" 2>/dev/null || df -h / 2>/dev/null || true
+df -ih / "${CACHE_BASE}" 2>/dev/null || df -ih / 2>/dev/null || true   # inodes too
 
-USE="$(root_pct)"
-log "root filesystem usage after GC: ${USE:-?}%"
-if [ -n "${USE:-}" ] && [ "$USE" -ge 85 ]; then
-  log "WARNING: root fs still ${USE}% full after GC — manual intervention may be needed (try --deep or add disk)"
+USE="$(root_pct)"; IUSE="$(root_ipct)"
+log "root filesystem usage after GC: ${USE:-?}% blocks / ${IUSE:-?}% inodes"
+if { [ -n "${USE:-}" ] && [ "$USE" -ge 85 ]; } || { [ -n "${IUSE:-}" ] && [ "$IUSE" -ge 85 ]; }; then
+  log "WARNING: root fs still ${USE}% blocks / ${IUSE}% inodes after GC — manual intervention may be needed (try --deep, add disk, or hunt small-file hoards: 'du --inodes -xd1 / | sort -n')"
 fi
 
 # Report cache volume usage if it's a separate mount.

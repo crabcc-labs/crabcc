@@ -84,6 +84,12 @@ composio_exec() {  # $1=slug  $2=account_id  $3=arguments-json
 # channels anyway. Notifications therefore go through a channel *incoming
 # webhook*: Discord → Server Settings → Integrations → Webhooks → New Webhook
 # → Copy URL → export DISCORD_WEBHOOK_URL. No Composio/bot needed to send.
+# Convenience fallback: if DISCORD_WEBHOOK_URL isn't exported, read it from
+# ~/.disc-webhook (a file holding just the URL) so it doesn't have to be set
+# every run. Whitespace/newlines are stripped.
+if [ -z "${DISCORD_WEBHOOK_URL:-}" ] && [ -f "$HOME/.disc-webhook" ]; then
+  DISCORD_WEBHOOK_URL="$(tr -d '[:space:]' < "$HOME/.disc-webhook")"
+fi
 if [ -n "${DISCORD_WEBHOOK_URL:-}" ]; then
   echo ">> [sink] Discord webhook notify"
   payload="$(python3 - "$(summary)" "$RUN_ID" <<'PY'
