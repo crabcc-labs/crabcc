@@ -37,6 +37,7 @@ mod compress_cmd;
 mod crawl_cmd;
 mod debug_network;
 mod doctor;
+mod edit;
 mod enrich_cmd;
 mod fetch_cmd;
 mod go;
@@ -575,6 +576,25 @@ enum Cmd {
         /// only drops near-constant lines.
         #[arg(long, default_value_t = 2.5)]
         threshold: f64,
+    },
+    /// AST-targeted edit: rewrite one symbol's exact span via the index, so
+    /// the agent sends just the symbol (FILE#SYMBOL), not the whole file.
+    Edit {
+        /// `FILE#SYMBOL` (e.g. `crates/crabcc-core/src/store.rs#Store::open`).
+        target: String,
+        /// New symbol body / lazy edit. Read from stdin when omitted.
+        #[arg(long)]
+        update: Option<String>,
+        /// Splice the update verbatim as the new symbol body (deterministic).
+        #[arg(long, conflicts_with = "lazy")]
+        replace: bool,
+        /// Merge a lazy edit into the symbol via Morph Fast Apply
+        /// (requires `MORPH_API_KEY`).
+        #[arg(long)]
+        lazy: bool,
+        /// Splice the result into the file in place (default: preview only).
+        #[arg(long)]
+        write: bool,
     },
     /// Audit Claude session logs for token waste.
     Audit {
@@ -1676,6 +1696,15 @@ fn main() -> Result<()> {
                 threshold,
             )?;
         }
+        Cmd::Edit {
+            target,
+            update,
+            replace,
+            lazy,
+            write,
+        } => {
+            edit::run(&root, &store, &target, update, replace, lazy, write)?;
+        }
         Cmd::Rag { op } => match op {
             RagOp::Build { rebuild } => rag::run_build(&root, &store, rebuild)?,
             RagOp::Query { query, limit } => rag::run_query(&root, &query, limit)?,
@@ -2311,6 +2340,7 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::Enrich { .. } => "enrich",
         Cmd::Serve { .. } => "serve",
         Cmd::Read { .. } => "read",
+        Cmd::Edit { .. } => "edit",
     }
 }
 
