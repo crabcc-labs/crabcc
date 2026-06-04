@@ -1242,7 +1242,7 @@ fn main() -> Result<()> {
                 println!("{{\"indexed\":{n}}}");
             }
             IndexOp::Watch { debounce } => {
-                let store = std::sync::Arc::new(parking_lot::Mutex::new(store));
+                let store = std::sync::Arc::new(std::sync::Mutex::new(store));
                 crabcc_core::watch::watch(
                     &root,
                     store,
