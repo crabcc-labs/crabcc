@@ -978,7 +978,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-cli"
-version = "6.1.0"
+version = "6.2.0"
 dependencies = [
  "ahash",
  "anyhow",
@@ -1013,7 +1013,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-core"
-version = "6.1.0"
+version = "6.2.0"
 dependencies = [
  "ahash",
  "anyhow",
@@ -1054,7 +1054,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-fetch"
-version = "6.1.0"
+version = "6.2.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1075,7 +1075,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-godfather"
-version = "6.1.0"
+version = "6.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1095,7 +1095,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-mcp"
-version = "6.1.0"
+version = "6.2.0"
 dependencies = [
  "ahash",
  "anyhow",
@@ -1110,7 +1110,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-memory"
-version = "6.1.0"
+version = "6.2.0"
 dependencies = [
  "ahash",
  "anyhow",
@@ -1129,7 +1129,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-memory-bench"
-version = "6.1.0"
+version = "6.2.0"
 dependencies = [
  "anyhow",
  "clap",

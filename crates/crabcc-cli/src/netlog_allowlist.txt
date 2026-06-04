@@ -1,0 +1,37 @@
+# crabcc outbound HTTP allowlist (issue #160).
+#
+# Hosts the binary legitimately contacts in normal operation. The netlog guard
+# consults this before an INFRA request fires (it is NOT applied to the web
+# crawler, which legitimately reaches arbitrary user-specified hosts).
+#
+# Syntax: one host per line; `#` starts a comment. `*.example.com` (or
+# `.example.com`) matches any subdomain AND the bare apex. Matching is
+# case-insensitive.
+
+# --- Release / repo / registry ------------------------------------------
+github.com
+api.github.com
+codeload.github.com
+*.githubusercontent.com
+ghcr.io
+crates.io
+static.crates.io
+index.crates.io
+
+# --- Bot ----------------------------------------------------------------
+api.telegram.org
+
+# --- LLM / inference ----------------------------------------------------
+api.morphllm.com
+openrouter.ai
+api.openai.com
+api.anthropic.com
+
+# --- Local inference (Ollama / LiteLLM) ---------------------------------
+localhost
+127.0.0.1
+::1
+
+# --- Toolchain bootstrap ------------------------------------------------
+sh.rustup.rs
+static.rust-lang.org
