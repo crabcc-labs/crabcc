@@ -840,3 +840,10 @@ vhs assets/demo-memory.tape   # → assets/demo-memory.gif
 Before committing a regenerated GIF, run it through [**compressO**](https://github.com/codeforreal1/compressO) (Tauri-based desktop GUI; macOS / Linux / Windows) to shrink the file size without re-encoding from scratch. Open compressO, drop the GIF in, save it back to `assets/`. Aim for ≤ 600 KB per demo.
 
 `assets/logo.svg` (and the `logo-*.svg` variants) are hand-tuned — don't run them through any automated optimizer.
+
+## Ignoring files (`.cccignore`)
+
+crabcc honors `.gitignore`/`.ignore`, plus `.dockerignore` and a crabcc-specific
+`.cccignore` (highest precedence). Drop vendored code, generated bundles, and
+binary assets to keep the index lean and load fast. See
+[docs/CCCIGNORE.md](docs/CCCIGNORE.md).

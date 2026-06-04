@@ -6,6 +6,13 @@ pub fn walk_repo(root: &Path) -> impl Iterator<Item = PathBuf> {
         .standard_filters(true)
         .hidden(true)
         .git_ignore(true)
+        // Compose extra ignore files on top of .gitignore/.ignore (already
+        // honored by standard_filters): .dockerignore (skip build-context
+        // excludes) then .cccignore (crabcc-specific overrides — added last so
+        // it has the highest precedence and can re-include with `!`). Fewer
+        // files walked = faster index + load.
+        .add_custom_ignore_filename(".dockerignore")
+        .add_custom_ignore_filename(".cccignore")
         .build()
         .filter_map(|r| r.ok())
         .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
@@ -75,6 +82,28 @@ mod tests {
         assert!(
             !paths.contains("secret.ts"),
             "secret.ts should be ignored; got {paths:?}"
+        );
+    }
+
+    #[test]
+    fn respects_cccignore() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::write(root.join(".cccignore"), "generated/\n*.min.js\n").unwrap();
+        fs::write(root.join("a.ts"), "ok").unwrap();
+        fs::write(root.join("bundle.min.js"), "x").unwrap();
+        fs::create_dir(root.join("generated")).unwrap();
+        fs::write(root.join("generated/g.ts"), "gen").unwrap();
+
+        let paths = rel_paths(root);
+        assert!(paths.contains("a.ts"));
+        assert!(
+            !paths.contains("bundle.min.js"),
+            ".cccignore glob not applied: {paths:?}"
+        );
+        assert!(
+            !paths.contains("generated/g.ts"),
+            ".cccignore dir not applied: {paths:?}"
         );
     }
 
