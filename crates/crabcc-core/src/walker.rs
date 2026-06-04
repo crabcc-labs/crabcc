@@ -36,7 +36,7 @@ fn is_python_bytecode(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
+    use ahash::HashSet;
     use std::fs;
 
     fn rel_paths(root: &Path) -> HashSet<String> {

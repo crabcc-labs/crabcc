@@ -54,6 +54,7 @@ crabcc-memory = { workspace = true }
 # `viz` feature — see [features]. Drops the dashboard / SSE viewer + its
 # tokio-rt + tiny_http + html2md transitive cost from the default install.
 crabcc-viz    = { workspace = true, optional = true }
+ahash         = { workspace = true }
 anyhow        = { workspace = true }
 clap          = { workspace = true }
 tokio                    = { workspace = true }

@@ -67,7 +67,7 @@ pub(crate) fn load_or_build_graph(
 pub(crate) fn since_filter(
     args: &Value,
     root: &Path,
-) -> Result<Option<std::collections::HashSet<String>>> {
+) -> Result<Option<ahash::HashSet<String>>> {
     match args.get("since").and_then(|v| v.as_str()) {
         Some(rev) => Ok(Some(crabcc_core::gitdiff::changed_files_since(root, rev)?)),
         None => Ok(None),

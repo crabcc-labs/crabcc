@@ -89,7 +89,8 @@ apply_patterns() {
   sed -i 's/\.len() == 0/.is_empty()/g' "$f"
 
   # P10: .len() != 0 / .len() > 0 → !.is_empty()
-  sed -i -E 's/\.len\(\) (!=|>) 0/!.is_empty()/g' "$f"
+  # Capture the receiver so `foo.len() != 0` → `!foo.is_empty()` (not `foo!.is_empty()`).
+  sed -i -E 's/([a-zA-Z_][a-zA-Z0-9_.]*)\.len\(\) *(!=|>) *0/!\1.is_empty()/g' "$f"
 }
 
 # ── collect files ─────────────────────────────────────────────────────────────

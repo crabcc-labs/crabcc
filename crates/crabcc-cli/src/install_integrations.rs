@@ -8,7 +8,7 @@
 //! Deliberately does not overwrite global agent settings without `--yes`.
 
 use anyhow::{anyhow, bail, Context, Result};
-use std::collections::HashSet;
+use ahash::HashSet;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -49,7 +49,7 @@ pub fn expand_targets(names: &[String]) -> Result<Vec<Target>> {
     if names.is_empty() {
         return Ok(Target::all());
     }
-    let mut set = HashSet::new();
+    let mut set = HashSet::default();
     for n in names {
         if n.eq_ignore_ascii_case("all") {
             return Ok(Target::all());

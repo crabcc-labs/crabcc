@@ -26,7 +26,7 @@ use futures_util::TryFutureExt;
 use redis::aio::ConnectionManager;
 use redis::streams::{StreamReadOptions, StreamReadReply};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use ahash::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 

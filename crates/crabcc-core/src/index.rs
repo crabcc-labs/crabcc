@@ -1,7 +1,7 @@
 use crate::{extract, hash, store::Store, walker};
 use anyhow::Result;
 use serde::Serialize;
-use std::collections::HashSet;
+use ahash::HashSet;
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
@@ -157,7 +157,7 @@ pub fn refresh_delta(root: &Path, store: &Store) -> Result<RefreshDelta> {
     tracing::info!(target: "crabcc_core::index", path = %root.display(), "refresh_delta: start");
     let mut delta = RefreshDelta::default();
     let in_db = store.list_files_with_meta()?;
-    let mut seen: HashSet<String> = HashSet::with_capacity(in_db.len());
+    let mut seen: HashSet<String> = HashSet::with_capacity_and_hasher(in_db.len(), Default::default());
 
     for path in walker::walk_repo(root) {
         let lang = match extract::detect_lang(&path) {

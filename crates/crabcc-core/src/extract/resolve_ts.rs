@@ -304,7 +304,7 @@ impl Resolver for TsResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
+    use ahash::HashMap;
     use std::sync::Mutex;
     use tree_sitter::Parser;
 
@@ -387,7 +387,7 @@ mod tests {
         let src = "class Foo {}\n";
         let tree = parse_ts(src);
         let scope = harvest_ts_scope(tree.root_node(), src.as_bytes());
-        let mut local_defs: HashMap<String, SymbolId> = HashMap::new();
+        let mut local_defs: HashMap<String, SymbolId> = HashMap::default();
         local_defs.insert("Foo".into(), SymbolId(42));
         let index = Arc::new(StubIndex::default());
         index.insert("./other::Foo", 999);
@@ -409,7 +409,7 @@ mod tests {
         let index = Arc::new(StubIndex::default());
         index.insert("./other::Bar", 7);
         let resolver = TsResolver::new(index, scope);
-        let local_defs: HashMap<String, SymbolId> = HashMap::new();
+        let local_defs: HashMap<String, SymbolId> = HashMap::default();
         let ctx = ScopeCtx {
             file_id: 1,
             current_module: Some("./m"),
@@ -427,7 +427,7 @@ mod tests {
         let index = Arc::new(StubIndex::default());
         index.insert("Foo::go", 13);
         let resolver = TsResolver::new(index, scope);
-        let local_defs: HashMap<String, SymbolId> = HashMap::new();
+        let local_defs: HashMap<String, SymbolId> = HashMap::default();
         let ctx = ScopeCtx {
             file_id: 1,
             current_module: None,
@@ -444,7 +444,7 @@ mod tests {
         let scope = harvest_ts_scope(tree.root_node(), src.as_bytes());
         let index = Arc::new(StubIndex::default());
         let resolver = TsResolver::new(index, scope);
-        let local_defs: HashMap<String, SymbolId> = HashMap::new();
+        let local_defs: HashMap<String, SymbolId> = HashMap::default();
         let ctx = ScopeCtx {
             file_id: 1,
             current_module: Some("./m"),
