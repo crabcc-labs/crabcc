@@ -54,7 +54,6 @@ ast-grep-language = { workspace = true }
 sha2 = { workspace = true }
 tracing = { workspace = true }
 notify-debouncer-mini = { workspace = true }
-rayon = { workspace = true }
 atty = { workspace = true }
 bumpalo = { workspace = true }
 serde_yml = { workspace = true }
