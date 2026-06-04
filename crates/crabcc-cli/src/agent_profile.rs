@@ -120,14 +120,16 @@ pub fn load(repo_root: &Path, profile_id: &str) -> Result<AgentProfile> {
 /// Enumerate available profile ids (filenames matching `*.profile.toml`)
 /// for nicer error messages on typos.
 fn list_available_profiles(dir: &Path) -> Result<Vec<String>> {
-    let mut out = Vec::new();
-    let entries = std::fs::read_dir(dir).with_context(|| format!("read {}", dir.display()))?;
-    for e in entries.flatten() {
-        let name = e.file_name().to_string_lossy().to_string();
-        if let Some(stripped) = name.strip_suffix(".profile.toml") {
-            out.push(stripped.to_string());
-        }
-    }
+    let mut out: Vec<String> = std::fs::read_dir(dir)
+        .with_context(|| format!("read {}", dir.display()))?
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name();
+            name.to_string_lossy()
+                .strip_suffix(".profile.toml")
+                .map(|s| s.to_string())
+        })
+        .collect();
     out.sort();
     Ok(out)
 }

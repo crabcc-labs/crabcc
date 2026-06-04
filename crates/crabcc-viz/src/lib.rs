@@ -1461,7 +1461,7 @@ fn agent_profiles_list(root: &Path) -> Result<AgentProfilesList> {
     let mut out: Vec<AgentProfile> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for e in entries.flatten() {
-            let n = e.file_name().to_string_lossy().to_string();
+            let n = e.file_name().to_string_lossy().into_owned();
             let id = match n.strip_suffix(".profile.toml") {
                 Some(s) => s.to_string(),
                 None => continue,
@@ -1586,7 +1586,7 @@ fn agent_models_list() -> Result<AgentModelsList> {
     let mut out: Vec<AgentModel> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&dir) {
         for e in entries.flatten() {
-            let fname = e.file_name().to_string_lossy().to_string();
+            let fname = e.file_name().to_string_lossy().into_owned();
             // Pattern: .model.<provider>.<name>.info
             let stripped = match fname.strip_prefix(".model.") {
                 Some(s) => s,

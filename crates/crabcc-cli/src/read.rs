@@ -21,7 +21,7 @@ pub fn run(
 ) -> Result<()> {
     let mode = ReadMode::parse(mode_raw)?;
     let session_id = effective_session_id(session_id_arg);
-    let path_label = path.to_string_lossy().to_string();
+    let path_label = path.to_string_lossy().into_owned();
     let payload = compute(root, store, path, mode, session_id, entropy_threshold)?;
     let body = payload.to_string();
     crabcc_core::track::record("read", &path_label, 1, &repo_label(root), body.len());

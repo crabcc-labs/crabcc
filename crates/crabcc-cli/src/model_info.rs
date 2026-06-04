@@ -215,7 +215,7 @@ mod tests {
             notes: None,
         };
         let path = write(tmp.path(), &info).unwrap();
-        let fname = path.file_name().unwrap().to_string_lossy().to_string();
+        let fname = path.file_name().unwrap().to_string_lossy().into_owned();
         assert!(!fname.contains('/'));
         assert!(fname.contains("ollama_qwen2.5-coder"));
     }
