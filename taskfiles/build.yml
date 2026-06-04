@@ -18,7 +18,7 @@ tasks:
       retrieval (ort fetches onnxruntime at build time; dev `build-fast`
       skips it to stay lean + offline).
     cmds:
-      - "{{.CARGO}} build --release -p crabcc-cli --features memory-embed"
+      - "{{.CARGO}} build --release -p crabcc-cli --features memory-embed,telemetry"
       - "{{.CARGO}} build --release"
 
   build-fast:
