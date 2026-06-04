@@ -12,6 +12,7 @@ use crabcc_core::{
 };
 use dashmap::DashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::Mutex;
@@ -36,6 +37,10 @@ pub struct Backend {
     /// handle without the old `RwLock<State>` read guard.
     pub store: Arc<std::sync::Mutex<Option<Store>>>,
     pub fts: Arc<std::sync::Mutex<Option<Fts>>>,
+    /// Bumped on every store mutation. `ensure_fts` snapshots it before
+    /// building and refuses to install a snapshot whose generation is stale,
+    /// so a build racing a concurrent edit can't overwrite the post-edit clear.
+    pub fts_gen: Arc<AtomicU64>,
     pub graph: Arc<std::sync::Mutex<Option<CallGraph>>>,
     /// Local-only usage/error/perf counters (see stats.rs).
     pub stats: Arc<crate::stats::Stats>,
@@ -77,11 +82,19 @@ fn ensure_store(store: &std::sync::Mutex<Option<Store>>, db_path: &std::path::Pa
 /// Lazily build the in-memory `Fts` from the live SQLite store and cache it in
 /// `fts`. Fuzzy/prefix no longer read a sidecar — they snapshot the symbol
 /// table directly — so this ensures the store is open, then builds from it.
-/// Locks are never held across both slots simultaneously (build under the
-/// store lock, drop it, then assign under the fts lock) to stay deadlock-free
-/// against callers that lock `fts` before `store`.
+///
+/// Concurrency: the snapshot is read under the store lock, but assigned to
+/// `fts` only after that lock is released, so a `did_change`/`did_save`
+/// reindex can commit + clear `fts` in between. To stop this build from racing
+/// a now-stale snapshot back into the slot, we snapshot `fts_gen` before
+/// reading and, under the `fts` lock, install only if the generation is
+/// unchanged (and nobody else already filled the slot). The mutation path
+/// (`invalidate_fts`) bumps the generation + clears the slot under the same
+/// lock, so the check is atomic against it. Locks are never held across both
+/// `store` and `fts` simultaneously, keeping it deadlock-free.
 fn ensure_fts(
     fts: &std::sync::Mutex<Option<Fts>>,
+    fts_gen: &AtomicU64,
     store: &std::sync::Mutex<Option<Store>>,
     db_path: &std::path::Path,
 ) -> bool {
@@ -91,6 +104,7 @@ fn ensure_fts(
     if !ensure_store(store, db_path) {
         return false;
     }
+    let gen_before = fts_gen.load(Ordering::SeqCst);
     let built = {
         let g = store.lock().unwrap();
         match g.as_ref() {
@@ -100,7 +114,13 @@ fn ensure_fts(
     };
     match built {
         Ok(v) => {
-            *fts.lock().unwrap() = Some(v);
+            let mut slot = fts.lock().unwrap();
+            // Install only if no mutation landed while we were building and
+            // nobody beat us to it. A stale build is simply dropped; the next
+            // request rebuilds against the fresh store.
+            if slot.is_none() && fts_gen.load(Ordering::SeqCst) == gen_before {
+                *slot = Some(v);
+            }
             true
         }
         Err(e) => {
@@ -108,6 +128,15 @@ fn ensure_fts(
             false
         }
     }
+}
+
+/// Mark the symbol store as mutated: bump the FTS generation and drop the
+/// cached snapshot under one lock, so an in-flight `ensure_fts` build that
+/// started before this point cannot install its now-stale snapshot afterwards.
+fn invalidate_fts(fts: &std::sync::Mutex<Option<Fts>>, fts_gen: &AtomicU64) {
+    let mut slot = fts.lock().unwrap();
+    fts_gen.fetch_add(1, Ordering::SeqCst);
+    *slot = None;
 }
 
 impl Backend {
@@ -122,6 +151,7 @@ impl Backend {
             open_docs: Arc::new(DashMap::new()),
             store: Arc::new(std::sync::Mutex::new(None)),
             fts: Arc::new(std::sync::Mutex::new(None)),
+            fts_gen: Arc::new(AtomicU64::new(0)),
             graph: Arc::new(std::sync::Mutex::new(None)),
             stats: Arc::new(crate::stats::Stats::new()),
         }
@@ -228,10 +258,11 @@ impl LanguageServer for Backend {
         // user never sends one, no I/O ever happens.
         let store = self.store.clone();
         let fts = self.fts.clone();
+        let fts_gen = self.fts_gen.clone();
         let cfg = self.root_config.lock().await.clone();
         let prefetch = tokio::task::spawn_blocking(move || {
             let store_ok = ensure_store(&store, &cfg.db_path);
-            let _ = ensure_fts(&fts, &store, &cfg.db_path);
+            let _ = ensure_fts(&fts, &fts_gen, &store, &cfg.db_path);
             (store_ok, cfg.repo_root.clone())
         })
         .await;
@@ -307,6 +338,7 @@ impl LanguageServer for Backend {
         let store = self.store.clone();
         let graph = self.graph.clone();
         let fts = self.fts.clone();
+        let fts_gen = self.fts_gen.clone();
         let cache = self.cache.clone();
         tokio::task::spawn_blocking(move || {
             ensure_store(&store, &cfg.db_path);
@@ -315,10 +347,10 @@ impl LanguageServer for Backend {
                 let _ = index::refresh(&cfg.repo_root, store);
                 drop(store_guard);
                 *graph.lock().unwrap() = None;
-                // Drop the cached fuzzy/prefix snapshot — `refresh` mutated
-                // the symbol table, so the next workspace/symbol request must
-                // rebuild `fts` from the updated store (mirrors `graph`).
-                *fts.lock().unwrap() = None;
+                // `refresh` mutated the symbol table: bump the generation +
+                // drop the snapshot so the next workspace/symbol request
+                // rebuilds it (and an in-flight build can't race it back).
+                invalidate_fts(&fts, &fts_gen);
                 // And re-clear the LRU: a query racing this background refresh
                 // may have re-cached a pre-refresh result after the entry-point
                 // invalidate_all() above but before the new rows landed.
@@ -497,7 +529,7 @@ impl LanguageServer for Backend {
             return Ok(Some((*out).clone()));
         }
         ensure_store(&self.store, &cfg.db_path);
-        ensure_fts(&self.fts, &self.store, &cfg.db_path);
+        ensure_fts(&self.fts, &self.fts_gen, &self.store, &cfg.db_path);
         let fts_guard = self.fts.lock().unwrap();
         let store_guard = self.store.lock().unwrap();
         let store = match store_guard.as_ref() {
@@ -764,7 +796,7 @@ impl Backend {
             // invalidate_all() and now; clearing again pins post-edit queries
             // to the fresh rows. The next request rebuilds `fts` lazily.
             Ok(()) => {
-                *self.fts.lock().unwrap() = None;
+                invalidate_fts(&self.fts, &self.fts_gen);
                 self.cache.invalidate_all();
             }
             Err(e) => warn!(target: "ucracc_lsp", ?uri, error = %e, "index_uri failed"),
