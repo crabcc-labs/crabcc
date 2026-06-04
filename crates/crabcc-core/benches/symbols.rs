@@ -51,7 +51,7 @@ fn synth_symbols(n: usize) -> Vec<Symbol> {
             file: format!("synthetic/path_{}.rs", i % 64),
             line_start: (i as u32) * 4 + 1,
             line_end: (i as u32) * 4 + 3,
-            visibility: if i % 5 == 0 { Some("pub".into()) } else { None },
+            visibility: (i % 5 == 0).then_some("pub".into()),
         })
         .collect()
 }

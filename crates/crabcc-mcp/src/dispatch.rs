@@ -113,9 +113,9 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
             return Ok(meta);
         }
     } else if matches!(tool, "_openapi" | "_health") {
-        return Err(anyhow::anyhow!(
+        anyhow::bail!(
             "tool {tool:?} is dev-only; restart the MCP server with --dev or CRABCC_MCP_DEV=1"
-        ));
+        );
     }
 
     // `ctx` is a meta-tool that dispatches by `tool` arg name. Re-enter
@@ -128,7 +128,7 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("ctx: missing `tool` arg"))?;
         if inner_tool == "ctx" {
-            return Err(anyhow::anyhow!("ctx: cannot dispatch ctx -> ctx"));
+            anyhow::bail!("ctx: cannot dispatch ctx -> ctx");
         }
         let inner_args = args.get("args").cloned().unwrap_or_else(|| json!({}));
         return dispatch_tool_inner(inner_tool, inner_args, root, dev);
@@ -263,10 +263,10 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| anyhow::anyhow!("write_file: missing arg `content`"))?;
             if std::path::Path::new(path).is_absolute() {
-                return Err(anyhow::anyhow!("write_file: path must be repo-relative"));
+                anyhow::bail!("write_file: path must be repo-relative");
             }
             if path.split('/').any(|c| c == "..") {
-                return Err(anyhow::anyhow!("write_file: `..` in path is rejected"));
+                anyhow::bail!("write_file: `..` in path is rejected");
             }
             let abs = root.join(path);
             if let Some(parent) = abs.parent() {
