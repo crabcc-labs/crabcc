@@ -63,7 +63,7 @@ YAML and Markdown deliberately don't emit call edges — they're not code.
 | `textDocument/definition` | Jump to where a symbol is defined | `query::find_symbol` |
 | `textDocument/references` | Find every reference to a symbol — single-file and cross-file | `query::find_refs ∪ query::find_callers` |
 | `textDocument/hover` | Signature + file:line + parent for the identifier at the cursor | first symbol from `query::find_symbol` |
-| `workspace/symbol` | Fuzzy / prefix search across the whole repo | tantivy `Fts::prefix` |
+| `workspace/symbol` | Fuzzy / prefix search across the whole repo | native `Fts::prefix` |
 | `callHierarchy/prepare` | Pin a callable for the next two requests | `query::find_symbol` |
 | `callHierarchy/incomingCalls` | Who calls this function? | `query::find_callers` |
 | `callHierarchy/outgoingCalls` | What does this function call? | `graph::CallGraph::callees` |
@@ -127,14 +127,14 @@ Swift and Bash used to be features here; in v0.2.0 they moved into
 
 ### Tips and gotchas
 
-- **`crabcc index` first.** ucracc-lsp expects `.crabcc/index.db` (and
-  `.crabcc/tantivy/` for `workspace/symbol`) to exist. If they don't, the
-  server starts in a "no-op" state — `documentSymbol` returns `None`,
-  `workspace/symbol` returns empty. On launch, the server shows a warning
-  message via `window/showMessage`.
-- **`workspace/symbol` needs the tantivy sidecar.** `crabcc index` builds
-  it; `crabcc refresh` does **not**. If you incrementally refresh a
-  large repo and `workspace/symbol` feels stale, run `crabcc index`
+- **`crabcc index` first.** ucracc-lsp expects `.crabcc/index.db` to
+  exist. If it doesn't, the server starts in a "no-op" state —
+  `documentSymbol` returns `None`, `workspace/symbol` returns empty. On
+  launch, the server shows a warning message via `window/showMessage`.
+- **`workspace/symbol` reads the live index.** Its fuzzy/prefix snapshot is
+  built in-memory from `index.db` (cached, and invalidated whenever the
+  server re-indexes an edited document), so it never goes stale on its own.
+  If results feel stale, the index itself is — run `crabcc index`
   (or call `crabcc fts-rebuild`).
 - **Cache invalidation on `didChange`.** The moka LRU is flushed on
   every write event. Stale hits are not a thing during editing. The
@@ -175,7 +175,7 @@ Swift and Bash used to be features here; in v0.2.0 they moved into
                             ┌────────────────────▼────────────────┐
                             │   State (RwLock + per-resource Mutexes)
                             │   - Store  (crabcc-core SQLite)     │
-                            │   - Fts    (crabcc-core tantivy)    │
+                            │   - Fts    (crabcc-core native)     │
                             │   - CallGraph                       │
                             │   - HashMap<Url, String>  (text)    │
                             │   - HashMap<Url, Tree>    (parse)   │
@@ -261,7 +261,7 @@ which acquire the inner Mutex, check `is_some()`, and open on miss.
 `initialized` (the LSP notification fired after the client receives our
 initialize response) spawns a background `tokio::task::spawn_blocking`
 that pre-warms both. By the time the user finishes hitting Cmd-S on
-their first file, the SQLite + tantivy open is already done.
+their first file, the SQLite open + symbol-load is already done.
 
 Result: `initialize` returns in ~24 µs (was 976 µs before lazy load).
 
@@ -300,7 +300,7 @@ data structure compatible with tokio's async runtime.
 Hit shape: serde-deserialize the cached `Value` back into the LSP wire
 type. The serialize/deserialize cost is real (~500 ns) but still beats
 the SQLite hit by 5–500× depending on the operation. The biggest win is
-`workspace/symbol` (tantivy + scoring at 604 µs → 1.1 µs cached, 550×).
+`workspace/symbol` (native scan + scoring at 604 µs → 1.1 µs cached, 550×).
 
 ### Extending the LSP
 

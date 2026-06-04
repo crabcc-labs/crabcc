@@ -114,10 +114,12 @@ snippet}`. Pipe through `jq` whenever you need to reshape — see examples above
 ## Re-indexing
 
 - `crabcc refresh` → incremental, mtime + sha256 keyed (~250ms no-op on 13k files).
-- `crabcc index` → full rebuild, also rebuilds Tantivy fuzzy/prefix sidecar.
-- `crabcc fts-rebuild` → rebuild fuzzy/prefix sidecar only.
+- `crabcc index` → full rebuild of the SQLite symbol index.
+- `crabcc fts-rebuild` → no-op, kept for back-compat (fuzzy/prefix read the live
+  index directly now, so there is no separate sidecar to rebuild).
 
-If lookups return stale results, run `refresh` first.
+Fuzzy/prefix always reflect the current `index.db`, so they're never stale on
+their own. If lookups return stale results, run `refresh` first.
 
 ## Token-cost rule of thumb
 

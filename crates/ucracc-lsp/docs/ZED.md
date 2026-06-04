@@ -73,7 +73,7 @@ startup. Build it once, then let crabcc keep it fresh:
 
 ```bash
 cd /path/to/project
-crabcc index            # builds .crabcc/index.db + .crabcc/tantivy/
+crabcc index            # builds .crabcc/index.db
 ```
 
 Without an index the server still starts but answers "empty" — Zed shows a
@@ -102,7 +102,7 @@ optional.
         "env": { "UCRACC_LOG": "info" }       // merged over the shell env
       },
       "initialization_options": {
-        "indexPath": ".crabcc"                // dir holding index.db + tantivy/
+        "indexPath": ".crabcc"                // dir holding index.db
       }
     }
   }
@@ -112,7 +112,7 @@ optional.
 ### `initialization_options.indexPath`
 
 Points the server at the `.crabcc` directory (the one containing
-`index.db` and `tantivy/`). Relative paths resolve against the worktree
+`index.db`). Relative paths resolve against the worktree
 root; absolute paths are used as-is. Both `indexPath` and `index_path`
 spellings are accepted. Omit it and the server uses `<root>/.crabcc`.
 
@@ -212,7 +212,7 @@ never blocks on it. Keystroke reparse on a ~3 KLOC file is ~162 µs
 | Symptom | Fix |
 |---|---|
 | `ucracc-lsp was not found on $PATH` | Install the binary, or set `lsp.ucracc-lsp.binary.path`. Verify with `dev: open language server logs`. |
-| Empty workspace symbols / go-to-definition | Index missing or stale — run `crabcc index` (rebuilds the tantivy sidecar `workspace/symbol` needs). |
-| Stale results after big out-of-editor changes | `crabcc index` (full) — incremental `crabcc refresh` doesn't rebuild the FTS sidecar. |
+| Empty workspace symbols / go-to-definition | Index missing or stale — run `crabcc index` (`workspace/symbol` reads it directly). |
+| Stale results after big out-of-editor changes | `crabcc refresh` (incremental) or `crabcc index` (full) — fuzzy/prefix read the live index. |
 | Want quiet logs | `binary.env.UCRACC_LOG = "warn"`. |
 | Extension won't build | `rustup target add wasm32-wasip1`. |

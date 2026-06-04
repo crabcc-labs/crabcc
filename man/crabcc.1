@@ -55,15 +55,16 @@ Run as an MCP server (JSON-RPC 2.0 over stdio) instead of a one-shot CLI. See
 .SS Indexing
 .TP
 .B index
-Build a fresh index for the repo. Wipes any existing index. Also rebuilds the
-Tantivy fuzzy/prefix sidecar.
+Build a fresh index for the repo. Wipes any existing index. Fuzzy/prefix
+search reads this index directly \(no separate sidecar\).
 .TP
 .B refresh
 Incrementally update the index. mtime + sha256 keyed; ~250 ms no-op on a
 13k-file repo.
 .TP
 .B fts-rebuild
-Rebuild only the Tantivy fuzzy/prefix sidecar from the current SQLite index.
+Retained as a no-op for backward compatibility. Fuzzy/prefix read the live
+index directly, so there is no sidecar to rebuild; prints the symbol count.
 
 .SS Symbol queries
 .TP
@@ -138,12 +139,6 @@ emits a structured object instead of the human-readable table.
 SQLite store: per-repo. Add to
 .IR .gitignore .
 .TP
-.I .crabcc/tantivy/
-Tantivy sidecar: per-repo. Rebuilt by
-.B index
-or
-.BR fts\-rebuild .
-.TP
 .I ~/.crabcc/usage.log
 Global JSONL telemetry log used by
 .BR track .
@@ -156,7 +151,7 @@ Tracing log filter. Defaults to
 .IR warn .
 Set
 .IR RUST_LOG=info
-for query timings and Tantivy chatter.
+for query timings.
 
 .SH EXIT STATUS
 .B 0

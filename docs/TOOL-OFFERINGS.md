@@ -32,11 +32,11 @@ lookup mission.
 | `crabcc callers NAME --count` | Shell count pipelines | Call-count checks | Docs note `rg` can be competitive for tight count-only regexes. |
 | `crabcc outline FILE` | Reading or dumping a whole file to understand shape | "What's in this file?" | Returns symbols and line ranges without method bodies. Use the ranges for selective reads. |
 | `crabcc files` | `ls -R`, `find . -name`, some `rg --files` code-file listings | Indexed code-file listing | SQLite-backed, gitignore-aware, filterable by `--under`, `--lang`, `--ext`, `--limit`. |
-| `crabcc fuzzy QUERY` | Guess-and-grep for misspelled symbol names | Typo-tolerant symbol lookup | Tantivy-backed Levenshtein-distance-2 over symbol names. |
-| `crabcc prefix QUERY` | Prefix regex scans over definitions | Starts-with symbol lookup | Case-insensitive prefix search over symbol names. |
-| `crabcc index` | Repeated cold disk scans | Initial repo indexing | Builds `.crabcc/index.db` and Tantivy sidecar. |
+| `crabcc fuzzy QUERY` | Guess-and-grep for misspelled symbol names | Typo-tolerant symbol lookup | Native, token-aware Levenshtein-distance-2 over symbol names, read live from the index. |
+| `crabcc prefix QUERY` | Prefix regex scans over definitions | Starts-with symbol lookup | Case-insensitive, token-aware prefix search over symbol names. |
+| `crabcc index` | Repeated cold disk scans | Initial repo indexing | Builds `.crabcc/index.db` (fuzzy/prefix read it directly — no sidecar). |
 | `crabcc refresh` | Rebuilding from scratch after edits | Incremental index update | mtime + sha256 keyed; fast no-op path. |
-| `crabcc fts-rebuild` | Full reindex just to fix fuzzy/prefix | Refresh the Tantivy sidecar | Needed when `refresh` changed SQLite but fuzzy/prefix sidecar is stale. |
+| `crabcc fts-rebuild` | — | Retained no-op (back-compat) | Fuzzy/prefix read the live index, so there is no sidecar to rebuild; just reports the symbol count. |
 | `crabcc track` | Ad hoc token-saving estimates | Usage and savings telemetry | Estimates tokens saved versus `grep + Read`. |
 | `crabcc --mcp` | Repeated CLI subprocess calls by agents | Persistent agent tool server | Exposes the same lookup primitives through MCP `tools/call`. |
 

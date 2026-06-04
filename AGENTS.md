@@ -8,8 +8,9 @@
 
 `crabcc` — a Rust CLI + MCP server that indexes a repo's symbols (functions,
 classes, methods, etc.) for symbol-aware lookups. SQLite-backed (`.crabcc/index.db`),
-Tantivy sidecar for fuzzy/prefix search, optional FSST string compression on
-the signature column (default-on as of v2.0.0-alpha).
+with native fuzzy/prefix search built in-memory from that index (no sidecar),
+optional FSST string compression on the signature column (default-on as of
+v2.0.0-alpha).
 
 Use it instead of `grep`/`find` for symbol-name queries: `crabcc sym Foo`,
 `crabcc refs Foo`, `crabcc callers handleAuth`.

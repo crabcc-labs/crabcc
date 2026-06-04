@@ -7,14 +7,15 @@
 ## What this crate is
 
 `ucracc-lsp` is a **navigation + retrieval** language server backed by
-`crabcc-core`'s symbol DB (SQLite) + Tantivy index. It is **additive**: it
+`crabcc-core`'s symbol DB (SQLite), with native fuzzy/prefix search built
+from it. It is **additive**: it
 runs *alongside* the semantic server for each language (rust-analyzer,
 pyright, gopls, …), which Zed/Neovim merge. It deliberately does **not** do
 diagnostics, completion, formatting, or rename — those stay with the
 semantic server.
 
 What it *does* provide: `hover`, `definition`, `references`,
-`documentSymbol`, repo-wide `workspace/symbol` (Tantivy prefix), call
+`documentSymbol`, repo-wide `workspace/symbol` (native prefix), call
 hierarchy (from the `edges` table), and an AI-first `executeCommand`
 surface (`ucracc.memory.search`, `ucracc.webfetch`, `ucracc.rerank` —
 feature-gated).
