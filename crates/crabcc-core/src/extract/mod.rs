@@ -4,7 +4,7 @@ use crate::types::{Edge, Symbol, SymbolKind};
 use anyhow::{anyhow, Result};
 use bumpalo::Bump;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use ahash::HashMap;
 use std::path::Path;
 use tree_sitter::{Node, Parser};
 
@@ -22,7 +22,7 @@ pub mod resolve_ts;
 // The map is keyed on the `&'static str` lang tag we already pass
 // everywhere, so no allocation on lookup.
 thread_local! {
-    static PARSERS: RefCell<HashMap<&'static str, Parser>> = RefCell::new(HashMap::new());
+    static PARSERS: RefCell<HashMap<&'static str, Parser>> = RefCell::new(HashMap::default());
 }
 
 fn intern_lang(lang: &str) -> Option<&'static str> {
@@ -141,9 +141,9 @@ pub fn extract_file_with_edges_with_resolver(
 
         // Pass 1: collect definitions, write to store, build local_defs + src_id map
         let mut symbols = Vec::new();
-        let mut local_defs: HashMap<String, SymbolId> = HashMap::new();
+        let mut local_defs: HashMap<String, SymbolId> = HashMap::default();
         // tree-sitter Node::id() returns usize and is stable for the Tree's lifetime.
-        let mut node_to_src_id: HashMap<(usize, usize), SymbolId> = HashMap::new();
+        let mut node_to_src_id: HashMap<(usize, usize), SymbolId> = HashMap::default();
         walk_with_store(
             root,
             bytes,
@@ -228,8 +228,8 @@ pub fn extract_from_root_with_resolver(
 
     // Pass1: collect definitions, write to store
     let mut symbols = Vec::new();
-    let mut local_defs: HashMap<String, SymbolId> = HashMap::new();
-    let mut node_to_src_id: HashMap<(usize, usize), SymbolId> = HashMap::new();
+    let mut local_defs: HashMap<String, SymbolId> = HashMap::default();
+    let mut node_to_src_id: HashMap<(usize, usize), SymbolId> = HashMap::default();
     walk_with_store(
         root,
         src,

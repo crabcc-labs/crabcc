@@ -1,9 +1,9 @@
 use crate::audit::{model, tokens};
-use std::collections::HashMap;
+use ahash::HashMap;
 
 pub fn analyze(session: &model::SessionFile, raw_lines: &[String]) -> Vec<model::WasteFinding> {
     let mut findings = Vec::new();
-    let mut line_counts = HashMap::new();
+    let mut line_counts = HashMap::default();
 
     for line in raw_lines {
         // Check for huge tool output

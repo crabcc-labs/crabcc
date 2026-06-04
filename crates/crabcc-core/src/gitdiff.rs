@@ -13,7 +13,7 @@
 //!   so we don't need to mediate between APIs.
 
 use anyhow::{anyhow, Context, Result};
-use std::collections::HashSet;
+use ahash::HashSet;
 use std::path::Path;
 use std::process::Command;
 

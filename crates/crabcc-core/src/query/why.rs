@@ -15,7 +15,8 @@ use crate::types::{Symbol, SymbolKind};
 use anyhow::Result;
 use rusqlite::params;
 use serde::Serialize;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
+use ahash::{HashMap, HashSet};
 
 #[derive(Debug, Serialize)]
 pub struct Path {
@@ -49,11 +50,11 @@ pub fn why(store: &Store, src: i64, dst: i64, max_depth: usize) -> Result<Option
     // parent_fwd[node] = the node we came from while expanding from `src`.
     // parent_rev[node] = the node we came from while expanding from `dst`.
     // edge_fwd[(src_id, dst_id)] = (kind, line) of the chosen edge.
-    let mut parent_fwd: HashMap<i64, i64> = HashMap::new();
-    let mut parent_rev: HashMap<i64, i64> = HashMap::new();
-    let mut edge_meta: HashMap<(i64, i64), (String, i64)> = HashMap::new();
-    let mut seen_fwd: HashSet<i64> = HashSet::new();
-    let mut seen_rev: HashSet<i64> = HashSet::new();
+    let mut parent_fwd: HashMap<i64, i64> = HashMap::default();
+    let mut parent_rev: HashMap<i64, i64> = HashMap::default();
+    let mut edge_meta: HashMap<(i64, i64), (String, i64)> = HashMap::default();
+    let mut seen_fwd: HashSet<i64> = HashSet::default();
+    let mut seen_rev: HashSet<i64> = HashSet::default();
     seen_fwd.insert(src);
     seen_rev.insert(dst);
 

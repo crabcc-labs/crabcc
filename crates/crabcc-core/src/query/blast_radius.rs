@@ -56,7 +56,7 @@ pub fn blast_radius(
     if max_depth == 0 {
         return Ok(BlastRadiusResult {
             affected: Vec::new(),
-            depth_map: HashMap::new(),
+            depth_map: HashMap::default(),
             kinds_used,
         });
     }

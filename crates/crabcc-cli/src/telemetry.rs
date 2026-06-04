@@ -190,7 +190,7 @@ const TELEGRAM_MIN_GAP_SECS: u64 = 60;
 
 struct TelegramLayer {
     tx: tokio::sync::mpsc::Sender<String>,
-    last_sent: std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+    last_sent: std::sync::Mutex<ahash::HashMap<String, std::time::Instant>>,
 }
 
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TelegramLayer {
@@ -369,7 +369,7 @@ fn try_init_telegram() -> Option<(TelegramHandle, TelegramLayer)> {
         },
         TelegramLayer {
             tx,
-            last_sent: std::sync::Mutex::new(std::collections::HashMap::new()),
+            last_sent: std::sync::Mutex::new(ahash::HashMap::new()),
         },
     ))
 }

@@ -3,7 +3,7 @@
 //! See [`super::Palace::search_hybrid`] for the entry point.
 
 use crate::types::*;
-use std::collections::HashMap;
+use ahash::HashMap;
 
 /// Reciprocal Rank Fusion constant (Cormack/Clarke/Buettcher 2009). Larger
 /// `k` softens the rank curve so top-of-list disagreements between rankers
@@ -22,7 +22,7 @@ pub(super) fn rrf_fuse(rankings: &[&[DrawerHit]], limit: usize) -> Vec<DrawerHit
     if limit == 0 || rankings.iter().all(|r| r.is_empty()) {
         return Vec::new();
     }
-    let mut fused: HashMap<DrawerId, (f32, DrawerHit)> = HashMap::new();
+    let mut fused: HashMap<DrawerId, (f32, DrawerHit)> = HashMap::default();
     for ranking in rankings {
         for (rank, hit) in ranking.iter().enumerate() {
             let contribution = 1.0_f32 / (RRF_K as f32 + (rank + 1) as f32);

@@ -14,7 +14,7 @@ use crate::store::Store;
 use anyhow::Result;
 use rusqlite::{params, params_from_iter};
 use serde::Serialize;
-use std::collections::{HashMap, HashSet};
+use ahash::{HashMap, HashSet};
 
 #[derive(Debug, Serialize)]
 pub struct FileImporter {
@@ -50,16 +50,16 @@ pub fn importers(store: &Store, target_path: &str, max_depth: usize) -> Result<V
     // `reached` is the file-id set the BFS has already expanded into,
     // starting with just the target. We accumulate per-file (depth,
     // edge_count) only for files OUTSIDE the initial target.
-    let mut reached: HashSet<i64> = HashSet::new();
+    let mut reached: HashSet<i64> = HashSet::default();
     reached.insert(target_file_id);
 
     // result[file_id] = (depth, edge_count). We aggregate edge_count across
     // BFS waves: a file may be reached at depth d but accumulate additional
     // edges in later waves as the reached set grows.
-    let mut result: HashMap<i64, (usize, usize)> = HashMap::new();
+    let mut result: HashMap<i64, (usize, usize)> = HashMap::default();
 
     // Frontier per wave: the file-ids whose imports we are about to expand.
-    let mut frontier: HashSet<i64> = HashSet::new();
+    let mut frontier: HashSet<i64> = HashSet::default();
     frontier.insert(target_file_id);
 
     // SQL: count edges whose destination symbol lives in ANY of the
@@ -90,7 +90,7 @@ pub fn importers(store: &Store, target_path: &str, max_depth: usize) -> Result<V
         let rows = stmt.query_map(params_from_iter(bound.iter().map(|b| b.as_ref())), |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)? as usize))
         })?;
-        let mut next_frontier: HashSet<i64> = HashSet::new();
+        let mut next_frontier: HashSet<i64> = HashSet::default();
         for r in rows {
             let (src_file_id, edges) = r?;
             // Only files NOT already reached become new frontier entries —

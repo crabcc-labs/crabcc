@@ -21,7 +21,8 @@
 use crate::store::Store;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use ahash::HashSet;
 use std::path::Path;
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -168,7 +169,7 @@ impl CallGraph {
 
 fn bfs(adj: &BTreeMap<i64, BTreeSet<i64>>, start: i64, depth: usize) -> Vec<GraphHit> {
     let mut out = Vec::new();
-    let mut seen: HashSet<i64> = HashSet::new();
+    let mut seen: HashSet<i64> = HashSet::default();
     let mut q: VecDeque<(i64, usize)> = VecDeque::new();
     q.push_back((start, 0));
     seen.insert(start);
@@ -198,7 +199,7 @@ fn bfs(adj: &BTreeMap<i64, BTreeSet<i64>>, start: i64, depth: usize) -> Vec<Grap
 fn tarjan_scc(adj: &BTreeMap<i64, BTreeSet<i64>>) -> Vec<Vec<i64>> {
     let mut idx: BTreeMap<i64, usize> = BTreeMap::new();
     let mut lowlink: BTreeMap<i64, usize> = BTreeMap::new();
-    let mut on_stack: HashSet<i64> = HashSet::new();
+    let mut on_stack: HashSet<i64> = HashSet::default();
     let mut stack: Vec<i64> = Vec::new();
     let mut next_index: usize = 0;
     let mut sccs: Vec<Vec<i64>> = Vec::new();
