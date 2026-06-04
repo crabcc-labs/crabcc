@@ -438,10 +438,7 @@ async fn workspace_symbol_reflects_did_change() {
     let uri = uri_for(&root, "ucracc.rs");
     open_doc(&svc, uri.clone(), "rust", fixtures::RUST_SRC).await;
 
-    async fn has_symbol(
-        svc: &LspService<ucracc_lsp::server::Backend>,
-        query: &str,
-    ) -> bool {
+    async fn has_symbol(svc: &LspService<ucracc_lsp::server::Backend>, query: &str) -> bool {
         svc.inner()
             .symbol(WorkspaceSymbolParams {
                 query: query.to_string(),

@@ -287,6 +287,65 @@ mod tests {
         assert_eq!(a, b);
     }
 
+    /// Perf regression guard. Fuzzy/prefix are linear scans, so 4× the corpus
+    /// should cost on the order of 4× the time — never the ~16× of an
+    /// accidental O(N²) (e.g. a nested match or a per-row re-sort). We compare
+    /// a small vs 4×-larger corpus with generous slack so this is robust on
+    /// noisy/shared CI runners and only trips on a genuine algorithmic blow-up.
+    #[test]
+    fn fuzzy_prefix_scale_roughly_linearly() {
+        use std::time::{Duration, Instant};
+
+        fn synth(n: usize) -> Vec<crate::types::Symbol> {
+            (0..n)
+                .map(|i| crate::types::Symbol {
+                    name: format!("sym_{i:05}"),
+                    kind: SymbolKind::Function,
+                    signature: None,
+                    parent: None,
+                    file: "synthetic.rs".into(),
+                    line_start: i as u32,
+                    line_end: i as u32,
+                    visibility: None,
+                })
+                .collect()
+        }
+
+        // Best-of-N min timing of a batch, to damp scheduler noise.
+        fn time_queries(n: usize) -> Duration {
+            let fts = Fts::from_symbols(synth(n));
+            let q = format!("sym_{:05}", n / 2);
+            let prefix = &q[..q.len() - 1]; // matches ~10 rows (sort stays cheap)
+            let run = || {
+                for _ in 0..25 {
+                    let _ = fts.fuzzy(&q, 20).unwrap();
+                    let _ = fts.prefix(prefix, 20).unwrap();
+                }
+            };
+            run(); // warm up
+            let mut best = Duration::MAX;
+            for _ in 0..4 {
+                let t = Instant::now();
+                run();
+                best = best.min(t.elapsed());
+            }
+            best
+        }
+
+        let small = time_queries(5_000);
+        let big = time_queries(20_000); // 4× the corpus
+
+        // Linear would be ~4×; allow up to 8× for cache effects + noise. An
+        // O(N²) regression lands near 16× and trips this. Skip the ratio when
+        // the larger run is already sub-millisecond (timer noise dominates).
+        assert!(
+            big < small * 8 || big < Duration::from_millis(1),
+            "fuzzy/prefix scaling looks super-linear: 5k={small:?} 20k={big:?} \
+             ({:.1}× — expected ~4× for a linear scan)",
+            big.as_secs_f64() / small.as_secs_f64().max(f64::MIN_POSITIVE)
+        );
+    }
+
     #[test]
     fn bounded_levenshtein_matches_known_distances() {
         assert_eq!(bounded_levenshtein("store", "store", 2), Some(0));

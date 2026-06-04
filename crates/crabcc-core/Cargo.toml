@@ -78,3 +78,10 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 name = "symbols"
 harness = false
 required-features = ["bench"]
+
+# Native fuzzy/prefix search matrix (corpus size × query shape). Replaced the
+# Tantivy sidecar in v6.x; this quantifies the brute-force scan's scaling.
+[[bench]]
+name = "fts_search"
+harness = false
+required-features = ["bench"]
