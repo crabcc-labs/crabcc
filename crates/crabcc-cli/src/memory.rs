@@ -310,25 +310,33 @@ pub fn run(root: &Path, cmd: MemoryCmd) -> Result<()> {
             // URL fetch phase — async via a per-call runtime. Single-user
             // CLI so the runtime cost is negligible.
             if !urls.is_empty() {
-                let safe: Vec<String> = urls
-                    .iter()
-                    .filter(|u| match crabcc_fetch::is_ingest_safe_url(u) {
-                        Ok(()) => true,
-                        Err(reason) => {
-                            errors.push(serde_json::json!({"url": u, "error": reason}));
-                            false
-                        }
-                    })
-                    .cloned()
-                    .collect();
+                // `crabcc memory` runs as the user, so URL ingest is
+                // relaxed by default (fetch your own LAN/localhost too);
+                // set CRABCC_FETCH_SSRF=on to restore the guard. When
+                // enforced, pre-filter unsafe URLs with a clear per-URL
+                // error rather than letting them fail mid-fetch.
+                let enforce_ssrf = crabcc_fetch::ssrf_enforced(false);
+                let safe: Vec<String> = if enforce_ssrf {
+                    urls.iter()
+                        .filter(|u| match crabcc_fetch::is_ingest_safe_url(u) {
+                            Ok(()) => true,
+                            Err(reason) => {
+                                errors.push(serde_json::json!({"url": u, "error": reason}));
+                                false
+                            }
+                        })
+                        .cloned()
+                        .collect()
+                } else {
+                    urls.clone()
+                };
                 if !safe.is_empty() {
                     let rt = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
                         .build()?;
-                    let results = rt.block_on(crabcc_fetch::fetch_and_clean(
-                        &safe,
-                        crabcc_fetch::FetchOpts::ingest(),
-                    ));
+                    let mut fetch_opts = crabcc_fetch::FetchOpts::ingest();
+                    fetch_opts.enforce_ssrf = enforce_ssrf;
+                    let results = rt.block_on(crabcc_fetch::fetch_and_clean(&safe, fetch_opts));
                     for r in results {
                         if r.error.is_some() || r.content_markdown.is_none() {
                             errors.push(serde_json::json!({
