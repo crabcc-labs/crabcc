@@ -99,7 +99,9 @@ fn lookup_shell(
 }
 
 fn row_to_record(r: &rusqlite::Row<'_>) -> rusqlite::Result<ShellRecord> {
-    let session_id = r.get::<_, Option<String>>(2)?.filter(|s| s != NULL_SESSION_SENTINEL);
+    let session_id = r
+        .get::<_, Option<String>>(2)?
+        .filter(|s| s != NULL_SESSION_SENTINEL);
     Ok(ShellRecord {
         command: r.get(0)?,
         cwd: r.get(1)?,

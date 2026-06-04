@@ -20,8 +20,8 @@
 //! not (the CLI runs as the user, internal IPs may be desired).
 
 use anyhow::Result;
-use std::fmt::Write as _;
 use serde::{Deserialize, Serialize};
+use std::fmt::Write as _;
 use std::time::Duration;
 
 const USER_AGENT: &str = concat!("crabcc-fetch/", env!("CARGO_PKG_VERSION"));
@@ -185,7 +185,11 @@ pub fn render_reddit_json(body: &str) -> Option<(String, String)> {
     let score = post.get("score").and_then(|s| s.as_i64()).unwrap_or(0);
 
     let mut md = String::new();
-    write!(md, "**r/{subreddit}**  \\| u/{author} \\| score {score}\n\n").unwrap();
+    write!(
+        md,
+        "**r/{subreddit}**  \\| u/{author} \\| score {score}\n\n"
+    )
+    .unwrap();
     if !selftext.is_empty() {
         md.push_str(selftext);
         md.push_str("\n\n");
