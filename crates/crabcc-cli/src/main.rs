@@ -595,7 +595,12 @@ enum Cmd {
     /// manifests, crawl each dependency's docs into memory in the
     /// background, and write a research plan + codebase overview +
     /// SessionStart-hook snippet under `.crabcc/onboard/`.
-    Init,
+    Init {
+        /// SessionStart-hook mode: emit onboarding context for the first few
+        /// prompts then go silent. Does NOT run onboarding (no crawl/lock).
+        #[arg(long)]
+        inject: bool,
+    },
     /// Start the localhost call-graph viewer (issue #64). Binds to 127.0.0.1
     /// by default — pass `--bind 0.0.0.0` only on a trusted LAN; the server
     /// is unauthenticated and exposes architecture.
@@ -1364,8 +1369,12 @@ fn main() -> Result<()> {
 
     // `init` reads dependency manifests + writes onboarding artifacts +
     // spawns background crawls; no symbol Store needed.
-    if let Some(Cmd::Init) = cli.cmd.as_ref() {
-        return init_cmd::run(&root);
+    if let Some(Cmd::Init { inject }) = cli.cmd.as_ref() {
+        return if *inject {
+            init_cmd::run_inject(&root)
+        } else {
+            init_cmd::run(&root)
+        };
     }
 
     // `serve` boots crabcc-viz; doesn't need the symbol Store opened
@@ -1845,7 +1854,7 @@ fn main() -> Result<()> {
         Cmd::Csv { .. } => unreachable!("csv handled before store init"),
         Cmd::Squeeze { .. } => unreachable!("squeeze handled before store init"),
         Cmd::Run { .. } => unreachable!("run handled before store init"),
-        Cmd::Init => unreachable!("init handled before store init"),
+        Cmd::Init { .. } => unreachable!("init handled before store init"),
         Cmd::Serve { .. } => unreachable!("serve handled before store init"),
         Cmd::Agent { .. } => unreachable!("agent handled before store init"),
         Cmd::Stack { .. } => unreachable!("stack handled before store init"),
@@ -2471,7 +2480,7 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::Csv { .. } => "csv",
         Cmd::Squeeze { .. } => "squeeze",
         Cmd::Run { .. } => "run",
-        Cmd::Init => "init",
+        Cmd::Init { .. } => "init",
         Cmd::Serve { .. } => "serve",
         Cmd::Read { .. } => "read",
         Cmd::Edit { .. } => "edit",
