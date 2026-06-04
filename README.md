@@ -407,7 +407,7 @@ just the matching lines — when the question is small, raw wins on bytes.
 | `lto=fat` + `codegen-units=1` + `panic=abort`    | `Cargo.toml` `[profile.release]` | (baseline — landed pre-2.10) |
 | `cache_size = -64 MiB` (was -16 MiB)             | `Store::open` PRAGMAs | ~30% on bulk writes, faster cold reads on warm I/O |
 | `release-native` profile + `target-cpu=native`   | `Cargo.toml` + `task build-native` | +5–15% on byte-scan / index loops; SIGILL on non-matching CPU |
-| `tikv-jemallocator` global allocator             | `crabcc-cli/src/main.rs` | ~5–12% on alloc-heavy paths (extract.rs, MCP `serve_io`) |
+| `tikv-jemallocator` global allocator             | `crabcc-cli/src/main.rs` | **re-benched [#648](./docs/PERF-648-agent-shell-and-deps.md): tie** — system/jemalloc/mimalloc within <3% on cold index. Kept jemalloc; mimalloc gave no measured win. |
 | `bumpalo` per-file arena during tree-sitter walk | `crabcc-core/src/extract.rs` | already shipped; ~80% of the gain a nightly `Vec<T, A>` would offer |
 | Auto-snapshot of `.crabcc/` after index/refresh  | `crabcc-cli/src/backup.rs` | bookkeeping only — best-effort, never blocks the index path |
 
@@ -423,6 +423,22 @@ Re-run:
 ```bash
 cd bench && python3 raw-bench.py /path/to/your/repo && python3 visualize.py
 ```
+
+### #648 perf campaign + agent-shell protector
+
+Full results + methodology: [`docs/PERF-648-agent-shell-and-deps.md`](./docs/PERF-648-agent-shell-and-deps.md)
+(raw artifacts in [`bench/results-648/`](./bench/results-648/)). Headlines (measured 2026-06-04, bench-node):
+
+- **Agent MCP latency ~39–56× lower** — per-session `Store` reuse removes the
+  ~680 µs per-call DB-open floor in `serve_io`.
+- **`read` tool ~19 ms → ~1 ms/call** — schema-ensure once/process + cached
+  session-read connection.
+- **Agent-shell protector**: PreToolUse hook rewrites grep/find → `rg` /
+  `crabcc lookup refs`. Symbol upgrades cut **34–98%** of output tokens
+  (precise refs vs every textual match); a PostToolUse measure/learn loop
+  suppresses any rewrite that doesn't actually reduce tokens.
+- **Allocator: measured tie** (see corrected row above) — jemalloc kept,
+  mimalloc reverted.
 
 ---
 
