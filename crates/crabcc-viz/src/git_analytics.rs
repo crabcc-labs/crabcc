@@ -84,7 +84,11 @@ fn read_cache(
 }
 
 fn write_cache(root: &Path, snap: &AnalyticsSnapshot, hotspot_limit: usize, dead_limit: usize) {
-    let entry = CacheEntry { hotspot_limit, dead_limit, snapshot: snap.clone() };
+    let entry = CacheEntry {
+        hotspot_limit,
+        dead_limit,
+        snapshot: snap.clone(),
+    };
     if let Ok(body) = serde_json::to_vec(&entry) {
         let _ = std::fs::write(cache_path(root), body);
     }
@@ -278,8 +282,7 @@ fn compute_dead_code(root: &Path, limit: usize) -> Result<Vec<DeadSymbol>> {
         return Ok(vec![]);
     }
     let graph = crabcc_core::graph::CallGraph::load(&graph_path)?;
-    let has_callers: std::collections::HashSet<i64> =
-        graph.callers.keys().copied().collect();
+    let has_callers: std::collections::HashSet<i64> = graph.callers.keys().copied().collect();
     // Derive candidates from ALL function symbols in the DB (not just
     // graph.callees.keys(), which omits symbols with zero outgoing calls).
     let mut fn_stmt = conn.prepare(
@@ -324,7 +327,11 @@ fn compute_dead_code(root: &Path, limit: usize) -> Result<Vec<DeadSymbol>> {
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
-pub(crate) fn analytics_snapshot(root: &Path, hotspot_limit: usize, dead_limit: usize) -> AnalyticsSnapshot {
+pub(crate) fn analytics_snapshot(
+    root: &Path,
+    hotspot_limit: usize,
+    dead_limit: usize,
+) -> AnalyticsSnapshot {
     let sha = head_sha(root);
     if let Some(cached) = read_cache(root, &sha, hotspot_limit, dead_limit) {
         return cached;

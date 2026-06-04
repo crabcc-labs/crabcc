@@ -75,15 +75,17 @@ pub fn discover() -> Result<Vec<WorkspaceRepo>> {
 /// Same as `discover` but with an explicit `$CRABCC_HOME` override. Tests use
 /// this to avoid the env-var mutation race that `cargo test` parallelism
 /// causes (mirrors `root_resolver::resolve_with_home`).
-pub(crate) fn discover_with_home(home_override: Option<&std::path::Path>) -> Result<Vec<WorkspaceRepo>> {
+pub(crate) fn discover_with_home(
+    home_override: Option<&std::path::Path>,
+) -> Result<Vec<WorkspaceRepo>> {
     let home = crabcc_home(home_override)?;
     let repos_dir = home.join("repos");
     if !repos_dir.exists() {
         return Ok(vec![]);
     }
     let mut out = Vec::new();
-    for entry in std::fs::read_dir(&repos_dir)
-        .with_context(|| format!("read {}", repos_dir.display()))?
+    for entry in
+        std::fs::read_dir(&repos_dir).with_context(|| format!("read {}", repos_dir.display()))?
     {
         let entry = entry?;
         let path = entry.path();

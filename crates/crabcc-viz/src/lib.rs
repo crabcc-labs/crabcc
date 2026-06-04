@@ -320,7 +320,9 @@ fn handle(request: Request, root: &Path) -> Result<()> {
                 .unwrap_or(1);
             match forge::list_prs(root, &state, page) {
                 Ok(snap) => respond_json(request, &snap),
-                Err(e) => respond_status(request, forge_http_status(&e), &format!("forge prs: {e}")),
+                Err(e) => {
+                    respond_status(request, forge_http_status(&e), &format!("forge prs: {e}"))
+                }
             }
         }
         // ── Analytics ───────────────────────────────────────────────────────
@@ -330,13 +332,16 @@ fn handle(request: Request, root: &Path) -> Result<()> {
                 .unwrap_or(50)
                 .clamp(1, 200);
             let snap = git_analytics::analytics_snapshot(root, limit, 200);
-            respond_json(request, &serde_json::json!({
-                "hotspots": snap.hotspots,
-                "head_sha": snap.head_sha,
-                "computed_at": snap.computed_at,
-                "total_commits_scanned": snap.total_commits_scanned,
-                "total_files_seen": snap.total_files_seen,
-            }))
+            respond_json(
+                request,
+                &serde_json::json!({
+                    "hotspots": snap.hotspots,
+                    "head_sha": snap.head_sha,
+                    "computed_at": snap.computed_at,
+                    "total_commits_scanned": snap.total_commits_scanned,
+                    "total_files_seen": snap.total_files_seen,
+                }),
+            )
         }
         "/api/analytics/deadcode" => {
             let limit: usize = query_param(query, "limit")
@@ -344,11 +349,14 @@ fn handle(request: Request, root: &Path) -> Result<()> {
                 .unwrap_or(100)
                 .clamp(1, 500);
             let snap = git_analytics::analytics_snapshot(root, 50, limit);
-            respond_json(request, &serde_json::json!({
-                "dead_code": snap.dead_code,
-                "head_sha": snap.head_sha,
-                "computed_at": snap.computed_at,
-            }))
+            respond_json(
+                request,
+                &serde_json::json!({
+                    "dead_code": snap.dead_code,
+                    "head_sha": snap.head_sha,
+                    "computed_at": snap.computed_at,
+                }),
+            )
         }
         _ => {
             // Path-parameter forge routes: /api/forge/prs/{number}[/impact]
@@ -367,10 +375,18 @@ fn handle(request: Request, root: &Path) -> Result<()> {
                 }
                 // /api/forge/prs/{number} — single PR detail
                 if let Ok(number) = rest.parse::<u64>() {
-                    return match (forge::get_pr(root, number), forge::get_pr_files(root, number)) {
-                        (Ok(pr), Ok((files, files_truncated))) => {
-                            respond_json(request, &forge::PrDetail { pr, files, files_truncated })
-                        }
+                    return match (
+                        forge::get_pr(root, number),
+                        forge::get_pr_files(root, number),
+                    ) {
+                        (Ok(pr), Ok((files, files_truncated))) => respond_json(
+                            request,
+                            &forge::PrDetail {
+                                pr,
+                                files,
+                                files_truncated,
+                            },
+                        ),
                         (Err(e), _) | (_, Err(e)) => respond_status(
                             request,
                             forge_http_status(&e),
@@ -800,8 +816,7 @@ fn seed_graph(root: &Path, query: &str) -> Result<SeedSnapshot> {
 
     // Resolve top symbol IDs to names. We scan past failed resolutions so
     // `seed_ids.len() == limit` (or exhausted) rather than silently short.
-    let mut id_to_name: std::collections::HashMap<i64, String> =
-        std::collections::HashMap::new();
+    let mut id_to_name: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
     let mut seed_ids: Vec<i64> = Vec::new();
     for &(id, _) in &ranked {
         if seed_ids.len() >= limit {
@@ -846,8 +861,11 @@ fn seed_graph(root: &Path, query: &str) -> Result<SeedSnapshot> {
         // Keep the seeds first, then add neighbors deterministically
         // by sorted ID until we hit `cap`.
         let mut out: std::collections::BTreeSet<i64> = seed_id_set.iter().copied().collect();
-        let mut others: Vec<i64> =
-            node_ids.iter().copied().filter(|n| !out.contains(n)).collect();
+        let mut others: Vec<i64> = node_ids
+            .iter()
+            .copied()
+            .filter(|n| !out.contains(n))
+            .collect();
         others.sort();
         for n in others.into_iter().take(cap.saturating_sub(out.len())) {
             out.insert(n);
@@ -858,7 +876,11 @@ fn seed_graph(root: &Path, query: &str) -> Result<SeedSnapshot> {
     // Resolve any not-yet-resolved node IDs to names.
     for &id in &node_ids {
         id_to_name.entry(id).or_insert_with(|| {
-            store.symbol_name_by_id(id).ok().flatten().unwrap_or_default()
+            store
+                .symbol_name_by_id(id)
+                .ok()
+                .flatten()
+                .unwrap_or_default()
         });
     }
     // Remove IDs that couldn't be resolved (empty name).
@@ -878,7 +900,9 @@ fn seed_graph(root: &Path, query: &str) -> Result<SeedSnapshot> {
         if !node_ids.contains(&src_id) {
             continue;
         }
-        let Some(src_name) = id_to_name.get(&src_id) else { continue };
+        let Some(src_name) = id_to_name.get(&src_id) else {
+            continue;
+        };
         for &dst_id in dsts {
             if node_ids.contains(&dst_id) {
                 if let Some(dst_name) = id_to_name.get(&dst_id) {

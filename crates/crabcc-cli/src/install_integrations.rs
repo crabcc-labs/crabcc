@@ -127,9 +127,7 @@ fn install_pi(opts: Options, project_root: &Path) -> Result<()> {
     }
 
     println!();
-    println!(
-        "Merge into ~/.pi/agent/settings.json (global) or .pi/settings.json (project):"
-    );
+    println!("Merge into ~/.pi/agent/settings.json (global) or .pi/settings.json (project):");
     println!("{PI_FRAGMENT}");
     if !opts.dry_run {
         let dest = integrations_home()?.join("pi.fragment.json");

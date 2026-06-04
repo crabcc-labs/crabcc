@@ -62,11 +62,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
-      # Autofix in place rather than gate on drift. `cargo fmt --all`
-      # rewrites files and exits 0 on success; it only fails when rustfmt
-      # genuinely cannot format the source (e.g. a parse error).
-      - name: cargo fmt --all (autofix)
-        run: cargo fmt --all
+      # Gate on drift: fail the build if the tree is not rustfmt-clean.
+      # The companion auto-fix-lint.yml (workflow_run) remediates failures by
+      # committing `cargo fmt --all` + `clippy --fix` back to the branch.
+      - name: cargo fmt --all --check
+        run: cargo fmt --all -- --check
 
   lint:
     name: lint (clippy)
