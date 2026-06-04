@@ -108,6 +108,17 @@ mimalloc  ███████████████████████�
 jemalloc  ████████████████████████████████████████▊1.611s  σ=0.085
 ```
 
+Re-benched on the **hot agent paths** (not just cold index) since those are
+what the rewrite hook + MCP loop actually hit, darwin arm64, warm, `-N`:
+
+| op | system | jemalloc | mimalloc |
+|---|---|---|---|
+| `graph build` (full edge scan) | 31.9 ms ± 1.0 | 31.9 ms ± 1.0 | 31.7 ms ± 1.4 |
+| `lookup refs Store` (hook target) | 40.5 ms ± 1.9 | 39.7 ms ± 1.1 | 39.9 ms ± 1.1 |
+
+Both within ~2% with fully overlapping σ — a statistical tie on the query
+paths too. jemalloc is not measurably faster for `refs`/`graph`/the hooks.
+
 **Verdict (final):** the **system allocator is the default**. It is fastest
 (or tied) on *both* platforms and has the lowest variance on macOS; jemalloc
 and mimalloc add a dependency, build time (jemalloc compiles its 5.x C source,
