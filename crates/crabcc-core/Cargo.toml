@@ -37,6 +37,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 ignore = { workspace = true }
 memchr = { workspace = true }
+rayon = { workspace = true }
 tantivy = { workspace = true }
 tree-sitter = { workspace = true }
 tree-sitter-typescript = { workspace = true }
