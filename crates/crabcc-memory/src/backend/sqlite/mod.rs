@@ -192,10 +192,14 @@ impl SqliteBackend {
 
         // v2.5.1 (#17) + #20 — sqlite-vec virtual table for ANN search.
         // Dim is fixed at 384 (MiniLM-L6-v2 / HashEmbedder default).
-        // `drawers_vec_state` stores a "count:id_sum" fingerprint at last sync.
-        // Using both count and SUM(drawer_id) detects the case where a
-        // feature-off build deletes one row and inserts another (net count=0
-        // but different IDs → sum changes), which a count-only check misses.
+        // `drawers_vec_state` stores the last-synced generation counter.
+        // Triggers on drawer_embeddings (installed here; fire on ALL
+        // connections regardless of feature flags) increment 'generation'
+        // on every dim=384 INSERT or DELETE.  Generation-counter diffing
+        // correctly handles the rowid-reuse scenario (INTEGER PRIMARY KEY
+        // without AUTOINCREMENT) where count+sum stays identical while
+        // embedding bytes changed: the delete trigger ticks the counter up
+        // before the reused-id insert ticks it up again.
         #[cfg(feature = "memory-vec")]
         {
             conn.execute_batch(
@@ -206,34 +210,64 @@ impl SqliteBackend {
                  CREATE TABLE IF NOT EXISTS drawers_vec_state (
                      key   TEXT PRIMARY KEY,
                      value TEXT NOT NULL
-                 );",
+                 );
+                 -- Generation counter: incremented on every dim=384 INSERT or
+                 -- DELETE in drawer_embeddings, regardless of which build wrote
+                 -- the row.  Triggers are database-level objects; once installed
+                 -- here they fire on all subsequent connections, including those
+                 -- compiled without the memory-vec feature.
+                 CREATE TRIGGER IF NOT EXISTS emb_gen_ins
+                 AFTER INSERT ON drawer_embeddings WHEN NEW.dim = 384
+                 BEGIN
+                     INSERT OR REPLACE INTO drawers_vec_state(key, value)
+                     VALUES ('generation', COALESCE(
+                         (SELECT CAST(value AS INTEGER) + 1
+                          FROM drawers_vec_state WHERE key = 'generation'), 1
+                     ));
+                 END;
+                 CREATE TRIGGER IF NOT EXISTS emb_gen_del
+                 AFTER DELETE ON drawer_embeddings WHEN OLD.dim = 384
+                 BEGIN
+                     INSERT OR REPLACE INTO drawers_vec_state(key, value)
+                     VALUES ('generation', COALESCE(
+                         (SELECT CAST(value AS INTEGER) + 1
+                          FROM drawers_vec_state WHERE key = 'generation'), 1
+                     ));
+                 END;",
             )
             .context("create drawers_vec virtual table")?;
 
-            let synced_fp: String = conn
+            let synced_raw: String = conn
                 .query_row(
                     "SELECT value FROM drawers_vec_state WHERE key = 'backfilled'",
                     [],
                     |r| r.get(0),
                 )
                 .unwrap_or_default();
+            // Migrate from old "count:sum" format: any stored value containing
+            // ':' is from a pre-generation-counter build.  Treat it as -1 to
+            // force a resync on this first open with the new code.
+            let synced_gen: i64 = if synced_raw.contains(':') {
+                -1
+            } else {
+                synced_raw.parse().unwrap_or(-1)
+            };
 
-            // Single-pass aggregation: COUNT and SUM(drawer_id) together.
-            let (current_count, current_id_sum): (i64, i64) = conn
+            let current_gen: i64 = conn
                 .query_row(
-                    "SELECT COUNT(*), COALESCE(SUM(drawer_id), 0) \
-                     FROM drawer_embeddings WHERE dim = 384",
+                    "SELECT CAST(value AS INTEGER) FROM drawers_vec_state \
+                     WHERE key = 'generation'",
                     [],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
+                    |r| r.get(0),
                 )
-                .unwrap_or((0, 0));
-            let current_fp = format!("{}:{}", current_count, current_id_sum);
+                .unwrap_or(0);
 
-            if synced_fp != current_fp {
-                // Re-sync: delete existing vec rows then re-insert all 384-dim
-                // embeddings. Handles initial backfill and recovery when
-                // feature-off writes mutated drawer_embeddings without updating
-                // drawers_vec (e.g. delete-one-insert-one keeping count equal).
+            if synced_gen != current_gen {
+                // Re-sync: DROP+CREATE the virtual table then re-insert all
+                // 384-dim embeddings.  Handles initial backfill and recovery
+                // when feature-off writes mutated drawer_embeddings without
+                // updating drawers_vec, including the rowid-reuse edge case
+                // where count+sum fingerprints collide.
                 let rows: Vec<(i64, Vec<u8>)> = {
                     let mut stmt = conn
                         .prepare("SELECT drawer_id, bytes FROM drawer_embeddings WHERE dim = 384")
@@ -268,8 +302,9 @@ impl SqliteBackend {
                     )?;
                 }
                 tx.execute(
-                    "INSERT OR REPLACE INTO drawers_vec_state(key, value) VALUES ('backfilled', ?1)",
-                    params![current_fp],
+                    "INSERT OR REPLACE INTO drawers_vec_state(key, value) \
+                     VALUES ('backfilled', ?1)",
+                    params![current_gen.to_string()],
                 )?;
                 tx.commit().context("commit drawers_vec backfill")?;
             }
@@ -560,6 +595,27 @@ impl Backend for SqliteBackend {
             )?;
             ids.push(id);
         }
+        // Advance the backfilled generation pointer so next open() skips a
+        // full DROP+CREATE resync for insertions made just above.  The INSERT
+        // triggers on drawer_embeddings already updated 'generation'; reading
+        // it here gives the post-insert value.  If all drawers were deduped
+        // (no new embeddings), generation is unchanged and this is a no-op.
+        #[cfg(feature = "memory-vec")]
+        {
+            let new_gen: i64 = tx
+                .query_row(
+                    "SELECT CAST(value AS INTEGER) FROM drawers_vec_state \
+                     WHERE key = 'generation'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            tx.execute(
+                "INSERT OR REPLACE INTO drawers_vec_state(key, value) \
+                 VALUES ('backfilled', ?1)",
+                params![new_gen.to_string()],
+            )?;
+        }
         tx.commit()?;
         Ok(ids)
     }
@@ -689,6 +745,26 @@ impl Backend for SqliteBackend {
             )?;
             #[cfg(feature = "memory-vec")]
             tx.execute("DELETE FROM drawers_vec WHERE drawer_id = ?1", params![id])?;
+        }
+        // Advance the backfilled generation pointer so next open() skips a
+        // full resync.  The CASCADE-triggered DELETE on drawer_embeddings
+        // already incremented 'generation'; reading it here gives the
+        // post-delete value.
+        #[cfg(feature = "memory-vec")]
+        {
+            let new_gen: i64 = tx
+                .query_row(
+                    "SELECT CAST(value AS INTEGER) FROM drawers_vec_state \
+                     WHERE key = 'generation'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            tx.execute(
+                "INSERT OR REPLACE INTO drawers_vec_state(key, value) \
+                 VALUES ('backfilled', ?1)",
+                params![new_gen.to_string()],
+            )?;
         }
         tx.commit()?;
         Ok(n)
@@ -1240,6 +1316,74 @@ mod tests {
             let _ = SqliteBackend::open(&path).unwrap();
             let _ = SqliteBackend::open(&path).unwrap();
             let _ = SqliteBackend::open(&path).unwrap();
+        }
+
+        #[test]
+        fn drawers_vec_resyncs_after_rowid_reuse() {
+            // Regression: INTEGER PRIMARY KEY without AUTOINCREMENT lets SQLite
+            // reuse the same rowid after a delete+insert.  A count+sum
+            // fingerprint stays identical while embedding bytes change, so the
+            // old resync gate would silently serve a stale ANN index.
+            // The generation-counter triggers must detect the change and force
+            // a full DROP+CREATE resync on the next open.
+            use crate::backend::Backend;
+            use encoding::vec_to_blob;
+
+            let dir = tempdir().unwrap();
+            let path = dir.path().join("memory.db");
+            let e = HashEmbedder::new();
+
+            // Step 1: insert one drawer via the vec-enabled backend.
+            let drawer_id = {
+                let b = SqliteBackend::open(&path).unwrap();
+                b.add(&[ins(&e, "src1", "fox jumps over fence", "w")])
+                    .unwrap()[0]
+            };
+            // After add(), backfilled == generation == 1.
+
+            // Step 2: use a plain connection to simulate a --no-default-features
+            // build doing delete+reinsert with the SAME drawer_id (rowid reuse)
+            // but different embedding bytes.
+            {
+                let conn = Connection::open(&path).unwrap();
+                // Disable FKs so we can touch drawer_embeddings directly.
+                conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
+                conn.execute(
+                    "DELETE FROM drawer_embeddings WHERE drawer_id = ?1",
+                    params![drawer_id],
+                )
+                .unwrap();
+                // SQLite reuses the rowid (no AUTOINCREMENT); insert replacement.
+                let replacement_emb = e.embed_one("cat sleeps on mat").unwrap();
+                conn.execute(
+                    "INSERT INTO drawer_embeddings(drawer_id, dim, bytes) \
+                     VALUES (?1, 384, ?2)",
+                    params![drawer_id, vec_to_blob(&replacement_emb)],
+                )
+                .unwrap();
+                // Triggers are database-level: emb_gen_del fires on DELETE and
+                // emb_gen_ins fires on INSERT, so generation is now 3 (was 1
+                // after the vec open's add(); +1 del +1 ins = 3).
+            }
+
+            // Step 3: reopen with the vec-enabled backend — must resync.
+            // (synced_gen=1, current_gen=3 → mismatch → DROP+CREATE+backfill)
+            let b = SqliteBackend::open(&path).unwrap();
+
+            // Step 4: querying with the REPLACEMENT embedding must hit.
+            let q = Query {
+                embedding: e.embed_one("cat sleeps on mat").unwrap(),
+                limit: 5,
+                wing: None,
+                room: None,
+            };
+            let r = b.query(&q).unwrap();
+            assert_eq!(r.hits.len(), 1, "ANN should return the resynced row");
+            assert!(
+                r.hits[0].score > 0.9,
+                "top hit should match replacement embedding after resync; got {}",
+                r.hits[0].score
+            );
         }
     }
 
