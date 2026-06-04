@@ -162,20 +162,15 @@ pub fn list(home: &Path, repo_root: &Path) -> Result<Vec<BackupEntry>> {
     if !dir.exists() {
         return Ok(vec![]);
     }
-    let mut out: Vec<BackupEntry> = Vec::new();
-    for e in std::fs::read_dir(&dir)?.flatten() {
-        let name = e.file_name().to_string_lossy().to_string();
-        let Some(ts) = name.parse::<u64>().ok() else {
-            continue;
-        };
-        let p = e.path();
-        let bytes = dir_size(&p).unwrap_or(0);
-        out.push(BackupEntry {
-            timestamp: ts,
-            path: p,
-            bytes,
-        });
-    }
+    let mut out: Vec<BackupEntry> = std::fs::read_dir(&dir)?
+        .flatten()
+        .filter_map(|e| {
+            let ts = e.file_name().to_string_lossy().parse::<u64>().ok()?;
+            let p = e.path();
+            let bytes = dir_size(&p).unwrap_or(0);
+            Some(BackupEntry { timestamp: ts, path: p, bytes })
+        })
+        .collect();
     out.sort_by_key(|a| std::cmp::Reverse(a.timestamp));
     Ok(out)
 }

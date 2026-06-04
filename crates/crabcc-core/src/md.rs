@@ -181,7 +181,9 @@ fn collapse_blank_lines(s: &str) -> String {
     }
     // Trim trailing whitespace so the output ends without a dangling
     // blank line — keeps assertions in tests readable.
-    out.trim_end().to_string()
+    let trimmed_len = out.trim_end().len();
+    out.truncate(trimmed_len);
+    out
 }
 
 #[cfg(test)]
