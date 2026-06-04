@@ -143,7 +143,7 @@ Swift and Bash used to be features here; in v0.2.0 they moved into
   rust-analyzer / sourcekit-lsp / pyright's job. ucracc-lsp's value is
   *speed of navigation*, not type-checking.
 - **Editor setup.** Neovim wires up via `lspconfig` (see the README);
-  Zed needs the [`editors/zed`](../../../editors/zed) extension (Zed can't
+  Zed needs the [`editors/zed/crabcc`](../../../editors/zed/crabcc) extension (Zed can't
   bind a new LSP binary from `settings.json` alone). Full Zed guide:
   [`ZED.md`](ZED.md).
 - **`initialization_options.indexPath`.** Clients can override where the

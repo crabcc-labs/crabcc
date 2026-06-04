@@ -5952,7 +5952,7 @@ dependencies = [
 
 [[package]]
 name = "ucracc-lsp"
-version = "5.0.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "crabcc-core",

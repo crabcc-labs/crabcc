@@ -1,6 +1,6 @@
 # Using `ucracc-lsp` in Zed
 
-> The short version lives in [`editors/zed/README.md`](../../../editors/zed/README.md).
+> The short version lives in [`editors/zed/crabcc/README.md`](../../../editors/zed/crabcc/README.md).
 > This is the deeper guide: how the integration works, the full settings
 > surface, remote/SSH setups, the AI-first execute-command surface, and
 > what to expect performance-wise.
@@ -20,7 +20,7 @@ Zed's `settings.json` can *configure* a language server it already knows
 about (override its binary, pass init options), but it can't *bind a new
 LSP binary to a language* — that's a capability only extensions have.
 Neovim's `lspconfig` lets you register an arbitrary `cmd`; Zed does not.
-So the [`editors/zed`](../../../editors/zed) extension is the supported
+So the [`editors/zed/crabcc`](../../../editors/zed/crabcc) extension is the supported
 path. It's a ~120-line WASM shim that:
 
 1. Declares which Zed languages `ucracc-lsp` attaches to
@@ -81,7 +81,7 @@ Without an index the server still starts but answers "empty" — Zed shows a
 
 ### 3. Install the extension
 
-Command palette → **`zed: install dev extension`** → pick `editors/zed`.
+Command palette → **`zed: install dev extension`** → pick `editors/zed/crabcc`.
 Zed compiles the WASM component (`rustup target add wasm32-wasip1` if you
 haven't) and binds `ucracc-lsp` to the languages above.
 

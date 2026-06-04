@@ -72,7 +72,7 @@ cargo build --release -p ucracc-lsp
 # the binary lives at target/release/ucracc-lsp; it speaks LSP over stdio
 ```
 
-**Zed** — install the [`editors/zed`](../../editors/zed) extension
+**Zed** — install the [`editors/zed/crabcc`](../../editors/zed/crabcc) extension
 (`zed: install dev extension` → pick that dir). Zed can't bind a new LSP
 binary to a language from `settings.json` alone, so the extension is the
 supported path. Full guide: [`docs/ZED.md`](docs/ZED.md). TL;DR:

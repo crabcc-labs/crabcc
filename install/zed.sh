@@ -131,7 +131,7 @@ else
 fi
 cleanup() { [ -n "$CLONED_TMP" ] && rm -rf "$CLONED_TMP" || true; }
 trap cleanup EXIT
-EXT_SRC="$REPO/editors/zed"
+EXT_SRC="$REPO/editors/zed/crabcc"
 [ -d "$EXT_SRC" ] || die "Zed extension source not found at $EXT_SRC (old checkout?)."
 
 # --- 2. install the ucracc-lsp binary -------------------------------------
@@ -202,7 +202,7 @@ fi
 # A dev extension is loaded from its *source directory* on every Zed launch,
 # so that directory has to persist. When we cloned into a tempdir (standalone
 # `curl | bash` mode), the EXIT trap would wipe it out from under the user —
-# so stage a durable copy of editors/zed and point the instructions there.
+# so stage a durable copy of editors/zed/crabcc and point the instructions there.
 # Running from a real checkout keeps pointing at the live tree (so a
 # `git pull` + "rebuild dev extension" picks up changes).
 STAGE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/crabcc/zed-extension"

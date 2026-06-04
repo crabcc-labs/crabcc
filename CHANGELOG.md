@@ -8,7 +8,7 @@ All notable changes to crabcc are documented here. Format follows
 
 ### Added
 
-- **Zed editor integration.** A new `editors/zed` extension registers
+- **Zed editor integration.** A new `editors/zed/crabcc` extension registers
   `ucracc-lsp` as an additional language server for Rust, the TS/JS
   family, Python, Ruby, Go, Swift, Java, YAML, and Markdown — running
   alongside the semantic server for each language (rust-analyzer, pyright,
