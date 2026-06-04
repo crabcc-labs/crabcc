@@ -12,6 +12,7 @@
 #   --name hetzner-1
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RUNNER_USER="${SUDO_USER:-${USER:-root}}"
 RUNNER_NAME="hetzner-$(hostname -s)"
 RUNNER_LABELS="self-hosted,linux,hetzner"
@@ -103,3 +104,43 @@ systemctl daemon-reload
 systemctl enable --now actions-runner
 echo "[runner] installed — systemctl status actions-runner"
 systemctl --no-pager status actions-runner || true
+
+# ── Disk-GC timer ───────────────────────────────────────────────────────
+# A single GitHub Actions cron only ever lands on one runner, so it can't
+# keep the whole fleet clean. Install a host-local systemd timer instead:
+# every box self-prunes Docker/cargo/apt/temp on a schedule, independent of
+# GitHub. Idempotent — re-running install.sh refreshes the units.
+echo "[runner] installing disk-GC timer..."
+install -m 0755 -o "$RUNNER_USER" -g "$RUNNER_USER" \
+  "${SCRIPT_DIR}/runner-gc.sh" "${INSTALL_DIR}/runner-gc.sh"
+
+cat > /etc/systemd/system/actions-runner-gc.service <<EOF
+[Unit]
+Description=GitHub Actions runner disk GC (${RUNNER_NAME})
+
+[Service]
+Type=oneshot
+User=${RUNNER_USER}
+Environment=HOME=${RUNNER_HOME}
+ExecStart=/usr/bin/env bash ${INSTALL_DIR}/runner-gc.sh
+EOF
+
+cat > /etc/systemd/system/actions-runner-gc.timer <<EOF
+[Unit]
+Description=Periodic disk GC for the GitHub Actions runner
+
+[Timer]
+# First run shortly after boot, then every 6h. Persistent catches up a
+# missed window if the box was powered off.
+OnBootSec=15min
+OnUnitActiveSec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+systemctl daemon-reload
+systemctl enable --now actions-runner-gc.timer
+echo "[runner] disk-GC timer installed — next runs:"
+systemctl --no-pager list-timers actions-runner-gc.timer || true

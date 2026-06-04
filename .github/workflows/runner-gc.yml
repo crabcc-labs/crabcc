@@ -1,23 +1,17 @@
 name: runner-gc
 
-# Scheduled disk reclamation for the self-hosted Hetzner runners.
+# On-demand disk reclamation for a self-hosted Hetzner runner.
 #
-# The CI legs (ci.yml) and the image builds (release-*-image.yml) share
-# these boxes. Without periodic GC the Docker image / build cache, cargo
-# registry sources, apt cache, journald logs and the runner `_temp` dir
-# accumulate until a job dies with "No space left on device" — observed on
-# PR #667's `test` leg, which OOM'd the disk mid-`cargo test --no-run`.
+# Scheduled, fleet-wide GC is handled by a host-local systemd timer
+# (`actions-runner-gc.timer`, installed by install/github-runner/install.sh)
+# — a GitHub Actions cron can't cover the whole fleet because all runners
+# share the same labels, so a scheduled job only ever lands on one host.
 #
-# This job is read-mostly: it prunes regenerable caches and *unused* Docker
-# resources only (never anything an in-flight build holds), reports `df`
-# before/after to the job summary, and raises a ::warning:: if the root fs
-# is still hot after cleanup so a maintainer can size up the disk.
+# This workflow is the manual/emergency escape hatch: trigger it to prune
+# whichever runner it lands on (e.g. one box reported >85% in its GC logs)
+# without SSHing in. It runs the exact same script the timer does.
 
 on:
-  schedule:
-    # Every 6h, offset off the top of the hour to avoid colliding with
-    # other cron workflows.
-    - cron: '17 */6 * * *'
   workflow_dispatch:
     inputs:
       deep:
@@ -25,7 +19,6 @@ on:
         type: boolean
         default: false
 
-# Serialise GC runs; never cancel one in progress.
 concurrency:
   group: runner-gc
   cancel-in-progress: false
@@ -39,75 +32,18 @@ jobs:
     runs-on: [self-hosted, linux, hetzner]
     timeout-minutes: 20
     steps:
-      - name: Disk usage (before)
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+      - name: runner-gc
         shell: bash
         run: |
+          ARGS=""
+          [ "${{ inputs.deep }}" = "true" ] && ARGS="--deep"
+          # Tee the script's df/prune output into the job summary too.
           {
             echo "## runner-gc on $(hostname)"
             echo '```'
-            df -h / 2>/dev/null || true
+            bash install/github-runner/runner-gc.sh $ARGS
             echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Prune Docker (unused images, build cache, stopped containers)
-        shell: bash
-        run: |
-          set -uo pipefail
-          if ! command -v docker >/dev/null 2>&1 || ! docker version >/dev/null 2>&1; then
-            echo "docker not present / daemon unreachable — skipping"
-            exit 0
-          fi
-          if [ "${{ inputs.deep }}" = "true" ]; then
-            echo "deep prune: removing all unused images + build cache"
-            docker system prune -af || true
-            docker builder prune -af || true
-          else
-            # Keep anything touched in the last 48h; prune the rest. Only
-            # *unused* resources are eligible, so running builds are safe.
-            docker container prune -f || true
-            docker image prune -af --filter "until=48h" || true
-            docker builder prune -af --filter "until=48h" || true
-            docker network prune -f || true
-          fi
-
-      - name: Prune cargo caches (regenerable)
-        shell: bash
-        run: |
-          set -uo pipefail
-          # Extracted crate sources + downloaded crate archives re-fetch on
-          # demand — the largest, safest-to-drop part of ~/.cargo. Keep
-          # anything touched in the last 7 days so warm builds stay warm.
-          for d in "$HOME/.cargo/registry/src" "$HOME/.cargo/registry/cache"; do
-            [ -d "$d" ] && find "$d" -mindepth 1 -maxdepth 1 -mtime +7 -exec rm -rf {} + 2>/dev/null || true
-          done
-          # Git-dependency checkouts older than 14 days.
-          [ -d "$HOME/.cargo/git/checkouts" ] && \
-            find "$HOME/.cargo/git/checkouts" -mindepth 1 -maxdepth 1 -mtime +14 -exec rm -rf {} + 2>/dev/null || true
-
-      - name: Prune system caches (apt, journald, temp)
-        shell: bash
-        run: |
-          set -uo pipefail
-          sudo apt-get clean 2>/dev/null || true
-          command -v journalctl >/dev/null 2>&1 && sudo journalctl --vacuum-time=2d 2>/dev/null || true
-          # Leftover step scripts / temp files from completed jobs (the
-          # `_temp` accumulation that filled the disk on #667). Current-job
-          # files are <1 day old, so they're never touched.
-          find /tmp -mindepth 1 -maxdepth 1 -mtime +1 -exec rm -rf {} + 2>/dev/null || true
-          [ -n "${RUNNER_TEMP:-}" ] && \
-            find "$RUNNER_TEMP" -mindepth 1 -mtime +1 -exec rm -rf {} + 2>/dev/null || true
-
-      - name: Disk usage (after) + threshold alert
-        shell: bash
-        run: |
-          set -uo pipefail
-          {
-            echo '```'
-            df -h / 2>/dev/null || true
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-          USE=$(df --output=pcent / 2>/dev/null | tail -1 | tr -dc '0-9')
-          echo "root filesystem usage after GC: ${USE:-?}%"
-          if [ -n "${USE:-}" ] && [ "$USE" -ge 85 ]; then
-            echo "::warning::runner $(hostname) root fs still ${USE}% full after GC — consider a deeper prune (workflow_dispatch deep=true) or a larger disk"
-          fi
+          } | tee -a "$GITHUB_STEP_SUMMARY"
