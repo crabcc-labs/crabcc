@@ -92,7 +92,7 @@ serde_json    = { workspace = true }
 # `crabcc run` background-process liveness: cross-platform process start-time +
 # status, so the pid-reuse guard before `--kill` works on macOS/BSD too (not
 # just Linux /proc). Already in the workspace via crabcc-godfather.
-sysinfo       = { version = "0.33", default-features = false, features = ["system"] }
+sysinfo       = { version = "0.39", default-features = false, features = ["system"] }
 # root_resolver — sha256-based cache key for `$CRABCC_HOME/repos/<key>/`.
 sha2          = { workspace = true }
 sonic-rs      = { workspace = true }
