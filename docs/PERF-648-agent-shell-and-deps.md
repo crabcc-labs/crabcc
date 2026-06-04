@@ -52,13 +52,31 @@ the memory `Palace` and re-ensured schema.
 | ensure-schema once/process | ~9 ms | 8 ms |
 | + cached session-read connection | **~1 ms** | — |
 
-## 3. Cold full index
+## 3. Cold full index — parallel parse
 
-Deps bump + extractor leaf-guards. Fresh reconfirm (jemalloc, HEAD index path):
+`build_index` parsed + extracted one file at a time on a single core.
+Profiled split: extract ~37%, sqlite_write ~42%, FTS ~18%. The clean,
+low-risk win is parallelising the CPU-bound parse/extract (tree-sitter
+parsers are thread-local) and keeping the SQLite write loop serial in
+walk order — so file_id assignment + cross-file edge resolution stay
+byte-identical (1-thread and 4-thread produce identical counts).
 
-| | Mean | Notes |
+A/B on bench-node (4-core, cold index of the workspace):
+
+| | Mean | Relative |
 |---|---|---|
-| cold `crabcc index` | **1.32 s ± 0.10** | ~437 files; was ~1.48 s pre-campaign (~11%) |
+| sequential (pre-change) | 1.408 s ± 0.051 | baseline |
+| **parallel (rayon parse)** | **986 ms ± 70** | **1.43× faster** |
+
+```
+cold index (lower is better)
+sequential  ██████████████████████████████████████████████████ 1.408s
+parallel    ███████████████████████████████████▏ 0.986s   (1.43x)
+```
+
+Output identical: 441 files / 4700 symbols / 51351 edges. The remaining
+SQLite bulk-resolution refactor (~88k per-edge point queries → in-memory
+`name→id` map) is a follow-up.
 
 ## 4. Global allocator — measured, not guessed
 
