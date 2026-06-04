@@ -16,8 +16,18 @@
 //!
 //! [proxifly]: https://github.com/proxifly/free-proxy-list
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::RwLock;
+use std::time::Duration;
+
+/// Consecutive failures a proxy may rack up before it's evicted from
+/// rotation. Free proxies die constantly, so this is deliberately small.
+pub const DEFAULT_MAX_FAILURES: u32 = 3;
+
+/// Lightweight endpoint a health probe GETs through a proxy — returns an
+/// empty `204`, so it's cheap and unambiguous.
+pub const HEALTH_CHECK_URL: &str = "http://www.gstatic.com/generate_204";
 
 /// A proxy endpoint in reqwest's `scheme://host:port` form.
 pub type ProxyUrl = String;
@@ -98,17 +108,31 @@ impl ProxySource for ProxiflySource {
     }
 }
 
-/// A rotating pool of proxy URLs. Round-robins via an atomic cursor;
-/// dead entries are evicted by [`ProxyPool::evict`] as health-checking
-/// finds them (free proxies churn fast).
+/// Mutable pool state: the live rotation plus per-proxy consecutive-
+/// failure counts, kept together under one lock so health updates and
+/// `pick` never race.
+struct State {
+    live: Vec<ProxyUrl>,
+    failures: HashMap<ProxyUrl, u32>,
+}
+
+/// A rotating, self-healing pool of proxy URLs. Round-robins via an atomic
+/// cursor; health-checking evicts dead entries two ways (free proxies
+/// churn fast):
 ///
-/// The list is behind an `RwLock` so [`pick`](Self::pick) (read) and
-/// [`evict`](Self::evict) (write) are safe to call concurrently from the
-/// worker tasks. `pick` therefore returns an owned `String` rather than a
-/// borrow into the list, since the lock can't outlive the call.
+/// - **passive** — [`report_failure`](Self::report_failure) /
+///   [`report_success`](Self::report_success) from the fetch path drop a
+///   proxy after [`DEFAULT_MAX_FAILURES`] consecutive failures;
+/// - **active** — [`prune_dead`](Self::prune_dead) probes every live proxy
+///   and evicts the ones that don't answer.
+///
+/// State is behind one `RwLock`, so `pick` (read) and the health mutators
+/// (write) are safe to call concurrently from worker tasks. `pick` returns
+/// an owned `String` since the lock can't outlive the call.
 pub struct ProxyPool {
-    proxies: RwLock<Vec<ProxyUrl>>,
+    state: RwLock<State>,
     cursor: AtomicUsize,
+    max_failures: u32,
 }
 
 impl ProxyPool {
@@ -127,34 +151,109 @@ impl ProxyPool {
 
     pub fn from_list(proxies: Vec<ProxyUrl>) -> Self {
         Self {
-            proxies: RwLock::new(proxies),
+            state: RwLock::new(State {
+                live: proxies,
+                failures: HashMap::new(),
+            }),
             cursor: AtomicUsize::new(0),
+            max_failures: DEFAULT_MAX_FAILURES,
         }
     }
 
+    /// Override the consecutive-failure eviction threshold.
+    pub fn with_max_failures(mut self, max_failures: u32) -> Self {
+        self.max_failures = max_failures.max(1);
+        self
+    }
+
     pub fn is_empty(&self) -> bool {
-        self.proxies.read().unwrap().is_empty()
+        self.state.read().unwrap().live.is_empty()
     }
 
     pub fn len(&self) -> usize {
-        self.proxies.read().unwrap().len()
+        self.state.read().unwrap().live.len()
     }
 
     /// Next proxy in round-robin order, or `None` when the pool is empty.
     pub fn pick(&self) -> Option<ProxyUrl> {
-        let proxies = self.proxies.read().unwrap();
-        if proxies.is_empty() {
+        let state = self.state.read().unwrap();
+        if state.live.is_empty() {
             return None;
         }
-        let i = self.cursor.fetch_add(1, Ordering::Relaxed) % proxies.len();
-        Some(proxies[i].clone())
+        let i = self.cursor.fetch_add(1, Ordering::Relaxed) % state.live.len();
+        Some(state.live[i].clone())
     }
 
-    /// Drop a dead proxy from rotation. Safe to call while other tasks are
-    /// `pick`ing — the `RwLock` serialises the mutation.
-    pub fn evict(&self, proxy: &str) {
-        self.proxies.write().unwrap().retain(|p| p != proxy);
+    /// Record a successful fetch through `proxy`, clearing its failure
+    /// streak so a transient blip doesn't accumulate toward eviction.
+    pub fn report_success(&self, proxy: &str) {
+        self.state.write().unwrap().failures.remove(proxy);
     }
+
+    /// Record a failed fetch through `proxy`. Returns `true` if this
+    /// tripped the threshold and the proxy was evicted from rotation.
+    pub fn report_failure(&self, proxy: &str) -> bool {
+        let mut state = self.state.write().unwrap();
+        let n = state.failures.entry(proxy.to_string()).or_insert(0);
+        *n += 1;
+        if *n >= self.max_failures {
+            remove(&mut state, proxy);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Drop a proxy from rotation immediately, regardless of failure count.
+    pub fn evict(&self, proxy: &str) {
+        remove(&mut self.state.write().unwrap(), proxy);
+    }
+
+    /// Active health check: probe every live proxy and evict the dead
+    /// ones. Returns how many were dropped. Sequential (an occasional
+    /// sweep, not a hot path) so it needs no extra concurrency deps.
+    pub async fn prune_dead(&self, test_url: &str, timeout: Duration) -> usize {
+        let live: Vec<ProxyUrl> = self.state.read().unwrap().live.clone();
+        let mut evicted = 0;
+        for proxy in live {
+            if !probe(&proxy, test_url, timeout).await {
+                self.evict(&proxy);
+                evicted += 1;
+            }
+        }
+        if evicted > 0 {
+            tracing::info!(target: "crabcc_fetch", evicted, "proxy health check evicted dead proxies");
+        }
+        evicted
+    }
+
+    /// Active health check against the default [`HEALTH_CHECK_URL`].
+    pub async fn health_check(&self, timeout: Duration) -> usize {
+        self.prune_dead(HEALTH_CHECK_URL, timeout).await
+    }
+}
+
+/// Remove a proxy from both the live list and the failure map.
+fn remove(state: &mut State, proxy: &str) {
+    state.live.retain(|p| p != proxy);
+    state.failures.remove(proxy);
+}
+
+/// Probe a single proxy: GET `test_url` through it and treat a 2xx as
+/// alive. Any build/connect/timeout error is "dead". Network I/O, so this
+/// is exercised by integration runs, not the unit tests.
+async fn probe(proxy: &str, test_url: &str, timeout: Duration) -> bool {
+    let Ok(reqwest_proxy) = reqwest::Proxy::all(proxy) else {
+        return false;
+    };
+    let Ok(client) = reqwest::Client::builder()
+        .proxy(reqwest_proxy)
+        .timeout(timeout)
+        .build()
+    else {
+        return false;
+    };
+    matches!(client.get(test_url).send().await, Ok(r) if r.status().is_success())
 }
 
 #[cfg(test)]
@@ -200,5 +299,36 @@ mod tests {
         pool.evict("http://b:2");
         assert!(pool.is_empty());
         assert!(pool.pick().is_none());
+    }
+
+    #[test]
+    fn consecutive_failures_evict_at_threshold() {
+        let pool = ProxyPool::from_list(vec!["http://a:1".into(), "http://b:2".into()])
+            .with_max_failures(3);
+        assert!(!pool.report_failure("http://a:1")); // 1
+        assert!(!pool.report_failure("http://a:1")); // 2
+        assert!(pool.report_failure("http://a:1")); // 3 → evicted
+        assert_eq!(pool.len(), 1);
+        assert_eq!(pool.pick().as_deref(), Some("http://b:2"));
+    }
+
+    #[test]
+    fn success_resets_the_failure_streak() {
+        let pool = ProxyPool::from_list(vec!["http://a:1".into()]).with_max_failures(2);
+        assert!(!pool.report_failure("http://a:1")); // 1
+        pool.report_success("http://a:1"); // streak cleared
+        assert!(!pool.report_failure("http://a:1")); // 1 again, not 2
+        assert_eq!(pool.len(), 1);
+        assert!(pool.report_failure("http://a:1")); // 2 → evicted
+        assert!(pool.is_empty());
+    }
+
+    #[test]
+    fn max_failures_is_floored_at_one() {
+        // A zero threshold would evict on the first failure rather than
+        // never — clamp to 1 so the pool stays sane.
+        let pool = ProxyPool::from_list(vec!["http://a:1".into()]).with_max_failures(0);
+        assert!(pool.report_failure("http://a:1"));
+        assert!(pool.is_empty());
     }
 }
