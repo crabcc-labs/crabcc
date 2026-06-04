@@ -30,9 +30,9 @@ mod agent_guard;
 mod agent_profile;
 mod agent_runs_db;
 mod audit;
-mod cli_config;
 mod auto_index;
 mod backup;
+mod cli_config;
 mod compress_cmd;
 mod debug_network;
 mod doctor;
@@ -712,6 +712,14 @@ enum ShellOp {
         /// SessionStart fires once per session).
         #[arg(long)]
         session_id: Option<String>,
+    },
+    /// Answer "is crabcc token-optimization ON?" at a glance: prints the
+    /// rewrite/RTK/Morph/media state (from .crabcc-cli.conf + env + PATH)
+    /// plus tokens saved in the last 24h. `--oneline` prints a single
+    /// status line (used by the SessionStart banner).
+    Status {
+        #[arg(long)]
+        oneline: bool,
     },
 }
 
@@ -1944,6 +1952,7 @@ fn run_shell(root: &Path, db: &Path, op: &ShellOp) -> Result<()> {
         } => shell_rewrite::run(root, db, command, session_id.as_deref()),
         ShellOp::RewriteMeasure => shell_rewrite::run_measure(),
         ShellOp::Context { session_id } => shell_context::run(root, db, session_id.as_deref()),
+        ShellOp::Status { oneline } => shell_rewrite::run_status(root, *oneline),
         ShellOp::Record {
             command,
             cwd,

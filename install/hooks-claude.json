@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -d .crabcc ]; then crabcc index --refresh >/dev/null 2>&1; else echo 'crabcc: no index in this repo (run /crabcc-init)' >&2; fi; command -v crabcc >/dev/null 2>&1 && crabcc shell context 2>/dev/null || true"
+            "command": "if [ -d .crabcc ]; then crabcc index --refresh >/dev/null 2>&1; else echo 'crabcc: no index in this repo (run /crabcc-init)' >&2; fi; command -v crabcc >/dev/null 2>&1 && { crabcc shell status --oneline 1>&2 || true; crabcc shell context 2>/dev/null || true; }"
           }
         ]
       }
