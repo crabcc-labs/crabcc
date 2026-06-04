@@ -75,19 +75,25 @@ jobs:
             echo "WARN: no runner unit file found"
           fi
 
-          echo "=== scheduling runner restart in 60 s ==="
-          # Detect the live service name: our install.sh writes 'actions-runner';
-          # GitHub's own svc.sh uses 'actions.runner.<owner>-<repo>.<name>'.
-          SVC_NAME=$(systemctl list-units --type=service --no-legend 2>/dev/null \
-            | awk '/actions/ && /runner/ { gsub(/\.service$/, "", $1); print $1; exit }')
-          [ -z "$SVC_NAME" ] && SVC_NAME="actions-runner"
-          echo "Detected runner service: ${SVC_NAME}"
+          echo "=== scheduling runner restarts in 60 s ==="
+          # Restart ALL runner services on this host — our install.sh writes
+          # 'actions-runner'; GitHub's svc.sh uses
+          # 'actions.runner.<owner>-<repo>.<name>' (one per runner process).
+          # mapfile collects every match; fall back to the default name if none.
+          mapfile -t SVC_NAMES < <(systemctl list-units --type=service --no-legend 2>/dev/null \
+            | awk '/actions/ && /runner/ { gsub(/\.service$/, "", $1); print $1 }')
+          if [ ${#SVC_NAMES[@]} -eq 0 ]; then
+            SVC_NAMES=("actions-runner")
+          fi
+          echo "Detected ${#SVC_NAMES[@]} runner service(s): ${SVC_NAMES[*]}"
           # systemd-run creates a transient timer that fires after this job
-          # exits, so the restart happens cleanly without killing this job.
-          sudo systemd-run --on-active=60 \
-            --description="post-provision actions-runner restart" \
-            sudo systemctl restart "${SVC_NAME}"
-          echo "restart scheduled for ${SVC_NAME}"
+          # exits, so each restart happens cleanly without killing this job.
+          for SVC_NAME in "${SVC_NAMES[@]}"; do
+            sudo systemd-run --on-active=60 \
+              --description="post-provision restart: ${SVC_NAME}" \
+              sudo systemctl restart "${SVC_NAME}"
+            echo "restart scheduled for ${SVC_NAME}"
+          done
 
       - name: summary
         if: always()
