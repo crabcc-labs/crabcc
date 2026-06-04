@@ -629,17 +629,13 @@ enum ShellOp {
     /// `_internal.db`, flagging + suppressing rewrites that did not
     /// reduce tokens (META_ERROR_OPERATOR_NEEDED). Best-effort.
     RewriteMeasure,
-    /// EXPERIMENTAL — inject standing context for the SessionStart hook.
-    /// Prints a SessionStart `hookSpecificOutput.additionalContext`
-    /// envelope with high-value reminders (context7 for docs, prefer
-    /// crabcc over grep, file GitHub issues for discoveries). Off unless
-    /// `--exp-ctx-inject` or `CRABCC_EXP_CTX_INJECT=1`; prints nothing
-    /// otherwise. Reminder text is overridable via `.crabcc/ctx-inject.md`.
+    /// Inject smart standing context for the SessionStart hook. Prints a
+    /// SessionStart `hookSpecificOutput.additionalContext` carrying the
+    /// repo's most-referenced symbols + densest files (from the index) +
+    /// a `crabcc lookup` example + context7/MCP nudge. On by default; set
+    /// `CRABCC_NO_CTX_INJECT=1` to disable. Override the text per-repo via
+    /// `.crabcc/ctx-inject.md`.
     Context {
-        /// Enable the experimental injection (equivalent to setting
-        /// `CRABCC_EXP_CTX_INJECT=1`).
-        #[arg(long = "exp-ctx-inject")]
-        exp_ctx_inject: bool,
         /// Session id (accepted for hook parity; not required since
         /// SessionStart fires once per session).
         #[arg(long)]
@@ -1862,10 +1858,7 @@ fn run_shell(root: &Path, db: &Path, op: &ShellOp) -> Result<()> {
             session_id,
         } => shell_rewrite::run(root, db, command, session_id.as_deref()),
         ShellOp::RewriteMeasure => shell_rewrite::run_measure(),
-        ShellOp::Context {
-            exp_ctx_inject,
-            session_id,
-        } => shell_context::run(root, *exp_ctx_inject, session_id.as_deref()),
+        ShellOp::Context { session_id } => shell_context::run(root, db, session_id.as_deref()),
         ShellOp::Record {
             command,
             cwd,
