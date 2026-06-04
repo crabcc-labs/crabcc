@@ -483,8 +483,10 @@ Environment=HOME=${RUNNER_HOME}
 # (rustup download) and cargo build steps.  CARGO_HOME and SCCACHE_DIR keep
 # registry blobs + sccache entries on the data volume rather than home.
 # CARGO_TARGET_DIR is the big one: without it, every build writes a multi-GB
-# target/ tree into _work on the root fs.  Namespaced per runner so two
-# runner processes on one host don't collide on cargo's exclusive target lock.
+# target/ tree into _work on the root fs. Tagged by runner name. On a host
+# running two runner processes the svc.sh units get distinct tags via
+# patch_runner_unit, so their builds never share cargo's exclusive target lock;
+# this self-written single unit is per host (one runner).
 Environment=TMPDIR=${CACHE_BASE}/tmp
 Environment=CARGO_HOME=${CACHE_BASE}/cargo
 Environment=SCCACHE_DIR=${CACHE_BASE}/sccache

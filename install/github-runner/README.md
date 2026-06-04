@@ -121,10 +121,12 @@ these and write to the data volume instead of the root filesystem.
 every build writes a multi-GB `target/` tree into the job checkout under
 `_work` on the **root fs** — the volume would mount but barely get used, and
 the root fs fills until a later `apt-get` / toolchain download dies with
-`No space left on device`. It is namespaced per runner
-(`/var/runner-data/target/<runner-name>`) so two runner processes on one host
-don't collide on cargo's exclusive target-dir lock. The GC timer prunes
-per-runner target dirs untouched for 7 days.
+`No space left on device`. It is keyed by runner name
+(`/var/runner-data/target/<runner>`). On a host running two runner processes,
+the `svc.sh` units get distinct tags (via `patch_runner_unit`), so their builds
+never share cargo's exclusive target-dir lock; single-runner hosts get one dir.
+The GC prunes a per-runner target dir only once its whole subtree has been cold
+for 7 days.
 
 > **sccache backend.** In CI the workflow sets `SCCACHE_GHA_ENABLED=true`, so
 > sccache uses the GitHub Actions cache service (shared across runners), not

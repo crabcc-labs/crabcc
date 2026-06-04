@@ -147,8 +147,17 @@ fi
 # Skipped mid-build — the live target dir would be deleted out from under cargo.
 TARGET_BASE="${RUNNER_TARGET_BASE:-${CACHE_BASE}/target}"
 if [ -d "$TARGET_BASE" ] && ! runner_busy; then
-  find "$TARGET_BASE" -mindepth 1 -maxdepth 1 -mtime +7 -exec rm -rf {} + 2>/dev/null || true
-  log "cargo target: pruned per-runner dirs older than 7d from ${TARGET_BASE}"
+  # Prune a per-runner target dir only when its WHOLE subtree is cold (no file
+  # touched in 7d). Keying on the top-level dir's own mtime would wrongly evict
+  # a steadily-built cache whose layout (debug/, release/) rarely changes, which
+  # only updates the parent dir's mtime when entries are added/removed.
+  for d in "$TARGET_BASE"/*/; do
+    [ -d "$d" ] || continue
+    if [ -z "$(find "$d" -type f -newermt '7 days ago' -print -quit 2>/dev/null)" ]; then
+      rm -rf "$d" 2>/dev/null || true
+      log "cargo target: pruned cold dir ${d}"
+    fi
+  done
 fi
 
 # ── System caches: apt + journald ─────────────────────────────────────────
