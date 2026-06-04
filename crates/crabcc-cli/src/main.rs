@@ -35,6 +35,7 @@ mod backup;
 mod cli_config;
 mod compress_cmd;
 mod crawl_cmd;
+mod csv;
 mod debug_network;
 mod doctor;
 mod edit;
@@ -54,6 +55,7 @@ mod rewrite_log;
 mod root_resolver;
 mod shell_context;
 mod shell_rewrite;
+mod squeeze;
 mod status;
 #[cfg(feature = "telemetry")]
 mod telemetry;
@@ -538,6 +540,21 @@ enum Cmd {
         #[arg(long = "max-tokens", default_value_t = 2000)]
         max_tokens: usize,
     },
+    /// Token-cheap CSV summaries via qsv (an explicit alternative to `cat`ting
+    /// a large CSV into context). Summaries, not the raw rows.
+    Csv {
+        #[command(subcommand)]
+        op: CsvCmd,
+    },
+    /// Collapse streaming/progress noise from stdin (carriage-return redraws,
+    /// repeated lines), keeping errors/warnings. A cheap filter for build /
+    /// install / test / log output: `noisy-cmd 2>&1 | crabcc squeeze`.
+    Squeeze {
+        /// Keep first/last N/2 lines and elide the middle (errors still
+        /// surfaced). 0 = no window, only the lossless reductions.
+        #[arg(long, default_value_t = 0)]
+        max_lines: usize,
+    },
     /// Onboard onto a fresh codebase: detect the stack from dependency
     /// manifests, crawl each dependency's docs into memory in the
     /// background, and write a research plan + codebase overview +
@@ -672,6 +689,20 @@ enum LoopOp {
         #[arg(long, default_value_t = crabcc_memory::loop_detect::DEFAULT_THRESHOLD)]
         threshold: i64,
     },
+}
+
+#[derive(Subcommand)]
+enum CsvCmd {
+    /// Per-column stats (`qsv stats`): type, min/max, mean, etc.
+    Stats { file: PathBuf },
+    /// `n` random rows (`qsv sample`).
+    Sample {
+        file: PathBuf,
+        #[arg(long, default_value_t = 10)]
+        n: usize,
+    },
+    /// Row count (`qsv count`).
+    Count { file: PathBuf },
 }
 
 #[derive(Subcommand)]
@@ -1260,6 +1291,20 @@ fn main() -> Result<()> {
         return enrich_cmd::run(&root, query, *max_tokens);
     }
 
+    // `csv` only shells out to qsv; no symbol Store needed.
+    if let Some(Cmd::Csv { op }) = cli.cmd.as_ref() {
+        return match op {
+            CsvCmd::Stats { file } => csv::run(csv::CsvOp::Stats, file, 0),
+            CsvCmd::Sample { file, n } => csv::run(csv::CsvOp::Sample, file, *n),
+            CsvCmd::Count { file } => csv::run(csv::CsvOp::Count, file, 0),
+        };
+    }
+
+    // `squeeze` is a pure stdin->stdout filter; no symbol Store needed.
+    if let Some(Cmd::Squeeze { max_lines }) = cli.cmd.as_ref() {
+        return squeeze::run(*max_lines);
+    }
+
     // `init` reads dependency manifests + writes onboarding artifacts +
     // spawns background crawls; no symbol Store needed.
     if let Some(Cmd::Init { inject }) = cli.cmd.as_ref() {
@@ -1744,6 +1789,8 @@ fn main() -> Result<()> {
         Cmd::Fetch { .. } => unreachable!("fetch handled before store init"),
         Cmd::Crawl { .. } => unreachable!("crawl handled before store init"),
         Cmd::Enrich { .. } => unreachable!("enrich handled before store init"),
+        Cmd::Csv { .. } => unreachable!("csv handled before store init"),
+        Cmd::Squeeze { .. } => unreachable!("squeeze handled before store init"),
         Cmd::Init { .. } => unreachable!("init handled before store init"),
         Cmd::Serve { .. } => unreachable!("serve handled before store init"),
         Cmd::Agent { .. } => unreachable!("agent handled before store init"),
@@ -2367,6 +2414,8 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::Fetch { .. } => "fetch",
         Cmd::Crawl { .. } => "crawl",
         Cmd::Enrich { .. } => "enrich",
+        Cmd::Csv { .. } => "csv",
+        Cmd::Squeeze { .. } => "squeeze",
         Cmd::Init { .. } => "init",
         Cmd::Serve { .. } => "serve",
         Cmd::Read { .. } => "read",
