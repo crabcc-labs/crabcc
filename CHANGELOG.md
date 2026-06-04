@@ -19,6 +19,21 @@ All notable changes to crabcc are documented here. Format follows
   out*, end to end. Reads only the memory Palace + the onboard plan; no symbol
   Store needed. The `init` research-plan.md + JSON now point at these commands.
 
+### Performance
+
+- **Fuzzy symbol search 3–6× faster, with a constant-time fast-bail.** The
+  native (post-Tantivy) `fuzzy` lookup now uses an allocation-free bounded
+  Levenshtein — profiling showed ~34% of its instructions were in the
+  allocator (four heap `Vec`s per call) and the length-gap prune ran *after*
+  them. Reworked into a reusable scratch with an ASCII byte fast-path: the
+  length prune runs first and the DP rows are allocated once per scan. Bench:
+  `fuzzy/exact/50k` 39→11 ms (3.5×), `fuzzy/nomatch/50k` 33→5 ms (6.5×).
+  Additionally, `fuzzy` now bails once it has `limit` exact hits (or a full
+  candidate pool), so a short/common query matching a large slice of the
+  corpus returns in ~5 µs flat instead of scanning everything; ranking stays
+  exact when matches are sparse. Adds a `fuzzy/dense` bench + a profiling
+  example. (No API or behavior change for sparse queries — distances identical.)
+
 ## [6.1.0] — 2026-06-04
 
 ### Added
