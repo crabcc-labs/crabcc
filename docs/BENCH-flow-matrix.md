@@ -57,21 +57,26 @@ symbol-upgrade JSON), so Morph adds nothing there.
 > MORPH_API_KEY=… CRABCC=target/release/crabcc bash scripts/bench-flow-matrix.sh
 > ```
 
-## Lane 3 — real-tokenizer prompt tokens (`OPENROUTER_API_KEY` + `MODELS`)
+## Lane 3 — real-tokenizer prompt tokens (`OPENROUTER_API_KEY` + `MODELS`) — _deferred_
 
-The only model-*dependent* number: the same vanilla-vs-flow `claude_code`
-context, measured as the API's actual `usage.prompt_tokens` per model (real
-tokenizers, not bytes/4). Costs real tokens; sends context to `openrouter.ai`.
+The same vanilla-vs-flow `claude_code` context, measured as the API's actual
+`usage.prompt_tokens` per model (real tokenizers, not bytes/4). This is the only
+model-*dependent* number, and it is **not essential**: lanes 1–2 are
+model-independent, so this lane only restates "−80% bytes ≈ −80% real tokens."
 
-> _Pending a keyed run._ Refresh with:
+> _Deferred._ The OpenRouter lane builds the request by slurping the full
+> `claude_code` context into a `jq --rawfile` payload; on a memory-constrained
+> machine this can OOM before printing rows, so it's left for a run on a roomy
+> box (and a large-context model — the ~138K-token vanilla side overflows
+> small-window models, returning `err`). Refresh with:
 > ```bash
-> OPENROUTER_API_KEY=… MODELS="anthropic/claude-haiku-4-5 deepseek/deepseek-v4-flash" \
+> OPENROUTER_API_KEY=… MODELS="anthropic/claude-haiku-4-5" \
 >   CRABCC=target/release/crabcc bash scripts/bench-flow-matrix.sh
 > ```
 
 | model | vanilla ptok | flow ptok | reduction |
 |-------|--------------|-----------|-----------|
-| _(per `MODELS`)_ | TBD | TBD | TBD |
+| _(deferred — see note)_ | — | — | — |
 
 ## Notes
 
