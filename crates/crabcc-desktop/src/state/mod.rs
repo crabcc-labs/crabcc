@@ -512,7 +512,7 @@ impl AppState {
         // Wall-clock proxy: prefer the latest observed event ts so
         // the timestamp matches other UI surfaces (KPI strip "X
         // seconds ago"). Falls back to 0 before the first event.
-        let created_at = self.last_event_ts.unwrap_or(0);
+        let created_at = self.last_event_ts.unwrap_or_default();
         let toast = Toast {
             id,
             level,

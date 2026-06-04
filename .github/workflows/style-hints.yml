@@ -91,6 +91,26 @@ jobs:
               'if .* \{ Some(' \
               'Replace with `cond.then_some(val)` — bool::then_some is cleaner for Option-producing conditions'
 
+          hit '.map(|t| …).unwrap_or(false)' \
+              '\.map(.*\)\.unwrap_or(false)' \
+              'Replace with `Option::is_some_and(|t| …)` — stable since 1.70, no unwrap needed'
+
+          hit '.unwrap_or(0) on numeric Option/Result' \
+              '\.unwrap_or(0[^.])\|\.unwrap_or(0$)' \
+              'Replace with `.unwrap_or_default()` when 0 is the type default (i64/u64/u32/usize/…)'
+
+          hit '.len() == 0 / .len() > 0' \
+              '\.len() *[=!>]= *0\b' \
+              'Replace `.len() == 0` with `.is_empty()` and `.len() > 0` / `.len() != 0` with `!.is_empty()`'
+
+          hit 'format!("{}", x) single-arg' \
+              'format!\("{}", ' \
+              'Replace `format!("{}", x)` with `x.to_string()` — skips the format machinery'
+
+          hit '.map(|x| x.to_string()) on &str iterator' \
+              '\.map(\|[a-z]\| [a-z]\.to_string())' \
+              'Replace with `.map(str::to_string)` for `&str` iterators (avoid a redundant closure); note: only valid when the iterator yields references, not owned types'
+
           {
             if [ "$TOTAL" -eq 0 ]; then
               printf '## ✅ No improvable style patterns in this diff\n'

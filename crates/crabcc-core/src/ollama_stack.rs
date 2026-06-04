@@ -459,7 +459,10 @@ fn parse_container(v: serde_json::Value) -> ContainerInfo {
         .and_then(|h| h.get("Status"))
         .and_then(|x| x.as_str())
         .map(str::to_string);
-    let restart_count = v.get("RestartCount").and_then(|x| x.as_u64()).unwrap_or(0) as u32;
+    let restart_count = v
+        .get("RestartCount")
+        .and_then(|x| x.as_u64())
+        .unwrap_or_default() as u32;
     let created = v
         .get("Created")
         .and_then(|x| x.as_str())
@@ -561,12 +564,12 @@ pub fn probe(opts: &Options, base_url: &str, master_key: &str) -> Result<ProbeRe
     } else {
         ("", body.as_ref())
     };
-    let http_status: u16 = status_str.trim().parse().unwrap_or(0);
+    let http_status: u16 = status_str.trim().parse().unwrap_or_default();
 
     let models_count = serde_json::from_str::<serde_json::Value>(json_body)
         .ok()
         .and_then(|v| v.get("data").and_then(|d| d.as_array()).map(|a| a.len()))
-        .unwrap_or(0);
+        .unwrap_or_default();
 
     let result = ProbeResult {
         url,
@@ -690,7 +693,7 @@ fn correlation(opts: &Options) -> String {
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos())
-            .unwrap_or(0);
+            .unwrap_or_default();
         format!("ols-{nanos:x}")
     })
 }

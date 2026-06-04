@@ -464,7 +464,7 @@ fn cmd_available(name: &str) -> bool {
         .stderr(std::process::Stdio::null())
         .status()
         .map(|s| s.success())
-        .unwrap_or(false)
+        .unwrap_or_default()
 }
 
 fn inspect_key_file(path: &std::path::Path, _expected_mode: u32) -> serde_json::Value {

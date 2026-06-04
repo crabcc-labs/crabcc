@@ -81,7 +81,9 @@ pub fn run(op: &JobsCmd) -> Result<()> {
                         let opts2 = opts.clone();
                         let q = q.to_owned();
                         tokio::spawn(async move {
-                            let depth = jobs::queue_depth_async(&opts2, &q).await.unwrap_or(0);
+                            let depth = jobs::queue_depth_async(&opts2, &q)
+                                .await
+                                .unwrap_or_default();
                             (q, depth)
                         })
                     })

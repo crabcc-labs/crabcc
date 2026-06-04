@@ -34,7 +34,7 @@ pub(crate) fn memory_recent(root: &Path, query: &str) -> Result<MemoryRecentSnap
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
         let v = url_decode(v);
         match k {
-            "since" => since = v.parse().unwrap_or(0),
+            "since" => since = v.parse().unwrap_or_default(),
             "limit" => limit = v.parse::<usize>().unwrap_or(20).clamp(1, 200),
             _ => {}
         }

@@ -483,7 +483,7 @@ fn walk_with_store(
             let visibility = visibility_for(lang, &node, src);
 
             // Get file_id from store (simplified: assume store has this method)
-            let file_id = store.get_file_id(file).ok().flatten().unwrap_or(0); // Fallback to 0 if not found; adjust as needed
+            let file_id = store.get_file_id(file).ok().flatten().unwrap_or_default(); // Fallback to 0 if not found; adjust as needed
 
             // Write to store
             let rowid = store
@@ -585,7 +585,7 @@ fn walk_edges_with_resolver(
         if let Some(src_symbol_id) = src_id {
             // Build ScopeCtx
             let scope = ScopeCtx {
-                file_id: store.get_file_id(file).ok().flatten().unwrap_or(0),
+                file_id: store.get_file_id(file).ok().flatten().unwrap_or_default(),
                 current_module: None, // Simplified; derive from AST if possible
                 imports,
                 local_defs,
@@ -617,7 +617,7 @@ fn walk_edges_with_resolver(
         let src_id = next_enclosing;
         if let Some(src_symbol_id) = src_id {
             let scope = ScopeCtx {
-                file_id: store.get_file_id(file).ok().flatten().unwrap_or(0),
+                file_id: store.get_file_id(file).ok().flatten().unwrap_or_default(),
                 current_module: None,
                 imports,
                 local_defs,
@@ -1071,12 +1071,23 @@ fn signature_for(node: &Node, src: &[u8], lang: &str) -> Option<String> {
         .child_by_field_name("body")
         .or_else(|| node.child_by_field_name("value"));
     let start = node.start_byte();
+    // Tree-sitter byte offsets are normally in-bounds for `src`, but a tree
+    // reused as an incremental-parse hint whose `InputEdit`s don't match the
+    // text it's reparsed against (e.g. concurrent edits to the same document
+    // upstream of the LSP indexer) can hand back stale ranges with end < start
+    // or past the buffer. Slice through `get()` so a bad range degrades to
+    // "no signature" instead of panicking — a panic here would poison the
+    // caller's store mutex and wedge all further indexing.
+    let tail = src.get(start..)?;
     let end = body.map(|b| b.start_byte()).unwrap_or_else(|| {
         // No body — take just the first line.
-        let nl = src[start..].iter().position(|&b| b == b'\n').unwrap_or(0);
+        let nl = src[start..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .unwrap_or_default();
         start + nl
     });
-    let raw = std::str::from_utf8(&src[start..end]).ok()?;
+    let raw = std::str::from_utf8(src.get(start..end)?).ok()?;
     Some(compact(raw, lang))
 }
 

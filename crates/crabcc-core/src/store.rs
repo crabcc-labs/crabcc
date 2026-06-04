@@ -100,6 +100,12 @@ impl Store {
         // v2.0 edges migration: pre-v2 DBs have INTEGER `src_symbol`; recreate
         // the empty table with TEXT (and the dst_kind composite index).
         migrate_edges_text(&conn).context("migrate edges schema")?;
+        // v5.0.5: drop the synthetic `id` rowid column from `edges` and
+        // convert to WITHOUT ROWID with a composite PK (src, dst, kind, line).
+        // Eliminates the hidden rowid B-tree (~30 % storage reduction) and
+        // makes src-keyed scans use the clustered PK instead of a secondary
+        // index. Idempotent — no-op when `id` column is already absent.
+        migrate_edges_without_rowid(&conn).context("migrate edges WITHOUT ROWID")?;
         // PRAGMA optimize is a no-op until the query planner has stats; it
         // becomes useful after ANALYZE. Run it whenever we open — sqlite
         // makes the call cheap when nothing's changed.
@@ -142,7 +148,7 @@ impl Store {
             .query_row("SELECT EXISTS(SELECT 1 FROM files LIMIT 1)", [], |r| {
                 r.get::<_, bool>(0)
             })
-            .unwrap_or(false);
+            .unwrap_or_default();
         let schema_v4_built = conn
             .query_row(
                 "SELECT value FROM meta WHERE key = 'schema_v4_built'",
@@ -710,7 +716,7 @@ impl Store {
         // `signature_enc` is non-null with default 0; older databases that
         // somehow lack the column are migrated at open time. Treat read errors
         // as "not encoded" rather than failing the row.
-        let enc: i64 = row.get::<_, i64>(enc_idx).unwrap_or(0);
+        let enc: i64 = row.get::<_, i64>(enc_idx).unwrap_or_default();
 
         #[cfg(feature = "compress")]
         {
@@ -835,6 +841,43 @@ pub struct EdgeHit {
 /// edit during the hackathon) and lets future v4→v5 migrations slot
 /// in here.
 fn migrate_edges_text(_conn: &Connection) -> Result<()> {
+    Ok(())
+}
+
+/// Convert the `edges` table to WITHOUT ROWID once per DB lifetime.
+/// Checks for the synthetic `id` column as the migration sentinel:
+/// - present  → old rowid-table schema → recreate and migrate data
+/// - absent   → already WITHOUT ROWID  → no-op
+fn migrate_edges_without_rowid(conn: &Connection) -> Result<()> {
+    let has_id: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('edges') WHERE name = 'id')",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or_default();
+    if !has_id {
+        return Ok(());
+    }
+    // Recreate atomically. INSERT OR IGNORE handles the rare edge case of
+    // pre-existing duplicate (src, dst, kind, line) tuples in old data.
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(
+        "CREATE TABLE edges_new (
+             src_symbol_id   INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+             dst_symbol_id   INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
+             kind            TEXT    NOT NULL CHECK (kind IN ('call','ref','import','inherit','impl')),
+             line            INTEGER NOT NULL,
+             PRIMARY KEY (src_symbol_id, dst_symbol_id, kind, line)
+         ) WITHOUT ROWID;
+         INSERT OR IGNORE INTO edges_new(src_symbol_id, dst_symbol_id, kind, line)
+             SELECT src_symbol_id, dst_symbol_id, kind, line FROM edges;
+         DROP TABLE edges;
+         ALTER TABLE edges_new RENAME TO edges;
+         CREATE INDEX IF NOT EXISTS idx_edges_dst      ON edges(dst_symbol_id);
+         CREATE INDEX IF NOT EXISTS idx_edges_dst_kind ON edges(dst_symbol_id, kind);",
+    )?;
+    tx.commit()?;
     Ok(())
 }
 

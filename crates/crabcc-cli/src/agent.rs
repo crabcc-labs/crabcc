@@ -213,7 +213,7 @@ impl RunDir {
         let started = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
-            .unwrap_or(0);
+            .unwrap_or_default();
         // Truncate the prompt for the meta record — full prompts can be
         // huge (`--run "$(cat huge.md)"` is a real call shape) and we
         // don't want meta.json to grow unbounded.
@@ -260,7 +260,7 @@ fn generate_id() -> String {
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0);
+            .unwrap_or_default();
         let pid = std::process::id() as u64;
         let mix = ts ^ (pid.wrapping_mul(0x9E37_79B9_7F4A_7C15));
         bytes.copy_from_slice(&mix.to_le_bytes());

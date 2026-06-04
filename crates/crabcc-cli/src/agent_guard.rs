@@ -99,7 +99,7 @@ pub fn run(cfg: GuardConfig) -> Result<()> {
         if let Some(lp) = &row.log_path {
             if log_idle_secs(lp)
                 .map(|s| s > cfg.idle_secs)
-                .unwrap_or(false)
+                .unwrap_or_default()
             {
                 let detail = format!(
                     "log mtime older than idle_secs={} (path={})",
@@ -243,7 +243,7 @@ fn write_kill_log(home: &Path, run_id: &str, act: &Action) -> Result<()> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .unwrap_or_default();
     let body = format!(
         "killed_at_unix: {now}\nreason: {}\npid: {}\ndetail: {}\n",
         act.reason,

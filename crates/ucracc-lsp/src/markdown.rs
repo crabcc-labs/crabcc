@@ -72,7 +72,7 @@ fn atx_heading(node: &Node, src: &[u8]) -> Option<(u32, String)> {
                     .trim_start_matches("atx_h")
                     .trim_end_matches("_marker")
                     .parse()
-                    .unwrap_or(0);
+                    .unwrap_or_default();
             }
             "inline" => {
                 text = slice(&child, src).map(|s| s.trim().to_string());

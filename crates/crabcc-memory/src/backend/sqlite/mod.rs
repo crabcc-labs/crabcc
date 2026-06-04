@@ -25,7 +25,7 @@ use encoding::{blob_to_vec, fts_match_string, now_secs, vec_to_blob};
 #[cfg(feature = "memory-vec")]
 use ensure::register_sqlite_vec_once;
 use ensure::{ensure_room, ensure_wing};
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use std::fmt::Write as _;
 use std::path::Path;
 use std::sync::Mutex;
@@ -82,7 +82,7 @@ impl SqliteBackend {
                 |_| Ok(true),
             )
             .optional()?
-            .unwrap_or(false);
+            .unwrap_or_default();
         if !has_enc {
             conn.execute(
                 "ALTER TABLE drawers ADD COLUMN body_enc INTEGER NOT NULL DEFAULT 0",
@@ -101,7 +101,7 @@ impl SqliteBackend {
                 |_| Ok(true),
             )
             .optional()?
-            .unwrap_or(false);
+            .unwrap_or_default();
         if !has_emb_model {
             conn.execute(
                 "ALTER TABLE drawer_embeddings ADD COLUMN embedding_model TEXT NOT NULL DEFAULT 'hash-m0'",
@@ -115,7 +115,7 @@ impl SqliteBackend {
                 |_| Ok(true),
             )
             .optional()?
-            .unwrap_or(false);
+            .unwrap_or_default();
         if !has_emb_at {
             conn.execute(
                 "ALTER TABLE drawer_embeddings ADD COLUMN embedded_at INTEGER NOT NULL DEFAULT 0",
@@ -131,10 +131,10 @@ impl SqliteBackend {
         // route through `body_from_row` (same decoder query() uses).
         let drawer_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM drawers", [], |r| r.get(0))
-            .unwrap_or(0);
+            .unwrap_or_default();
         let fts_count: i64 = conn
             .query_row("SELECT COUNT(*) FROM drawers_fts", [], |r| r.get(0))
-            .unwrap_or(0);
+            .unwrap_or_default();
         if drawer_count > 0 && fts_count == 0 {
             // Open codec early just for the backfill — needs the same
             // decode path that `body_from_row` uses. We can't call
@@ -301,7 +301,7 @@ impl SqliteBackend {
 impl Backend for SqliteBackend {
     fn add(&self, drawers: &[DrawerInsert]) -> Result<Vec<DrawerId>> {
         let mut conn = self.conn.lock().map_err(|_| anyhow!("poisoned mutex"))?;
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut ids = Vec::with_capacity(drawers.len());
         let now = now_secs();
         for d in drawers {
@@ -484,7 +484,7 @@ impl Backend for SqliteBackend {
         // delete from drawers (which cascades drawer_embeddings), then
         // emit one FTS delete per id under the same transaction so the
         // pair is atomic.
-        let tx = conn.transaction()?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let ids: Vec<DrawerId> = match sel {
             DeleteSel::All => {
                 let mut stmt = tx.prepare("SELECT id FROM drawers")?;
@@ -620,6 +620,15 @@ impl Backend for SqliteBackend {
         // is preserved (sqlite restores pragmas across the rewrite).
         let conn = self.conn.lock().map_err(|_| anyhow!("poisoned mutex"))?;
         conn.execute("VACUUM", [])?;
+        Ok(())
+    }
+
+    fn vacuum_into(&self, dest: &Path) -> Result<()> {
+        let dest_str = dest
+            .to_str()
+            .ok_or_else(|| anyhow!("vacuum_into: dest path is not valid UTF-8"))?;
+        let conn = self.conn.lock().map_err(|_| anyhow!("poisoned mutex"))?;
+        conn.execute("VACUUM INTO ?1", rusqlite::params![dest_str])?;
         Ok(())
     }
 
@@ -1249,7 +1258,7 @@ mod tests {
                     )
                     .optional()
                     .unwrap()
-                    .unwrap_or(false);
+                    .unwrap_or_default();
                 assert!(!has_enc, "test fixture should lack body_enc to begin with");
             }
             // Open via SqliteBackend — schema apply is idempotent (CREATE
@@ -1264,7 +1273,7 @@ mod tests {
                 )
                 .optional()
                 .unwrap()
-                .unwrap_or(false);
+                .unwrap_or_default();
             assert!(has_enc, "Store::open must add body_enc to pre-existing DBs");
         }
     }

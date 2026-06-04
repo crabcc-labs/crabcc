@@ -102,7 +102,7 @@ pub fn record(op: &str, query: &str, results: usize, repo: &str, output_bytes: u
         ts: SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs())
-            .unwrap_or(0),
+            .unwrap_or_default(),
         op: op.into(),
         query: query.chars().take(200).collect(),
         results,
@@ -156,7 +156,7 @@ pub fn report() -> Result<Report> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .unwrap_or_default();
     let session_cutoff = now.saturating_sub(30 * 60);
     let day_cutoff = now.saturating_sub(24 * 60 * 60);
 

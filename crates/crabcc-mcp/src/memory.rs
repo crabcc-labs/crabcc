@@ -106,6 +106,17 @@ pub fn tools_def() -> Vec<Value> {
             &[],
         ),
         tool(
+            "memory.backup",
+            "Write a transactionally consistent snapshot of memory.db to `dest` \
+             using VACUUM INTO. Safe on a live WAL-mode database — no WAL sidecar \
+             in the output, readers/writers unblocked. Prefer over raw file copy.",
+            json!({
+                "cwd":  cwd_field,
+                "dest": str_field("destination file path for the snapshot"),
+            }),
+            &["dest"],
+        ),
+        tool(
             "memory.count",
             "Drawer count for the store.",
             json!({"cwd": cwd_field}),
@@ -208,7 +219,10 @@ pub fn dispatch(tool: &str, args: &Value, server_root: &Path) -> Result<String> 
                 .get("source")
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
-            let all = args.get("all").and_then(|v| v.as_bool()).unwrap_or(false);
+            let all = args
+                .get("all")
+                .and_then(|v| v.as_bool())
+                .unwrap_or_default();
             let count = [id.is_some(), source.is_some(), all]
                 .iter()
                 .filter(|x| **x)
@@ -253,6 +267,12 @@ pub fn dispatch(tool: &str, args: &Value, server_root: &Path) -> Result<String> 
             };
             let n = palace.forget(&sel)?;
             Ok(json!({"forgotten": n}).to_string())
+        }
+        "memory.backup" => {
+            let dest = arg_str(args, "dest")?;
+            let dest_path = std::path::Path::new(dest);
+            palace.vacuum_into(dest_path)?;
+            Ok(json!({"status": "ok", "dest": dest}).to_string())
         }
         "memory.count" => Ok(json!({"count": palace.count()?}).to_string()),
         "memory.health" => Ok(serde_json::to_string(&palace.health())?),

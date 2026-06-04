@@ -132,8 +132,8 @@ impl Render for DashboardHome {
         let index_kpi = match state.bootstrap.as_ref().and_then(|b| b.index.as_ref()) {
             Some(idx) => format!(
                 "{} files · {} symbols",
-                idx.files.unwrap_or(0),
-                idx.symbols.unwrap_or(0)
+                idx.files.unwrap_or_default(),
+                idx.symbols.unwrap_or_default()
             ),
             None => "—".into(),
         };
@@ -215,7 +215,7 @@ impl Render for DashboardHome {
         // Use `last_event_ts` as a wall-clock proxy. Same trick as the
         // Agents-route relative-age formatter — keeps chrono out of
         // the dep tree for a tiny display tweak.
-        let now_ts = state.last_event_ts.unwrap_or(0);
+        let now_ts = state.last_event_ts.unwrap_or_default();
         let entity_for_op = cx.entity();
         let activity_body: gpui::AnyElement =
             if groups_empty && (active_pin.is_some() || active_agent_pin.is_some()) {
@@ -1136,7 +1136,7 @@ mod tests {
             op: op.into(),
             query: q.into(),
             results,
-            agent_id: agent.map(|s| s.into()),
+            agent_id: agent.map(Into::into),
         }
     }
 
