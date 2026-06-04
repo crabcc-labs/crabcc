@@ -1264,93 +1264,92 @@ mod tests {
         assert_eq!(detect_lang(&PathBuf::from("a.md")), None);
     }
 
-    // ---- TypeScript ----
+    // ---- TypeScript / JavaScript symbols ----
 
     #[test]
-    fn ts_function_export() {
-        let src = "export function foo(a: string): number { return 0; }";
-        let syms = extract_file("a.ts", src, "typescript").unwrap();
-        assert_eq!(syms.len(), 1, "got: {syms:?}");
-        let s = &syms[0];
-        assert_eq!(s.name, "foo");
-        assert!(matches!(s.kind, SymbolKind::Function));
-        assert_eq!(s.visibility.as_deref(), Some("pub"));
-        assert_eq!(s.line_start, 1);
-        let sig = s.signature.as_deref().unwrap_or_default();
-        assert!(
-            sig.contains("foo"),
-            "signature should contain name: {sig:?}"
-        );
+    fn ts_js_symbols() {
+        // function export: name, kind, pub visibility, line, signature.
+        {
+            let src = "export function foo(a: string): number { return 0; }";
+            let syms = extract_file("a.ts", src, "typescript").unwrap();
+            assert_eq!(syms.len(), 1, "got: {syms:?}");
+            let s = &syms[0];
+            assert_eq!(s.name, "foo");
+            assert!(matches!(s.kind, SymbolKind::Function));
+            assert_eq!(s.visibility.as_deref(), Some("pub"));
+            assert_eq!(s.line_start, 1);
+            let sig = s.signature.as_deref().unwrap_or_default();
+            assert!(
+                sig.contains("foo"),
+                "signature should contain name: {sig:?}"
+            );
+        }
+        // class method gets class parent + Method kind.
+        {
+            let src = "class Greeter {\n  greet(name: string): string { return name; }\n}\n";
+            let syms = extract_file("a.ts", src, "typescript").unwrap();
+            let n = names(&syms);
+            assert!(n.contains(&"Greeter"), "names: {n:?}");
+            assert!(n.contains(&"greet"), "names: {n:?}");
+            let m = syms.iter().find(|s| s.name == "greet").unwrap();
+            assert_eq!(m.parent.as_deref(), Some("Greeter"));
+            assert!(matches!(m.kind, SymbolKind::Method));
+        }
+        // interface + type alias.
+        {
+            let src = "interface User { id: number; }\ntype Id = string;\n";
+            let syms = extract_file("a.ts", src, "typescript").unwrap();
+            let n = names(&syms);
+            assert!(n.contains(&"User"));
+            assert!(n.contains(&"Id"));
+            let i = syms.iter().find(|s| s.name == "User").unwrap();
+            assert!(matches!(i.kind, SymbolKind::Interface));
+        }
+        // JS function declaration.
+        {
+            let src = "function add(a, b) { return a + b; }";
+            let syms = extract_file("a.js", src, "javascript").unwrap();
+            assert_eq!(syms.len(), 1);
+            assert_eq!(syms[0].name, "add");
+            assert!(matches!(syms[0].kind, SymbolKind::Function));
+        }
     }
 
-    #[test]
-    fn ts_class_with_method_has_parent() {
-        let src = "class Greeter {\n  greet(name: string): string { return name; }\n}\n";
-        let syms = extract_file("a.ts", src, "typescript").unwrap();
-        let n = names(&syms);
-        assert!(n.contains(&"Greeter"), "names: {n:?}");
-        assert!(n.contains(&"greet"), "names: {n:?}");
-        let m = syms.iter().find(|s| s.name == "greet").unwrap();
-        assert_eq!(m.parent.as_deref(), Some("Greeter"));
-        assert!(matches!(m.kind, SymbolKind::Method));
-    }
+    // ---- Ruby symbols ----
 
     #[test]
-    fn ts_interface_and_type() {
-        let src = "interface User { id: number; }\ntype Id = string;\n";
-        let syms = extract_file("a.ts", src, "typescript").unwrap();
-        let n = names(&syms);
-        assert!(n.contains(&"User"));
-        assert!(n.contains(&"Id"));
-        let i = syms.iter().find(|s| s.name == "User").unwrap();
-        assert!(matches!(i.kind, SymbolKind::Interface));
-    }
-
-    // ---- JavaScript ----
-
-    #[test]
-    fn js_function_declaration() {
-        let src = "function add(a, b) { return a + b; }";
-        let syms = extract_file("a.js", src, "javascript").unwrap();
-        assert_eq!(syms.len(), 1);
-        assert_eq!(syms[0].name, "add");
-        assert!(matches!(syms[0].kind, SymbolKind::Function));
-    }
-
-    // ---- Ruby ----
-
-    #[test]
-    fn ruby_class_with_method_has_parent() {
-        let src = "class Foo\n  def bar(x)\n    x\n  end\nend\n";
-        let syms = extract_file("a.rb", src, "ruby").unwrap();
-        let n = names(&syms);
-        assert!(n.contains(&"Foo"));
-        assert!(n.contains(&"bar"));
-        let m = syms.iter().find(|s| s.name == "bar").unwrap();
-        assert_eq!(m.parent.as_deref(), Some("Foo"));
-        assert!(matches!(m.kind, SymbolKind::Method));
-    }
-
-    #[test]
-    fn ruby_module() {
-        let src = "module Auth\n  def self.sign_in(u); end\nend\n";
-        let syms = extract_file("a.rb", src, "ruby").unwrap();
-        let n = names(&syms);
-        assert!(n.contains(&"Auth"));
-        assert!(n.contains(&"sign_in"));
-    }
-
-    #[test]
-    fn ruby_signature_strips_trailing_comment() {
-        let src = "class User # the number seems arbitrary, ported from legacy\n  # extra notes\n  def name; end\nend\n";
-        let syms = extract_file("a.rb", src, "ruby").unwrap();
-        let cls = syms.iter().find(|s| s.name == "User").unwrap();
-        let sig = cls.signature.as_deref().unwrap_or_default();
-        assert!(
-            !sig.contains('#'),
-            "signature should not leak '#' comments, got: {sig:?}"
-        );
-        assert!(sig.starts_with("class User"), "got: {sig:?}");
+    fn ruby_symbols() {
+        // class method gets class parent + Method kind.
+        {
+            let src = "class Foo\n  def bar(x)\n    x\n  end\nend\n";
+            let syms = extract_file("a.rb", src, "ruby").unwrap();
+            let n = names(&syms);
+            assert!(n.contains(&"Foo"));
+            assert!(n.contains(&"bar"));
+            let m = syms.iter().find(|s| s.name == "bar").unwrap();
+            assert_eq!(m.parent.as_deref(), Some("Foo"));
+            assert!(matches!(m.kind, SymbolKind::Method));
+        }
+        // module + module function.
+        {
+            let src = "module Auth\n  def self.sign_in(u); end\nend\n";
+            let syms = extract_file("a.rb", src, "ruby").unwrap();
+            let n = names(&syms);
+            assert!(n.contains(&"Auth"));
+            assert!(n.contains(&"sign_in"));
+        }
+        // signature strips trailing `#` comments.
+        {
+            let src = "class User # the number seems arbitrary, ported from legacy\n  # extra notes\n  def name; end\nend\n";
+            let syms = extract_file("a.rb", src, "ruby").unwrap();
+            let cls = syms.iter().find(|s| s.name == "User").unwrap();
+            let sig = cls.signature.as_deref().unwrap_or_default();
+            assert!(
+                !sig.contains('#'),
+                "signature should not leak '#' comments, got: {sig:?}"
+            );
+            assert!(sig.starts_with("class User"), "got: {sig:?}");
+        }
     }
 
     // ---- Rust ----
@@ -1516,122 +1515,114 @@ mod tests {
         );
     }
 
-    // ---- Go ----
+    // ---- Go symbols ----
 
     #[test]
-    fn go_function_with_visibility_from_capitalization() {
-        let src = "package x\nfunc Add(a, b int) int { return a + b }\nfunc helper() {}\n";
-        let syms = extract_file("a.go", src, "go").unwrap();
-        let add = syms.iter().find(|s| s.name == "Add").unwrap();
-        assert!(matches!(add.kind, SymbolKind::Function));
-        assert_eq!(add.visibility.as_deref(), Some("pub"));
-        let helper = syms.iter().find(|s| s.name == "helper").unwrap();
-        assert_eq!(helper.visibility.as_deref(), Some("priv"));
+    fn go_symbols() {
+        // visibility from capitalization (exported vs unexported).
+        {
+            let src = "package x\nfunc Add(a, b int) int { return a + b }\nfunc helper() {}\n";
+            let syms = extract_file("a.go", src, "go").unwrap();
+            let add = syms.iter().find(|s| s.name == "Add").unwrap();
+            assert!(matches!(add.kind, SymbolKind::Function));
+            assert_eq!(add.visibility.as_deref(), Some("pub"));
+            let helper = syms.iter().find(|s| s.name == "helper").unwrap();
+            assert_eq!(helper.visibility.as_deref(), Some("priv"));
+        }
+        // pointer receiver strips to the type name.
+        {
+            let src = "package x\ntype Repo struct{}\nfunc (r *Repo) Save() error { return nil }\n";
+            let syms = extract_file("a.go", src, "go").unwrap();
+            let save = syms.iter().find(|s| s.name == "Save").unwrap();
+            assert!(matches!(save.kind, SymbolKind::Method));
+            assert_eq!(save.parent.as_deref(), Some("Repo"));
+        }
+        // value receiver.
+        {
+            let src =
+                "package x\ntype User struct{}\nfunc (u User) Name() string { return \"\" }\n";
+            let syms = extract_file("a.go", src, "go").unwrap();
+            let name = syms.iter().find(|s| s.name == "Name").unwrap();
+            assert_eq!(name.parent.as_deref(), Some("User"));
+            assert!(matches!(name.kind, SymbolKind::Method));
+        }
+        // type / const / var declarations.
+        {
+            let src = "package x\ntype ID int\nconst Max = 100\nvar Default = \"hi\"\n";
+            let syms = extract_file("a.go", src, "go").unwrap();
+            let by = |needle: &str| {
+                syms.iter()
+                    .find(|s| s.name == needle)
+                    .unwrap_or_else(|| panic!("missing {needle}: {:?}", names(&syms)))
+                    .clone()
+            };
+            assert!(matches!(by("ID").kind, SymbolKind::Type));
+            assert!(matches!(by("Max").kind, SymbolKind::Const));
+            assert!(matches!(by("Default").kind, SymbolKind::Var));
+        }
+        // pointer + generic receiver strips to the type name.
+        {
+            let src = "package x\ntype Box[T any] struct{}\nfunc (b *Box[T]) Open() {}\n";
+            let syms = extract_file("a.go", src, "go").unwrap();
+            let open = syms.iter().find(|s| s.name == "Open").unwrap();
+            assert_eq!(open.parent.as_deref(), Some("Box"));
+        }
     }
 
-    #[test]
-    fn go_method_receiver_pointer_strips_to_type_name() {
-        let src = "package x\ntype Repo struct{}\nfunc (r *Repo) Save() error { return nil }\n";
-        let syms = extract_file("a.go", src, "go").unwrap();
-        let save = syms.iter().find(|s| s.name == "Save").unwrap();
-        assert!(matches!(save.kind, SymbolKind::Method));
-        assert_eq!(save.parent.as_deref(), Some("Repo"));
-    }
+    // ---- Python symbols ----
 
     #[test]
-    fn go_method_value_receiver() {
-        let src = "package x\ntype User struct{}\nfunc (u User) Name() string { return \"\" }\n";
-        let syms = extract_file("a.go", src, "go").unwrap();
-        let name = syms.iter().find(|s| s.name == "Name").unwrap();
-        assert_eq!(name.parent.as_deref(), Some("User"));
-        assert!(matches!(name.kind, SymbolKind::Method));
-    }
-
-    #[test]
-    fn go_type_const_var_declarations() {
-        let src = "package x\ntype ID int\nconst Max = 100\nvar Default = \"hi\"\n";
-        let syms = extract_file("a.go", src, "go").unwrap();
-        let by = |needle: &str| {
-            syms.iter()
-                .find(|s| s.name == needle)
-                .unwrap_or_else(|| panic!("missing {needle}: {:?}", names(&syms)))
-                .clone()
-        };
-        assert!(matches!(by("ID").kind, SymbolKind::Type));
-        assert!(matches!(by("Max").kind, SymbolKind::Const));
-        assert!(matches!(by("Default").kind, SymbolKind::Var));
-    }
-
-    #[test]
-    fn go_receiver_helper_strips_pointer_and_generics() {
-        // Inline test of go_receiver_type via a method declaration with both
-        // pointer and generic params.
-        let src = "package x\ntype Box[T any] struct{}\nfunc (b *Box[T]) Open() {}\n";
-        let syms = extract_file("a.go", src, "go").unwrap();
-        let open = syms.iter().find(|s| s.name == "Open").unwrap();
-        assert_eq!(open.parent.as_deref(), Some("Box"));
-    }
-
-    // ---- Python ----
-
-    #[test]
-    fn python_def_function_visibility_from_underscore() {
-        let src = "def add(a, b):\n    return a + b\n\ndef _internal():\n    pass\n\ndef __mangled():\n    pass\n";
-        let syms = extract_file("a.py", src, "python").unwrap();
-        let add = syms.iter().find(|s| s.name == "add").unwrap();
-        let internal = syms.iter().find(|s| s.name == "_internal").unwrap();
-        let mangled = syms.iter().find(|s| s.name == "__mangled").unwrap();
-        assert_eq!(add.visibility.as_deref(), Some("pub"));
-        assert_eq!(internal.visibility.as_deref(), Some("priv"));
-        assert_eq!(mangled.visibility.as_deref(), Some("priv"));
-        assert!(matches!(add.kind, SymbolKind::Function));
-    }
-
-    #[test]
-    fn python_dunder_init_is_public() {
-        // Dunder methods (`__init__`, `__repr__`, `__eq__`) are public by
-        // Python's own rules even though they start with `__`.
-        let src = "class A:\n    def __init__(self):\n        pass\n";
-        let syms = extract_file("a.py", src, "python").unwrap();
-        let init = syms.iter().find(|s| s.name == "__init__").unwrap();
-        assert_eq!(init.visibility.as_deref(), Some("pub"));
-    }
-
-    #[test]
-    fn python_async_def_emits_function_kind() {
-        let src = "async def fetch(url):\n    return url\n";
-        let syms = extract_file("a.py", src, "python").unwrap();
-        let fetch = syms.iter().find(|s| s.name == "fetch").unwrap();
-        assert!(matches!(fetch.kind, SymbolKind::Function));
-    }
-
-    #[test]
-    fn python_class_with_method_has_parent() {
-        let src = "class User:\n    def name(self):\n        return ''\n";
-        let syms = extract_file("a.py", src, "python").unwrap();
-        let user = syms.iter().find(|s| s.name == "User").unwrap();
-        assert!(matches!(user.kind, SymbolKind::Class));
-        let name = syms.iter().find(|s| s.name == "name").unwrap();
-        assert_eq!(name.parent.as_deref(), Some("User"));
-        assert!(matches!(name.kind, SymbolKind::Function));
-    }
-
-    #[test]
-    fn python_decorated_class_unwraps_to_inner() {
-        // `@dataclass` wraps class_definition in decorated_definition. We descend
-        // through the wrapper and emit the inner class.
-        let src = "from dataclasses import dataclass\n\n@dataclass\nclass Point:\n    x: int\n    y: int\n";
-        let syms = extract_file("a.py", src, "python").unwrap();
-        let point = syms.iter().find(|s| s.name == "Point").unwrap();
-        assert!(matches!(point.kind, SymbolKind::Class));
-    }
-
-    #[test]
-    fn python_decorated_async_def_function() {
-        let src = "@retry\nasync def fetch_user(uid):\n    return uid\n";
-        let syms = extract_file("a.py", src, "python").unwrap();
-        let fetch = syms.iter().find(|s| s.name == "fetch_user").unwrap();
-        assert!(matches!(fetch.kind, SymbolKind::Function));
+    fn python_symbols() {
+        // visibility from leading underscores; dunder is public.
+        {
+            let src = "def add(a, b):\n    return a + b\n\ndef _internal():\n    pass\n\ndef __mangled():\n    pass\n";
+            let syms = extract_file("a.py", src, "python").unwrap();
+            let add = syms.iter().find(|s| s.name == "add").unwrap();
+            let internal = syms.iter().find(|s| s.name == "_internal").unwrap();
+            let mangled = syms.iter().find(|s| s.name == "__mangled").unwrap();
+            assert_eq!(add.visibility.as_deref(), Some("pub"));
+            assert_eq!(internal.visibility.as_deref(), Some("priv"));
+            assert_eq!(mangled.visibility.as_deref(), Some("priv"));
+            assert!(matches!(add.kind, SymbolKind::Function));
+        }
+        {
+            // Dunder methods are public by Python's rules despite `__`.
+            let src = "class A:\n    def __init__(self):\n        pass\n";
+            let syms = extract_file("a.py", src, "python").unwrap();
+            let init = syms.iter().find(|s| s.name == "__init__").unwrap();
+            assert_eq!(init.visibility.as_deref(), Some("pub"));
+        }
+        // async def -> Function kind.
+        {
+            let src = "async def fetch(url):\n    return url\n";
+            let syms = extract_file("a.py", src, "python").unwrap();
+            let fetch = syms.iter().find(|s| s.name == "fetch").unwrap();
+            assert!(matches!(fetch.kind, SymbolKind::Function));
+        }
+        // class method gets class parent.
+        {
+            let src = "class User:\n    def name(self):\n        return ''\n";
+            let syms = extract_file("a.py", src, "python").unwrap();
+            let user = syms.iter().find(|s| s.name == "User").unwrap();
+            assert!(matches!(user.kind, SymbolKind::Class));
+            let name = syms.iter().find(|s| s.name == "name").unwrap();
+            assert_eq!(name.parent.as_deref(), Some("User"));
+            assert!(matches!(name.kind, SymbolKind::Function));
+        }
+        // @dataclass-decorated class unwraps to the inner class.
+        {
+            let src = "from dataclasses import dataclass\n\n@dataclass\nclass Point:\n    x: int\n    y: int\n";
+            let syms = extract_file("a.py", src, "python").unwrap();
+            let point = syms.iter().find(|s| s.name == "Point").unwrap();
+            assert!(matches!(point.kind, SymbolKind::Class));
+        }
+        // decorated async def.
+        {
+            let src = "@retry\nasync def fetch_user(uid):\n    return uid\n";
+            let syms = extract_file("a.py", src, "python").unwrap();
+            let fetch = syms.iter().find(|s| s.name == "fetch_user").unwrap();
+            assert!(matches!(fetch.kind, SymbolKind::Function));
+        }
     }
 
     // ---- Cross-cutting extractor edge cases ----
@@ -1791,219 +1782,175 @@ mod tests {
     }
 
     #[test]
-    fn ts_edges_bare_call_attributes_to_caller() {
-        let src = "function high(){ low(); mid(); }\nfunction low(){}\nfunction mid(){}\n";
-        let es = edges("a.ts", src, "typescript");
-        // high() calls low() and mid().
-        let from_high: Vec<&str> = es
-            .iter()
-            .filter(|e| e.src_symbol.as_deref() == Some("high"))
-            .map(|e| e.dst_name.as_str())
-            .collect();
-        assert!(from_high.contains(&"low"), "edges: {es:?}");
-        assert!(from_high.contains(&"mid"), "edges: {es:?}");
-    }
-
-    #[test]
-    fn ts_edges_member_call_keeps_property_name() {
-        let src = "function f(){ obj.greet('hi'); }\n";
-        let es = edges("a.ts", src, "typescript");
-        let dst: Vec<&str> = es.iter().map(|e| e.dst_name.as_str()).collect();
-        assert!(dst.contains(&"greet"), "edges: {es:?}");
-        // Bare `obj` (a property access on its own) is not a call — should not
-        // appear as an edge.
-        assert!(!dst.contains(&"obj"), "edges: {es:?}");
-    }
-
-    #[test]
-    fn ts_edges_top_level_call_has_no_caller() {
-        let src = "function greet(n){ return n; }\ngreet('world');\n";
-        let es = edges("a.ts", src, "typescript");
-        let top = es
-            .iter()
-            .find(|e| e.dst_name == "greet" && e.src_symbol.is_none());
-        assert!(top.is_some(), "expected top-level greet call: {es:?}");
-    }
-
-    #[test]
-    fn ts_edges_arrow_function_is_callable() {
-        let src = "const f = () => { foo(); };\n";
-        let es = edges("a.ts", src, "typescript");
-        // Arrow with no name → src_symbol is None, but it should still NOT
-        // attribute the call to whatever's outside the arrow.
-        // We accept None here (anonymous arrow has no name).
-        let foo_calls: Vec<&Edge> = es.iter().filter(|e| e.dst_name == "foo").collect();
-        assert_eq!(foo_calls.len(), 1, "edges: {es:?}");
-    }
-
-    #[test]
-    fn ts_edges_method_attributes_to_method_not_class() {
-        let src = "class G { greet(n){ return helper(n); } }\nfunction helper(x){ return x; }\n";
-        let es = edges("a.ts", src, "typescript");
-        // helper() inside greet() should attribute to greet, not G.
-        let helper_call = es.iter().find(|e| e.dst_name == "helper").unwrap();
-        assert_eq!(helper_call.src_symbol.as_deref(), Some("greet"));
-    }
-
-    #[test]
-    fn js_edges_basic() {
-        let src = "function a(){ b(); }\nfunction b(){}\n";
-        let es = edges("a.js", src, "javascript");
-        assert!(dst_names(&es).contains(&"b"));
-    }
-
-    #[test]
-    fn ruby_edges_bare_call() {
-        let src = "def high\n  low\n  mid()\nend\ndef low; end\ndef mid; end\n";
-        let es = edges("a.rb", src, "ruby");
-        let from_high: Vec<&str> = es
-            .iter()
-            .filter(|e| e.src_symbol.as_deref() == Some("high"))
-            .map(|e| e.dst_name.as_str())
-            .collect();
-        // Only `mid()` (with parens) is a call node; bare `low` is just
-        // an identifier reference until you add parens or a receiver.
-        assert!(from_high.contains(&"mid"), "edges: {es:?}");
-    }
-
-    #[test]
-    fn ruby_edges_method_receiver() {
-        let src = "class C\n  def go\n    Foo.new.bar(1)\n  end\nend\n";
-        let es = edges("a.rb", src, "ruby");
-        let names = dst_names(&es);
-        // Foo.new.bar(1) parses as nested calls: bar on (new on Foo).
-        // Both `bar` and `new` should appear; the receiver `Foo` should not.
-        assert!(names.contains(&"bar"), "edges: {es:?}");
-        assert!(names.contains(&"new"), "edges: {es:?}");
-        // The `bar` call should attribute to the enclosing method `go`.
-        let bar = es.iter().find(|e| e.dst_name == "bar").unwrap();
-        assert_eq!(bar.src_symbol.as_deref(), Some("go"));
-    }
-
-    #[test]
-    fn extract_file_with_edges_single_parse_returns_both() {
-        let src = "function f(){ g(); }\nfunction g(){}\n";
-        let (syms, es) = extract_file_with_edges("a.ts", src, "typescript").unwrap();
-        assert!(syms.iter().any(|s| s.name == "f"));
-        assert!(syms.iter().any(|s| s.name == "g"));
-        assert!(es.iter().any(|e| e.dst_name == "g"));
-    }
-
-    #[test]
-    fn extract_edges_unsupported_lang_errors() {
+    fn ts_js_ruby_edges() {
+        // TS: bare calls attribute to the enclosing caller.
+        {
+            let src = "function high(){ low(); mid(); }\nfunction low(){}\nfunction mid(){}\n";
+            let es = edges("a.ts", src, "typescript");
+            let from_high: Vec<&str> = es
+                .iter()
+                .filter(|e| e.src_symbol.as_deref() == Some("high"))
+                .map(|e| e.dst_name.as_str())
+                .collect();
+            assert!(from_high.contains(&"low"), "edges: {es:?}");
+            assert!(from_high.contains(&"mid"), "edges: {es:?}");
+        }
+        // TS: member call keeps the property name, not the receiver.
+        {
+            let src = "function f(){ obj.greet('hi'); }\n";
+            let es = edges("a.ts", src, "typescript");
+            let dst: Vec<&str> = es.iter().map(|e| e.dst_name.as_str()).collect();
+            assert!(dst.contains(&"greet"), "edges: {es:?}");
+            assert!(!dst.contains(&"obj"), "edges: {es:?}");
+        }
+        // TS: top-level call has no caller.
+        {
+            let src = "function greet(n){ return n; }\ngreet('world');\n";
+            let es = edges("a.ts", src, "typescript");
+            let top = es
+                .iter()
+                .find(|e| e.dst_name == "greet" && e.src_symbol.is_none());
+            assert!(top.is_some(), "expected top-level greet call: {es:?}");
+        }
+        // TS: anonymous arrow body call still emits exactly one edge.
+        {
+            let src = "const f = () => { foo(); };\n";
+            let es = edges("a.ts", src, "typescript");
+            let foo_calls: Vec<&Edge> = es.iter().filter(|e| e.dst_name == "foo").collect();
+            assert_eq!(foo_calls.len(), 1, "edges: {es:?}");
+        }
+        // TS: method-body call attributes to the method, not the class.
+        {
+            let src =
+                "class G { greet(n){ return helper(n); } }\nfunction helper(x){ return x; }\n";
+            let es = edges("a.ts", src, "typescript");
+            let helper_call = es.iter().find(|e| e.dst_name == "helper").unwrap();
+            assert_eq!(helper_call.src_symbol.as_deref(), Some("greet"));
+        }
+        // JS: basic call edge.
+        {
+            let src = "function a(){ b(); }\nfunction b(){}\n";
+            let es = edges("a.js", src, "javascript");
+            assert!(dst_names(&es).contains(&"b"));
+        }
+        // Ruby: only parenthesized calls are edges (bare ident is not).
+        {
+            let src = "def high\n  low\n  mid()\nend\ndef low; end\ndef mid; end\n";
+            let es = edges("a.rb", src, "ruby");
+            let from_high: Vec<&str> = es
+                .iter()
+                .filter(|e| e.src_symbol.as_deref() == Some("high"))
+                .map(|e| e.dst_name.as_str())
+                .collect();
+            assert!(from_high.contains(&"mid"), "edges: {es:?}");
+        }
+        // Ruby: chained receiver call (Foo.new.bar) emits bar + new, attributes to `go`.
+        {
+            let src = "class C\n  def go\n    Foo.new.bar(1)\n  end\nend\n";
+            let es = edges("a.rb", src, "ruby");
+            let n = dst_names(&es);
+            assert!(n.contains(&"bar"), "edges: {es:?}");
+            assert!(n.contains(&"new"), "edges: {es:?}");
+            let bar = es.iter().find(|e| e.dst_name == "bar").unwrap();
+            assert_eq!(bar.src_symbol.as_deref(), Some("go"));
+        }
+        // Single parse returns both symbols and edges.
+        {
+            let src = "function f(){ g(); }\nfunction g(){}\n";
+            let (syms, es) = extract_file_with_edges("a.ts", src, "typescript").unwrap();
+            assert!(syms.iter().any(|s| s.name == "f"));
+            assert!(syms.iter().any(|s| s.name == "g"));
+            assert!(es.iter().any(|e| e.dst_name == "g"));
+        }
+        // Unsupported language errors.
         assert!(extract_edges("a.txt", "x", "klingon").is_err());
     }
 
-    // ---- Java ----
+    // ---- Java symbols + edges ----
 
     #[test]
-    fn java_class_with_method_has_parent() {
-        let src =
-            "public class Greeter {\n  public String greet(String name) { return name; }\n}\n";
-        let syms = extract_file("Greeter.java", src, "java").unwrap();
-        let n = names(&syms);
-        assert!(n.contains(&"Greeter"), "names: {n:?}");
-        assert!(n.contains(&"greet"), "names: {n:?}");
-        let cls = syms.iter().find(|s| s.name == "Greeter").unwrap();
-        assert!(matches!(cls.kind, SymbolKind::Class));
-        let m = syms.iter().find(|s| s.name == "greet").unwrap();
-        assert_eq!(m.parent.as_deref(), Some("Greeter"));
-        assert!(matches!(m.kind, SymbolKind::Method));
-    }
-
-    #[test]
-    fn java_constructor_is_method_with_class_parent() {
-        let src = "public class Foo {\n  public Foo(int x) {}\n}\n";
-        let syms = extract_file("Foo.java", src, "java").unwrap();
-        let ctor = syms
-            .iter()
-            .find(|s| s.name == "Foo" && matches!(s.kind, SymbolKind::Method));
-        assert!(ctor.is_some(), "expected constructor symbol; got: {syms:?}");
-        assert_eq!(ctor.unwrap().parent.as_deref(), Some("Foo"));
-    }
-
-    #[test]
-    fn java_interface_and_enum() {
-        let src =
-            "public interface User { String name(); }\npublic enum Color { RED, GREEN, BLUE }\n";
-        let syms = extract_file("a.java", src, "java").unwrap();
-        let n = names(&syms);
-        assert!(n.contains(&"User"));
-        assert!(n.contains(&"Color"));
-        let i = syms.iter().find(|s| s.name == "User").unwrap();
-        assert!(matches!(i.kind, SymbolKind::Interface));
-        let e = syms.iter().find(|s| s.name == "Color").unwrap();
-        assert!(matches!(e.kind, SymbolKind::Enum));
-    }
-
-    #[test]
-    fn java_record_is_struct() {
-        // Java 14+ record — concise immutable data class.
-        let src = "public record Point(int x, int y) {}\n";
-        let syms = extract_file("Point.java", src, "java").unwrap();
-        let p = syms.iter().find(|s| s.name == "Point").unwrap();
-        assert!(matches!(p.kind, SymbolKind::Struct), "got: {:?}", p.kind);
-    }
-
-    #[test]
-    fn java_visibility_levels() {
-        let src = "
-public class Outer {
-  public void pubMethod() {}
-  protected void protMethod() {}
-  private void privMethod() {}
-  void pkgMethod() {}
-}
-";
-        let syms = extract_file("Outer.java", src, "java").unwrap();
-        let v = |name: &str| {
-            syms.iter()
-                .find(|s| s.name == name)
-                .and_then(|s| s.visibility.clone())
-                .unwrap_or_default()
-        };
-        assert_eq!(v("Outer"), "pub");
-        assert_eq!(v("pubMethod"), "pub");
-        assert_eq!(v("protMethod"), "protected");
-        assert_eq!(v("privMethod"), "priv");
-        assert_eq!(v("pkgMethod"), "pkg");
-    }
-
-    #[test]
-    fn java_method_invocation_edges() {
-        let src = "
-class C {
-  void high() {
-    helper();
-    other.foo();
-  }
-  void helper() {}
-}
-";
-        let es = edges("C.java", src, "java");
-        let names = dst_names(&es);
-        assert!(names.contains(&"helper"), "edges: {es:?}");
-        // Receiver-style call resolves to the method name, ignoring the receiver.
-        assert!(names.contains(&"foo"), "edges: {es:?}");
-        // Both calls should attribute to the enclosing method `high`.
-        let helper = es.iter().find(|e| e.dst_name == "helper").unwrap();
-        assert_eq!(helper.src_symbol.as_deref(), Some("high"));
-    }
-
-    #[test]
-    fn java_constructor_call_edge_resolves_to_type() {
-        let src = "
-class C {
-  void make() {
-    new Foo();
-    new Bar<String>();
-  }
-}
-";
-        let es = edges("C.java", src, "java");
-        let names = dst_names(&es);
-        // `new Foo()` lands as a call edge to `Foo`; generic head is stripped.
-        assert!(names.contains(&"Foo"), "edges: {es:?}");
-        assert!(names.contains(&"Bar"), "edges: {es:?}");
+    fn java_symbols_and_edges() {
+        // class + method parent/kind.
+        {
+            let src =
+                "public class Greeter {\n  public String greet(String name) { return name; }\n}\n";
+            let syms = extract_file("Greeter.java", src, "java").unwrap();
+            let n = names(&syms);
+            assert!(n.contains(&"Greeter"), "names: {n:?}");
+            assert!(n.contains(&"greet"), "names: {n:?}");
+            let cls = syms.iter().find(|s| s.name == "Greeter").unwrap();
+            assert!(matches!(cls.kind, SymbolKind::Class));
+            let m = syms.iter().find(|s| s.name == "greet").unwrap();
+            assert_eq!(m.parent.as_deref(), Some("Greeter"));
+            assert!(matches!(m.kind, SymbolKind::Method));
+        }
+        // constructor is a Method with the class as parent.
+        {
+            let src = "public class Foo {\n  public Foo(int x) {}\n}\n";
+            let syms = extract_file("Foo.java", src, "java").unwrap();
+            let ctor = syms
+                .iter()
+                .find(|s| s.name == "Foo" && matches!(s.kind, SymbolKind::Method));
+            assert!(ctor.is_some(), "expected constructor symbol; got: {syms:?}");
+            assert_eq!(ctor.unwrap().parent.as_deref(), Some("Foo"));
+        }
+        // interface + enum kinds.
+        {
+            let src = "public interface User { String name(); }\npublic enum Color { RED, GREEN, BLUE }\n";
+            let syms = extract_file("a.java", src, "java").unwrap();
+            let n = names(&syms);
+            assert!(n.contains(&"User"));
+            assert!(n.contains(&"Color"));
+            assert!(matches!(
+                syms.iter().find(|s| s.name == "User").unwrap().kind,
+                SymbolKind::Interface
+            ));
+            assert!(matches!(
+                syms.iter().find(|s| s.name == "Color").unwrap().kind,
+                SymbolKind::Enum
+            ));
+        }
+        // record -> Struct.
+        {
+            let src = "public record Point(int x, int y) {}\n";
+            let syms = extract_file("Point.java", src, "java").unwrap();
+            let p = syms.iter().find(|s| s.name == "Point").unwrap();
+            assert!(matches!(p.kind, SymbolKind::Struct), "got: {:?}", p.kind);
+        }
+        // visibility levels (pub / protected / priv / pkg).
+        {
+            let src = "\npublic class Outer {\n  public void pubMethod() {}\n  protected void protMethod() {}\n  private void privMethod() {}\n  void pkgMethod() {}\n}\n";
+            let syms = extract_file("Outer.java", src, "java").unwrap();
+            let v = |name: &str| {
+                syms.iter()
+                    .find(|s| s.name == name)
+                    .and_then(|s| s.visibility.clone())
+                    .unwrap_or_default()
+            };
+            assert_eq!(v("Outer"), "pub");
+            assert_eq!(v("pubMethod"), "pub");
+            assert_eq!(v("protMethod"), "protected");
+            assert_eq!(v("privMethod"), "priv");
+            assert_eq!(v("pkgMethod"), "pkg");
+        }
+        // method-invocation edges attribute to the enclosing method.
+        {
+            let src = "\nclass C {\n  void high() {\n    helper();\n    other.foo();\n  }\n  void helper() {}\n}\n";
+            let es = edges("C.java", src, "java");
+            let n = dst_names(&es);
+            assert!(n.contains(&"helper"), "edges: {es:?}");
+            assert!(n.contains(&"foo"), "edges: {es:?}");
+            let helper = es.iter().find(|e| e.dst_name == "helper").unwrap();
+            assert_eq!(helper.src_symbol.as_deref(), Some("high"));
+        }
+        // constructor-call edges resolve to the type (generic head stripped).
+        {
+            let src =
+                "\nclass C {\n  void make() {\n    new Foo();\n    new Bar<String>();\n  }\n}\n";
+            let es = edges("C.java", src, "java");
+            let n = dst_names(&es);
+            assert!(n.contains(&"Foo"), "edges: {es:?}");
+            assert!(n.contains(&"Bar"), "edges: {es:?}");
+        }
     }
 }
