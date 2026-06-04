@@ -6,15 +6,20 @@ private-repo checkout for light workflows).
 
 ## Runner labels
 
-Workflows use:
+Build CI workflows (`fmt`, `lint`, `test`) require:
 
 ```yaml
-runs-on: [self-hosted, linux, hetzner]
+runs-on: [self-hosted, linux, hetzner, gh-runner]
 ```
 
-Register the runner with at least: `self-hosted`, `linux`, `hetzner`.
+The installer now defaults to all four labels. If you register a runner
+manually or re-register an existing one, ensure it carries `gh-runner` —
+without it the runner will never pick up build jobs (they queue indefinitely).
 
-Optional fourth label `crabcc` if you run multiple repos on one host.
+The `gh-runner` label deliberately excludes specialised runners (e.g. NixOS
+bench-node) from build CI. Bench-node and similar hosts should be registered
+**without** `gh-runner` so they only pick up workflows that explicitly target
+their labels.
 
 ## One-time install (Hetzner box)
 

@@ -23,7 +23,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RUNNER_USER="${SUDO_USER:-${USER:-root}}"
 RUNNER_NAME="hetzner-$(hostname -s)"
-RUNNER_LABELS="self-hosted,linux,hetzner"
+RUNNER_LABELS="self-hosted,linux,hetzner,gh-runner"
 REPO_URL=""
 TOKEN=""
 GC_ONLY=0
