@@ -33,6 +33,7 @@
 //! | `crabcc_core::graph::*` | edges, nodes, count, duration_ms |
 //! | `crabcc_cli::agent::*` | x_request_id, x_timings, cold/warm |
 
+use std::fmt::Write as _;
 use std::io::{self, IsTerminal};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -274,7 +275,7 @@ impl tracing::field::Visit for FieldCollector {
         if !self.text.is_empty() {
             self.text.push(' ');
         }
-        self.text.push_str(&format!("`{}={}`", field.name(), s));
+        write!(self.text, "`{}={}`", field.name(), s).unwrap();
         self.otel
             .push((field.name().to_owned(), serde_json::Value::String(s)));
     }
@@ -282,7 +283,7 @@ impl tracing::field::Visit for FieldCollector {
         if !self.text.is_empty() {
             self.text.push(' ');
         }
-        self.text.push_str(&format!("`{}={}`", field.name(), value));
+        write!(self.text, "`{}={}`", field.name(), value).unwrap();
         self.otel.push((
             field.name().to_owned(),
             serde_json::Value::String(value.to_owned()),
@@ -292,7 +293,7 @@ impl tracing::field::Visit for FieldCollector {
         if !self.text.is_empty() {
             self.text.push(' ');
         }
-        self.text.push_str(&format!("`{}={}`", field.name(), value));
+        write!(self.text, "`{}={}`", field.name(), value).unwrap();
         self.otel
             .push((field.name().to_owned(), serde_json::json!(value)));
     }
@@ -300,7 +301,7 @@ impl tracing::field::Visit for FieldCollector {
         if !self.text.is_empty() {
             self.text.push(' ');
         }
-        self.text.push_str(&format!("`{}={}`", field.name(), value));
+        write!(self.text, "`{}={}`", field.name(), value).unwrap();
         self.otel
             .push((field.name().to_owned(), serde_json::json!(value)));
     }
@@ -308,7 +309,7 @@ impl tracing::field::Visit for FieldCollector {
         if !self.text.is_empty() {
             self.text.push(' ');
         }
-        self.text.push_str(&format!("`{}={}`", field.name(), value));
+        write!(self.text, "`{}={}`", field.name(), value).unwrap();
         self.otel
             .push((field.name().to_owned(), serde_json::Value::Bool(value)));
     }
