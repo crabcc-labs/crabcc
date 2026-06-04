@@ -272,6 +272,12 @@ elif try_install_prebuilt; then
       # serves the Claude skill/command symlinks in step 3.
 else
     say "building (cargo install — this is the slow step, ~2–5 min on a cold cache)"
+    # sccache dramatically speeds up repeated builds (re-installs, CI).
+    # Install once with: cargo install sccache  — then it's transparent.
+    if command -v sccache >/dev/null 2>&1 && [ -z "${RUSTC_WRAPPER:-}" ]; then
+        export RUSTC_WRAPPER=sccache
+        say "  sccache detected — compile cache active"
+    fi
     mkdir -p "$INSTALL_DIR"
     (
         cd "$TMP/src"

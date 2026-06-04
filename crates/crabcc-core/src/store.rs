@@ -5,6 +5,14 @@ use std::path::Path;
 
 const SCHEMA: &str = include_str!("../../../schema/001_init.sql");
 
+/// Bumped each time a new migration is added. Stored in the `meta` table
+/// under the key `migration_level` so we can skip all migration probes
+/// on DBs that are already fully migrated (the common case).
+/// We intentionally do NOT use `PRAGMA user_version` here — that pragma
+/// is read by `tools/index-publish/build-manifest.sh` as the public
+/// schema version and must stay aligned with `meta.schema_version`.
+const STORE_MIGRATION_LEVEL: i32 = 3;
+
 /// Sentinel `files` row path used to anchor unresolved-name `symbols` rows.
 /// The v4 `symbols.file_id` column is `NOT NULL REFERENCES files(id)`, so
 /// sentinel symbols need a real (synthetic) file to live under. Created
@@ -77,38 +85,50 @@ impl Store {
         conn.busy_timeout(std::time::Duration::from_millis(2_000))?;
         conn.execute_batch(SCHEMA).context("apply schema")?;
 
-        // Idempotent migration: pre-FSST DBs lack `symbols.signature_enc`. The
-        // schema above declares it for new DBs; for older indexes we ALTER
-        // TABLE in place. PRAGMA table_info is the standard "does this column
-        // exist?" probe — cheap and read-only.
-        let has_enc: bool = conn
+        // Fast-path: if migration_level is already at STORE_MIGRATION_LEVEL,
+        // all migrations have been applied — skip every PRAGMA table_info probe.
+        // NOTE: we use a meta key, not PRAGMA user_version, because the publish
+        // tooling reads user_version as the public schema version.
+        let migrated_level: i32 = conn
             .query_row(
-                "SELECT 1 FROM pragma_table_info('symbols') WHERE name = 'signature_enc'",
+                "SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'migration_level'",
                 [],
-                |_| Ok(true),
+                |r| r.get(0),
             )
             .optional()
             .unwrap_or(None)
-            .is_some();
-        if !has_enc {
+            .unwrap_or(0);
+        if migrated_level < STORE_MIGRATION_LEVEL {
+            // Idempotent migration: pre-FSST DBs lack `symbols.signature_enc`.
+            let has_enc: bool = conn
+                .query_row(
+                    "SELECT 1 FROM pragma_table_info('symbols') WHERE name = 'signature_enc'",
+                    [],
+                    |_| Ok(true),
+                )
+                .optional()
+                .unwrap_or(None)
+                .is_some();
+            if !has_enc {
+                conn.execute(
+                    "ALTER TABLE symbols ADD COLUMN signature_enc INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )
+                .context("migrate: add symbols.signature_enc")?;
+            }
+            // v2.0 edges migration: no-op stub, kept for future slots.
+            migrate_edges_text(&conn).context("migrate edges schema")?;
+            // v5.0.5: WITHOUT ROWID edges migration.
+            migrate_edges_without_rowid(&conn).context("migrate edges WITHOUT ROWID")?;
+            // Mark as fully migrated — skips all probes on next open.
             conn.execute(
-                "ALTER TABLE symbols ADD COLUMN signature_enc INTEGER NOT NULL DEFAULT 0",
-                [],
+                "INSERT INTO meta(key, value) VALUES('migration_level', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![STORE_MIGRATION_LEVEL.to_string()],
             )
-            .context("migrate: add symbols.signature_enc")?;
+            .context("set migration_level")?;
         }
-        // v2.0 edges migration: pre-v2 DBs have INTEGER `src_symbol`; recreate
-        // the empty table with TEXT (and the dst_kind composite index).
-        migrate_edges_text(&conn).context("migrate edges schema")?;
-        // v5.0.5: drop the synthetic `id` rowid column from `edges` and
-        // convert to WITHOUT ROWID with a composite PK (src, dst, kind, line).
-        // Eliminates the hidden rowid B-tree (~30 % storage reduction) and
-        // makes src-keyed scans use the clustered PK instead of a secondary
-        // index. Idempotent — no-op when `id` column is already absent.
-        migrate_edges_without_rowid(&conn).context("migrate edges WITHOUT ROWID")?;
-        // PRAGMA optimize is a no-op until the query planner has stats; it
-        // becomes useful after ANALYZE. Run it whenever we open — sqlite
-        // makes the call cheap when nothing's changed.
+        // PRAGMA optimize is cheap when nothing changed; run it on every open.
         let _ = conn.execute_batch("PRAGMA optimize;");
 
         // Codec discovery (FSST). The DB path is typically `.crabcc/index.db`;

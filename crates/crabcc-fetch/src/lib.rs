@@ -587,7 +587,7 @@ pub async fn fetch_and_clean(urls: &[String], opts: FetchOpts) -> Vec<FetchResul
             )),
         }
     }
-    indexed.sort_by_key(|(i, _)| *i);
+    indexed.sort_unstable_by_key(|(i, _)| *i);
     indexed.into_iter().map(|(_, r)| r).collect()
 }
 

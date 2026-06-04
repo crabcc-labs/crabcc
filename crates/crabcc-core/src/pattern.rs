@@ -69,7 +69,7 @@ pub fn find_callers(src: &str, lang: SupportLang, name: &str) -> Vec<Hit> {
             });
         }
     }
-    out.sort_by_key(|h| (h.line, h.col));
+    out.sort_unstable_by_key(|h| (h.line, h.col));
     out
 }
 
