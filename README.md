@@ -87,7 +87,7 @@ and optionally brings up Docker/Ollama and the macOS LaunchAgent.
 Idempotent — same script for fresh install **and** upgrade.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/crabcc-labs/crabcc/main/scripts/bootstrap.sh | bash
+gh api -H 'Accept: application/vnd.github.v3.raw' /repos/crabcc-labs/crabcc/contents/scripts/bootstrap.sh | bash
 
 # Defaults:
 #   ✓ Docker Desktop + Ollama stack (LiteLLM proxy on :4000)
