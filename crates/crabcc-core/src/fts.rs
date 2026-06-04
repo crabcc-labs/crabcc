@@ -19,6 +19,8 @@ use tantivy::{doc, Index, ReloadPolicy, TantivyDocument, Term};
 
 pub struct Fts {
     index: Index,
+    // Built once in `open`, reused across queries (see `exec`).
+    reader: tantivy::IndexReader,
     f_name: Field,
     f_kind: Field,
     f_file: Field,
@@ -47,8 +49,17 @@ impl Fts {
         let schema = sb.build();
         std::fs::create_dir_all(dir)?;
         let index = Index::open_or_create(MmapDirectory::open(dir)?, schema)?;
+        // Build the IndexReader ONCE and reuse it. Rebuilding a reader per query
+        // (the old `exec` path) re-opens segment readers and dominated
+        // fuzzy/prefix latency. ReloadPolicy::Manual: `rebuild` calls
+        // `reader.reload()` so queries see the fresh index.
+        let reader = index
+            .reader_builder()
+            .reload_policy(ReloadPolicy::Manual)
+            .try_into()?;
         Ok(Self {
             index,
+            reader,
             f_name,
             f_kind,
             f_file,
@@ -76,6 +87,9 @@ impl Fts {
         // Wait for any background merge threads to finish before returning so
         // that sequential rebuild() calls don't race on the index lock.
         writer.wait_merging_threads()?;
+        // Refresh the cached reader so subsequent queries see the new index
+        // (ReloadPolicy::Manual won't auto-pick-up the commit).
+        self.reader.reload()?;
         Ok(n)
     }
 
@@ -92,12 +106,7 @@ impl Fts {
     }
 
     fn exec(&self, q: &dyn tantivy::query::Query, limit: usize) -> Result<Vec<FuzzyHit>> {
-        let reader = self
-            .index
-            .reader_builder()
-            .reload_policy(ReloadPolicy::Manual)
-            .try_into()?;
-        let searcher = reader.searcher();
+        let searcher = self.reader.searcher();
         // tantivy 0.26: TopDocs is no longer itself a Collector — must call
         // .order_by_score() to get one with Fruit = Vec<(Score, DocAddress)>.
         let top = searcher.search(q, &TopDocs::with_limit(limit).order_by_score())?;
