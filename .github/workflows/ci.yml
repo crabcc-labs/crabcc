@@ -282,7 +282,9 @@ jobs:
           # hard-block CI worse than the prior apt-get path.
           AF_REF="v1.7.6"
           if ! command -v apt-fast >/dev/null 2>&1; then
-            if sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends aria2; then
+            # lockfile-progs provides `lockfile-create`, which apt-fast invokes
+            # before apt — without it apt-fast is present but errors at runtime.
+            if sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends aria2 lockfile-progs; then
               sudo curl -fsSL "https://raw.githubusercontent.com/ilikenwf/apt-fast/${AF_REF}/apt-fast" -o /usr/local/sbin/apt-fast \
                 && sudo chmod +x /usr/local/sbin/apt-fast \
                 && sudo curl -fsSL "https://raw.githubusercontent.com/ilikenwf/apt-fast/${AF_REF}/apt-fast.conf" -o /etc/apt-fast.conf \
@@ -296,10 +298,14 @@ jobs:
           else
             INST="sudo apt-get install -y --no-install-recommends"
           fi
-          command -v mold >/dev/null 2>&1 || $INST mold
+          # Runtime fallback to plain apt-get if apt-fast is present but errors
+          # (e.g. a missing runtime dep) — so "fallback-safe" holds at run time,
+          # not just at bootstrap.
+          APT_GET="sudo apt-get install -y --no-install-recommends"
+          command -v mold >/dev/null 2>&1 || $INST mold || $APT_GET mold
           # ripgrep must be on PATH for shell_rewrite_e2e::find_swaps_to_ripgrep —
           # the rewriter only emits the find→rg swap when `rg` is found on PATH.
-          command -v rg >/dev/null 2>&1 || $INST ripgrep
+          command -v rg >/dev/null 2>&1 || $INST ripgrep || $APT_GET ripgrep
 
       # See lint-job comment above for why this is the only cache
       # layer needed at the dependency-blob level. The `ci-ubuntu`
