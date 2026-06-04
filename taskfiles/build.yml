@@ -18,8 +18,12 @@ tasks:
       retrieval (ort fetches onnxruntime at build time; dev `build-fast`
       skips it to stay lean + offline).
     cmds:
-      - "{{.CARGO}} build --release -p crabcc-cli --features memory-embed"
+      # Build the rest of the workspace FIRST, then the featured crabcc-cli
+      # LAST — otherwise the plain workspace build overwrites
+      # target/release/crabcc with a default-feature binary (no memory-embed,
+      # no telemetry).
       - "{{.CARGO}} build --release"
+      - "{{.CARGO}} build --release -p crabcc-cli --features memory-embed,telemetry"
 
   build-fast:
     desc: Iteration-friendly build (-O1, minimal debug info, ~half the time)

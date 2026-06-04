@@ -940,6 +940,7 @@ dependencies = [
  "crabcc-mcp",
  "crabcc-memory",
  "crabcc-viz",
+ "flate2",
  "htmd",
  "image",
  "libc",

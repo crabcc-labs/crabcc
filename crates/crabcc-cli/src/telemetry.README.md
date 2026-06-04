@@ -74,6 +74,7 @@ crabcc serve
 | `CRABCC_TELEMETRY_LOG` | same as RUST_LOG | jsonl file filter |
 | `CRABCC_TELEMETRY_FILE` | `.crabcc/telemetry.jsonl` | jsonl path override |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | unset (disabled) | OTLP HTTP endpoint |
+| `OTEL_EXPORTER_OTLP_HEADERS` | unset | `k=v,…` headers on each export (e.g. `Authorization=Bearer …`) — auth to a hardened collector |
 | `CRABCC_ENV` | `local` | `deployment.environment` span attribute |
 | `TELEGRAM_BOT_TOKEN` | unset (disabled) | Telegram notifications |
 | `TELEGRAM_CHAT_ID` | unset (disabled) | Telegram chat destination |

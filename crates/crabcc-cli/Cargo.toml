@@ -42,7 +42,7 @@ viz = ["dep:crabcc-viz"]
 # compiled (they're cheap no-ops without a subscriber); only the heavy
 # `tracing-subscriber` + `tracing-appender` init pulls in. Off by
 # default for a lean default install.
-telemetry = ["dep:tracing-subscriber", "dep:tracing-appender"]
+telemetry = ["dep:tracing-subscriber", "dep:tracing-appender", "dep:flate2"]
 # Lightpanda CDP rendered-DOM transport for `crabcc crawl` (JS-built pages
 # render to real DOM). Adds a minimal ws:// CDP client (no TLS) to the
 # build; the transport auto-detects a `lightpanda` binary / endpoint and
@@ -104,6 +104,8 @@ toml          = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"], optional = true }
 tracing-appender   = { workspace = true, optional = true }
+# gzip the OTLP export body (telemetry feature only).
+flate2             = { version = "1", optional = true }
 # Issue #112 follow-up — jemalloc as the global allocator on the binary
 # crate. ~5-12% on alloc-heavy paths (extract.rs, MCP serve_io). MSVC
 # targets fall back to system allocator (cfg gate in main.rs). Optional
