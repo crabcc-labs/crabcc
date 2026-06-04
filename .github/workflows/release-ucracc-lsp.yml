@@ -1,0 +1,102 @@
+name: release-ucracc-lsp
+
+# Independent release for the ucracc-lsp language server. Triggers on its own
+# tag line (ucracc-lsp-v*), separate from the crabcc release (release.yml, which
+# triggers on v*.*.*). Mirrors that workflow's matrix + packaging so the Zed
+# extension / agent-runner can auto-download a versioned ucracc-lsp binary.
+#
+# Cut a release: bump `version` in crates/ucracc-lsp/Cargo.toml to match, then
+#   git tag ucracc-lsp-v0.3.0 && git push origin ucracc-lsp-v0.3.0
+on:
+  push:
+    tags: ['ucracc-lsp-v*']
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: [self-hosted, linux, hetzner]
+            archive: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: [self-hosted, linux, hetzner]
+            archive: tar.gz
+            cross: true
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release-ucracc-lsp-${{ matrix.target }}
+
+      - name: install cross (linux aarch64 only)
+        if: matrix.cross
+        run: cargo install cross --locked
+
+      - name: build release
+        shell: bash
+        run: |
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            cross build --release --target ${{ matrix.target }} -p ucracc-lsp
+          else
+            cargo build --release --target ${{ matrix.target }} -p ucracc-lsp
+          fi
+
+      - name: package
+        shell: bash
+        run: |
+          # The tag (github.ref_name) is e.g. `ucracc-lsp-v0.3.0`, so NAME is
+          # already `ucracc-lsp-v0.3.0-<target>` — no extra prefix needed.
+          BIN="target/${{ matrix.target }}/release/ucracc-lsp"
+          NAME="${{ github.ref_name }}-${{ matrix.target }}"
+          mkdir -p "dist/$NAME"
+          cp "$BIN" "dist/$NAME/"
+          cp README.md LICENSE "dist/$NAME/" 2>/dev/null || true
+          tar -czf "dist/$NAME.tar.gz" -C dist "$NAME"
+          (cd dist && shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256")
+          ls -la dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ucracc-lsp-${{ matrix.target }}
+          path: dist/*
+
+  release:
+    name: release
+    needs: build
+    runs-on: [self-hosted, linux, hetzner]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: list artifacts
+        run: ls -la dist
+
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
