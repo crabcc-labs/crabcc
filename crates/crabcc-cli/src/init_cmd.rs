@@ -250,26 +250,44 @@ fn render_overview(root: &Path, topics: &[Topic]) -> String {
 /// truncated for the overview.
 fn readme_summary(text: &str) -> Option<String> {
     let mut para = String::new();
+    // True while inside a multi-line HTML block (e.g. a centered <h1>…</h1>
+    // header or <p>…</p> badge block) whose inner text lines don't
+    // themselves start with `<` and would otherwise be mistaken for prose.
+    let mut in_html = false;
     for line in text.lines() {
         let t = line.trim();
-        if para.is_empty() {
-            // Still scanning for the start of the first prose paragraph.
-            let skip = t.is_empty()
-                || t.starts_with('#')
-                || t.starts_with("![")
-                || t.starts_with('[')
-                || t.starts_with('<')
-                || t.starts_with('>');
-            if skip {
-                continue;
+        if !para.is_empty() {
+            if t.is_empty() {
+                break; // end of the first paragraph
             }
-            para.push_str(t);
-        } else if t.is_empty() {
-            break; // end of the first paragraph
-        } else {
             para.push(' ');
             para.push_str(t);
+            continue;
         }
+        // Still scanning for the start of the first prose paragraph.
+        if in_html {
+            // Skip the whole block until it closes or a blank line ends it.
+            if t.is_empty() || t.contains("</") || t.ends_with("/>") {
+                in_html = false;
+            }
+            continue;
+        }
+        if t.is_empty()
+            || t.starts_with('#')
+            || t.starts_with("![")
+            || t.starts_with('[')
+            || t.starts_with('>')
+        {
+            continue;
+        }
+        if t.starts_with('<') {
+            // Enter block-skip mode unless this tag is closed on its own line.
+            if !(t.contains("</") || t.ends_with("/>")) {
+                in_html = true;
+            }
+            continue;
+        }
+        para.push_str(t);
     }
     if para.is_empty() {
         None
@@ -454,6 +472,15 @@ mod tests {
             "The fast symbol index. Line two of the para."
         );
         assert!(readme_summary("# only a title\n").is_none());
+    }
+
+    #[test]
+    fn readme_summary_skips_multiline_html_header_block() {
+        // Inner text (`crabcc`) of a multi-line <h1> must not become the
+        // paragraph — the whole block is skipped until it closes.
+        let md = "<h1 align=\"center\">\ncrabcc\n</h1>\n\n\
+                  <p><img src=\"x\"></p>\n\nReal description here.\n";
+        assert_eq!(readme_summary(md).unwrap(), "Real description here.");
     }
 
     #[test]
