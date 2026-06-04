@@ -1,25 +1,23 @@
-# bench-opt-bin — archived runs
+# bench-opt-bin — where sweep output goes
 
-This directory is the **durable, tracked home** for `bench-opt-bin` sweep
-output. The harness writes its working artifacts into `bench/` (gitignored,
-ephemeral); `scripts/bench-opt-bin/provision-ovh.sh` mirrors the curated
-subset of each run here and commits it, so a sweep survives the teardown of
-the throwaway OVH box **and** the ephemeral CI container.
+Sweep artifacts are **not** committed into this repo (`bench/` is gitignored,
+and we don't want tarballs/flamegraphs bloating `crabcc`'s history). Each run
+is bundled locally into `bench/results/run-<host>-<stamp>/` (+ a `.tar.gz` and
+a `MANIFEST.json` with a sha256 of every file), then
+[`scripts/bench-opt-bin/publish.sh`](../../../scripts/bench-opt-bin/publish.sh)
+fans it out to whichever durable sinks are configured:
 
-Each run lands in `run-<host>-<UTCstamp>/`:
+| Sink | Env to enable | What lands there |
+|---|---|---|
+| **`_bench-results` repo** (system of record) | `BENCH_RESULTS_REPO` | full run under `runs/<id>/`; `*.tar.gz` + `*.svg` via **Git LFS**, reports/NDJSON/manifest as plain diffable text |
+| **Discord** notification | `COMPOSIO_API_KEY`, `COMPOSIO_DISCORD_ACCOUNT`, `DISCORD_CHANNEL_ID` | REPORT summary + fastest-config line, via Composio |
+| **Google Drive** | `COMPOSIO_API_KEY`, `COMPOSIO_DRIVE_ACCOUNT` | the zipped bundle, via Composio |
 
-| File | What |
-|---|---|
-| `REPORT.md` | rendered speed + footprint tables, fastest-config callout |
-| `opt-bin.ndjson` | one machine-readable row per leg (all metrics) |
-| `MANIFEST.json` | run metadata + per-leg records + sha256 of every artifact |
-| `flamegraphs/*.svg` | symbolized flamegraphs for the baseline + fastest legs |
-| `logs.tar.gz` | per-leg `cargo build` logs + hyperfine JSONs |
+`provision-ovh.sh` calls `publish.sh` automatically after pulling results back
+(`PUBLISH=0` to skip). Because `publish.sh` runs on *your* machine, it uses
+your git credentials and `COMPOSIO_API_KEY` / `~/.composio` — not the
+throwaway VM's.
 
-The full, uncurated bundle (including raw per-leg logs) is also written as
-`bench/results/run-<host>-<stamp>.tar.gz` on the machine that ran the sweep —
-attach that to a GitHub Release or object store if you want the heavyweight
-copy preserved too. The per-leg `target/` dirs (tens of GB) are never kept.
-
-See [`scripts/bench-opt-bin/README.md`](../../../scripts/bench-opt-bin/README.md)
+This directory itself only holds documentation, not run artifacts. See
+[`scripts/bench-opt-bin/README.md`](../../../scripts/bench-opt-bin/README.md)
 for how to run a sweep.

@@ -135,32 +135,32 @@ rsync -az --delete -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o UserKnownH
   --exclude '.git' --exclude 'target' --exclude 'bench' --exclude 'node_modules' \
   "$REPO_ROOT"/ "ubuntu@$IP:~/crabcc/"
 
-# --flamegraph: symbolized SVGs for baseline+fastest. --archive-dir: mirror the
-# curated artifacts into a TRACKED path so the run survives the VM teardown via
-# git (bench/ itself is gitignored).
-ARCHIVE_DIR="docs/bench/opt-bin"
+# --flamegraph: symbolized SVGs for baseline+fastest.
 echo ">> running sweep (this is the ~1h part)…"
 $SSH "source ~/.cargo/env && cd ~/crabcc && \
   export SCCACHE_DIR=\$HOME/.cache/sccache SCCACHE_CACHE_SIZE=40G && \
-  python3 scripts/bench-opt-bin/sweep.py $SWEEP_ARGS --flamegraph --archive-dir $ARCHIVE_DIR && \
+  python3 scripts/bench-opt-bin/sweep.py $SWEEP_ARGS --flamegraph && \
   (command -v sccache >/dev/null && sccache --show-stats || true)"
 
 echo ">> pulling ALL generated output back (reports, ndjson, logs, hyperfine, flamegraphs, tarballs)"
-mkdir -p "$REPO_ROOT/bench/results" "$REPO_ROOT/$ARCHIVE_DIR"
+mkdir -p "$REPO_ROOT/bench/results"
 RSYNC_SSH="ssh -i $SSH_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
-rsync -az -e "$RSYNC_SSH" "ubuntu@$IP:~/crabcc/bench/results/"   "$REPO_ROOT/bench/results/"
-rsync -az -e "$RSYNC_SSH" "ubuntu@$IP:~/crabcc/$ARCHIVE_DIR/"    "$REPO_ROOT/$ARCHIVE_DIR/"
+rsync -az -e "$RSYNC_SSH" "ubuntu@$IP:~/crabcc/bench/results/" "$REPO_ROOT/bench/results/"
 
-# Durable backup: commit the tracked archive (small text + SVG + gzipped logs)
-# so the run is preserved on the remote even after this box AND the local
-# checkout are gone. Set BACKUP_GIT=0 to skip.
-if [ "${BACKUP_GIT:-1}" = "1" ] && [ -n "$(ls -A "$REPO_ROOT/$ARCHIVE_DIR" 2>/dev/null)" ]; then
-  echo ">> committing backup under $ARCHIVE_DIR"
-  ( cd "$REPO_ROOT" && git add "$ARCHIVE_DIR" \
-    && git commit -q -m "bench-opt-bin: archive sweep run ($(date -u +%Y-%m-%dT%H:%MZ))" \
-    && for i in 1 2 3 4; do git push && break || sleep $((2**i)); done ) || \
-    echo "   (git backup skipped — commit/push failed; tarball still in bench/results/)"
+# Durable publish: fan the newest run out to the configured sinks (_bench-results
+# repo + LFS, Discord, Google Drive — see publish.sh). publish.sh runs HERE (on
+# the machine that invoked provision-ovh.sh), so it uses this host's git creds
+# and COMPOSIO_API_KEY / ~/.composio — not the throwaway VM's. Each sink is
+# env-gated; unset ones are skipped. Set PUBLISH=0 to keep results local-only.
+if [ "${PUBLISH:-1}" = "1" ]; then
+  RUN_DIR="$(ls -dt "$REPO_ROOT"/bench/results/run-*/ 2>/dev/null | head -1)"
+  if [ -n "$RUN_DIR" ]; then
+    bash "$REPO_ROOT/scripts/bench-opt-bin/publish.sh" "$RUN_DIR" || \
+      echo "   (publish had failures; bundle still in bench/results/)"
+  else
+    echo "   ! no run-*/ dir found to publish"
+  fi
 fi
 
-echo ">> done. Report: bench/results/opt-bin-REPORT.md ; backup: $ARCHIVE_DIR/"
+echo ">> done. Report: bench/results/opt-bin-REPORT.md"
 head -40 "$REPO_ROOT/bench/results/opt-bin-REPORT.md" 2>/dev/null || true
