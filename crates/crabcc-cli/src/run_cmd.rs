@@ -30,9 +30,9 @@ struct Meta {
     started_at: u64,
     #[serde(default)]
     session_id: String,
-    /// Process start-time (Linux `/proc/<pid>/stat` field 22, in clock ticks
-    /// since boot), recorded so a later `--kill`/liveness check can prove the
-    /// pid still belongs to *this* run and not a reused pid. 0 = unknown.
+    /// Process start-time (seconds since epoch, via `sysinfo`), recorded so a
+    /// later `--kill`/liveness check can prove the pid still belongs to *this*
+    /// run and not a reused pid. 0 = unknown.
     #[serde(default)]
     start_tick: u64,
 }
@@ -129,7 +129,7 @@ fn start(
             pid,
             started_at: now_secs(),
             session_id: std::env::var("CRABCC_SESSION_ID").unwrap_or_default(),
-            start_tick: proc_starttime(pid).unwrap_or(0),
+            start_tick: proc_info(pid).map(|(s, _)| s).unwrap_or(0),
         },
     )?;
 
@@ -350,61 +350,41 @@ fn read_meta(dir: &Path) -> Result<Meta> {
     Ok(serde_json::from_str(&s)?)
 }
 
-/// True if `pid` is a live (non-zombie) process. `kill(pid, 0)` checks
-/// existence, but a killed-but-unreaped zombie still "exists" — on Linux we
-/// read `/proc/<pid>/stat` and treat state `Z` as dead so a just-killed run
-/// reads as finished.
-#[cfg(target_os = "linux")]
+/// Live (non-zombie) status of a run's recorded process, cross-platform via
+/// `sysinfo`. False when the pid is gone, a zombie, or — crucially — when its
+/// start-time no longer matches what we recorded: that means the OS recycled
+/// the pid onto a different process, so it is NOT our run and must never be
+/// signalled (the `--kill` group-kill safety guard, on every platform).
 fn alive(m: &Meta) -> bool {
-    if m.pid == 0 || unsafe { libc::kill(m.pid as i32, 0) } != 0 {
+    if m.pid == 0 {
         return false;
     }
-    let Ok(s) = std::fs::read_to_string(format!("/proc/{}/stat", m.pid)) else {
-        return false;
+    let Some((start, zombie)) = proc_info(m.pid) else {
+        return false; // process is gone
     };
-    // Fields after the `)` that closes `(comm)`: [0]=state ... [19]=starttime.
-    let Some(after) = s.rsplit_once(')').map(|x| x.1) else {
-        return true;
-    };
-    let toks: Vec<&str> = after.split_whitespace().collect();
-    if toks.first() == Some(&"Z") {
-        return false; // zombie: exists but reaped-pending, treat as done
+    if zombie {
+        return false; // exists but reaped-pending
     }
-    // PID-reuse guard: the start-time must match what we recorded. A mismatch
-    // means the OS recycled the pid onto a different process — NOT our run, so
-    // we must never signal it.
-    if m.start_tick != 0 {
-        match toks.get(19).and_then(|t| t.parse::<u64>().ok()) {
-            Some(st) if st == m.start_tick => {}
-            _ => return false,
-        }
-    }
-    true
+    m.start_tick == 0 || start == m.start_tick
 }
 
-#[cfg(all(unix, not(target_os = "linux")))]
-fn alive(m: &Meta) -> bool {
-    m.pid != 0 && unsafe { libc::kill(m.pid as i32, 0) } == 0
-}
-
-#[cfg(not(unix))]
-fn alive(_m: &Meta) -> bool {
-    false
-}
-
-/// Process start-time from `/proc/<pid>/stat` field 22 (clock ticks since
-/// boot) — field 22 is index 19 in the tokens after the `)` closing `(comm)`.
-/// Recorded at spawn and re-checked to prove a pid hasn't been recycled.
-#[cfg(target_os = "linux")]
-fn proc_starttime(pid: u32) -> Option<u64> {
-    let s = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    let after = s.rsplit_once(')')?.1;
-    after.split_whitespace().nth(19)?.parse().ok()
-}
-
-#[cfg(not(target_os = "linux"))]
-fn proc_starttime(_pid: u32) -> Option<u64> {
-    None
+/// `(start_time_in_secs_since_epoch, is_zombie)` for `pid`, or `None` if no
+/// such process. Recorded at spawn (the start-time) and re-checked to prove a
+/// pid hasn't been recycled onto an unrelated process.
+fn proc_info(pid: u32) -> Option<(u64, bool)> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System};
+    let p = Pid::from_u32(pid);
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&[p]),
+        true,
+        ProcessRefreshKind::nothing(),
+    );
+    let process = sys.process(p)?;
+    Some((
+        process.start_time(),
+        process.status() == ProcessStatus::Zombie,
+    ))
 }
 
 /// Kill the whole session/group led by `pid` (we `setsid` the child, so its

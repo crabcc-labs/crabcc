@@ -1000,6 +1000,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "sonic-rs",
+ "sysinfo",
  "tempfile",
  "tikv-jemallocator",
  "tokio",
