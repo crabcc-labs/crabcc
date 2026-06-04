@@ -133,6 +133,17 @@ setup_cache_volume() {
 
   mkdir -p "${CACHE_BASE}"
 
+  # If the Hetzner automount agent already mounted the device somewhere else
+  # (typically /mnt/HC_Volume_*), unmount it before the fstab-controlled
+  # mount at CACHE_BASE.  Without this, `mount CACHE_BASE` would fail with
+  # "device is already mounted" even though CACHE_BASE is not yet a mountpoint.
+  local current_mount
+  current_mount="$(findmnt -n -o TARGET --source "$dev" 2>/dev/null || true)"
+  if [ -n "$current_mount" ] && [ "$current_mount" != "$CACHE_BASE" ]; then
+    echo "[runner] unmounting automount at ${current_mount}..."
+    umount "$dev"
+  fi
+
   # Persist mount across reboots.  The nofail option prevents the machine
   # from hanging at boot if the volume is temporarily detached.
   if ! grep -qs "${CACHE_BASE}" /etc/fstab; then
