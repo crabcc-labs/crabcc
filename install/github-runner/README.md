@@ -59,11 +59,21 @@ sudo systemctl start actions-runner-gc.service   # run GC now
 journalctl -u actions-runner-gc.service          # see what it pruned
 ```
 
-> **Rollout:** existing hosts pick up the timer by **re-running
-> `install.sh`** (idempotent — refreshes the units, runner registration is
-> `--replace`). For an emergency prune without SSH, trigger the on-demand
-> `runner-gc` GitHub workflow (Actions → runner-gc → Run workflow), which
-> runs the same script on whichever runner it lands on.
+> **Rollout to an existing fleet:** run `install.sh --gc-only` on each box
+> — it installs just the GC script + timer, **no registration token and no
+> runner re-registration**:
+>
+> ```bash
+> for h in hetzner-1 hetzner-2 hetzner-3; do   # your hosts
+>   ssh root@"$h" 'cd /opt/crabcc && git pull && \
+>     sudo bash install/github-runner/install.sh --gc-only'
+> done
+> ```
+>
+> New hosts get the timer automatically from a full `install.sh` run. For a
+> one-off prune without SSH, trigger the on-demand `runner-gc` GitHub
+> workflow (Actions → runner-gc → Run workflow), which runs the same script
+> on whichever runner it lands on.
 
 ## Preinstalled toolchain (recommended)
 
