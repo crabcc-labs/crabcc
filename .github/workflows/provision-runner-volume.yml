@@ -34,6 +34,14 @@ jobs:
           DEVICE="/dev/disk/by-id/scsi-0HC_Volume_105921366"
           CACHE_BASE="/var/runner-data"
 
+          # Skip gracefully if the block device is not attached to this host.
+          # The workflow uses broad labels ([self-hosted, linux, hetzner]) so it
+          # may land on bench-node or other non-volume runners.
+          if [ ! -e "$DEVICE" ]; then
+            echo "SKIP: $DEVICE not present on $(hostname) — re-queue or run on the volume host"
+            exit 0
+          fi
+
           echo "=== block device check ==="
           lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT,LABEL "$DEVICE" || lsblk
 
