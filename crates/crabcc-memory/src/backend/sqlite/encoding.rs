@@ -48,11 +48,7 @@ pub(super) fn fts_match_string(input: &str) -> String {
 }
 
 pub(super) fn vec_to_blob(v: &[f32]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(v.len() * 4);
-    for x in v {
-        out.extend_from_slice(&x.to_le_bytes());
-    }
-    out
+    v.iter().flat_map(|x| x.to_le_bytes()).collect()
 }
 
 pub(super) fn blob_to_vec(b: &[u8]) -> Vec<f32> {
