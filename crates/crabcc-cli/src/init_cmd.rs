@@ -20,6 +20,7 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 /// How many dependency doc-sites to crawl in the background. Kept modest so
 /// onboarding is "medium-sized", not a full mirror.
@@ -28,7 +29,65 @@ const MAX_CRAWL_TOPICS: usize = 12;
 const ONBOARD_DEPTH: &str = "1";
 const ONBOARD_MAX_PAGES: &str = "15";
 
+/// A lock with no `done` marker older than this is treated as a crashed
+/// leader and taken over.
+const LOCK_STALE_SECS: u64 = 600;
+/// How long a follower waits for the leader to publish artifacts before
+/// reusing whatever's there. The leader only needs to write files + spawn
+/// the crawls (fast); it does NOT hold this until the crawls finish.
+const WAIT_TIMEOUT: Duration = Duration::from_secs(45);
+const WAIT_POLL: Duration = Duration::from_millis(500);
+
+/// Onboard the repo — **deduped across concurrent agents**.
+///
+/// Launch N agents at once and exactly one wins an atomic lock and becomes
+/// the leader: it does the research + spawns the background doc-crawls once,
+/// then publishes a `done` marker. The other agents detect the in-flight
+/// (or finished) onboarding and reuse its artifacts instead of each firing
+/// off their own crawl storm. A crashed leader's stale lock is taken over.
 pub fn run(root: &Path) -> Result<()> {
+    let onboard_dir = root.join(".crabcc").join("onboard");
+    std::fs::create_dir_all(&onboard_dir).context("create .crabcc/onboard")?;
+    let lock = onboard_dir.join(".lock");
+    let done = onboard_dir.join(".done");
+
+    // Bounded loop so a stale-lock takeover retries without spinning.
+    for _ in 0..3 {
+        if done.exists() {
+            return reuse(&onboard_dir, "already onboarded");
+        }
+        match try_acquire(&lock)? {
+            true => {
+                // Leader: onboard exactly once, then publish `done` so
+                // waiting agents can reuse it.
+                let r = lead(root, &onboard_dir);
+                let _ = std::fs::write(&done, unix_now().to_string());
+                return r;
+            }
+            false => {
+                // Another agent holds the lock. If it looks crashed (stale,
+                // no done marker), take over; else wait briefly then reuse.
+                if lock_age_secs(&lock).is_some_and(|a| a > LOCK_STALE_SECS) {
+                    let _ = std::fs::remove_file(&lock);
+                    continue;
+                }
+                let finished = wait_for(&done, WAIT_TIMEOUT);
+                return reuse(
+                    &onboard_dir,
+                    if finished {
+                        "onboarding completed by another agent"
+                    } else {
+                        "onboarding already in progress elsewhere"
+                    },
+                );
+            }
+        }
+    }
+    reuse(&onboard_dir, "reusing existing onboarding")
+}
+
+/// The actual onboarding work — run by the lock leader only.
+fn lead(root: &Path, onboard_dir: &Path) -> Result<()> {
     let topics = detect_topics(root);
     if topics.is_empty() {
         eprintln!(
@@ -37,11 +96,6 @@ pub fn run(root: &Path) -> Result<()> {
         );
     }
 
-    let onboard_dir = root.join(".crabcc").join("onboard");
-    std::fs::create_dir_all(&onboard_dir).context("create .crabcc/onboard")?;
-
-    // Artifacts: research plan (for the agent's deep-research skill) +
-    // codebase overview (for the SessionStart injection).
     std::fs::write(
         onboard_dir.join("research-plan.md"),
         render_research_plan(&topics),
@@ -67,6 +121,64 @@ pub fn run(root: &Path) -> Result<()> {
     );
     eprintln!("\n{}", hook_snippet(root));
     Ok(())
+}
+
+/// Atomically try to become the onboarding leader. `Ok(true)` = we created
+/// the lock (lead); `Ok(false)` = another agent holds it. The `create_new`
+/// open is the atomic primitive that makes exactly one agent win.
+fn try_acquire(lock: &Path) -> Result<bool> {
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(lock)
+    {
+        Ok(mut f) => {
+            use std::io::Write as _;
+            let _ = writeln!(f, "{} pid={}", unix_now(), std::process::id());
+            Ok(true)
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(e) => Err(anyhow::Error::new(e).context("create onboarding lock")),
+    }
+}
+
+/// Age of the lock file in seconds (from its mtime), if it exists.
+fn lock_age_secs(lock: &Path) -> Option<u64> {
+    let modified = std::fs::metadata(lock).ok()?.modified().ok()?;
+    modified.elapsed().ok().map(|d| d.as_secs())
+}
+
+/// Block until `path` exists or `timeout` elapses; returns whether it
+/// appeared.
+fn wait_for(path: &Path, timeout: Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if path.exists() {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(WAIT_POLL);
+    }
+}
+
+/// A follower's path: point at the artifacts the leader produced (they keep
+/// filling as the background crawls land).
+fn reuse(onboard_dir: &Path, why: &str) -> Result<()> {
+    eprintln!(
+        "init: {why} — reusing {}/overview.md (docs fill in via the background \
+         crawl; `crabcc enrich \"<topic>\"` as they land)",
+        onboard_dir.display()
+    );
+    Ok(())
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 /// A thing worth researching — a dependency / library name plus the
@@ -487,6 +599,35 @@ mod tests {
     fn truncate_adds_ellipsis_on_char_boundary() {
         assert_eq!(truncate("short", 100), "short");
         assert_eq!(truncate("héllo", 2), "h…"); // mid 'é' → backs up to 'h'
+    }
+
+    #[test]
+    fn lock_is_exclusive_so_one_agent_leads() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join(".lock");
+        assert!(try_acquire(&lock).unwrap()); // first agent leads
+        assert!(!try_acquire(&lock).unwrap()); // concurrent agent sees it held
+        assert!(!try_acquire(&lock).unwrap());
+    }
+
+    #[test]
+    fn done_marker_short_circuits_without_leading() {
+        let dir = tempfile::tempdir().unwrap();
+        let onboard = dir.path().join(".crabcc").join("onboard");
+        std::fs::create_dir_all(&onboard).unwrap();
+        std::fs::write(onboard.join(".done"), "1").unwrap();
+        // Already onboarded → reuse path; must NOT take the lock or spawn.
+        run(dir.path()).unwrap();
+        assert!(!onboard.join(".lock").exists());
+    }
+
+    #[test]
+    fn wait_for_returns_false_on_timeout() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!wait_for(
+            &dir.path().join("nope"),
+            Duration::from_millis(40)
+        ));
     }
 
     #[test]
