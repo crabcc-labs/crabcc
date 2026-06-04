@@ -33,6 +33,11 @@ gain, on top:
    # or grab `ucracc-lsp` from a crabcc release tarball
    ```
 
+> **Once published to the Zed registry**, the extension will
+> auto-download a prebuilt `ucracc-lsp` for your platform, so step 1
+> becomes optional. Until then (and for remote/SSH hosts), install the
+> binary yourself as below.
+
 2. **Build the index** once per project (and let crabcc keep it fresh):
 
    ```bash
@@ -134,6 +139,11 @@ remote worktree root).
 - **Server logs** — set `"env": { "UCRACC_LOG": "debug" }` under
   `binary`; output shows up in Zed's LSP logs (`dev: open language server
   logs`).
+
+## License
+
+GPLv3 — see [`LICENSE`](./LICENSE) and [`NOTICE.md`](./NOTICE.md) for what
+that means for forks and commercial use (copyleft + attribution). © crabcc-labs.
 
 See [`crates/ucracc-lsp/docs/ZED.md`](../../../crates/ucracc-lsp/docs/ZED.md)
 for the deeper guide.

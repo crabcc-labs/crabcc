@@ -2,7 +2,7 @@
 name = "zed_crabcc"
 version = "0.1.0"
 edition = "2021"
-license = "MIT"
+license = "GPL-3.0-only"
 publish = false
 
 # This crate compiles to a WebAssembly component (wasm32-wasip1) that Zed

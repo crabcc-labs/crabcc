@@ -1080,11 +1080,10 @@ fn signature_for(node: &Node, src: &[u8], lang: &str) -> Option<String> {
     // caller's store mutex and wedge all further indexing.
     let tail = src.get(start..)?;
     let end = body.map(|b| b.start_byte()).unwrap_or_else(|| {
-        // No body — take just the first line.
-        let nl = src[start..]
-            .iter()
-            .position(|&b| b == b'\n')
-            .unwrap_or_default();
+        // No body — take just the first line. Reuse the bounds-checked
+        // `tail` (start <= len already guaranteed by the `?` above) instead
+        // of re-slicing `src[start..]`, which would also leave `tail` unused.
+        let nl = tail.iter().position(|&b| b == b'\n').unwrap_or_default();
         start + nl
     });
     let raw = std::str::from_utf8(src.get(start..end)?).ok()?;
