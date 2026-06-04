@@ -47,6 +47,9 @@ sshq db1.internal
 - `--no-mux` — disable multiplexing.
 - `--no-merge` — keep stderr separate from stdout before filtering.
 - `-o KEY=VALUE` — pass any extra option straight to `ssh` (repeatable).
+  These are placed *before* the baked-in defaults, so passing a key
+  `sshq` also sets (e.g. `-o StrictHostKeyChecking=no`, `-o BatchMode=no`)
+  overrides it — OpenSSH honors the first value seen for a repeated option.
 - `-p PORT`, `--persist DURATION`.
 
 ## Caveats

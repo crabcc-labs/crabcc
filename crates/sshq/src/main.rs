@@ -200,16 +200,29 @@ fn build_ssh_args(cli: &Cli, tty: bool, remote: Option<&str>) -> Result<Vec<Stri
 
     // Item 1: clean, unstyled output for agents. For interactive/TTY
     // sessions do the opposite — force a PTY and stay chatty enough to
-    // show auth prompts.
+    // show auth prompts. (`-t`/`-T`/`-q` aren't `-o` options, so their
+    // position relative to the `-o` block below doesn't matter.)
     if tty {
         a.push("-t".into());
     } else {
         a.push("-T".into());
         a.push("-q".into());
-        opt(&mut a, "BatchMode=yes");
     }
 
-    // Sensible non-interactive defaults regardless of mode.
+    // User `-o KEY=VALUE` overrides go FIRST: OpenSSH keeps the first
+    // value it sees for any repeated option, so to let a user's
+    // `-o StrictHostKeyChecking=no` (or `BatchMode=no`, keepalive tweaks,
+    // a custom ControlPath, …) win, theirs must precede our baked-in
+    // defaults below.
+    for o in &cli.ssh_opt {
+        opt(&mut a, o);
+    }
+
+    // Baked-in defaults — each only "sticks" if the user didn't already
+    // set the same key above.
+    if !tty {
+        opt(&mut a, "BatchMode=yes");
+    }
     opt(&mut a, "StrictHostKeyChecking=accept-new");
     opt(&mut a, "ServerAliveInterval=60");
     opt(&mut a, "ServerAliveCountMax=3");
@@ -232,9 +245,6 @@ fn build_ssh_args(cli: &Cli, tty: bool, remote: Option<&str>) -> Result<Vec<Stri
     if let Some(p) = cli.port {
         a.push("-p".into());
         a.push(p.to_string());
-    }
-    for o in &cli.ssh_opt {
-        opt(&mut a, o);
     }
 
     a.push(cli.host.clone());
@@ -368,6 +378,23 @@ mod tests {
         assert!(args.contains(&"-t".to_string()));
         assert!(!args.contains(&"-T".to_string()));
         assert!(!args.iter().any(|a| a == "BatchMode=yes"));
+    }
+
+    #[test]
+    fn user_opts_precede_defaults_so_overrides_win() {
+        // OpenSSH honors the first value for a repeated option, so a
+        // user override must land before the baked-in default.
+        let c = cli(&["-o", "StrictHostKeyChecking=no", "host", "ls"]);
+        let args = build_ssh_args(&c, false, Some("ls")).unwrap();
+        let user = args
+            .iter()
+            .position(|a| a == "StrictHostKeyChecking=no")
+            .unwrap();
+        let default = args
+            .iter()
+            .position(|a| a == "StrictHostKeyChecking=accept-new")
+            .unwrap();
+        assert!(user < default);
     }
 
     #[test]
