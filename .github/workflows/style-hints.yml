@@ -75,6 +75,42 @@ jobs:
               '\.map\(\|[a-z]\| [a-z]\.clone\(\)\)' \
               'Replace with `.map(Clone::clone)` or `.cloned()` when iterating over references'
 
+          hit 'return Err(anyhow::anyhow!())' \
+              'return Err\(anyhow::anyhow!\(' \
+              'Replace with `anyhow::bail!(…)` — one macro instead of two, and no need for the explicit `return`'
+
+          hit '.map(|x| x.into()) — single-var closure' \
+              '\.map\(\|[a-z]\| [a-z]\.into\(\)\)' \
+              'Replace with `.map(Into::into)` — point-free, no closure boilerplate'
+
+          hit '.iter().filter(…).count() > 0' \
+              'filter\(.*\)\.count\(\) *[>!]= *[01][^0-9]' \
+              'Replace `.filter(…).count() > 0` with `.any(…)` and `.count() == 0` with `!.any(…)`'
+
+          hit 'if cond { Some(val) } else { None }' \
+              'if .* \{ Some(' \
+              'Replace with `cond.then_some(val)` — bool::then_some is cleaner for Option-producing conditions'
+
+          hit '.map(|t| …).unwrap_or(false)' \
+              '\.map(.*\)\.unwrap_or(false)' \
+              'Replace with `Option::is_some_and(|t| …)` — stable since 1.70, no unwrap needed'
+
+          hit '.unwrap_or(0) on numeric Option/Result' \
+              '\.unwrap_or(0[^.])\|\.unwrap_or(0$)' \
+              'Replace with `.unwrap_or_default()` when 0 is the type default (i64/u64/u32/usize/…)'
+
+          hit '.len() == 0 / .len() > 0' \
+              '\.len() *[=!>]= *0\b' \
+              'Replace `.len() == 0` with `.is_empty()` and `.len() > 0` / `.len() != 0` with `!.is_empty()`'
+
+          hit 'format!("{}", x) single-arg' \
+              'format!\("{}", ' \
+              'Replace `format!("{}", x)` with `x.to_string()` — skips the format machinery'
+
+          hit '.map(|x| x.to_string()) on &str iterator' \
+              '\.map(\|[a-z]\| [a-z]\.to_string())' \
+              'Replace with `.map(str::to_string)` for `&str` iterators (avoid a redundant closure); note: only valid when the iterator yields references, not owned types'
+
           {
             if [ "$TOTAL" -eq 0 ]; then
               printf '## ✅ No improvable style patterns in this diff\n'

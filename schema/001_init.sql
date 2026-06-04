@@ -39,16 +39,20 @@ CREATE INDEX IF NOT EXISTS idx_files_lang        ON files(lang);
 
 -- v4: edges are symbol-ID FKs. dst_symbol_id may point at a sentinel row in
 -- symbols where kind='sentinel' (for unresolved names, see unresolved_names).
+--
+-- WITHOUT ROWID: the composite PK (src, dst, kind, line) is the clustered
+-- B-tree key — no hidden rowid column. Lookups by src_symbol_id use the PK
+-- prefix for free; dst and (dst, kind) still need explicit secondary indices.
+-- Eliminates ~30 % of edge-table storage vs the rowid-table shape.
 CREATE TABLE IF NOT EXISTS edges (
-    id              INTEGER PRIMARY KEY,
     src_symbol_id   INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
     dst_symbol_id   INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
     kind            TEXT    NOT NULL CHECK (kind IN ('call','ref','import','inherit','impl')),
-    line            INTEGER NOT NULL
-);
+    line            INTEGER NOT NULL,
+    PRIMARY KEY (src_symbol_id, dst_symbol_id, kind, line)
+) WITHOUT ROWID;
 
 CREATE INDEX IF NOT EXISTS idx_edges_dst       ON edges(dst_symbol_id);
-CREATE INDEX IF NOT EXISTS idx_edges_src       ON edges(src_symbol_id);
 CREATE INDEX IF NOT EXISTS idx_edges_dst_kind  ON edges(dst_symbol_id, kind);
 
 -- Sentinel pattern for unresolved edges (languages without a resolver yet,

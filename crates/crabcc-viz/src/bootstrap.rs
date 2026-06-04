@@ -73,15 +73,18 @@ pub(crate) fn bootstrap_snapshot(root: &Path) -> Result<BootstrapSnapshot> {
             .ok()
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs())
-            .unwrap_or(0);
+            .unwrap_or_default();
     }
     if index.present {
         // Open in read-only-ish fashion via Store — costs about a stat
         // plus three count(*) round-trips, all cheap on an indexed db.
         if let Ok(store) = crabcc_core::store::Store::open(&db_path) {
-            index.files = store.list_files().map(|v| v.len()).unwrap_or(0);
-            index.symbols = store.iter_all_symbols().map(|v| v.len()).unwrap_or(0);
-            index.edges = store.edge_count().map(|n| n as usize).unwrap_or(0);
+            index.files = store.list_files().map(|v| v.len()).unwrap_or_default();
+            index.symbols = store
+                .iter_all_symbols()
+                .map(|v| v.len())
+                .unwrap_or_default();
+            index.edges = store.edge_count().map(|n| n as usize).unwrap_or_default();
         }
     }
 

@@ -94,7 +94,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for OtlpLayer {
         let now_ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0);
+            .unwrap_or_default();
 
         // Minimal OTel JSON span — enough for rotel to display in /live.
         let span = serde_json::json!({

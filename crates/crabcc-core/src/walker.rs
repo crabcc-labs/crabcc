@@ -8,7 +8,7 @@ pub fn walk_repo(root: &Path) -> impl Iterator<Item = PathBuf> {
         .git_ignore(true)
         .build()
         .filter_map(|r| r.ok())
-        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .filter(|e| e.file_type().is_some_and(|t| t.is_file()))
         .map(|e| e.into_path())
         .filter(|p| !is_python_bytecode(p))
 }

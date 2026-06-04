@@ -184,7 +184,7 @@ fn save_codec(codec: &Codec, path: &Path) -> Result<u64> {
     codec
         .save(path)
         .with_context(|| format!("save fsst symbol table to {}", path.display()))?;
-    let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or_default();
     println!("wrote {} ({} bytes table on disk)", path.display(), bytes);
     Ok(bytes)
 }
@@ -384,8 +384,8 @@ fn print_stats(args: &Args) -> Result<()> {
         [],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
     )?;
-    let plain_bytes = row.0.unwrap_or(0);
-    let encoded_bytes = row.1.unwrap_or(0);
+    let plain_bytes = row.0.unwrap_or_default();
+    let encoded_bytes = row.1.unwrap_or_default();
     let encoded_rows = row.2;
     let plain_rows = row.3;
     let null_rows = row.4;
@@ -393,7 +393,7 @@ fn print_stats(args: &Args) -> Result<()> {
     let symbols_path = symbols_path(&args.db);
     let table_bytes = std::fs::metadata(&symbols_path)
         .map(|m| m.len())
-        .unwrap_or(0);
+        .unwrap_or_default();
 
     // Read the persisted post-rebuild totals from `meta` (written by
     // `--rebuild`). When present they give us a true ratio even after every

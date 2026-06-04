@@ -113,9 +113,9 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
             return Ok(meta);
         }
     } else if matches!(tool, "_openapi" | "_health") {
-        return Err(anyhow::anyhow!(
+        anyhow::bail!(
             "tool {tool:?} is dev-only; restart the MCP server with --dev or CRABCC_MCP_DEV=1"
-        ));
+        );
     }
 
     // `ctx` is a meta-tool that dispatches by `tool` arg name. Re-enter
@@ -128,7 +128,7 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("ctx: missing `tool` arg"))?;
         if inner_tool == "ctx" {
-            return Err(anyhow::anyhow!("ctx: cannot dispatch ctx -> ctx"));
+            anyhow::bail!("ctx: cannot dispatch ctx -> ctx");
         }
         let inner_args = args.get("args").cloned().unwrap_or_else(|| json!({}));
         return dispatch_tool_inner(inner_tool, inner_args, root, dev);
@@ -263,10 +263,10 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| anyhow::anyhow!("write_file: missing arg `content`"))?;
             if std::path::Path::new(path).is_absolute() {
-                return Err(anyhow::anyhow!("write_file: path must be repo-relative"));
+                anyhow::bail!("write_file: path must be repo-relative");
             }
             if path.split('/').any(|c| c == "..") {
-                return Err(anyhow::anyhow!("write_file: `..` in path is rejected"));
+                anyhow::bail!("write_file: `..` in path is rejected");
             }
             let abs = root.join(path);
             if let Some(parent) = abs.parent() {
@@ -316,7 +316,10 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
             let under = args.get("under").and_then(|v| v.as_str());
             let lang = args.get("lang").and_then(|v| v.as_str());
             let ext = args.get("ext").and_then(|v| v.as_str());
-            let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let limit = args
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .unwrap_or_default() as usize;
             let r = list_indexed_files(&store, under, lang, ext, limit)?;
             Ok(serde_json::to_string(&r)?)
         }
@@ -327,7 +330,11 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
             // elapsed_ms + (empty here — in-process logs aren't piped).
             // Mirrors the shape of /api/reindex from crabcc-viz so the
             // /live dashboard and MCP clients consume identical JSON.
-            if args.get("logs").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if args
+                .get("logs")
+                .and_then(|v| v.as_bool())
+                .unwrap_or_default()
+            {
                 let env = serde_json::json!({
                     "stats": r,
                     "elapsed_ms": started.elapsed().as_millis() as u64,
@@ -338,7 +345,10 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
             Ok(serde_json::to_string(&r)?)
         }
         "refresh" => {
-            let want_delta = args.get("delta").and_then(|v| v.as_bool()).unwrap_or(false);
+            let want_delta = args
+                .get("delta")
+                .and_then(|v| v.as_bool())
+                .unwrap_or_default();
             if want_delta {
                 let d = index::refresh_delta(root, &store)?;
                 Ok(serde_json::to_string(&d)?)
@@ -449,7 +459,11 @@ fn dispatch_tool_inner(tool: &str, args: Value, root: &Path, dev: bool) -> Resul
             // The MCP path treats `apply` as opt-in just like the CLI. The
             // index store is re-opened by callers on the next tool invocation
             // — we don't try to invalidate it from here.
-            if args.get("apply").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if args
+                .get("apply")
+                .and_then(|v| v.as_bool())
+                .unwrap_or_default()
+            {
                 let _ = crabcc_core::upgrade::cleanup_index(root);
             }
             Ok(serde_json::to_string(&report)?)

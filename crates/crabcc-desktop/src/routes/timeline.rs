@@ -553,8 +553,8 @@ impl Render for TimelineRoute {
                         // Members are newest-first (the source list
                         // was `iter().rev()` upstream). First member's
                         // ts is the newest; last is the oldest.
-                        run.members.first().map(|(e, _)| e.ts).unwrap_or(0),
-                        run.members.last().map(|(e, _)| e.ts).unwrap_or(0),
+                        run.members.first().map(|(e, _)| e.ts).unwrap_or_default(),
+                        run.members.last().map(|(e, _)| e.ts).unwrap_or_default(),
                         collapsed,
                         muted,
                         foreground,
@@ -712,7 +712,7 @@ impl TimelineRoute {
             .selected
             .as_ref()
             .map(|s| same_event(s, &event))
-            .unwrap_or(false);
+            .unwrap_or_default();
 
         // Stable id per row — ts is i64 + op is short, so concat is
         // unique enough across a session without a hash. Using

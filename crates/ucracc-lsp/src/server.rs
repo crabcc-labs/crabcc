@@ -654,7 +654,7 @@ impl Backend {
                 let mtime = SystemTime::now()
                     .duration_since(SystemTime::UNIX_EPOCH)
                     .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0);
+                    .unwrap_or_default();
 
                 let lang = Lang::from_path(std::path::Path::new(&rel));
                 if let Some(l) = lang {

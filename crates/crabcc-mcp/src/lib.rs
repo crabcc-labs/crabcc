@@ -82,7 +82,7 @@ pub(crate) fn since_filter(
 pub(crate) fn want_stream(args: &Value) -> bool {
     args.get("stream")
         .and_then(|v| v.as_bool())
-        .unwrap_or(false)
+        .unwrap_or_default()
 }
 
 /// Serialize an `Output::Hits` payload as newline-delimited JSON — one
@@ -92,9 +92,7 @@ pub(crate) fn hits_to_ndjson(out: &query::Output) -> Result<String> {
     let hits = match out {
         query::Output::Hits(h) => h,
         _ => {
-            return Err(anyhow::anyhow!(
-                "stream=true requires hits-mode output (got non-Hits shape)"
-            ));
+            anyhow::bail!("stream=true requires hits-mode output (got non-Hits shape)");
         }
     };
     let mut buf = String::new();
@@ -304,7 +302,7 @@ mod tests {
         });
         let resp = handle(&req, dir.path());
         assert!(
-            resp["error"].is_object() || resp["result"]["isError"].as_bool().unwrap_or(false),
+            resp["error"].is_object() || resp["result"]["isError"].as_bool().unwrap_or_default(),
             "expected error on ctx → ctx self-dispatch, got: {resp}"
         );
     }

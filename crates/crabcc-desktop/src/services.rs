@@ -181,7 +181,7 @@ fn docker_available() -> bool {
         .args(["info", "--format", "{{.ServerVersion}}"])
         .output()
         .map(|o| o.status.success())
-        .unwrap_or(false)
+        .unwrap_or_default()
 }
 
 /// Single shot at `/api/health` via the existing `Client`. Returns

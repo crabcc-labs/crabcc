@@ -165,7 +165,7 @@ fn bench_incremental_reparse(c: &mut Criterion) {
 
     // Build the InputEdit that describes the insertion.
     let line = src[..pos].matches('\n').count();
-    let col = pos - src[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
+    let col = pos - src[..pos].rfind('\n').map(|i| i + 1).unwrap_or_default();
     let start_byte = pos + needle.len();
     let edit = tree_sitter::InputEdit {
         start_byte,

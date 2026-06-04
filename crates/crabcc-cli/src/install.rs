@@ -539,7 +539,7 @@ pub fn ensure_opencode(yes: bool) -> Result<()> {
         .arg("--version")
         .output()
         .map(|o| o.status.success())
-        .unwrap_or(false)
+        .unwrap_or_default()
     {
         println!("opencode: ok (on PATH)");
         return Ok(());
@@ -579,7 +579,7 @@ fn bash_major_version() -> u32 {
         .and_then(|l| l.split("version ").nth(1))
         .and_then(|v| v.split('.').next())
         .and_then(|n| n.parse().ok())
-        .unwrap_or(0)
+        .unwrap_or_default()
 }
 
 /// Ensure bash 5+ is available. macOS ships bash 3.2 which lacks associative

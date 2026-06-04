@@ -483,7 +483,7 @@ fn walk_with_store(
             let visibility = visibility_for(lang, &node, src);
 
             // Get file_id from store (simplified: assume store has this method)
-            let file_id = store.get_file_id(file).ok().flatten().unwrap_or(0); // Fallback to 0 if not found; adjust as needed
+            let file_id = store.get_file_id(file).ok().flatten().unwrap_or_default(); // Fallback to 0 if not found; adjust as needed
 
             // Write to store
             let rowid = store
@@ -585,7 +585,7 @@ fn walk_edges_with_resolver(
         if let Some(src_symbol_id) = src_id {
             // Build ScopeCtx
             let scope = ScopeCtx {
-                file_id: store.get_file_id(file).ok().flatten().unwrap_or(0),
+                file_id: store.get_file_id(file).ok().flatten().unwrap_or_default(),
                 current_module: None, // Simplified; derive from AST if possible
                 imports,
                 local_defs,
@@ -617,7 +617,7 @@ fn walk_edges_with_resolver(
         let src_id = next_enclosing;
         if let Some(src_symbol_id) = src_id {
             let scope = ScopeCtx {
-                file_id: store.get_file_id(file).ok().flatten().unwrap_or(0),
+                file_id: store.get_file_id(file).ok().flatten().unwrap_or_default(),
                 current_module: None,
                 imports,
                 local_defs,
@@ -1081,7 +1081,10 @@ fn signature_for(node: &Node, src: &[u8], lang: &str) -> Option<String> {
     let tail = src.get(start..)?;
     let end = body.map(|b| b.start_byte()).unwrap_or_else(|| {
         // No body — take just the first line.
-        let nl = tail.iter().position(|&b| b == b'\n').unwrap_or(0);
+        let nl = src[start..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .unwrap_or_default();
         start + nl
     });
     let raw = std::str::from_utf8(src.get(start..end)?).ok()?;

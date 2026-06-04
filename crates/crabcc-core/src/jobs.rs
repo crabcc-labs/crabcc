@@ -233,7 +233,7 @@ pub async fn submit_async(opts: &Options, spec: JobSpec) -> Result<JobReceipt> {
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
+        .unwrap_or_default();
 
     let data_json = serde_json::to_string(&spec.data).context("serialize job data")?;
     let opts_json =
@@ -263,7 +263,10 @@ pub async fn submit_async(opts: &Options, spec: JobSpec) -> Result<JobReceipt> {
             ("agentName", agent_name_s.as_str()),
             ("repoPath", repo_path_s.as_str()),
             ("githubUrl", github_url_s.as_str()),
-            ("agentFolder", spec.agent_folder.as_deref().unwrap_or_default()),
+            (
+                "agentFolder",
+                spec.agent_folder.as_deref().unwrap_or_default(),
+            ),
         ],
     );
 
@@ -432,9 +435,7 @@ pub async fn ping_async(opts: &Options) -> Result<()> {
         .await
         .context("redis PING")?;
     if pong != "PONG" {
-        return Err(anyhow::anyhow!(
-            "redis PING returned unexpected response: {pong}"
-        ));
+        anyhow::bail!("redis PING returned unexpected response: {pong}");
     }
     Ok(())
 }
@@ -516,7 +517,7 @@ fn synth_job_id() -> JobId {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
-        .unwrap_or(0);
+        .unwrap_or_default();
     format!("ccc-job-{nanos:x}")
 }
 

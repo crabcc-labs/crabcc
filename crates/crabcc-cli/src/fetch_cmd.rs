@@ -453,7 +453,10 @@ fn render_reddit_json(body: &str) -> Option<(String, String)> {
         .unwrap_or_default()
         .trim();
     let post_url = post.get("url").and_then(|u| u.as_str()).unwrap_or_default();
-    let score = post.get("score").and_then(|s| s.as_i64()).unwrap_or(0);
+    let score = post
+        .get("score")
+        .and_then(|s| s.as_i64())
+        .unwrap_or_default();
 
     let mut md = String::new();
     write!(
@@ -483,7 +486,10 @@ fn render_reddit_json(body: &str) -> Option<(String, String)> {
                 None => continue,
             };
             let cauthor = data.get("author").and_then(|a| a.as_str()).unwrap_or("?");
-            let cscore = data.get("score").and_then(|s| s.as_i64()).unwrap_or(0);
+            let cscore = data
+                .get("score")
+                .and_then(|s| s.as_i64())
+                .unwrap_or_default();
             let cbody = data
                 .get("body")
                 .and_then(|b| b.as_str())

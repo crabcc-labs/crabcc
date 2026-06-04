@@ -684,6 +684,36 @@ paths:
                 properties:
                   forgotten: {type: integer}
 
+  /tools/memory.backup:
+    post:
+      tags: [memory]
+      operationId: memory_backup
+      summary: Write a transactionally consistent VACUUM INTO snapshot of memory.db.
+      description: |
+        Uses SQLite's `VACUUM INTO` to write a self-contained, WAL-free snapshot
+        to `dest`. Safe on a live, WAL-mode database — readers and writers are
+        not blocked. Prefer over `std::fs::copy` for backups.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [dest]
+              properties:
+                cwd:  {type: string, description: "Path inside a git repo."}
+                dest: {type: string, description: "Destination file path for the snapshot."}
+      responses:
+        "200":
+          description: Backup written.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {type: string}
+                  dest:   {type: string}
+
   /tools/memory.count:
     post:
       tags: [memory]

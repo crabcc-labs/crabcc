@@ -213,8 +213,8 @@ fn bootstrap_endpoint_returns_repo_summary() {
     // and at least 2 symbols. Use ≥ assertions so the test stays
     // robust against extractor evolution that might add synthetic
     // module-level symbols.
-    assert!(index["files"].as_u64().unwrap_or(0) >= 1);
-    assert!(index["symbols"].as_u64().unwrap_or(0) >= 2);
+    assert!(index["files"].as_u64().unwrap_or_default() >= 1);
+    assert!(index["symbols"].as_u64().unwrap_or_default() >= 2);
     let graph = v.get("graph").expect("missing graph block");
     assert!(graph.get("present").is_some());
     let memory = v.get("memory").expect("missing memory block");
@@ -233,7 +233,7 @@ fn memory_recent_endpoint_returns_empty_when_db_absent() {
         v["drawers"]
             .as_array()
             .map(|a| a.is_empty())
-            .unwrap_or(false),
+            .unwrap_or_default(),
         "drawers must be empty when no memory.db: {body}"
     );
 }
