@@ -41,6 +41,7 @@ mod edit;
 mod enrich_cmd;
 mod fetch_cmd;
 mod go;
+mod init_cmd;
 mod install;
 mod install_integrations;
 mod media;
@@ -537,6 +538,11 @@ enum Cmd {
         #[arg(long = "max-tokens", default_value_t = 2000)]
         max_tokens: usize,
     },
+    /// Onboard onto a fresh codebase: detect the stack from dependency
+    /// manifests, crawl each dependency's docs into memory in the
+    /// background, and write a research plan + codebase overview +
+    /// SessionStart-hook snippet under `.crabcc/onboard/`.
+    Init,
     /// Start the localhost call-graph viewer (issue #64). Binds to 127.0.0.1
     /// by default — pass `--bind 0.0.0.0` only on a trusted LAN; the server
     /// is unauthenticated and exposes architecture.
@@ -1249,6 +1255,12 @@ fn main() -> Result<()> {
         return enrich_cmd::run(&root, query, *max_tokens);
     }
 
+    // `init` reads dependency manifests + writes onboarding artifacts +
+    // spawns background crawls; no symbol Store needed.
+    if let Some(Cmd::Init) = cli.cmd.as_ref() {
+        return init_cmd::run(&root);
+    }
+
     // `serve` boots crabcc-viz; doesn't need the symbol Store opened
     // here (the viz server lazy-opens its own). Gated behind the `viz`
     // feature so the default install doesn't pull in the dashboard.
@@ -1723,6 +1735,7 @@ fn main() -> Result<()> {
         Cmd::Fetch { .. } => unreachable!("fetch handled before store init"),
         Cmd::Crawl { .. } => unreachable!("crawl handled before store init"),
         Cmd::Enrich { .. } => unreachable!("enrich handled before store init"),
+        Cmd::Init => unreachable!("init handled before store init"),
         Cmd::Serve { .. } => unreachable!("serve handled before store init"),
         Cmd::Agent { .. } => unreachable!("agent handled before store init"),
         Cmd::Stack { .. } => unreachable!("stack handled before store init"),
@@ -2345,6 +2358,7 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::Fetch { .. } => "fetch",
         Cmd::Crawl { .. } => "crawl",
         Cmd::Enrich { .. } => "enrich",
+        Cmd::Init => "init",
         Cmd::Serve { .. } => "serve",
         Cmd::Read { .. } => "read",
         Cmd::Edit { .. } => "edit",
