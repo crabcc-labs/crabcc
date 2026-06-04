@@ -82,9 +82,15 @@ python3 scripts/bench-opt-bin/sweep.py --deep --flamegraph \
   --archive-dir docs/bench/opt-bin
 ```
 
-`provision-ovh.sh` does this automatically (archive dir `docs/bench/opt-bin/`,
-then `git commit` + push — set `BACKUP_GIT=0` to skip). Archived runs live
-under [`docs/bench/opt-bin/`](../../docs/bench/opt-bin/).
+For unattended/OVH runs, durable backup is handled by
+[`publish.sh`](./publish.sh), not `--archive-dir`: `provision-ovh.sh` runs the
+sweep, pulls the bundle back, then calls `publish.sh`, which fans the run out
+to whichever sinks are configured (the `_bench-results` repo + LFS, a Discord
+webhook, Google Drive — see the table below). With **no** sink env set, nothing
+is published and the bundle stays under gitignored `bench/results/` only —
+so set at least `BENCH_RESULTS_REPO` if you want the run persisted. (`PUBLISH=0`
+skips the publish step entirely.) `--archive-dir` above is the manual,
+local-run equivalent if you'd rather mirror into a tracked path yourself.
 
 `--flamegraph` renders symbolized SVGs for the baseline + fastest legs by
 rebuilding just those two under the `profiling` profile (debug info, no strip —

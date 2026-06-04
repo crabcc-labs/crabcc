@@ -610,6 +610,9 @@ def main() -> int:
                     help="size per-leg jobs to exactly cores (no oversubscription)")
     ap.add_argument("--quick", action="store_true",
                     help="smoke: baseline + one mimalloc leg, no PGO/BOLT")
+    ap.add_argument("--allow-missing-tools", action="store_true",
+                    help="build even if hyperfine/size are absent (measurements "
+                         "will be skipped — normally the run aborts instead)")
     ap.add_argument("--flamegraph", action="store_true",
                     help="render symbolized flamegraph SVGs for baseline + "
                          "fastest leg (rebuilds them under the `profiling` "
@@ -676,8 +679,16 @@ def main() -> int:
         print("   ! PGO legs will be skipped (install: rustup component add llvm-tools-preview)")
     if need_bolt and not bolt_ok:
         print("   ! BOLT legs will be skipped (install: llvm-bolt + merge-fdata)")
-    if not have("hyperfine") or not have("size"):
-        print("   ! hyperfine and binutils `size` are required to measure.", file=sys.stderr)
+    # hyperfine + `size` produce the entire point of the run (timing + footprint).
+    # Without them every leg's measurement fails and we'd emit an empty-looking
+    # but "successful" report after an expensive build phase — abort up front
+    # instead. --allow-missing-tools opts out (e.g. to validate the build legs).
+    missing = [t for t in ("hyperfine", "size") if not have(t)]
+    if missing and not args.allow_missing_tools:
+        print(f"   ! required measurement tool(s) missing: {', '.join(missing)}.\n"
+              f"     install them (hyperfine; binutils for `size`) or pass "
+              f"--allow-missing-tools to build without measuring.", file=sys.stderr)
+        return 2
 
     started = time.time()
 
