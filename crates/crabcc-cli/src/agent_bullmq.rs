@@ -20,13 +20,13 @@
 
 #![cfg(feature = "agents-bullmq")]
 
+use ahash::HashMap;
 use anyhow::{Context, Result};
 use bullmq_rs::{QueueBuilder, RedisConnection};
 use futures_util::TryFutureExt;
 use redis::aio::ConnectionManager;
 use redis::streams::{StreamReadOptions, StreamReadReply};
 use serde::{Deserialize, Serialize};
-use ahash::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 

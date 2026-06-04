@@ -64,10 +64,7 @@ pub(crate) fn load_or_build_graph(
 /// `gitdiff::changed_files_since`. Returns `Ok(None)` when the arg is
 /// absent so callers can use `Option::as_ref()` to drive the filter
 /// path. A bad git revision surfaces as a tool error per JSON-RPC.
-pub(crate) fn since_filter(
-    args: &Value,
-    root: &Path,
-) -> Result<Option<ahash::HashSet<String>>> {
+pub(crate) fn since_filter(args: &Value, root: &Path) -> Result<Option<ahash::HashSet<String>>> {
     match args.get("since").and_then(|v| v.as_str()) {
         Some(rev) => Ok(Some(crabcc_core::gitdiff::changed_files_since(root, rev)?)),
         None => Ok(None),
@@ -133,7 +130,7 @@ pub(crate) fn list_indexed_files(
         })
         .map(|(p, _)| p)
         .collect();
-    out.sort();
+    out.sort_unstable();
     if limit > 0 && out.len() > limit {
         out.truncate(limit);
     }

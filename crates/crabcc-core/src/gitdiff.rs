@@ -12,8 +12,8 @@
 //! - Output is the exact format `git diff --name-only` already produces,
 //!   so we don't need to mediate between APIs.
 
-use anyhow::{anyhow, Context, Result};
 use ahash::HashSet;
+use anyhow::{anyhow, Context, Result};
 use std::path::Path;
 use std::process::Command;
 

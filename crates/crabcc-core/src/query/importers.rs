@@ -11,10 +11,10 @@
 //!   symbols(id, file_id, ...) — joined per BFS hop to map symbol → file.
 
 use crate::store::Store;
+use ahash::{HashMap, HashSet};
 use anyhow::Result;
 use rusqlite::{params, params_from_iter};
 use serde::Serialize;
-use ahash::{HashMap, HashSet};
 
 #[derive(Debug, Serialize)]
 pub struct FileImporter {

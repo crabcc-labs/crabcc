@@ -5,11 +5,11 @@
 // tree-sitter walker in `refs.rs`.
 
 use crate::types::Hit;
+use ahash::HashSet;
 #[cfg(test)]
 use anyhow::Result;
 use ast_grep_core::{AstGrep, Pattern};
 use ast_grep_language::SupportLang;
-use ahash::HashSet;
 
 pub fn lang_for(s: &str) -> Option<SupportLang> {
     Some(match s {
