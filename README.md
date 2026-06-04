@@ -431,6 +431,8 @@ Full results + methodology: [`docs/PERF-648-agent-shell-and-deps.md`](./docs/PER
 
 - **Agent MCP latency ~39–56× lower** — per-session `Store` reuse removes the
   ~680 µs per-call DB-open floor in `serve_io`.
+- **Cold index 1.43× faster** — parse/extract parallelised across cores
+  (rayon), serial SQLite write preserved (identical output): 1.41s → 986ms.
 - **`read` tool ~19 ms → ~1 ms/call** — schema-ensure once/process + cached
   session-read connection.
 - **Agent-shell protector**: PreToolUse hook rewrites grep/find → `rg` /
