@@ -229,6 +229,9 @@ User=${RUNNER_USER}
 Environment=HOME=${RUNNER_HOME}
 Environment=RUNNER_GC_WORK_TEMP=${INSTALL_DIR}/_work/_temp
 Environment=RUNNER_CACHE_BASE=${CACHE_BASE}
+Environment=CARGO_HOME=${CACHE_BASE}/cargo
+Environment=SCCACHE_DIR=${CACHE_BASE}/sccache
+Environment=RUNNER_TOOL_CACHE=${CACHE_BASE}/tool-cache
 ExecStart=/usr/bin/env bash ${INSTALL_DIR}/runner-gc.sh
 EOF
 
@@ -237,10 +240,10 @@ EOF
 Description=Periodic disk GC for the GitHub Actions runner
 
 [Timer]
-# First run shortly after boot, then every 6h. Persistent catches up a
-# missed window if the box was powered off.
-OnBootSec=15min
-OnUnitActiveSec=6h
+# First run 5 min after boot (catches leftover temp from prior session), then
+# every 4h. Persistent catches up a missed window after downtime.
+OnBootSec=5min
+OnUnitActiveSec=4h
 Persistent=true
 
 [Install]
@@ -348,6 +351,7 @@ Environment=HOME=${RUNNER_HOME}
 Environment=TMPDIR=${CACHE_BASE}/tmp
 Environment=CARGO_HOME=${CACHE_BASE}/cargo
 Environment=SCCACHE_DIR=${CACHE_BASE}/sccache
+Environment=SCCACHE_CACHE_SIZE=15G
 Environment=RUNNER_TOOL_CACHE=${CACHE_BASE}/tool-cache
 
 [Install]
