@@ -397,9 +397,20 @@ impl Store {
             "DELETE FROM edges WHERE src_symbol_id IN (SELECT id FROM symbols WHERE file_id = ?1)",
             params![file_id],
         )?;
+        // The edges PK is `(src_symbol_id, dst_symbol_id, kind, line)`, so two
+        // extracted edges that collapse to the same tuple (the same logical
+        // call/ref — common when a name resolves to one symbol, or when
+        // concurrent indexers race a shared db) are the *same* edge. Swallow
+        // only that PK conflict with `ON CONFLICT ... DO NOTHING`: unlike a
+        // blanket `OR IGNORE`, this still lets `CHECK (kind IN (...))`, FK, and
+        // NOT NULL violations surface as errors instead of silently dropping a
+        // malformed edge. Turns the duplicate-tuple
+        // `UNIQUE constraint failed: edges.*` into a no-op rather than failing
+        // the whole file's index — matching the table migration's own dedupe.
         let mut insert = tx.prepare_cached(
             "INSERT INTO edges(src_symbol_id, dst_symbol_id, kind, line)
-             VALUES (?1, ?2, ?3, ?4)",
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(src_symbol_id, dst_symbol_id, kind, line) DO NOTHING",
         )?;
         for e in edges {
             let src_name = match e.src_symbol.as_deref() {
@@ -640,9 +651,15 @@ impl Store {
         kind: &str,
         line: i64,
     ) -> Result<()> {
+        // Suppress only the duplicate-tuple PK conflict via
+        // `ON CONFLICT ... DO NOTHING` (a re-resolved edge is the same edge).
+        // A blanket `OR IGNORE` would also swallow the `CHECK (kind IN (...))`
+        // violation this API documents as a surfaced error, silently dropping
+        // a bad-kind edge.
         self.conn.execute(
             "INSERT INTO edges(src_symbol_id, dst_symbol_id, kind, line)
-             VALUES (?1, ?2, ?3, ?4)",
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(src_symbol_id, dst_symbol_id, kind, line) DO NOTHING",
             params![src_symbol_id, dst_symbol_id, kind, line],
         )?;
         Ok(())
@@ -1281,6 +1298,94 @@ mod tests {
         assert!(
             edges.iter().any(|(s, d, _)| *s == src_id && *d == dst_id),
             "replace_edges did not persist a row resolvable via v4 columns; got {edges:?}"
+        );
+    }
+
+    /// Regression: duplicate edge tuples in a single `replace_edges` batch must
+    /// collapse to one row, not trip the `(src, dst, kind, line)` PRIMARY KEY
+    /// with `UNIQUE constraint failed: edges.*`. This is the failure that
+    /// surfaced non-deterministically as the `full_index` flake whenever the
+    /// extractor emitted the same logical call twice for one source line.
+    #[test]
+    fn replace_edges_dedupes_duplicate_tuples() {
+        let (_dir, store) = tmp_store();
+        let fid = store.upsert_file("a.rs", "h", 0, "rust").unwrap();
+        let src_id = store
+            .insert_symbol(
+                fid,
+                "caller",
+                None,
+                SymbolKind::Function,
+                None,
+                1,
+                3,
+                None,
+                None,
+            )
+            .unwrap();
+        let dst_id = store
+            .insert_symbol(
+                fid,
+                "callee",
+                None,
+                SymbolKind::Function,
+                None,
+                5,
+                7,
+                None,
+                None,
+            )
+            .unwrap();
+
+        let dup = || Edge {
+            src_file: "a.rs".into(),
+            src_symbol: Some("caller".into()),
+            dst_name: "callee".into(),
+            kind: "call".into(),
+            line: 2,
+        };
+
+        // Two identical edges in the same batch — pre-fix this errored on the
+        // second insert and poisoned the whole file's index.
+        store
+            .replace_edges(fid, &[dup(), dup()])
+            .expect("replace_edges must dedupe duplicate tuples, not fail the batch");
+
+        let rows: Vec<_> = store
+            .iter_call_edges_resolved()
+            .unwrap()
+            .into_iter()
+            .filter(|(s, d, _)| *s == src_id && *d == dst_id)
+            .collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "duplicate edge tuple must collapse to exactly one row; got {rows:?}"
+        );
+    }
+
+    /// The dedupe must be scoped to the PK conflict only: a bad `kind` still
+    /// has to surface the schema `CHECK (kind IN (...))` error rather than be
+    /// silently swallowed (the trap a blanket `INSERT OR IGNORE` would set —
+    /// see PR #655 review). Guards `insert_edge_resolved`'s documented contract.
+    #[test]
+    fn insert_edge_resolved_still_surfaces_bad_kind() {
+        let (_dir, store) = tmp_store();
+        let fid = store.upsert_file("a.rs", "h", 0, "rust").unwrap();
+        let a = store
+            .insert_symbol(fid, "a", None, SymbolKind::Function, None, 1, 2, None, None)
+            .unwrap();
+        let b = store
+            .insert_symbol(fid, "b", None, SymbolKind::Function, None, 3, 4, None, None)
+            .unwrap();
+
+        // Valid kind goes in fine.
+        store.insert_edge_resolved(a, b, "call", 1).unwrap();
+        // Unsupported kind must still error, not be dropped on the floor.
+        let err = store.insert_edge_resolved(a, b, "bogus", 1);
+        assert!(
+            err.is_err(),
+            "bad edge kind must surface the CHECK constraint error, got {err:?}"
         );
     }
 
