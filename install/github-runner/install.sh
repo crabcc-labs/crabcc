@@ -131,6 +131,42 @@ setup_cache_volume() {
   setup_cache_dirs
 }
 
+# ── Patch existing runner service unit ──────────────────────────────────
+# Injects the four cache-redirect env vars into an already-installed unit
+# when --gc-only --cache-volume is used on an existing runner.  Without
+# this, the volume would be mounted but the runner service still exports
+# the old TMPDIR/CARGO_HOME, leaving rustup/cargo writing to the root fs.
+# Idempotent: skips the rewrite if the vars are already present.
+patch_runner_unit() {
+  local unit=/etc/systemd/system/actions-runner.service
+  if [ ! -f "$unit" ]; then
+    echo "[runner] no runner unit at ${unit} — skipping env patch (full install will write it)"
+    return 0
+  fi
+  if grep -q "TMPDIR=${CACHE_BASE}/tmp" "$unit"; then
+    echo "[runner] unit already has TMPDIR=${CACHE_BASE}/tmp — skipping patch"
+    return 0
+  fi
+  echo "[runner] patching ${unit} with cache-volume env vars..."
+  local tmp
+  tmp=$(mktemp)
+  # Insert the four Environment= lines immediately before [Install] so
+  # they land inside [Service].  awk preserves the rest of the unit verbatim.
+  awk -v base="${CACHE_BASE}" '
+    /^\[Install\]/ {
+      print "Environment=TMPDIR=" base "/tmp"
+      print "Environment=CARGO_HOME=" base "/cargo"
+      print "Environment=SCCACHE_DIR=" base "/sccache"
+      print "Environment=RUNNER_TOOL_CACHE=" base "/tool-cache"
+      print ""
+    }
+    { print }
+  ' "$unit" > "$tmp"
+  mv "$tmp" "$unit"
+  systemctl daemon-reload
+  echo "[runner] unit patched — run 'sudo systemctl restart actions-runner' to apply"
+}
+
 # ── Disk-GC timer ───────────────────────────────────────────────────────
 # A single GitHub Actions cron only ever lands on one runner, so it can't
 # keep the whole fleet clean. A host-local systemd timer makes every box
@@ -191,6 +227,9 @@ if [ "$GC_ONLY" = 1 ]; then
   else
     setup_cache_dirs
   fi
+  # Patch the existing runner unit so TMPDIR/CARGO_HOME/etc. take effect
+  # after the operator runs `sudo systemctl restart actions-runner`.
+  patch_runner_unit
   install_gc_timer
   exit 0
 fi
