@@ -14,8 +14,9 @@
 //! Run:
 //!   cargo bench -p ucracc-lsp --bench extractor_cost
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use std::fmt::Write as _;
+use std::hint::black_box;
 #[cfg(any(feature = "yaml", feature = "markdown"))]
 use tree_sitter::Parser;
 
