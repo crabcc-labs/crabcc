@@ -356,6 +356,11 @@ const COMPACTABLE: &[&str] = &[
     "cat", "gh", "git", "rg", "grep", "find", "curl", "jq", "tree",
 ];
 
+/// Min residual size (bytes, ~2k tokens) before the hook pays Morph's
+/// network round-trip. RTK handles smaller outputs locally for free, so
+/// the default chain only escalates to Morph for large residuals.
+const MORPH_MIN_BYTES: usize = 8000;
+
 /// First token of a simple (no-metacharacter) command, if it's worth
 /// piping through a compaction stage.
 fn compactable_program(cmd: &str) -> Option<String> {
@@ -492,7 +497,11 @@ pub fn run(root: &Path, db: &Path, command: &str, session_id: Option<&str>) -> R
             chain.push("rtk");
         }
         if morph_enabled() {
-            let mut m = String::from("crabcc morph compact");
+            // RTK already did the bulk, free, local reduction. Only pay
+            // Morph's network round-trip when the *residual* output is
+            // still large enough for its query-conditioned pass to be
+            // worth ~1s (cached on repeat). Keeps the default fast.
+            let mut m = format!("crabcc morph compact --min-bytes {MORPH_MIN_BYTES}");
             if let Some(q) = &compact_query {
                 m.push_str(" --query ");
                 m.push_str(&shq(q));
