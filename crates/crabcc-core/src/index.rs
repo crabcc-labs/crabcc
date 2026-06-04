@@ -48,66 +48,106 @@ pub struct RefreshDelta {
 
 const MAX_FILE_BYTES: usize = 2 * 1024 * 1024;
 
-pub fn build_index(root: &Path, store: &Store) -> Result<IndexStats> {
-    let mut stats = IndexStats::default();
+/// Outcome of parsing one file off the SQLite-write thread. Carries the
+/// owned extraction result so the serial writer can persist it in walk
+/// order (preserving file_id assignment + cross-file edge resolution).
+enum FileOutcome {
+    Unsupported,
+    Unreadable,
+    TooLarge,
+    ParseError,
+    Indexed {
+        rel: String,
+        sha: String,
+        mtime: i64,
+        lang: &'static str,
+        symbols: Vec<crate::types::Symbol>,
+        edges: Vec<crate::types::Edge>,
+    },
+}
 
-    for path in walker::walk_repo(root) {
-        let lang = match extract::detect_lang(&path) {
-            Some(l) => l,
-            None => {
-                stats.skipped_unsupported += 1;
-                continue;
-            }
-        };
-        let bytes = match std::fs::read(&path) {
-            Ok(b) => b,
-            Err(_) => {
-                stats.skipped_unreadable += 1;
-                continue;
-            }
-        };
-        if bytes.len() > MAX_FILE_BYTES {
-            stats.skipped_too_large += 1;
-            continue;
-        }
-        let src = match std::str::from_utf8(&bytes) {
-            Ok(s) => s,
-            Err(_) => {
-                stats.skipped_unreadable += 1;
-                continue;
-            }
-        };
-
-        let rel = path
-            .strip_prefix(root)
-            .unwrap_or(&path)
-            .to_string_lossy()
-            .into_owned();
-
-        let (symbols, edges) = match extract::extract_file_with_edges(&rel, src, lang) {
-            Ok(pair) => pair,
-            Err(_) => {
-                stats.skipped_parse_error += 1;
-                continue;
-            }
-        };
-
-        let sha = hash::sha256_hex(&bytes);
-        let mtime = std::fs::metadata(&path)
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or_default();
-
-        let file_id = store.upsert_file(&rel, &sha, mtime, lang)?;
-        store.replace_symbols(file_id, &symbols)?;
-        store.replace_edges(file_id, &edges)?;
-        stats.files_indexed += 1;
-        stats.symbols += symbols.len();
-        stats.edges += edges.len();
+/// Read + parse + extract a single file. Pure (no `Store`), so it runs on
+/// a rayon worker. Tree-sitter parsers are thread-local, so this is safe
+/// to call concurrently.
+fn parse_one(root: &Path, path: &Path) -> FileOutcome {
+    let lang = match extract::detect_lang(path) {
+        Some(l) => l,
+        None => return FileOutcome::Unsupported,
+    };
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(_) => return FileOutcome::Unreadable,
+    };
+    if bytes.len() > MAX_FILE_BYTES {
+        return FileOutcome::TooLarge;
     }
+    let src = match std::str::from_utf8(&bytes) {
+        Ok(s) => s,
+        Err(_) => return FileOutcome::Unreadable,
+    };
+    let rel = path
+        .strip_prefix(root)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned();
+    let (symbols, edges) = match extract::extract_file_with_edges(&rel, src, lang) {
+        Ok(pair) => pair,
+        Err(_) => return FileOutcome::ParseError,
+    };
+    let sha = hash::sha256_hex(&bytes);
+    let mtime = std::fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or_default();
+    FileOutcome::Indexed {
+        rel,
+        sha,
+        mtime,
+        lang,
+        symbols,
+        edges,
+    }
+}
 
+pub fn build_index(root: &Path, store: &Store) -> Result<IndexStats> {
+    use rayon::prelude::*;
+
+    // Parse + extract every file in parallel (CPU-bound, thread-local
+    // tree-sitter parser pools), then write to SQLite serially in walk
+    // order. `par_iter().collect()` preserves order, so file_id
+    // assignment and the order-dependent cross-file edge resolution
+    // (unresolved-symbol sentinels) are byte-for-byte identical to the
+    // old sequential loop — only parsing is parallelised, the `!Sync`
+    // `Store` is touched from one thread.
+    let paths: Vec<std::path::PathBuf> = walker::walk_repo(root).collect();
+    let outcomes: Vec<FileOutcome> = paths.par_iter().map(|p| parse_one(root, p)).collect();
+
+    let mut stats = IndexStats::default();
+    for outcome in outcomes {
+        match outcome {
+            FileOutcome::Unsupported => stats.skipped_unsupported += 1,
+            FileOutcome::Unreadable => stats.skipped_unreadable += 1,
+            FileOutcome::TooLarge => stats.skipped_too_large += 1,
+            FileOutcome::ParseError => stats.skipped_parse_error += 1,
+            FileOutcome::Indexed {
+                rel,
+                sha,
+                mtime,
+                lang,
+                symbols,
+                edges,
+            } => {
+                let file_id = store.upsert_file(&rel, &sha, mtime, lang)?;
+                store.replace_symbols(file_id, &symbols)?;
+                store.replace_edges(file_id, &edges)?;
+                stats.files_indexed += 1;
+                stats.symbols += symbols.len();
+                stats.edges += edges.len();
+            }
+        }
+    }
     Ok(stats)
 }
 

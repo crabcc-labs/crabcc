@@ -987,6 +987,7 @@ dependencies = [
  "markdown",
  "memchr",
  "notify-debouncer-mini",
+ "rayon",
  "rusqlite",
  "serde",
  "serde_json",
