@@ -38,3 +38,10 @@ bytes       = "1"
 
 [dev-dependencies]
 tempfile   = { workspace = true }
+
+# The smoke example imports `crabcc_fetch::crawl`, which only exists under
+# the `crawl` feature. Without this, a default `--all-targets` build (the
+# lint/test gate) would try to compile it featureless and fail.
+[[example]]
+name = "crawl_smoke"
+required-features = ["crawl"]
