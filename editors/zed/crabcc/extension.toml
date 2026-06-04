@@ -1,0 +1,29 @@
+id = "crabcc"
+name = "crabcc"
+version = "0.0.1"
+schema_version = 1
+authors = ["peterlodri-sec"]
+description = "crabcc code intelligence for Zed: symbol navigation, references, and call hierarchy backed by the crabcc index, via the ucracc-lsp language server."
+repository = "https://github.com/crabcc-labs/crabcc"
+
+# Registers ucracc-lsp as an ADDITIONAL language server for crabcc's languages.
+# Zed runs it alongside the built-in servers (rust-analyzer, pyright, etc.), so
+# you get crabcc's index-backed nav on top of the normal tooling.
+#
+# `languages` must match Zed's registered language `name`s. The list below is
+# the confident built-in set. Swift, Java, and Shell Script also work if those
+# language extensions are installed (add "Swift", "Java", "Shell Script") — the
+# names must match Zed exactly, so they are left out by default.
+[language_servers.crabcc-lsp]
+name = "crabcc (ucracc-lsp)"
+languages = [
+  "Rust",
+  "TypeScript",
+  "TSX",
+  "JavaScript",
+  "Python",
+  "Ruby",
+  "Go",
+  "YAML",
+  "Markdown",
+]
