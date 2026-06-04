@@ -2531,28 +2531,36 @@ fn memory_ingest(mut request: Request, root: &Path) -> Result<()> {
     // URL fetch phase — async via a per-request runtime. Single-user
     // localhost so the runtime cost is negligible.
     if !urls.is_empty() {
-        let safe: Vec<String> = urls
-            .iter()
-            .filter(|u| match crabcc_fetch::is_ingest_safe_url(u) {
-                Ok(()) => true,
-                Err(reason) => {
-                    errors.push(IngestError {
-                        url: (*u).clone(),
-                        error: reason,
-                    });
-                    false
-                }
-            })
-            .cloned()
-            .collect();
+        // Untrusted input, so SSRF-guarded by default. The operator can
+        // relax their own deployment with CRABCC_FETCH_SSRF=off — but the
+        // override only takes effect if this prefilter is gated on the same
+        // resolver as FetchOpts::ingest(), else localhost/private URLs are
+        // rejected here before the relaxed fetch can run.
+        let enforce_ssrf = crabcc_fetch::ssrf_enforced(true);
+        let safe: Vec<String> = if enforce_ssrf {
+            urls.iter()
+                .filter(|u| match crabcc_fetch::is_ingest_safe_url(u) {
+                    Ok(()) => true,
+                    Err(reason) => {
+                        errors.push(IngestError {
+                            url: (*u).clone(),
+                            error: reason,
+                        });
+                        false
+                    }
+                })
+                .cloned()
+                .collect()
+        } else {
+            urls.clone()
+        };
         if !safe.is_empty() {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()?;
-            let results = rt.block_on(crabcc_fetch::fetch_and_clean(
-                &safe,
-                crabcc_fetch::FetchOpts::ingest(),
-            ));
+            let mut fetch_opts = crabcc_fetch::FetchOpts::ingest();
+            fetch_opts.enforce_ssrf = enforce_ssrf;
+            let results = rt.block_on(crabcc_fetch::fetch_and_clean(&safe, fetch_opts));
             for r in results {
                 if r.error.is_some() || r.content_markdown.is_none() {
                     errors.push(IngestError {
