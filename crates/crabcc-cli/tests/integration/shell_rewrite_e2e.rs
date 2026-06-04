@@ -29,7 +29,9 @@ fn crabcc() -> Command {
 fn write_fixture(root: &Path) {
     let mut noisy = String::new();
     for i in 0..40 {
-        noisy.push_str(&format!("// line {i}: Widget mentioned here in a comment\n"));
+        noisy.push_str(&format!(
+            "// line {i}: Widget mentioned here in a comment\n"
+        ));
     }
     noisy.push_str("pub struct Widget { pub id: u32 }\n");
     noisy.push_str("pub fn use_widget(w: &Widget) -> u32 { w.id }\n");
