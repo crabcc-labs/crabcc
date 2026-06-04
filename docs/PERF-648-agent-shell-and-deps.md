@@ -140,6 +140,53 @@ signature is suppressed, so it passes through unchanged next time. True
 pre-exec measurement is impossible (the command hasn't run), so the design is
 estimate-gate up front + real measurement + learning post-exec.
 
+## 7. Which features benefit AI agents most (measured)
+
+Per-operation token cost vs the naive baseline, on the crabcc repo
+(bench-node, clean source). Token ≈ bytes/4; latency = median of 5 runs.
+
+| Operation | crabcc | latency | baseline | reduction |
+|---|---|---|---|---|
+| `sym` (find definition) | 42 tok | 23 ms | grep 92,556 | **−99%** |
+| `callers --count` | 3 tok | 22 ms | grep 1,162 | **−99%** |
+| `refs` | 2,033 tok | 22 ms | grep 92,556 | **−97%** |
+| `outline` (understand a file) | 3,631 tok | 14 ms | cat 14,790 | **−75%** |
+| `read` (cache hit → outline stub) | ~3.7k tok | 32 ms | cat re-read 14,790 | **−75%** |
+| `files --ext` | 2,142 tok | 14 ms | find 2,327 | −7% |
+
+### Top 3 by benefit — human-operated CLI
+
+1. **Symbol query surface — `lookup sym/refs/callers`** (crabcc-core: index
+   + store + edges). −97 to −99% tokens. The operator's core questions
+   ("where defined / who calls / where used") that otherwise mean grep +
+   reading files. Biggest, most-used win.
+2. **`outline`** (crabcc-core extract). −75%. The first move on an unfamiliar
+   file: structure without dumping the body.
+3. **Agent-shell rewrite hook + smart SessionStart context** (crabcc-cli,
+   this PR). Unique to interactive use: applies the savings *without the
+   operator changing habits* (grep→rg/refs transparently) and points them
+   at crabcc up front.
+
+### Top 3 by benefit — agentic (LangChain / MCP, programmatic loop)
+
+1. **MCP server with per-session `Store` reuse** (crabcc-mcp). The delivery
+   substrate: exposes every query as a structured JSON tool at 14-32 ms/call
+   (per-call DB-open floor removed → ~39-56× e2e). Without it, programmatic
+   agents can't use crabcc efficiently; with it, the token wins below reach
+   the agent loop as parseable data.
+2. **Symbol query tools — `sym/refs/callers`**. Same −97-99% token win, but
+   in a loop the per-call token cost is paid every iteration, so the savings
+   **compound** across the agent's trajectory.
+3. **`read` caching + `outline`** (crabcc-memory `session_reads` +
+   crabcc-core). −75%. Agents re-read the same files across reasoning steps;
+   the session-keyed outline-stub cache stops them re-dumping full bodies
+   every turn. The PostToolUse measure/learn rewrite loop also lives here.
+
+**Module attribution:** crabcc-core (index/store/query/edges) is the engine
+behind the top token-savers; crabcc-mcp is the agentic delivery layer;
+crabcc-memory powers read-caching. `files`/`find`-style listing is a weak
+win (−7%) — gitignore-awareness aside, both just list paths.
+
 ## 6. Dependencies + cleanup
 
 Cargo majors bumped (rusqlite 0.39→0.40, reqwest 0.12→0.13 [rustls+webpki],
