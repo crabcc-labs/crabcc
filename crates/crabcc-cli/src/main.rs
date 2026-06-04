@@ -42,6 +42,7 @@ mod edit;
 mod enrich_cmd;
 mod fetch_cmd;
 mod go;
+mod init_cmd;
 mod install;
 mod install_integrations;
 mod media;
@@ -522,6 +523,11 @@ enum Cmd {
         /// untrusted; never crawl authenticated targets through them.
         #[arg(long, value_name = "PROTOCOL")]
         proxify: Option<String>,
+        /// Resume from a persistent on-disk frontier at this path (created
+        /// if absent) so an interrupted crawl picks up where it left off.
+        /// Default is an ephemeral in-memory frontier.
+        #[arg(long, value_name = "PATH")]
+        state: Option<std::path::PathBuf>,
     },
     /// Token-bounded documentation context from memory (crawler-ingested
     /// docs). Returns the most-relevant cached concept plus one
@@ -549,6 +555,11 @@ enum Cmd {
         #[arg(long, default_value_t = 0)]
         max_lines: usize,
     },
+    /// Onboard onto a fresh codebase: detect the stack from dependency
+    /// manifests, crawl each dependency's docs into memory in the
+    /// background, and write a research plan + codebase overview +
+    /// SessionStart-hook snippet under `.crabcc/onboard/`.
+    Init,
     /// Start the localhost call-graph viewer (issue #64). Binds to 127.0.0.1
     /// by default — pass `--bind 0.0.0.0` only on a trusted LAN; the server
     /// is unauthenticated and exposes architecture.
@@ -1252,6 +1263,7 @@ fn main() -> Result<()> {
         remember,
         format,
         proxify,
+        state,
     }) = cli.cmd.as_ref()
     {
         return crawl_cmd::run(
@@ -1264,6 +1276,7 @@ fn main() -> Result<()> {
             *remember,
             format,
             proxify.as_deref(),
+            state.as_deref(),
         );
     }
 
@@ -1285,6 +1298,12 @@ fn main() -> Result<()> {
     // `squeeze` is a pure stdin->stdout filter; no symbol Store needed.
     if let Some(Cmd::Squeeze { max_lines }) = cli.cmd.as_ref() {
         return squeeze::run(*max_lines);
+    }
+
+    // `init` reads dependency manifests + writes onboarding artifacts +
+    // spawns background crawls; no symbol Store needed.
+    if let Some(Cmd::Init) = cli.cmd.as_ref() {
+        return init_cmd::run(&root);
     }
 
     // `serve` boots crabcc-viz; doesn't need the symbol Store opened
@@ -1763,6 +1782,7 @@ fn main() -> Result<()> {
         Cmd::Enrich { .. } => unreachable!("enrich handled before store init"),
         Cmd::Csv { .. } => unreachable!("csv handled before store init"),
         Cmd::Squeeze { .. } => unreachable!("squeeze handled before store init"),
+        Cmd::Init => unreachable!("init handled before store init"),
         Cmd::Serve { .. } => unreachable!("serve handled before store init"),
         Cmd::Agent { .. } => unreachable!("agent handled before store init"),
         Cmd::Stack { .. } => unreachable!("stack handled before store init"),
@@ -2387,6 +2407,7 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::Enrich { .. } => "enrich",
         Cmd::Csv { .. } => "csv",
         Cmd::Squeeze { .. } => "squeeze",
+        Cmd::Init => "init",
         Cmd::Serve { .. } => "serve",
         Cmd::Read { .. } => "read",
         Cmd::Edit { .. } => "edit",
