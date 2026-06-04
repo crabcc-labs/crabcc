@@ -55,12 +55,7 @@ fn setup() -> Bed {
     std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
     let store = Store::open(&db_path).expect("open store");
     crabcc_core::index::full_index(&root, &store).expect("full_index");
-
-    let fts_dir = root.join(".crabcc/tantivy");
-    let fts = Fts::open(&fts_dir).ok();
-    if let Some(f) = fts.as_ref() {
-        let _ = f.rebuild(&store);
-    }
+    let fts = Fts::from_store(&store).ok();
 
     let rt = Arc::new(Runtime::new().unwrap());
     let (service, _socket) = LspService::new(Backend::new);
@@ -101,8 +96,8 @@ fn setup() -> Bed {
 }
 
 fn bench_cold_open(c: &mut Criterion) {
-    // Cold-start surrogate: time to open the on-disk SQLite store + tantivy.
-    // We pre-build them once and then re-open in the bench iter.
+    // Cold-start surrogate: time to open the on-disk SQLite store.
+    // We pre-build it once and then re-open in the bench iter.
     let tmp = TempDir::new().unwrap();
     let root = tmp.path().to_path_buf();
     std::fs::write(root.join("ucracc.rs"), RUST).unwrap();
@@ -110,9 +105,6 @@ fn bench_cold_open(c: &mut Criterion) {
     std::fs::create_dir_all(db.parent().unwrap()).unwrap();
     let store = Store::open(&db).unwrap();
     crabcc_core::index::full_index(&root, &store).unwrap();
-    let fts_dir = root.join(".crabcc/tantivy");
-    let fts = Fts::open(&fts_dir).unwrap();
-    let _ = fts.rebuild(&store);
     drop(store);
 
     c.bench_function("cold_open_baseline_store_only", |b| {

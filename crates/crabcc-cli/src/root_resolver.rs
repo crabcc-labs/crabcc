@@ -62,9 +62,6 @@ impl ResolvedRoot {
     pub fn db(&self) -> PathBuf {
         self.data_dir.join("index.db")
     }
-    pub fn fts_dir(&self) -> PathBuf {
-        self.data_dir.join("tantivy")
-    }
     pub fn graph_json(&self) -> PathBuf {
         self.data_dir.join("graph.json")
     }
@@ -467,7 +464,6 @@ mod tests {
         let home = tempdir().unwrap();
         let r = resolve_with_home(&tmp.path().to_string_lossy(), Some(home.path())).unwrap();
         assert_eq!(r.db(), r.data_dir.join("index.db"));
-        assert_eq!(r.fts_dir(), r.data_dir.join("tantivy"));
         assert_eq!(r.graph_json(), r.data_dir.join("graph.json"));
     }
 

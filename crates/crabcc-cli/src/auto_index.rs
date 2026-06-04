@@ -22,7 +22,6 @@ pub fn ensure_indexed(resolved: &ResolvedRoot, store: &Store) -> Result<()> {
         return Ok(());
     }
     let source_dir = resolved.source_dir.as_path();
-    let fts_dir = resolved.fts_dir();
     eprintln!(
         "warning: project not indexed yet — indexing now ({})",
         resolved.display_origin()
@@ -30,9 +29,6 @@ pub fn ensure_indexed(resolved: &ResolvedRoot, store: &Store) -> Result<()> {
     let started = std::time::Instant::now();
     let stats = crabcc_core::index::full_index(source_dir, store)?;
     store.mark_schema_v4_built()?;
-    if let Ok(fts) = crabcc_core::fts::Fts::open(&fts_dir) {
-        let _ = fts.rebuild(store);
-    }
     eprintln!(
         "warning: indexed {} files ({} symbols) in {:.2}s",
         stats.files_indexed,

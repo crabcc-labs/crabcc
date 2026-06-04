@@ -45,16 +45,13 @@ pub struct WorkspaceRepo {
     /// for the same `remote.origin.url` (see `root_resolver::repo_storage_key`).
     pub key: String,
     /// `$CRABCC_HOME/repos/<key>/` — the per-repo data dir holding
-    /// `index.db`, `tantivy/`, and `graph.json`.
+    /// `index.db` and `graph.json`.
     pub data_dir: PathBuf,
 }
 
 impl WorkspaceRepo {
     pub fn db(&self) -> PathBuf {
         self.data_dir.join("index.db")
-    }
-    pub fn fts_dir(&self) -> PathBuf {
-        self.data_dir.join("tantivy")
     }
 }
 

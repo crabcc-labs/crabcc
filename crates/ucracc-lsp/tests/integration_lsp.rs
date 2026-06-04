@@ -31,12 +31,8 @@ fn build_index(root: &Path) {
     std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
     let store = Store::open(&db_path).expect("open store");
     crabcc_core::index::full_index(root, &store).expect("full_index");
-    // Build the tantivy sidecar — workspace/symbol prefix matching needs
-    // it. `crabcc index` does this automatically; doing it directly via
-    // `full_index` does not. Mirror the production sequence here.
-    let fts_dir = root.join(".crabcc/tantivy");
-    let fts = crabcc_core::fts::Fts::open(&fts_dir).expect("open fts");
-    fts.rebuild(&store).expect("fts rebuild");
+    // Fuzzy/prefix (workspace/symbol) now read the live SQLite index — no
+    // sidecar to build, so `full_index` is all the setup needed.
 }
 
 fn uri_for(root: &Path, name: &str) -> Url {
@@ -567,8 +563,6 @@ async fn initialization_options_index_path_override() {
     std::fs::create_dir_all(&crabcc_dir).unwrap();
     let store = Store::open(&db_path).expect("open store");
     crabcc_core::index::full_index(&root, &store).expect("full_index");
-    let fts = crabcc_core::fts::Fts::open(&crabcc_dir.join("tantivy")).expect("open fts");
-    fts.rebuild(&store).expect("fts rebuild");
     assert!(
         !root.join(".crabcc").exists(),
         "default path must be absent"

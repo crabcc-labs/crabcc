@@ -23,7 +23,6 @@ use tracing::{info, warn};
 pub struct RootConfig {
     pub repo_root: PathBuf,
     pub db_path: PathBuf,
-    pub fts_dir: PathBuf,
 }
 
 pub struct Backend {
@@ -75,8 +74,40 @@ fn ensure_store(store: &std::sync::Mutex<Option<Store>>, db_path: &std::path::Pa
     ensure_open(store, db_path, Store::open, "ensure_store")
 }
 
-fn ensure_fts(fts: &std::sync::Mutex<Option<Fts>>, fts_dir: &std::path::Path) -> bool {
-    ensure_open(fts, fts_dir, Fts::open, "ensure_fts")
+/// Lazily build the in-memory `Fts` from the live SQLite store and cache it in
+/// `fts`. Fuzzy/prefix no longer read a sidecar — they snapshot the symbol
+/// table directly — so this ensures the store is open, then builds from it.
+/// Locks are never held across both slots simultaneously (build under the
+/// store lock, drop it, then assign under the fts lock) to stay deadlock-free
+/// against callers that lock `fts` before `store`.
+fn ensure_fts(
+    fts: &std::sync::Mutex<Option<Fts>>,
+    store: &std::sync::Mutex<Option<Store>>,
+    db_path: &std::path::Path,
+) -> bool {
+    if fts.lock().unwrap().is_some() {
+        return true;
+    }
+    if !ensure_store(store, db_path) {
+        return false;
+    }
+    let built = {
+        let g = store.lock().unwrap();
+        match g.as_ref() {
+            Some(s) => Fts::from_store(s),
+            None => return false,
+        }
+    };
+    match built {
+        Ok(v) => {
+            *fts.lock().unwrap() = Some(v);
+            true
+        }
+        Err(e) => {
+            tracing::warn!(target: "ucracc_lsp", error = %e, "ensure_fts failed");
+            false
+        }
+    }
 }
 
 impl Backend {
@@ -86,7 +117,6 @@ impl Backend {
             root_config: Mutex::new(Arc::new(RootConfig {
                 repo_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
                 db_path: PathBuf::new(),
-                fts_dir: PathBuf::new(),
             })),
             cache: Arc::new(LruCache::new()),
             open_docs: Arc::new(DashMap::new()),
@@ -147,7 +177,7 @@ impl LanguageServer for Backend {
         // Honor an editor-supplied `initialization_options.indexPath`
         // (Zed forwards `lsp.ucracc-lsp.initialization_options` from
         // settings.json). It points at the `.crabcc` directory that holds
-        // `index.db` + `tantivy/`. Relative paths resolve against the repo
+        // `index.db`. Relative paths resolve against the repo
         // root. Absent → the default `<root>/.crabcc` auto-discovery, so
         // existing clients (Neovim, the tests) are unaffected.
         //
@@ -167,13 +197,12 @@ impl LanguageServer for Backend {
         // Record paths; do NOT open Store/Fts yet. They're lazy-opened
         // on first use (or prefetched from the `initialized` notification
         // below). This keeps `initialize` in the tens-of-microseconds
-        // range instead of paying the ~1 ms SQLite/tantivy open cost
+        // range instead of paying the ~1 ms SQLite open + symbol-load cost
         // before the editor has even sent a request.
         let mut cfg = self.root_config.lock().await;
         *cfg = Arc::new(RootConfig {
             repo_root: root.clone(),
             db_path: crabcc_dir.join("index.db"),
-            fts_dir: crabcc_dir.join("tantivy"),
         });
         drop(cfg);
 
@@ -202,7 +231,7 @@ impl LanguageServer for Backend {
         let cfg = self.root_config.lock().await.clone();
         let prefetch = tokio::task::spawn_blocking(move || {
             let store_ok = ensure_store(&store, &cfg.db_path);
-            let _ = ensure_fts(&fts, &cfg.fts_dir);
+            let _ = ensure_fts(&fts, &store, &cfg.db_path);
             (store_ok, cfg.repo_root.clone())
         })
         .await;
@@ -457,8 +486,8 @@ impl LanguageServer for Backend {
         if let Some(CacheValue::WorkspaceSymbol(out)) = self.cache.get(&key) {
             return Ok(Some((*out).clone()));
         }
-        ensure_fts(&self.fts, &cfg.fts_dir);
         ensure_store(&self.store, &cfg.db_path);
+        ensure_fts(&self.fts, &self.store, &cfg.db_path);
         let fts_guard = self.fts.lock().unwrap();
         let store_guard = self.store.lock().unwrap();
         let store = match store_guard.as_ref() {
@@ -726,7 +755,7 @@ impl Backend {
 /// Pull `indexPath` out of the LSP `initialization_options` blob, if the
 /// client sent one. Accepts both `indexPath` and the snake_case
 /// `index_path` spelling so config copy/paste is forgiving. Returns the
-/// path to the `.crabcc` directory (containing `index.db` + `tantivy/`).
+/// path to the `.crabcc` directory (containing `index.db`).
 fn init_options_index_path(opts: Option<&serde_json::Value>) -> Option<PathBuf> {
     let obj = opts?.as_object()?;
     obj.get("indexPath")

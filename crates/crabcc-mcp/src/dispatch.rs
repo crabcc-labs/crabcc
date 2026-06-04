@@ -387,14 +387,14 @@ fn dispatch_tool_inner(
         }
         "fuzzy" => {
             let q = arg_str(&args, "query")?;
-            let fts = Fts::open(&root.join(".crabcc").join("tantivy"))?;
+            let fts = Fts::from_store(store)?;
             let r = fts.fuzzy(q, 20)?;
             memory::auto_capture(root, "fuzzy", q, r.len(), &args);
             Ok(serde_json::to_string(&r)?)
         }
         "prefix" => {
             let q = arg_str(&args, "query")?;
-            let fts = Fts::open(&root.join(".crabcc").join("tantivy"))?;
+            let fts = Fts::from_store(store)?;
             let r = fts.prefix(q, 20)?;
             memory::auto_capture(root, "prefix", q, r.len(), &args);
             Ok(serde_json::to_string(&r)?)
