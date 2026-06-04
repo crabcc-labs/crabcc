@@ -182,7 +182,8 @@ patch_runner_unit() {
     [ -z "$unit" ] && continue
     if grep -q "TMPDIR=${CACHE_BASE}/tmp" "$unit" \
        && grep -q "SCCACHE_CACHE_SIZE=" "$unit" \
-       && grep -q "CARGO_TARGET_DIR=" "$unit"; then
+       && grep -q "CARGO_TARGET_DIR=" "$unit" \
+       && grep -q "LimitNOFILE=" "$unit"; then
       echo "[runner] unit already patched: ${unit} — skipping"
       continue
     fi
@@ -198,9 +199,10 @@ patch_runner_unit() {
     # Insert the Environment= lines immediately before [Install] so they land
     # inside [Service]. awk preserves the rest of the unit verbatim.
     awk -v base="${CACHE_BASE}" -v tag="${tag}" '
-      # Strip any pre-existing cache-env lines so re-runs are idempotent
+      # Strip any pre-existing cache-env + limit lines so re-runs are idempotent
       # even when an older patch omitted some vars (e.g. CARGO_TARGET_DIR).
       /^Environment=(TMPDIR|CARGO_HOME|CARGO_TARGET_DIR|SCCACHE_DIR|SCCACHE_CACHE_SIZE|RUNNER_TOOL_CACHE)=/ { next }
+      /^(LimitNOFILE|LimitNPROC)=/ { next }
       /^\[Install\]/ {
         print "Environment=TMPDIR=" base "/tmp"
         print "Environment=CARGO_HOME=" base "/cargo"
@@ -208,6 +210,8 @@ patch_runner_unit() {
         print "Environment=SCCACHE_CACHE_SIZE=15G"
         print "Environment=RUNNER_TOOL_CACHE=" base "/tool-cache"
         print "Environment=CARGO_TARGET_DIR=" base "/target/" tag
+        print "LimitNOFILE=1048576"
+        print "LimitNPROC=unlimited"
         print ""
       }
       { print }
@@ -222,24 +226,26 @@ patch_runner_unit() {
   fi
 }
 
-# ── Docker log rotation ─────────────────────────────────────────────────
-# Without log limits, containers that emit continuous output fill
-# /var/lib/docker/containers/*/...log on the root filesystem unboundedly.
-# Caps each container at 10 MB × 3 files (~30 MB worst-case per container).
-# Idempotent: skips if the setting is already present.
-configure_docker_logging() {
+# ── Docker daemon config: log rotation + default shm size ────────────────
+# Log limits: without them, containers that emit continuous output fill
+# /var/lib/docker/containers/*/...log on the root fs unboundedly. Cap each at
+# 10 MB × 3 files (~30 MB worst-case per container).
+# default-shm-size: containers default to a tiny 64 MB /dev/shm, which is too
+# small for the testcontainers e2e suite (redis, etc.); bump to 2 GB.
+# Idempotent: re-applies if either setting is missing.
+configure_docker() {
   if ! command -v docker >/dev/null 2>&1; then
-    echo "[runner] docker not found — skipping log-rotation config"
+    echo "[runner] docker not found — skipping daemon config"
     return 0
   fi
   local cfg=/etc/docker/daemon.json
-  if [ -f "$cfg" ] && grep -q '"max-size"' "$cfg"; then
-    echo "[runner] docker log rotation already configured"
+  if [ -f "$cfg" ] && grep -q '"max-size"' "$cfg" && grep -q '"default-shm-size"' "$cfg"; then
+    echo "[runner] docker daemon already configured (logging + shm)"
     return 0
   fi
   if [ -f "$cfg" ]; then
     # Merge into existing daemon.json (requires jq, which we installed above).
-    jq '. + {"log-driver":"json-file","log-opts":{"max-size":"10m","max-file":"3"}}' \
+    jq '. + {"log-driver":"json-file","log-opts":{"max-size":"10m","max-file":"3"},"default-shm-size":"2G"}' \
       "$cfg" > "${cfg}.tmp" && mv "${cfg}.tmp" "$cfg"
   else
     mkdir -p /etc/docker
@@ -249,13 +255,33 @@ configure_docker_logging() {
   "log-opts": {
     "max-size": "10m",
     "max-file": "3"
-  }
+  },
+  "default-shm-size": "2G"
 }
 DOCKEREOF
   fi
-  echo "[runner] docker log rotation configured (10 MB × 3 files per container)"
+  echo "[runner] docker daemon configured (10 MB × 3 log files, 2 GB default shm)"
   # HUP reloads the config without restarting existing containers.
   systemctl reload docker 2>/dev/null || true
+}
+
+# ── Host /dev/shm sizing ─────────────────────────────────────────────────
+# Default /dev/shm is 50% of RAM; on the 8 GB runners that's ~4 GB, and heavy
+# parallel test/link steps (plus anything using POSIX shm) can exhaust it.
+# Pin it to 6 GB via fstab and remount live. tmpfs is swap-backed, so the size
+# is a ceiling, not a reservation — safe to set above the typical default.
+SHM_SIZE="${SHM_SIZE:-6g}"
+configure_shm() {
+  if grep -qE '^[^[:space:]]+[[:space:]]+/dev/shm[[:space:]]' /etc/fstab; then
+    # Update an existing entry's size= option in place.
+    sed -i -E "s|^([^[:space:]]+[[:space:]]+/dev/shm[[:space:]]+tmpfs[[:space:]]+)[^[:space:]]+|\1defaults,nosuid,nodev,size=${SHM_SIZE}|" /etc/fstab
+  else
+    echo "tmpfs /dev/shm tmpfs defaults,nosuid,nodev,size=${SHM_SIZE} 0 0" >> /etc/fstab
+  fi
+  # Remount live so the change takes effect without a reboot.
+  mount -o "remount,size=${SHM_SIZE}" /dev/shm 2>/dev/null \
+    || echo "[runner] WARN: live /dev/shm remount failed — applies on next boot"
+  echo "[runner] /dev/shm sized to ${SHM_SIZE} ($(df -h /dev/shm | awk 'NR==2{print $2}'))"
 }
 
 # ── Disk-watchdog timer (15 min, threshold-guarded) ──────────────────────
@@ -369,7 +395,8 @@ if [ "$GC_ONLY" = 1 ]; then
   # Patch the existing runner unit so TMPDIR/CARGO_HOME/etc. take effect
   # after the operator runs `sudo systemctl restart actions-runner`.
   patch_runner_unit
-  configure_docker_logging
+  configure_docker
+  configure_shm
   install_gc_timer
   install_disk_watch_timer
   exit 0
@@ -380,10 +407,15 @@ fi
 echo "[runner] installing apt packages for crabcc CI..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
+# Preinstall everything the CI jobs install at runtime so their per-job
+# `command -v X || apt-get install X` guards are all no-ops — no per-job apt
+# writes to the root fs (mold, ripgrep) and no ENOSPC at the setup step.
+# mold: ci.yml linker. ripgrep: shell_rewrite_e2e::find_swaps_to_ripgrep.
+# sqlite3 + zstd: index-publish.yml. Keep this in sync with the workflows.
 apt-get install -y --no-install-recommends \
   ca-certificates curl git jq python3 python3-venv \
   build-essential pkg-config libssl-dev clang mold \
-  sqlite3 zstd upx-ucl
+  sqlite3 zstd upx-ucl ripgrep
 
 # ── Cache volume ─────────────────────────────────────────────────────────
 # Must happen before the runner download so the tarball can land in the
@@ -440,6 +472,11 @@ WorkingDirectory=${INSTALL_DIR}
 ExecStart=${INSTALL_DIR}/run.sh
 Restart=always
 RestartSec=10
+# Raise the fd + process ceilings: big parallel rustc/link jobs plus sccache
+# (many concurrent open objects) blow past the systemd default of 1024 open
+# files. Inherited by every job step.
+LimitNOFILE=1048576
+LimitNPROC=unlimited
 Environment=HOME=${RUNNER_HOME}
 # Redirect all temp/cache I/O off the root filesystem.
 # TMPDIR is inherited by every child process, including dtolnay/rust-toolchain
@@ -464,6 +501,7 @@ systemctl enable --now actions-runner
 echo "[runner] installed — systemctl status actions-runner"
 systemctl --no-pager status actions-runner || true
 
-configure_docker_logging
+configure_docker
+configure_shm
 install_gc_timer
 install_disk_watch_timer

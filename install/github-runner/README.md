@@ -132,6 +132,23 @@ per-runner target dirs untouched for 7 days.
 > non-GHA / local runs. Both are wired; the GHA backend is what you see in the
 > per-job `sccache --show-stats` (`Cache location: ghac`).
 
+## Host tuning (preinstalled tools, fd limits, shm)
+
+`install.sh` also applies these host-level settings (and `--gc-only` re-applies
+them idempotently, so an existing fleet picks them up on the next run):
+
+- **Preinstalled CI tools.** The apt step installs everything the workflows
+  install at job time — `mold`, `ripgrep`, `sqlite3`, `zstd`, … — so the
+  per-job `command -v X || apt-get install X` guards are all no-ops. No per-job
+  `apt` writes to the root fs ⇒ no `apt`-time `No space left on device`. **Keep
+  this list in sync with `.github/workflows/*` whenever a job adds a tool.**
+- **File-descriptor / process limits.** The runner unit sets
+  `LimitNOFILE=1048576` and `LimitNPROC=unlimited` — the systemd default of
+  1024 open files is far too low for big parallel `rustc`/link jobs + sccache.
+- **`/dev/shm`.** Host shm is pinned to 6 GB (`SHM_SIZE=` overrides), and the
+  Docker daemon's `default-shm-size` is bumped from 64 MB to 2 GB for the
+  testcontainers e2e suite.
+
 ## Verify
 
 After provisioning, confirm the runner actually uses the volume:
