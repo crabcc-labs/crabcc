@@ -75,9 +75,12 @@ pub fn init(root: &Path, db: &Path) -> Result<GoReport> {
         // accessors that already exist on Store (avoid a fresh count(*)
         // round-trip per metric on a warm DB).
         let _ = crabcc_core::index::refresh(root, &store)?;
-        report.symbols = store.iter_all_symbols().map(|v| v.len()).unwrap_or(0);
-        report.edges = store.edge_count().map(|n| n as usize).unwrap_or(0);
-        report.files_indexed = store.list_files().map(|v| v.len()).unwrap_or(0);
+        report.symbols = store
+            .iter_all_symbols()
+            .map(|v| v.len())
+            .unwrap_or_default();
+        report.edges = store.edge_count().map(|n| n as usize).unwrap_or_default();
+        report.files_indexed = store.list_files().map(|v| v.len()).unwrap_or_default();
     }
 
     // Step 3 — Tantivy sidecar. Best-effort: a missing fuzzy index is
@@ -96,7 +99,7 @@ pub fn init(root: &Path, db: &Path) -> Result<GoReport> {
     // Step 5 — memory palace. Delegated to the crabcc-memory crate so
     // the same db semantics apply as `crabcc memory init`.
     let palace = crabcc_memory::Palace::open(root)?;
-    report.drawer_count = palace.count().unwrap_or(0);
+    report.drawer_count = palace.count().unwrap_or_default();
 
     Ok(report)
 }

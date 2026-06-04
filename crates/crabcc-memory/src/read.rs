@@ -110,7 +110,7 @@ pub fn compute(
     let is_fresh_hit = cached
         .as_ref()
         .map(|c| c.mtime_ns == mtime_ns && c.content_hash == content_hash)
-        .unwrap_or(false);
+        .unwrap_or_default();
 
     let resolved = match mode {
         ReadMode::Auto if is_fresh_hit => ReadMode::Stub,
@@ -124,7 +124,9 @@ pub fn compute(
     let payload = match resolved {
         ReadMode::Stub => {
             let syms = outline::outline(store, &outline_key).unwrap_or_default();
-            let bytes_returned = serde_json::to_string(&syms).map(|s| s.len()).unwrap_or(0);
+            let bytes_returned = serde_json::to_string(&syms)
+                .map(|s| s.len())
+                .unwrap_or_default();
             if let Some(sid) = session_id.as_deref() {
                 upsert_session_read(
                     &db_path,
@@ -237,7 +239,7 @@ fn mtime_ns(meta: &std::fs::Metadata) -> i64 {
         .ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
         .map(|d| d.as_nanos() as i64)
-        .unwrap_or(0)
+        .unwrap_or_default()
 }
 
 fn relative_to_root(path: &Path, root: &Path) -> String {
@@ -278,7 +280,7 @@ fn upsert_session_read(
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+        .unwrap_or_default();
     let conn = Connection::open(db).with_context(|| format!("open {}", db.display()))?;
     conn.execute(
         "INSERT INTO session_reads

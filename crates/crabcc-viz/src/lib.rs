@@ -471,7 +471,7 @@ fn otlp_health_probe() -> OtlpHealthSnapshot {
         };
         Some(TcpStream::connect_timeout(&addr.parse().ok()?, Duration::from_secs(2)).is_ok())
     })()
-    .unwrap_or(false);
+    .unwrap_or_default();
 
     OtlpHealthSnapshot {
         reachable: ok,
@@ -530,7 +530,7 @@ fn telemetry_tail(root: &Path, query: &str) -> Result<TelemetrySnapshot> {
     for pair in query.split('&').filter(|s| !s.is_empty()) {
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
         match k {
-            "since" => since = v.parse::<u64>().unwrap_or(0),
+            "since" => since = v.parse::<u64>().unwrap_or_default(),
             "limit" => {
                 limit = v
                     .parse::<usize>()
@@ -592,7 +592,7 @@ fn telemetry_tail(root: &Path, query: &str) -> Result<TelemetrySnapshot> {
             .get("timestamp")
             .and_then(|t| t.as_str())
             .map(parse_iso8601_unix)
-            .unwrap_or(0);
+            .unwrap_or_default();
         if ts < since {
             continue;
         }
@@ -604,7 +604,7 @@ fn telemetry_tail(root: &Path, query: &str) -> Result<TelemetrySnapshot> {
         let target = v
             .get("target")
             .and_then(|t| t.as_str())
-            .unwrap_or("")
+            .unwrap_or_default()
             .to_string();
         let fields = v
             .get("fields")
@@ -986,11 +986,11 @@ fn read_agent_meta(dir: &std::path::Path) -> ParsedMeta {
     let mut root: Option<String> = None;
     if let Ok(body) = std::fs::read_to_string(&meta_path) {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) {
-            started_ts = v["started_ts"].as_u64().unwrap_or(0);
+            started_ts = v["started_ts"].as_u64().unwrap_or_default();
             runtime_label = v["runtime"].as_str().unwrap_or("?").to_string();
             model = v["model"].as_str().map(|s| s.to_string());
-            prompt_preview = v["prompt_preview"].as_str().unwrap_or("").to_string();
-            prompt_chars = v["prompt_chars"].as_u64().unwrap_or(0) as usize;
+            prompt_preview = v["prompt_preview"].as_str().unwrap_or_default().to_string();
+            prompt_chars = v["prompt_chars"].as_u64().unwrap_or_default() as usize;
             root = v["root"].as_str().map(|s| s.to_string());
         }
     }
@@ -1001,7 +1001,7 @@ fn read_agent_meta(dir: &std::path::Path) -> ParsedMeta {
         // `RunDir::create`, before spawn); fall back to dir mtime.
         started_ts = mtime_secs(&dir.join("lock"))
             .or_else(|| mtime_secs(dir))
-            .unwrap_or(0);
+            .unwrap_or_default();
     }
     ParsedMeta {
         started_ts,
@@ -1056,7 +1056,9 @@ fn agents_list() -> Result<AgentsList> {
 
         let status = if lock.exists() { "running" } else { "exited" };
         let pid = read_agent_pid(&pid_path);
-        let log_bytes = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+        let log_bytes = std::fs::metadata(&log_path)
+            .map(|m| m.len())
+            .unwrap_or_default();
         let meta = read_agent_meta(&p);
         agents.push(AgentSummary {
             id,
@@ -1096,7 +1098,7 @@ fn agent_log(id: &str, query: &str) -> Result<AgentLog> {
     for pair in query.split('&').filter(|s| !s.is_empty()) {
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
         if k == "since" {
-            since = url_decode(v).parse().unwrap_or(0);
+            since = url_decode(v).parse().unwrap_or_default();
         }
     }
     let home = runtime::home_dir()?;
@@ -1104,7 +1106,9 @@ fn agent_log(id: &str, query: &str) -> Result<AgentLog> {
     if !log_path.exists() {
         anyhow::bail!("no such agent: {id}");
     }
-    let total = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+    let total = std::fs::metadata(&log_path)
+        .map(|m| m.len())
+        .unwrap_or_default();
     use std::io::{Read, Seek, SeekFrom};
     let mut f = std::fs::File::open(&log_path)?;
     if since > 0 && since < total {
@@ -1247,7 +1251,9 @@ fn agent_tail(id: &str, query: &str) -> Result<AgentTail> {
     if !log_path.exists() {
         anyhow::bail!("no such agent: {id}");
     }
-    let total = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+    let total = std::fs::metadata(&log_path)
+        .map(|m| m.len())
+        .unwrap_or_default();
     use std::io::{Read, Seek, SeekFrom};
     let mut f = std::fs::File::open(&log_path)?;
     // Read the last min(total, 64 KiB) bytes — enough for 20 lines of
@@ -1320,8 +1326,10 @@ fn agent_info(id: &str) -> Result<AgentInfo> {
 
     let status = if lock.exists() { "running" } else { "exited" };
     let pid = read_agent_pid(&pid_path);
-    let is_alive = pid.map(pid_alive).unwrap_or(false);
-    let log_bytes = std::fs::metadata(&log_path).map(|m| m.len()).unwrap_or(0);
+    let is_alive = pid.map(pid_alive).unwrap_or_default();
+    let log_bytes = std::fs::metadata(&log_path)
+        .map(|m| m.len())
+        .unwrap_or_default();
     let meta = read_agent_meta(&dir);
 
     Ok(AgentInfo {
@@ -1709,7 +1717,7 @@ fn debug_dump(root: &Path) -> Result<DebugDump> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .unwrap_or_default();
     let bootstrap = bootstrap_snapshot(root)?;
     let agents = agents_list()?;
     let since = now.saturating_sub(3600);
@@ -1792,7 +1800,7 @@ fn rand_usize() -> u64 {
         let ns = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0);
+            .unwrap_or_default();
         bytes.copy_from_slice(&ns.to_le_bytes());
     }
     u64::from_le_bytes(bytes)
@@ -2253,7 +2261,7 @@ fn memory_graph(root: &Path, query: &str) -> Result<KnowledgeSnapshot> {
 
     let drawer_count: i64 = conn
         .query_row("SELECT COUNT(*) FROM drawers", [], |r| r.get(0))
-        .unwrap_or(0);
+        .unwrap_or_default();
 
     Ok(KnowledgeSnapshot {
         stats: KnowledgeStats {
@@ -2269,7 +2277,7 @@ fn memory_graph(root: &Path, query: &str) -> Result<KnowledgeSnapshot> {
 fn first_line(body: &str) -> String {
     body.lines()
         .find(|l| !l.trim().is_empty())
-        .unwrap_or("")
+        .unwrap_or_default()
         .trim_start_matches(['#', ' '])
         .chars()
         .take(80)
@@ -2475,7 +2483,7 @@ fn memory_ingest(mut request: Request, root: &Path) -> Result<()> {
         let reader = request.as_reader();
         let mut buf = [0u8; 8 * 1024];
         loop {
-            let n = std::io::Read::read(reader, &mut buf).unwrap_or(0);
+            let n = std::io::Read::read(reader, &mut buf).unwrap_or_default();
             if n == 0 {
                 break;
             }
@@ -2635,7 +2643,7 @@ fn drawer_id_as_i64(id: crabcc_memory::DrawerId) -> i64 {
     let dbg = format!("{id:?}");
     dbg.trim_matches(|c: char| !c.is_ascii_digit())
         .parse::<i64>()
-        .unwrap_or(0)
+        .unwrap_or_default()
 }
 
 fn strip_urls(text: &str) -> String {

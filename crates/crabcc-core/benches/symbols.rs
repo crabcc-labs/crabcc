@@ -74,7 +74,7 @@ fn make_populated_store(n: usize) -> (TempDir, Store, PathBuf) {
                 .rsplit('_')
                 .next()
                 .and_then(|t| t.trim_end_matches(".rs").parse::<usize>().ok())
-                .unwrap_or(0);
+                .unwrap_or_default();
             m.entry(bucket).or_default().push(s);
         }
         m

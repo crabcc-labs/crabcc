@@ -93,7 +93,7 @@ impl LiteLlmSamplingHandler {
                 "LITELLM_MASTER_KEY env var not set",
             )
         })?;
-        let host_ram_gb = detect_host_ram_gb().unwrap_or(0);
+        let host_ram_gb = detect_host_ram_gb().unwrap_or_default();
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(600))
             .build()
@@ -134,7 +134,7 @@ impl LiteLlmSamplingHandler {
 impl SamplingHandler for LiteLlmSamplingHandler {
     fn handle(&self, request: SamplingRequest) -> Result<SamplingResponse, SamplingError> {
         // Depth gate first — reject before doing any work.
-        let depth = request.meta.as_ref().map(|m| m.sampling_depth).unwrap_or(0);
+        let depth = request.meta.as_ref().map(|m| m.sampling_depth).unwrap_or_default();
         if depth >= MAX_SAMPLING_DEPTH {
             return Err(SamplingError::new(
                 SamplingErrorKind::DepthExceeded,

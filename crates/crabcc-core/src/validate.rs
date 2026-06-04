@@ -146,7 +146,7 @@ pub fn reindex_file(store: &Store, rel: &str, src: &str) -> Result<(Vec<Symbol>,
     let mtime = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+        .unwrap_or_default();
     let fid = store.upsert_file(rel, &sha, mtime, lang)?;
     store.replace_symbols(fid, &syms)?;
     store.replace_edges(fid, &edges)?;

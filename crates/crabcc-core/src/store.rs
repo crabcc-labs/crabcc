@@ -148,7 +148,7 @@ impl Store {
             .query_row("SELECT EXISTS(SELECT 1 FROM files LIMIT 1)", [], |r| {
                 r.get::<_, bool>(0)
             })
-            .unwrap_or(false);
+            .unwrap_or_default();
         let schema_v4_built = conn
             .query_row(
                 "SELECT value FROM meta WHERE key = 'schema_v4_built'",
@@ -716,7 +716,7 @@ impl Store {
         // `signature_enc` is non-null with default 0; older databases that
         // somehow lack the column are migrated at open time. Treat read errors
         // as "not encoded" rather than failing the row.
-        let enc: i64 = row.get::<_, i64>(enc_idx).unwrap_or(0);
+        let enc: i64 = row.get::<_, i64>(enc_idx).unwrap_or_default();
 
         #[cfg(feature = "compress")]
         {
@@ -855,7 +855,7 @@ fn migrate_edges_without_rowid(conn: &Connection) -> Result<()> {
             [],
             |r| r.get(0),
         )
-        .unwrap_or(false);
+        .unwrap_or_default();
     if !has_id {
         return Ok(());
     }

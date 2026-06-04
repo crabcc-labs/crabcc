@@ -98,7 +98,7 @@ pub fn build_index(root: &Path, store: &Store) -> Result<IndexStats> {
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
+            .unwrap_or_default();
 
         let file_id = store.upsert_file(&rel, &sha, mtime, lang)?;
         store.replace_symbols(file_id, &symbols)?;
@@ -179,7 +179,7 @@ pub fn refresh_delta(root: &Path, store: &Store) -> Result<RefreshDelta> {
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
             .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
+            .unwrap_or_default();
 
         if let Some((stored_sha, stored_mtime)) = in_db.get(&rel) {
             if *stored_mtime == mtime {

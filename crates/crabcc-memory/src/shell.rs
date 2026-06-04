@@ -54,7 +54,7 @@ pub fn record_shell(
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+        .unwrap_or_default();
     let session_storage = session_id.unwrap_or(NULL_SESSION_SENTINEL);
     let conn = Connection::open(&db).with_context(|| format!("open {}", db.display()))?;
     conn.execute(
