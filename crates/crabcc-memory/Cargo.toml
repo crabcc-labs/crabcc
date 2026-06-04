@@ -12,10 +12,11 @@ default = ["compress", "memory-vec"]
 # graph) or at runtime by opening the backend without a sibling fsst.symbols
 # file present.
 compress = ["crabcc-core/compress"]
-# v2.5.1 (#17) — load the bundled sqlite-vec C extension at Backend::open
-# and create a `drawers_vec` virtual table for ANN search. Default OFF —
-# pulls in the sqlite-vec FFI dep + ~few hundred KB of compiled extension.
-# #20 wires the actual search path; until then the table stays empty.
+# v2.5.1 (#17) / #20 — load the bundled sqlite-vec C extension at
+# Backend::open, create + backfill `drawers_vec`, and route vector queries
+# through it instead of the brute-force cosine scan. Default ON (same as
+# the crate default). Disable with `--no-default-features` if you want a
+# pure-Rust build without the sqlite-vec C extension.
 memory-vec = ["dep:sqlite-vec"]
 # v2.5.x (#40) — std::simd-backed cosine helper. Default OFF because
 # `portable_simd` (rust-lang/rust#86656) is still nightly-only. Enable

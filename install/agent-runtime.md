@@ -1,14 +1,11 @@
-# `crabcc agent` runtime — design + v3.0 path
+# `crabcc agent` runtime — design
 
 `crabcc agent --run "<prompt>"` drives an LLM agent through one round of
 tool-use against the crabcc MCP surface. This document covers:
 
-1. The current (v2.5.x) runtime — host subprocess.
-2. The v3.0 plan (issue [#62](https://github.com/peterlodri-sec/crabcc/issues/62))
-   — microVM-isolated runtime via [microsandbox](https://github.com/superradcompany/microsandbox)
-   or an alternative.
-3. The trait seam that lets v3.0 land as one cargo-feature flip, not a rewrite.
-4. The threat model we're explicitly making (and not yet making).
+1. The current runtime — host subprocess.
+2. The trait seam that lets a future isolated runtime land without a rewrite.
+3. The threat model we're explicitly making (and not yet making).
 
 ## Today: subprocess runtime
 
@@ -58,13 +55,13 @@ user is the one writing the prompt and reviewing the output. It is
 - Repos containing secrets the agent shouldn't touch.
 - Workflows where the agent is expected to apply diffs without review.
 
-The v3.0 runtime addresses those cases.
+A future sandboxed runtime would address those cases.
 
-## v3.0: sandboxed runtime (issue #62)
+## Future: isolated runtime
 
-The agent gets wrapped in a microVM. The microVM mounts only the repo
-root (read-write) plus the MCP socket — no host filesystem, no host
-network, no host processes. Output is captured back over the same
+The agent would get wrapped in a microVM or container. The sandbox mounts
+only the repo root (read-write) plus the MCP socket — no host filesystem,
+no host network, no host processes. Output is captured back over the same
 socket / stdout pipe.
 
 ### Implementation seam
@@ -75,72 +72,23 @@ pub trait AgentRuntime {
     fn label(&self) -> &'static str;
 }
 
-pub struct SubprocessRuntime;          // today; default
-#[cfg(feature = "agent-sandbox")]
-pub struct SandboxRuntime;             // v3.0; cargo-feature gated
+pub struct SubprocessRuntime;   // current default
+// A future SandboxRuntime impl drops in here; the trait is the contract.
 ```
 
-The CLI dispatcher picks a runtime based on a future `--sandbox` flag
-(coming with v3.0). Today the flag doesn't exist; `SubprocessRuntime`
-is the only impl and is hardcoded in `agent::run`.
+The `AgentRuntime` trait decouples the dispatch logic from the backend.
+Whoever lands the isolation work should be free to pick any backend
+(Firecracker, Apple Virtualization.framework, runc+cgroups, etc.) without
+touching the agent command infrastructure.
 
-### Why a trait, not a config switch
-
-Two reasons:
-
-1. **The dep tree must not bloat for stable users.** microsandbox is
-   itself a microVM dispatcher with a non-trivial dep tree (libkrun,
-   OCI image management, hypervisor crates). Gating it behind a
-   cargo feature keeps `cargo install crabcc` lean.
-2. **v3.0 may not pick microsandbox.** Whoever lands #62 should be free
-   to swap in `cloud-hypervisor`, direct Firecracker FFI, or even
-   wasmtime if the analysis shifts. The `AgentRuntime` trait is the
-   contract; the chosen backend is an implementation detail.
-
-### Why microsandbox is the leading candidate (and the catch)
-
-**Pro:** sub-second cold-start (claimed `<100ms` in the README, though
-without per-platform numbers), libkrun-backed (smaller surface than
-QEMU+KVM), Apache-2.0, OCI image model, simple "spin up and run a
-command" API shape.
-
-**Con as of 2026-04:**
-
-- **Not on crates.io** (workspace version 0.4.2-beta) — git dep only.
-- Self-declared **beta**.
-- **Linux+KVM or macOS Apple Silicon only** — Windows + Intel Mac
-  unsupported, even though the repo carries a `windows` topic tag.
-- README claim of `<100ms` cold-start has no per-platform breakdown
-  (a `benchmarks/` dir exists in the repo but the numbers aren't
-  reproduced in user-facing docs).
-
-The verdict for v3.0 planning: **design behind the trait now, defer the
-backend decision until microsandbox publishes a stable crates.io
-release** (or until a comparable alternative — Firecracker direct,
-Apple's Virtualization.framework, runc + cgroups — looks better-fit).
-
-### Comparable backends to keep on the design table
+### Backend options
 
 | Option | Isolation | Cold-start | Cross-platform | Maturity |
 |---|---|---|---|---|
-| **microsandbox** | microVM (libkrun) | "<100 ms" claimed | macOS arm64 + Linux KVM | beta, no crates.io |
 | **Firecracker direct** | microVM | ~125 ms | Linux KVM only | stable, AWS-grade |
 | **Apple Virtualization.framework** | VM | ~500 ms | macOS only (10.15+) | stable, native |
 | **runc + cgroups + seccomp** | container | <50 ms | Linux only | stable, `youki` Rust crate |
-| **wasmtime / Wasmer** | WASM sandbox | <10 ms | universal | stable, but agent CLIs aren't WASM |
-| **macOS `sandbox-exec`** | profile-based | negligible | macOS only | stable, deprecated by Apple |
-
-Wasmtime gets ruled out because `claude` (and any future agent CLI we'd
-target) is not a WASM binary. Everything else is on the table.
-
-## Acceptance for issue #62
-
-| Criterion | Status |
-|---|---|
-| Spike: cold-start + one-shot `crabcc sym X` inside microsandbox | **deferred** — microsandbox not on crates.io as of 2026-04 |
-| Decide: feature-gated dep vs companion binary | **decided** — feature-gated dep behind `agent-sandbox`; trait keeps the door open for a binary later |
-| Document threat-model story | **this file** |
-| Confirm cross-platform | **partial** — macOS arm64 + Linux KVM look possible; Windows + Intel Mac are gaps regardless of backend |
+| **microsandbox** | microVM (libkrun) | "<100 ms" claimed | macOS arm64 + Linux KVM | not on crates.io as of 2026 |
 
 ## Trying it today
 
