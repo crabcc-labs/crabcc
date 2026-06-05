@@ -1,13 +1,31 @@
-# Adds node-optimized to nixpkgs: Node.js 24 (latest) compiled with ThinLTO.
+# node-optimized: Node.js 26 with:
+#   - aws-lc 1.69.0 replacing OpenSSL — hardware AES-GCM / ChaCha20 / ECDH on aarch64
+#   - ThinLTO across V8, libuv, and all C++ bindings
+#   - jemalloc — reduces allocator fragmentation under V8's GC pressure
+#   - small-icu — English-only ICU data; saves ~15 MB and speeds cold start
 #
-# V8 handles JS optimization at runtime (Sparkplug -> Maglev -> Turbofan);
-# ThinLTO here targets the C++ layer: V8 internals, libuv, OpenSSL bindings.
-#
-# Bump the base attribute when nixpkgs-unstable ships a newer LTS:
-#   base = prev.nodejs_28 or prev.nodejs_26 or prev.nodejs;
-final: prev: {
-  node-optimized = (prev.nodejs_26 or prev.nodejs_24).overrideAttrs (old: {
+# Bump nodejs_28 when it lands in nixpkgs-unstable.
+# To update aws-lc: nix eval nixpkgs#aws-lc.version --raw
+final: prev:
+let
+  base = (prev.nodejs_26 or prev.nodejs_24).override {
+    # aws-lc is API/ABI-compatible with OpenSSL for the Node.js bindings.
+    # On aarch64 it uses ARMv8 crypto extensions for AES-GCM and SHA.
+    openssl = prev.aws-lc;
+  };
+in {
+  node-optimized = base.overrideAttrs (old: {
     pname = "node-optimized";
+
+    # jemalloc linked into the node binary; reduces fragmentation in long-lived
+    # processes with V8's frequent small allocations.
+    buildInputs = (old.buildInputs or [ ]) ++ [ prev.jemalloc ];
+
+    configureFlags = old.configureFlags ++ [
+      "--with-jemalloc"
+      "--with-intl=small-icu" # replaces --with-intl=system-icu; English only
+    ];
+
     env = (old.env or { }) // {
       NIX_CFLAGS_COMPILE =
         ((old.env or { }).NIX_CFLAGS_COMPILE or "") + " -flto=thin";
