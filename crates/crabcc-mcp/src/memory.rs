@@ -460,19 +460,21 @@ pub fn env_auto_capture_enabled() -> bool {
 }
 
 /// Parse a user-supplied delay/timestamp into an absolute epoch value.
-/// Accepts: bare integer (epoch seconds), RFC3339 string, or human duration
-/// ("1h30m", "2d", "45m", "90s"). Returns None on invalid input.
+/// Parse the MCP `delay` field into an absolute epoch.
+/// Bare integers are relative seconds from now ("3600" → now + 1 h).
+/// RFC3339 strings and human durations ("1h30m", "2d") are also accepted.
+/// Absolute epoch integers belong in `due_at`, not here.
 fn parse_due_at(s: &str) -> Option<i64> {
-    if let Ok(n) = s.parse::<i64>() {
-        return Some(n);
-    }
-    if s.contains('T') || (s.len() >= 10 && s.as_bytes()[4] == b'-') {
-        return parse_rfc3339_to_epoch(s);
-    }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
+    if let Ok(n) = s.parse::<i64>() {
+        return Some(now + n);
+    }
+    if s.contains('T') || (s.len() >= 10 && s.as_bytes()[4] == b'-') {
+        return parse_rfc3339_to_epoch(s);
+    }
     let mut total: i64 = 0;
     let mut num = String::new();
     for ch in s.chars() {

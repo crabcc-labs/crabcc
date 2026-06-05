@@ -466,9 +466,9 @@ pub fn run(root: &Path, cmd: MemoryCmd) -> Result<()> {
             match action {
                 RemindCmd::Set { message, delay, at } => {
                     let due_at = if let Some(d) = delay {
-                        parse_remind_delay(&d)?
+                        parse_remind_delay(&d)?   // relative: bare int = now + N
                     } else if let Some(a) = at {
-                        parse_remind_delay(&a)?
+                        parse_remind_at(&a)?      // absolute: bare int = epoch
                     } else {
                         anyhow::bail!("specify either --in <delay> or --at <timestamp>");
                     };
@@ -566,20 +566,25 @@ pub fn env_auto_capture_enabled() -> bool {
     std::env::var("CRABCC_AUTO_MEMORY").ok().as_deref() == Some("1")
 }
 
-/// Parse a user-supplied delay/timestamp into an absolute epoch seconds value.
-/// Accepts: bare integer (epoch), RFC3339 string, or human duration ("1h30m").
+/// Parse a relative delay (`--in`) into an absolute epoch.
+/// Bare integers are seconds from now ("3600" → now + 1 h), not absolute epochs.
+/// Human durations ("1h30m", "2d", "45m", "90s") are also relative.
+/// RFC3339 strings are rejected — use `--at` for absolute timestamps.
 fn parse_remind_delay(s: &str) -> Result<i64> {
-    if let Ok(n) = s.parse::<i64>() {
-        return Ok(n);
-    }
     if s.contains('T') {
-        return time_parse_rfc3339(s)
-            .ok_or_else(|| anyhow!("invalid timestamp {s:?}; use epoch seconds or RFC3339"));
+        anyhow::bail!(
+            "--in expects a relative delay ('1h30m', '45m', '90s', or bare seconds); \
+             use --at for absolute timestamps"
+        );
     }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
+    // Bare integer → relative seconds from now.
+    if let Ok(n) = s.parse::<i64>() {
+        return Ok(now + n);
+    }
     let mut total: i64 = 0;
     let mut num = String::new();
     for ch in s.chars() {
@@ -600,9 +605,19 @@ fn parse_remind_delay(s: &str) -> Result<i64> {
         }
     }
     if !num.is_empty() || total == 0 {
-        anyhow::bail!("invalid delay {s:?}; use '1h30m', '2d', '45m', '90s'");
+        anyhow::bail!("invalid delay {s:?}; use '1h30m', '2d', '45m', '90s', or bare seconds");
     }
     Ok(now + total)
+}
+
+/// Parse an absolute timestamp (`--at`) into an epoch.
+/// Accepts epoch seconds (bare integer) or RFC3339 string.
+fn parse_remind_at(s: &str) -> Result<i64> {
+    if let Ok(n) = s.parse::<i64>() {
+        return Ok(n);
+    }
+    time_parse_rfc3339(s)
+        .ok_or_else(|| anyhow!("--at expects epoch seconds or RFC3339, got {s:?}"))
 }
 
 /// Per-agent hook config for wiring `memory.remind_poll` as a `send_later`
