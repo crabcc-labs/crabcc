@@ -228,7 +228,7 @@ def run_workload(binary: Path, scratch: Path, log, iterations: int = 3):
         shutil.rmtree(root / ".crabcc", ignore_errors=True)
         subprocess.run([str(binary), "index", "--root", str(root)],
                        check=False, stdout=log.file, stderr=subprocess.STDOUT)
-        subprocess.run([str(binary), "sym", "Store", "--root", str(root)],
+        subprocess.run([str(binary), "lookup", "sym", "Store", "--root", str(root)],
                        check=False, stdout=log.file, stderr=subprocess.STDOUT)
 
 
@@ -289,15 +289,43 @@ def build_leg(leg: Leg, work: Path, jobs: int, profdata_tool: str | None,
     return leg
 
 
+def bolt_runtime_lib() -> str | None:
+    """Locate libbolt_rt_instr.a — the static runtime BOLT links into an
+    `-instrument`ed binary. Distro `llvm-bolt` packages install it under
+    /usr/lib/llvm-NN/lib/, but BOLT derives a bare /usr/lib/ default and aborts
+    with "library not found" there, so we find the real path and pass it
+    explicitly via --runtime-instrumentation-lib."""
+    for cfg in ("llvm-config", "llvm-config-18", "llvm-config-17", "llvm-config-16"):
+        exe = shutil.which(cfg)
+        if not exe:
+            continue
+        try:
+            libdir = subprocess.check_output([exe, "--libdir"], text=True).strip()
+            cand = Path(libdir) / "libbolt_rt_instr.a"
+            if cand.exists():
+                return str(cand)
+        except Exception:  # noqa: BLE001
+            pass
+    candidates = [Path("/usr/lib/libbolt_rt_instr.a"),
+                  *sorted(Path("/usr/lib").glob("llvm-*/lib/libbolt_rt_instr.a"),
+                          reverse=True)]
+    for cand in candidates:
+        if cand.exists():
+            return str(cand)
+    return None
+
+
 def bolt_optimize(binary: Path, leg_dir: Path, log) -> Path:
     """Instrument → workload → optimize the ELF layout post-link."""
     inst = leg_dir / f"{BIN}.inst"
     fdata = leg_dir / "bolt.fdata"
-    subprocess.run(
-        ["llvm-bolt", str(binary), "-instrument",
-         f"-instrumentation-file={fdata}", "-instrumentation-file-append-pid",
-         "-o", str(inst)],
-        check=True, stdout=log.file, stderr=subprocess.STDOUT)
+    inst_cmd = ["llvm-bolt", str(binary), "-instrument",
+                f"-instrumentation-file={fdata}", "-instrumentation-file-append-pid",
+                "-o", str(inst)]
+    rt_lib = bolt_runtime_lib()
+    if rt_lib:
+        inst_cmd.append(f"--runtime-instrumentation-lib={rt_lib}")
+    subprocess.run(inst_cmd, check=True, stdout=log.file, stderr=subprocess.STDOUT)
     run_workload(inst, leg_dir, log, iterations=2)
     # merge-fdata across the per-pid drops.
     merged = leg_dir / "bolt.merged.fdata"
@@ -378,7 +406,7 @@ def measure_leg(leg: Leg, work: Path, pin: str | None, runs: int, log_print):
         subprocess.run([str(binary), "index", "--root", str(root)],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         qj = work / f"{leg.id}.query.json"
-        query_cmd = " ".join(pin_prefix + [shquote(str(binary)), "sym", "Store", "--root", shquote(str(root))])
+        query_cmd = " ".join(pin_prefix + [shquote(str(binary)), "lookup", "sym", "Store", "--root", shquote(str(root))])
         subprocess.run([
             "hyperfine", "--warmup", "3", "--runs", str(max(runs, 20)),
             "--export-json", str(qj), query_cmd,
@@ -708,7 +736,10 @@ def main() -> int:
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
 
     profdata = llvm_profdata()
-    bolt_ok = have("llvm-bolt") and have("merge-fdata")
+    # BOLT needs the tools *and* the static instrumentation runtime it links in;
+    # a distro llvm-bolt with no findable libbolt_rt_instr.a fails mid-instrument.
+    bolt_rt = bolt_runtime_lib()
+    bolt_ok = have("llvm-bolt") and have("merge-fdata") and bolt_rt is not None
     need_bolt = any(l.bolt for l in legs)
     need_pgo = any(l.pgo for l in legs)
     print(f"== bench-opt-bin == cores={cores} legs={n} pool={jobs} "
@@ -721,7 +752,9 @@ def main() -> int:
     if need_pgo and not profdata:
         print("   ! PGO legs will be skipped (install: rustup component add llvm-tools-preview)")
     if need_bolt and not bolt_ok:
-        print("   ! BOLT legs will be skipped (install: llvm-bolt + merge-fdata)")
+        why = ("llvm-bolt + merge-fdata" if not (have("llvm-bolt") and have("merge-fdata"))
+               else "libbolt_rt_instr.a runtime (install the matching llvm-bolt/bolt-NN package)")
+        print(f"   ! BOLT legs will be skipped (missing: {why})")
     # hyperfine + `size` produce the entire point of the run (timing + footprint).
     # Without them every leg's measurement fails and we'd emit an empty-looking
     # but "successful" report after an expensive build phase — abort up front
