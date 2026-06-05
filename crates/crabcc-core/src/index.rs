@@ -230,6 +230,42 @@ pub fn refresh(root: &Path, store: &Store) -> Result<RefreshStats> {
 /// Same logic as [`refresh`], but additionally returns the per-bucket
 /// file lists (`added` / `modified` / `removed`). New surface for agents
 /// that want to re-read only what changed.
+/// Result of `persist_file`: the file was indexed, or skipped for a reason.
+/// (Distinct from `FileOutcome`, which the parallel `build_index` path uses to
+/// carry extracted content back for sequential writes.)
+enum PersistOutcome {
+    Indexed,
+    Unreadable,
+    ParseError,
+}
+
+/// utf8-decode `bytes`, extract symbols/edges, and persist them (upsert file +
+/// replace symbols/edges). Returns whether the file was indexed or why it was
+/// skipped, so the "modified" and "new" arms of `refresh_delta` share this body
+/// and differ only in their stats/list bookkeeping. Callers must have already
+/// applied the `MAX_FILE_BYTES` size cap.
+fn persist_file(
+    store: &Store,
+    rel: &str,
+    lang: &str,
+    bytes: &[u8],
+    sha: &str,
+    mtime: i64,
+) -> Result<PersistOutcome> {
+    let src = match std::str::from_utf8(bytes) {
+        Ok(s) => s,
+        Err(_) => return Ok(PersistOutcome::Unreadable),
+    };
+    let (symbols, edges) = match extract::extract_file_with_edges(rel, src, lang) {
+        Ok(pair) => pair,
+        Err(_) => return Ok(PersistOutcome::ParseError),
+    };
+    let file_id = store.upsert_file(rel, sha, mtime, lang)?;
+    store.replace_symbols(file_id, &symbols)?;
+    store.replace_edges(file_id, &edges)?;
+    Ok(PersistOutcome::Indexed)
+}
+
 pub fn refresh_delta(root: &Path, store: &Store) -> Result<RefreshDelta> {
     let started = std::time::Instant::now();
     tracing::info!(target: "crabcc_core::index", path = %root.display(), "refresh_delta: start");
@@ -284,25 +320,14 @@ pub fn refresh_delta(root: &Path, store: &Store) -> Result<RefreshDelta> {
                 continue;
             }
             // Real content change — reindex.
-            let src = match std::str::from_utf8(&bytes) {
-                Ok(s) => s,
-                Err(_) => {
-                    delta.stats.skipped_unreadable += 1;
-                    continue;
+            match persist_file(store, &rel, lang, &bytes, &sha, mtime)? {
+                PersistOutcome::Indexed => {
+                    delta.stats.reindexed += 1;
+                    delta.modified.push(rel);
                 }
-            };
-            let (symbols, edges) = match extract::extract_file_with_edges(&rel, src, lang) {
-                Ok(pair) => pair,
-                Err(_) => {
-                    delta.stats.skipped_parse_error += 1;
-                    continue;
-                }
-            };
-            let file_id = store.upsert_file(&rel, &sha, mtime, lang)?;
-            store.replace_symbols(file_id, &symbols)?;
-            store.replace_edges(file_id, &edges)?;
-            delta.stats.reindexed += 1;
-            delta.modified.push(rel);
+                PersistOutcome::Unreadable => delta.stats.skipped_unreadable += 1,
+                PersistOutcome::ParseError => delta.stats.skipped_parse_error += 1,
+            }
         } else {
             // New file on disk.
             let bytes = match std::fs::read(&path) {
@@ -316,26 +341,15 @@ pub fn refresh_delta(root: &Path, store: &Store) -> Result<RefreshDelta> {
                 delta.stats.skipped_too_large += 1;
                 continue;
             }
-            let src = match std::str::from_utf8(&bytes) {
-                Ok(s) => s,
-                Err(_) => {
-                    delta.stats.skipped_unreadable += 1;
-                    continue;
-                }
-            };
-            let (symbols, edges) = match extract::extract_file_with_edges(&rel, src, lang) {
-                Ok(pair) => pair,
-                Err(_) => {
-                    delta.stats.skipped_parse_error += 1;
-                    continue;
-                }
-            };
             let sha = hash::sha256_hex(&bytes);
-            let file_id = store.upsert_file(&rel, &sha, mtime, lang)?;
-            store.replace_symbols(file_id, &symbols)?;
-            store.replace_edges(file_id, &edges)?;
-            delta.stats.new += 1;
-            delta.added.push(rel);
+            match persist_file(store, &rel, lang, &bytes, &sha, mtime)? {
+                PersistOutcome::Indexed => {
+                    delta.stats.new += 1;
+                    delta.added.push(rel);
+                }
+                PersistOutcome::Unreadable => delta.stats.skipped_unreadable += 1,
+                PersistOutcome::ParseError => delta.stats.skipped_parse_error += 1,
+            }
         }
     }
 

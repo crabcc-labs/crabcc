@@ -883,6 +883,41 @@ impl Store {
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
+
+    /// Batched [`find_by_name`]: one `WHERE name IN (…)` query for many names,
+    /// returning the union (order not preserved — callers that care should
+    /// sort). Lets the LSP `workspace/symbol` re-hydrate all its prefix hits in
+    /// a single query instead of one per hit.
+    pub fn find_by_names(&self, names: &[&str]) -> Result<Vec<Symbol>> {
+        if names.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = (0..names.len())
+            .map(|i| format!("?{}", i + 1))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT s.name, s.kind, s.signature, p.name AS parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
+             FROM symbols s
+             JOIN files f ON s.file_id = f.id
+             LEFT JOIN symbols p ON p.id = s.parent_id
+             WHERE s.name IN ({placeholders}) AND s.kind != 'sentinel'"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(names.iter().copied()), |row| {
+            Ok(Symbol {
+                name: row.get(0)?,
+                kind: kind_from_str(&row.get::<_, String>(1)?),
+                signature: self.signature_from_row(row, 2, 8)?,
+                parent: row.get(3)?,
+                file: row.get(4)?,
+                line_start: row.get(5)?,
+                line_end: row.get(6)?,
+                visibility: row.get(7)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
 }
 
 /// One row of `Store::callers_of` — caller-side hit shape, file-and-line plus
@@ -1285,6 +1320,33 @@ mod tests {
         let _fid = store.upsert_file("a.rs", "h", 0, "rust").unwrap();
         let hits = store.find_by_name("does_not_exist").unwrap();
         assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn find_by_names_batches_union_and_skips_unknown() {
+        let (_dir, store) = tmp_store();
+        let fid = store.upsert_file("a.ts", "h", 0, "typescript").unwrap();
+        store
+            .replace_symbols(
+                fid,
+                &[
+                    sym("alpha", SymbolKind::Function, None),
+                    sym("beta", SymbolKind::Function, None),
+                    sym("gamma", SymbolKind::Function, None),
+                ],
+            )
+            .unwrap();
+        // Batch returns the union; unknown names contribute nothing.
+        let mut got: Vec<String> = store
+            .find_by_names(&["alpha", "gamma", "nope"])
+            .unwrap()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        got.sort();
+        assert_eq!(got, vec!["alpha", "gamma"]);
+        // Equivalent to per-name find_by_name, just one query.
+        assert!(store.find_by_names(&[]).unwrap().is_empty());
     }
 
     // ────────────────────────────────────────────────────────────────────────

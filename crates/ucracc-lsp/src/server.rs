@@ -7,7 +7,7 @@ use crabcc_core::{
     fts::Fts,
     graph::CallGraph,
     hash, index,
-    query::{self, find_callers, find_symbol},
+    query::{self, find_callers, find_symbol, find_symbols},
     store::Store,
 };
 use dashmap::DashMap;
@@ -536,18 +536,21 @@ impl LanguageServer for Backend {
             Some(s) => s,
             None => return Ok(None),
         };
-        let mut syms = Vec::new();
-        if let Some(fts) = fts_guard.as_ref() {
-            for hit in fts.prefix(&q, 50).unwrap_or_default() {
-                // The Fts hit has name + file; re-hydrate via find_symbol
-                // to keep one wire shape across the surface.
-                if let Ok(mut found) = find_symbol(store, &hit.name) {
-                    syms.append(&mut found);
-                }
-            }
+        let mut syms = if let Some(fts) = fts_guard.as_ref() {
+            // Re-hydrate all prefix hits in ONE query (batched `find_symbols`)
+            // instead of an N+1 `find_symbol` per hit. Same wire shape; dedup
+            // below handles any fts/store overlap.
+            let names: Vec<String> = fts
+                .prefix(&q, 50)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|h| h.name)
+                .collect();
+            let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+            find_symbols(store, &name_refs).unwrap_or_default()
         } else {
-            syms = find_symbol(store, &q).unwrap_or_default();
-        }
+            find_symbol(store, &q).unwrap_or_default()
+        };
         // De-dup by (name, file, line) to avoid n-of-the-same when fts and store overlap.
         syms.sort_by(|a, b| {
             a.name
