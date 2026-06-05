@@ -2431,6 +2431,7 @@ fn run_serve(root: &Path, port: u16, bind: &str, no_open: bool, init: bool) -> R
         root: root.to_path_buf(),
         no_open,
         init,
+        open_path: None,
     })
 }
 

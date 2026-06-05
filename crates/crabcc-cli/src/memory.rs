@@ -125,6 +125,22 @@ pub enum MemoryCmd {
         #[arg(long, default_value = "cli-ingest")]
         source: String,
     },
+    /// Open the cross-repo memory browser in your browser. Starts the
+    /// `crabcc serve` viewer (binds 127.0.0.1:7878 by default) and lands on
+    /// the `/memory` page, which searches drawers across every indexed repo
+    /// under `$CRABCC_HOME/repos/`. Run it from any repo — same viewer, same
+    /// central memory. Blocks until Ctrl-C.
+    Ui {
+        /// TCP port to bind. 0 picks an ephemeral port.
+        #[arg(long, default_value_t = 7878)]
+        port: u16,
+        /// Bind address. Loopback-only by default; the viewer is unauthenticated.
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+        /// Start the server but don't auto-open a browser.
+        #[arg(long)]
+        no_open: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -248,8 +264,46 @@ fn time_parse_rfc3339(s: &str) -> Option<i64> {
 }
 
 pub fn run(root: &Path, cmd: MemoryCmd) -> Result<()> {
+    // `ui` launches the long-running viewer, which opens drawer stores
+    // itself — handle it before the per-command `Palace::open` so we don't
+    // hold an extra handle for the lifetime of the blocking server.
+    #[cfg(feature = "viz")]
+    if let MemoryCmd::Ui {
+        port,
+        bind,
+        no_open,
+    } = &cmd
+    {
+        let bind: std::net::IpAddr = bind
+            .parse()
+            .map_err(|e| anyhow!("invalid --bind address '{bind}': {e}"))?;
+        if !bind.is_loopback() {
+            eprintln!(
+                "warning: serving on {bind} (non-loopback). The viewer is \
+                 unauthenticated — only do this on a trusted network."
+            );
+        }
+        return crabcc_viz::serve(crabcc_viz::Config {
+            bind,
+            port: *port,
+            root: root.to_path_buf(),
+            no_open: *no_open,
+            init: true,
+            open_path: Some("/memory".to_string()),
+        });
+    }
+    #[cfg(not(feature = "viz"))]
+    if matches!(cmd, MemoryCmd::Ui { .. }) {
+        return Err(anyhow!(
+            "this crabcc was built without the `viz` feature. Re-install with \
+             `cargo install crabcc-cli --features viz` to enable `crabcc memory ui` \
+             (the dashboard / memory browser)."
+        ));
+    }
+
     let palace = Palace::open(root)?;
     match cmd {
+        MemoryCmd::Ui { .. } => unreachable!("memory ui handled before Palace::open"),
         MemoryCmd::Init => {
             // Palace::open already created/reused the file; emit a JSON ack.
             let body = serde_json::json!({"status": "ok", "root": root.display().to_string()});

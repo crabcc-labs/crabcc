@@ -445,6 +445,33 @@ paths:
                 type: object
                 additionalProperties: true
 
+  /api/memory/search:
+    get:
+      tags: [meta]
+      summary: Cross-repo aggregate substring search over crabcc-memory drawers.
+      description: Powers the /memory browser. Walks $CRABCC_HOME/repos/*/memory.db
+        and matches body/source_id, newest first. Pass repo=<key> to scope to one repo.
+      operationId: getMemorySearch
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - in: query
+          name: repo
+          schema: { type: string }
+      responses:
+        "200":
+          description: Aggregate hits (free-form for now; tracked opaquely
+            until the memory dashboard panel stabilises).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
   /api/events:
     get:
       tags: [stream]
