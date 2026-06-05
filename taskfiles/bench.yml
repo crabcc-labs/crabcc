@@ -237,3 +237,38 @@ tasks:
           {{.CARGO}} run -q --release -p crabcc-mcp --features bench --example agent_replay --
             --root "{{.ROOT}}" --bin {{.ROOT_DIR}}/target/release/crabcc --profile "$p";
         done
+
+  stress:
+    desc: |
+      Parallel stress + fuzz the crabcc CLI — hammers the subcommand surface
+      from many workers with valid + mutated args, flags panics/segfaults/hangs
+      as distinct from clean usage errors. Vars: WORKERS, WRITERS, DURATION, SEED.
+    deps: [build-fast]
+    cmds:
+      - 'test -f .crabcc/index.db || {{.ROOT_DIR}}/target/debug/crabcc index build >/dev/null'
+      - >-
+        python3 scripts/stress/stress.py
+        --workers {{.WORKERS | default 16}}
+        --writers {{.WRITERS | default 2}}
+        --duration {{.DURATION | default 30}}
+        {{if .SEED}}--seed {{.SEED}}{{end}}
+
+  stress-smoke:
+    desc: Fast read-only stress smoke (CI-friendly — no writers, fixed seed, deterministic).
+    deps: [build-fast]
+    cmds:
+      - 'test -f .crabcc/index.db || {{.ROOT_DIR}}/target/debug/crabcc index build >/dev/null'
+      - 'python3 scripts/stress/stress.py --workers 8 --iterations 500 --seed 1'
+
+  soak:
+    desc: |
+      Long-running realistic-mix soak of the crabcc CLI — tracks latency drift,
+      index.db/WAL growth, and fd leaks over time. Vars: SOAK (s), WORKERS, SEED.
+    deps: [build-fast]
+    cmds:
+      - 'test -f .crabcc/index.db || {{.ROOT_DIR}}/target/debug/crabcc index build >/dev/null'
+      - >-
+        python3 scripts/stress/stress.py
+        --soak {{.SOAK | default 600}}
+        --workers {{.WORKERS | default 12}}
+        {{if .SEED}}--seed {{.SEED}}{{end}}
