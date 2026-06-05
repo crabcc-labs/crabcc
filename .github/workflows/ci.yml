@@ -131,11 +131,11 @@ jobs:
       # Scoped crates are filtered through `cargo metadata --no-deps`
       # so we never emit `-p <name>` for crates that live under
       # `crates/` but are deliberately excluded from the parent
-      # workspace (e.g. crabcc-desktop carries its own gpui/zed
-      # toolchain and a private Cargo.lock — see its Cargo.toml header
-      # for the rationale). Without this filter `cargo clippy -p
-      # crabcc-desktop` from the workspace root errors with "package
-      # ID specification did not match any packages".
+      # workspace (e.g. crabcc-viz carries its own Cargo.lock and is
+      # built standalone — see its Cargo.toml header for the
+      # rationale). Without this filter `cargo clippy -p crabcc-viz`
+      # from the workspace root errors with "package ID specification
+      # did not match any packages".
       - name: detect changed scope
         id: scope
         shell: bash
@@ -241,7 +241,7 @@ jobs:
       #   - PR with no crate changes (docs/CI only) → skip nextest entirely.
       # Same workspace-member filter as the lint job — see comment there
       # for rationale. crates/ paths that aren't workspace members
-      # (e.g. crabcc-desktop) are dropped before nextest sees them.
+      # (e.g. crabcc-viz) are dropped before nextest sees them.
       - name: detect changed crates
         id: scope
         shell: bash

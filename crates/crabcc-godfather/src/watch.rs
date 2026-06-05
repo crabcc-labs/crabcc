@@ -24,7 +24,7 @@ use crate::godfather::Godfather;
 
 #[derive(Debug, Clone)]
 pub struct WatchConfig {
-    /// Most callers pass a static literal (`"crabcc"`, `"desktop"`,
+    /// Most callers pass a static literal (`"crabcc"`, `"viz"`,
     /// etc.). `Cow<'static, str>` keeps the literal-call path
     /// allocation-free while still letting tests / dynamic callers
     /// pass an owned `String` via `Cow::Owned(...)` or `.into()`

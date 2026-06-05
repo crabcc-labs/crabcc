@@ -77,7 +77,7 @@ pub struct Event {
     pub ts: u64,
     pub session_id: Option<String>,
     pub severity: Severity,
-    /// Crate / surface name — `viz` / `desktop` / `agent` / `cli` /
+    /// Crate / surface name — `viz` / `agent` / `cli` /
     /// `godfather` itself for heartbeats and supervisor lifecycle.
     pub source: String,
     /// Sub-classifier used for filtering — `heartbeat` / `crash` /

@@ -162,7 +162,7 @@ crates/
 
 bench/                    # raw-bench.py (vs grep/find), compress-bench.py (FSST gate)
 docs/                     # In-tree docs (no longer a submodule). RUST-ANTHOLOGY.md,
-                          # PROCESS-SPAWNING.md, desktop/{ARCHITECTURE,DESIGN-BRIEF}.md,
+                          # PROCESS-SPAWNING.md,
                           # RESEARCH-tts-voice-control-*.md. Per-crate deep-dives live
                           # under crates/*/docs/ (e.g. crabcc-core/docs/HOW_IT_WORKS.md).
 

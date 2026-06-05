@@ -158,8 +158,6 @@ respect" for the full list.
    - [`crates/crabcc-core/docs/HOW_IT_WORKS.md`](./crates/crabcc-core/docs/HOW_IT_WORKS.md) — library + internals reference (extractor, parser pool, schema).
    - [`crates/ucracc-lsp/docs/HOW_IT_WORKS.md`](./crates/ucracc-lsp/docs/HOW_IT_WORKS.md) — LSP user + developer reference.
 3. Repo-root `docs/` is in-tree (not a submodule anymore — see commit history). Notable contents:
-   - [`docs/desktop/ARCHITECTURE.md`](./docs/desktop/ARCHITECTURE.md) and [`DESIGN-BRIEF.md`](./docs/desktop/DESIGN-BRIEF.md) — `crabcc-desktop` design + architecture.
    - [`docs/RUST-ANTHOLOGY.md`](./docs/RUST-ANTHOLOGY.md) — Rust patterns reference.
    - [`docs/PROCESS-SPAWNING.md`](./docs/PROCESS-SPAWNING.md) — agent process management notes.
    - `docs/RESEARCH-tts-voice-control-*.md` — TTS dossiers (foss / 2026 candidates).
-   - `docs/desktop/design-refs/` — UI mockup PNGs (~2.6 MB, reference material for the desktop redesign).

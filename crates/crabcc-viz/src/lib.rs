@@ -1321,7 +1321,7 @@ fn agents_launch(mut request: Request, root: &Path) -> Result<()> {
     if let Some(p) = &req.profile {
         // Server-emitted profile ids are bare filenames; the CLI flag
         // wants the `internal/<id>` namespace prefix. Pre-pend here
-        // so desktop / web clients don't need to know the namespace.
+        // so web clients don't need to know the namespace.
         cmd.arg("--profile").arg(format!("internal/{p}"));
     }
     if req.no_refresh {
