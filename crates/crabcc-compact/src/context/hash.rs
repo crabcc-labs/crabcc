@@ -1,9 +1,15 @@
 use ahash::AHashSet;
 
+#[allow(dead_code)]
 pub struct SessionCache {
     seen: AHashSet<u64>,
 }
 
+impl Default for SessionCache {
+    fn default() -> Self { Self::new() }
+}
+
+#[allow(dead_code)]
 impl SessionCache {
     pub fn new() -> Self {
         Self { seen: AHashSet::new() }
@@ -18,6 +24,7 @@ impl SessionCache {
     }
 }
 
+#[allow(dead_code)]
 fn hash(text: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = ahash::AHasher::default();

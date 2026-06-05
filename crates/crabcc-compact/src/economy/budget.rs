@@ -15,6 +15,7 @@ impl Budget {
         self.total_compressed += compressed;
     }
 
+    #[allow(dead_code)]
     pub fn record_dedup(&mut self, size: usize) {
         self.dedup_hits += 1;
         self.total_original += size;

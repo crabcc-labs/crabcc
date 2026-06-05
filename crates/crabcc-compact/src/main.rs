@@ -320,4 +320,10 @@ fn cmd_uninstall(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-fn run_mcp(_args: &[String]) -> Result<()> { println!("mcp: not yet implemented"); Ok(()) }
+fn run_mcp(args: &[String]) -> Result<()> {
+    let port: u16 = args.iter()
+        .find_map(|a| a.strip_prefix("--port=").and_then(|p| p.parse().ok()))
+        .unwrap_or(3456);
+    mcp::server::run(port)?;
+    Ok(())
+}

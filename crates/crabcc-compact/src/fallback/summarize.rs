@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 pub fn extract_errors(text: &str) -> String {
     let error_patterns = ["error", "Error", "ERROR", "warning", "Warning", "WARN",
                           "panic", "PANIC", "failed", "FAILED", "exception", "Exception"];

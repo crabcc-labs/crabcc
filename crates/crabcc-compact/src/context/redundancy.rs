@@ -1,5 +1,6 @@
 use ahash::AHashSet;
 
+#[allow(dead_code)]
 pub fn jaccard_trigrams(a: &str, b: &str) -> f32 {
     let ta = trigrams(a);
     let tb = trigrams(b);
@@ -12,6 +13,7 @@ pub fn jaccard_trigrams(a: &str, b: &str) -> f32 {
     intersection as f32 / union as f32
 }
 
+#[allow(dead_code)]
 fn trigrams(s: &str) -> AHashSet<[u8; 3]> {
     let bytes = s.as_bytes();
     if bytes.len() < 3 {
@@ -20,11 +22,13 @@ fn trigrams(s: &str) -> AHashSet<[u8; 3]> {
     bytes.windows(3).map(|w| [w[0], w[1], w[2]]).collect()
 }
 
+#[allow(dead_code)]
 pub struct NearDupCache {
     recent: std::collections::VecDeque<String>,
     capacity: usize,
 }
 
+#[allow(dead_code)]
 impl NearDupCache {
     pub fn new(capacity: usize) -> Self {
         Self { recent: std::collections::VecDeque::with_capacity(capacity), capacity }
