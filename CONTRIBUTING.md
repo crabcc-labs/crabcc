@@ -56,7 +56,7 @@ the setting never runs plugin code without that consent. To opt out locally, set
    ```
    feat(viz): add About view to /live
    fix(memory): drawer search panics on empty FTS5 result
-   perf(desktop): box AppEvent telemetry variant
+   perf(core): box AppEvent telemetry variant
    ```
 4. **Run `task ci` before pushing.** Same gate as CI.
 5. **Open a PR** against `main`. The [PR template](.github/pull_request_template.md) asks for a Summary, What's in, Test plan, and a `Closes #N` link.

@@ -18,7 +18,6 @@ This repo holds research briefs, design notes, and long-form docs that don't shi
 |------|--------|
 | [`RESEARCH-tts-voice-control-2026.md`](RESEARCH-tts-voice-control-2026.md) | Cloud-augmented + OSS comparison: near-instant TTS, full-duplex voice control, recommended stacks. |
 | [`RESEARCH-tts-voice-control-foss-ios-2026.md`](RESEARCH-tts-voice-control-foss-ios-2026.md) | FOSS-only sibling brief. iPhone↔Mac on-device, no cloud, no API keys, WiFi/Tailscale only. |
-| [`desktop/ARCHITECTURE.md`](desktop/ARCHITECTURE.md) | Desktop dashboard notes |
 | [`RUST-ANTHOLOGY.md`](RUST-ANTHOLOGY.md) | Rust patterns used in the codebase |
 
 ## How this repo is consumed

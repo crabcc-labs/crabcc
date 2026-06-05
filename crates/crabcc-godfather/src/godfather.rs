@@ -1,5 +1,5 @@
-//! `Godfather` — the main facade. Embedded callers (cli / desktop /
-//! viz) construct one at startup, record their session, drop it on
+//! `Godfather` — the main facade. Embedded callers (cli / viz)
+//! construct one at startup, record their session, drop it on
 //! exit. Everything's a thin wrapper around the per-table modules.
 //!
 //! ## Privacy opt-out

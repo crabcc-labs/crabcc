@@ -27,7 +27,13 @@
     color: var(--fg); font: inherit;
   }
   #q:focus { outline: none; border-color: var(--cyan); }
+  select {
+    padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--panel); color: var(--fg); font: inherit; cursor: pointer;
+  }
+  select:focus { outline: none; border-color: var(--cyan); }
   #status { color: var(--muted); white-space: nowrap; font-size: 12px; }
+  .score { color: var(--muted); font-size: 11px; }
   main { display: grid; grid-template-columns: minmax(280px, 420px) 1fr; height: calc(100vh - 58px); }
   @media (max-width: 720px) { main { grid-template-columns: 1fr; } #detail { display: none; } }
   #list { overflow-y: auto; border-right: 1px solid var(--border); }
@@ -59,6 +65,14 @@
 <header>
   <span class="logo">crab<b>cc</b> · memory</span>
   <input id="q" type="search" placeholder="Search drawers across every repo…" autofocus autocomplete="off" />
+  <select id="repo" title="Filter by repository">
+    <option value="">All repos</option>
+  </select>
+  <select id="mode" title="Ranking mode">
+    <option value="hybrid">Hybrid</option>
+    <option value="lexical">Lexical</option>
+    <option value="vector">Vector</option>
+  </select>
   <span id="status">—</span>
 </header>
 <main>
@@ -67,11 +81,14 @@
 </main>
 <script>
   const $q = document.getElementById("q");
+  const $repo = document.getElementById("repo");
+  const $mode = document.getElementById("mode");
   const $list = document.getElementById("list");
   const $detail = document.getElementById("detail");
   const $status = document.getElementById("status");
   let seq = 0;          // drop out-of-order responses from fast typing
   let selected = null;
+  let knownRepos = "";  // serialized repo list, to avoid rebuilding the dropdown
 
   const esc = (s) => (s ?? "").replace(/[&<>"]/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -80,8 +97,10 @@
   async function search() {
     const mine = ++seq;
     const q = $q.value.trim();
+    const params = new URLSearchParams({ limit: "100", q, mode: $mode.value });
+    if ($repo.value) params.set("repo", $repo.value);
     try {
-      const r = await fetch(`/api/memory/search?limit=100&q=${encodeURIComponent(q)}`);
+      const r = await fetch(`/api/memory/search?${params}`);
       if (mine !== seq) return;             // a newer query already fired
       const data = await r.json();
       render(data);
@@ -90,10 +109,23 @@
     }
   }
 
+  // Rebuild the repo dropdown only when the set of repos changes, so a
+  // re-search doesn't reset the user's selection mid-interaction.
+  function syncRepos(repos) {
+    const key = (repos || []).join("");
+    if (key === knownRepos) return;
+    knownRepos = key;
+    const current = $repo.value;
+    $repo.innerHTML = `<option value="">All repos</option>` +
+      (repos || []).map((r) => `<option value="${esc(r)}">${esc(r)}</option>`).join("");
+    $repo.value = current;                  // preserve selection if still present
+  }
+
   function render(data) {
     const hits = data.hits || [];
+    syncRepos(data.repos);
     $status.textContent =
-      `${data.queried_repos} repo${data.queried_repos === 1 ? "" : "s"} · ` +
+      `${data.mode} · ${data.queried_repos} repo${data.queried_repos === 1 ? "" : "s"} · ` +
       `${data.total} hit${data.total === 1 ? "" : "s"}` + (data.truncated ? " (capped)" : "");
     if (!hits.length) {
       $list.innerHTML = `<div class="empty">No drawers match.</div>`;
@@ -107,6 +139,7 @@
         `<div class="meta">` +
           `<span class="badge">${esc(h.repo)}</span>` +
           `<span class="badge wing">${esc(h.wing)}${h.room ? "/" + esc(h.room) : ""}</span>` +
+          (h.score ? `<span class="score">${h.score.toFixed(3)}</span>` : "") +
           `<time>${esc(when(h.created_at))}</time>` +
         `</div>` +
         `<div class="src">${esc(h.source_id)}</div>` +
@@ -136,6 +169,8 @@
 
   let t;
   $q.addEventListener("input", () => { clearTimeout(t); t = setTimeout(search, 180); });
+  $repo.addEventListener("change", search);
+  $mode.addEventListener("change", search);
   search();   // initial: recent drawers
 </script>
 </body>

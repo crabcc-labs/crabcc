@@ -462,9 +462,13 @@ paths:
         - in: query
           name: repo
           schema: { type: string }
+        - in: query
+          name: mode
+          description: Ranking mode. Empty query always lists newest-first.
+          schema: { type: string, enum: [hybrid, lexical, vector], default: hybrid }
       responses:
         "200":
-          description: Aggregate hits (free-form for now; tracked opaquely
+          description: Aggregate ranked hits (free-form for now; tracked opaquely
             until the memory dashboard panel stabilises).
           content:
             application/json:

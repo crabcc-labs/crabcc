@@ -1,7 +1,7 @@
 <!--
 Title convention: <type>(<scope>): <summary>
   type:  feat | fix | perf | refactor | docs | test | ci | chore | deps | epic | rfc
-  scope: cli, viz, agents, memory, mcp, desktop, macos-app, telegram, mobile,
+  scope: cli, viz, agents, memory, mcp, macos-app, telegram, mobile,
          extension, cua, tts, events, netlog, security, service-discovery, jobs, docs
 -->
 
