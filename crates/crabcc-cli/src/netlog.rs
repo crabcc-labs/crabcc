@@ -306,6 +306,63 @@ mod tests {
         }
     }
 
+    #[derive(serde::Deserialize)]
+    struct ReplayRec {
+        host: String,
+        /// Expected allowlist verdict (mirrors the real netlog `ok` field).
+        ok: bool,
+    }
+
+    /// #160 Phase 2 acceptance gate: replay a synthetic captured egress log
+    /// through the enforcer (deny mode + seeded allowlist) and assert every
+    /// verdict — real infra hosts pass, unknown hosts (incl. the cloud-metadata
+    /// SSRF IP and a suffix-boundary spoof) are blocked. `task netlog-replay`
+    /// runs exactly this; it also rides along in `cargo test --workspace`.
+    #[test]
+    fn replay_fixture_enforces_allowlist() {
+        let seed = Allowlist::seed();
+        let fixture = include_str!("netlog_replay.jsonl");
+        let (mut allowed, mut denied) = (0u32, 0u32);
+        for (i, line) in fixture.lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let rec: ReplayRec = serde_json::from_str(line)
+                .unwrap_or_else(|e| panic!("fixture line {}: bad JSON ({e}): {line}", i + 1));
+            // IPv6 literals need bracketing to parse as a URL authority.
+            let url = if rec.host.contains(':') && !rec.host.starts_with('[') {
+                format!("https://[{}]/", rec.host)
+            } else {
+                format!("https://{}/", rec.host)
+            };
+            let verdict = guard_with("replay", &url, Mode::Deny, seed).is_ok();
+            assert_eq!(
+                verdict,
+                rec.ok,
+                "fixture line {}: host `{}` expected allow={} but enforcer said allow={}",
+                i + 1,
+                rec.host,
+                rec.ok,
+                verdict
+            );
+            if rec.ok {
+                allowed += 1;
+            } else {
+                denied += 1;
+            }
+        }
+        // The gate is only meaningful if it exercises both outcomes.
+        assert!(
+            allowed >= 10,
+            "fixture should confirm many real infra hosts (got {allowed})"
+        );
+        assert!(
+            denied >= 3,
+            "fixture must prove unknown hosts are blocked (got {denied})"
+        );
+    }
+
     #[test]
     fn host_extraction() {
         assert_eq!(
