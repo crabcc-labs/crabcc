@@ -12,7 +12,7 @@
 #   semi-space  — 1 GB per semi-space (2 GB young gen); reduces premature
 #                 promotion and Old-Space GC frequency on high-alloc workloads.
 #                 Baked via NODE_OPTIONS; override at runtime if needed.
-#   shared deps — system libuv + zlib; smaller binary, OS-managed updates
+#   shared deps — libuv, zlib, c-ares, nghttp2, brotli; smaller binary, OS-managed updates
 #   PGO         — NOTE: not applied here. Node.js PGO requires two separate
 #                 configure+build phases (--enable-pgo-generate then
 #                 --enable-pgo-use). That needs a custom buildPhase and a
@@ -43,10 +43,12 @@ in {
     ];
 
     buildInputs = (old.buildInputs or [ ]) ++ [
-      prev.jemalloc # --with-jemalloc
-      prev.libuv    # --shared-libuv
-      # zlib already in stdenv; listed explicitly for clarity
-      prev.zlib
+      prev.jemalloc  # --with-jemalloc
+      prev.libuv     # --shared-libuv
+      prev.zlib      # --shared-zlib
+      prev.c-ares    # --shared-cares   (async DNS resolution)
+      prev.nghttp2   # --shared-nghttp2 (HTTP/2)
+      prev.brotli    # --shared-brotli  (Brotli compression)
     ];
 
     configureFlags =
@@ -57,6 +59,9 @@ in {
         "--with-intl=small-icu"
         "--shared-libuv"
         "--shared-zlib"
+        "--shared-cares"
+        "--shared-nghttp2"
+        "--shared-brotli"
 
         # V8 tweaks
         "--v8-enable-hugepage"
