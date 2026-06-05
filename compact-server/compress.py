@@ -1,7 +1,7 @@
 from __future__ import annotations
 import functools
 
-_MODEL_NAME = "microsoft/llmlingua-2-xlm-roberta-large-for-general-compression"
+_MODEL_NAME = "microsoft/llmlingua-2-xlm-roberta-large-meetingbank"
 
 @functools.lru_cache(maxsize=1)
 def _compressor():
