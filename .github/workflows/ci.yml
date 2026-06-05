@@ -271,16 +271,6 @@ jobs:
           cache-on-failure: "true"
           cache-all-crates: "true"
 
-      - name: install cargo-nextest (JUnit reporter)
-        run: |
-          # Use the cached binary if present; compile from source otherwise.
-          # taiki-e/install-action@v2 was consistently failing on this runner
-          # (exit 1 in <100ms before any output) — cargo install is slower but
-          # always works from the registry without hitting GitHub Releases.
-          if ! cargo nextest --version &>/dev/null 2>&1; then
-            cargo install cargo-nextest --locked
-          fi
-
       # Scope policy:
       #   - push to main → full workspace (covers any cross-crate fallout)
       #   - PR → only the crates touched by the diff. Faster feedback, and
@@ -289,6 +279,12 @@ jobs:
       # Same workspace-member filter as the lint job — see comment there
       # for rationale. crates/ paths that aren't workspace members
       # (e.g. crabcc-viz) are dropped before nextest sees them.
+      #
+      # Runs BEFORE `install cargo-nextest` so we can skip the multi-hundred-
+      # MB nextest compile entirely for docs/CI-only PRs (where scope is
+      # empty and nextest never runs). On a disk-pressured Hetzner runner
+      # the install can OOM-kill / saturate / hang the job; for any PR
+      # whose nextest step would skip anyway, just don't install it.
       - name: detect changed crates
         id: scope
         shell: bash
@@ -324,6 +320,20 @@ jobs:
           else
             echo "scope=--workspace" >> "$GITHUB_OUTPUT"
             echo "smoke=1" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: install cargo-nextest (JUnit reporter)
+        # Skip the install entirely when scope is empty -- a docs/CI-only PR
+        # never runs nextest, no need to pay the compile cost (or risk the
+        # runner-disk wedge described above).
+        if: steps.scope.outputs.scope != ''
+        run: |
+          # Use the cached binary if present; compile from source otherwise.
+          # taiki-e/install-action@v2 was consistently failing on this runner
+          # (exit 1 in <100ms before any output) — cargo install is slower but
+          # always works from the registry without hitting GitHub Releases.
+          if ! cargo nextest --version &>/dev/null 2>&1; then
+            cargo install cargo-nextest --locked
           fi
 
       - name: cargo nextest (scoped)
