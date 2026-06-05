@@ -268,8 +268,22 @@ facade lives at `crates/crabcc-memory/src/palace.rs`.
 - **Bench fixtures:** mc-mothership at `/Users/peter.lodri/workspace/mc-mothership`
   (NOT inside this repo; never copy or commit it). Pass via `--repo` arg or
   `REPO_FIXTURE` env var.
-- **Skill + slash command:** `skill/crabcc/SKILL.md` and `commands/crabcc-init.md`.
-  Symlink with `crabcc install-claude`.
+- **Skills:** `skill/crabcc/SKILL.md` (+ slash command `commands/crabcc-init.md`,
+  symlink with `crabcc install-claude`), `skill/stop-slop/SKILL.md` (prose
+  hygiene — see "Prose hygiene" below), plus the on-demand audit skills
+  (`skill/warp-speed-audit`, `skill/rust-logging-audit`, `skill/crabcc-taskfile`).
+
+## Prose hygiene — stop-slop (all agents)
+
+Every agent working in this repo applies the **stop-slop** skill
+([`skill/stop-slop/SKILL.md`](skill/stop-slop/SKILL.md)) to prose it writes —
+commit messages, PR descriptions, issue comments, docs, changelog entries.
+Drop throat-clearing openers, adverbs, em-dashes, passive voice, binary
+"not X, it's Y" contrasts, and vague declaratives; name the actor and state
+the point. It is vendored from
+<https://github.com/hardikpandya/stop-slop> (MIT — see
+[`skill/stop-slop/PROVENANCE.md`](skill/stop-slop/PROVENANCE.md)). It does not
+touch code identifiers or quoted output.
 
 ## When unsure
 
