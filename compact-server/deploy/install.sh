@@ -8,7 +8,7 @@ PORT="${COMPACT_PORT:-8080}"
 # Leave unset to use system Python via uv.
 NIXERY_REGISTRY="${NIXERY_REGISTRY:-}"
 # Image path components for the Python runtime (Nixery builds the image on demand).
-NIXERY_PYTHON_IMAGE="${NIXERY_PYTHON_IMAGE:-python314t/uv}"
+NIXERY_PYTHON_IMAGE="${NIXERY_PYTHON_IMAGE:-python315t-optimized/uv}"
 
 echo "Installing compact-server to $INSTALL_DIR"
 mkdir -p "$INSTALL_DIR"
@@ -42,15 +42,27 @@ else
     echo "Installing dependencies with uv..."
     uv --directory "$INSTALL_DIR" sync
 
+    echo "Building crabcc-compact-serve ..."
+    REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+    cargo build --release -p crabcc-compact-serve \
+        --manifest-path "$REPO_ROOT/Cargo.toml"
+    cp "$REPO_ROOT/target/release/crabcc-compact-serve" "$INSTALL_DIR/"
+
     echo "Pre-downloading LLMLingua-2 model (~500MB on first run)..."
     uv --directory "$INSTALL_DIR" run python -c "
 from llmlingua import PromptCompressor
 PromptCompressor('microsoft/llmlingua-2-xlm-roberta-large-meetingbank', use_llmlingua2=True, device_map='cpu')
 print('LLMLingua-2 ready')
 "
+    # Bake the venv site-packages path so the PyO3-embedded Python can
+    # import llmlingua / mlx_lm at runtime without activating the venv.
+    PYVER=$("$INSTALL_DIR/.venv/bin/python3" -c \
+        "import sys; print(f'python{sys.version_info.major}.{sys.version_info.minor}')")
     cat > "$INSTALL_DIR/start.sh" <<EOF
 #!/usr/bin/env bash
-exec uv --directory $INSTALL_DIR run uvicorn server:app --host 0.0.0.0 --port $PORT
+export PYTHONPATH="$INSTALL_DIR/.venv/lib/$PYVER/site-packages\${PYTHONPATH:+:\$PYTHONPATH}"
+export COMPACT_PYTHON_PATH="$INSTALL_DIR"
+exec "$INSTALL_DIR/crabcc-compact-serve" --port $PORT
 EOF
 fi
 chmod +x "$INSTALL_DIR/start.sh"

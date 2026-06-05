@@ -1,35 +1,34 @@
-# Adds python316t-optimized to nixpkgs:
-#   - CPython 3.16 pre-release (free-threaded / no-GIL)
+# Adds python315t-optimized to nixpkgs:
+#   - CPython 3.15 pre-release (free-threaded / no-GIL)
 #   - PGO: multistage instrument -> profile -> recompile (--enable-optimizations)
 #   - ThinLTO (--with-lto=thin)
-#   - Copy-and-patch JIT (--enable-experimental-jit; may become --enable-jit in 3.16 final)
+#   - Copy-and-patch JIT (--enable-experimental-jit)
 #
-# Update rev + hash when a new 3.16 pre-release tag drops:
-#   nix-prefetch-github --owner python --repo cpython --rev v3.16.0aN
-#   or: nix store prefetch-file --hash-type sha256 \
-#         https://github.com/python/cpython/archive/refs/tags/v3.16.0aN.tar.gz
+# Update rev + hash when a new pre-release tag drops (e.g. 3.15.0b3, 3.15.0rc1):
+#   nix-prefetch-url --unpack https://github.com/python/cpython/archive/refs/tags/vX.Y.tar.gz
+#   nix hash convert --to sri sha256:<base32-output>
 final: prev:
 let
-  cpython316 = {
-    rev  = "v3.16.0a1"; # bump as new pre-release tags appear
-    hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="; # FILL IN after nix-prefetch
+  cpython315 = {
+    rev  = "v3.15.0b2";
+    hash = "sha256-ILvnNPQpm8ACvWFigmFfrAcAGXdXXrHEMgh/dZ4QMcQ=";
   };
 
   # Ride on the free-threaded 3.13 derivation (closest upstream base).
-  # python316t won't exist in nixpkgs until it stabilises; we build it here.
+  # python315t won't be in nixpkgs until 3.15 stabilises; we build it here.
   base = prev.python313t or prev.python313;
 in {
-  python316t-optimized = (base.override {
+  python315t-optimized = (base.override {
     enableOptimizations = true; # PGO multistage build (non-deterministic profile data)
     reproducibleBuild   = false;
   }).overrideAttrs (old: {
-    pname   = "python316t-optimized";
-    version = "3.16.0a1";
+    pname   = "python315t-optimized";
+    version = "3.15.0b2";
 
     src = prev.fetchFromGitHub {
       owner = "python";
       repo  = "cpython";
-      inherit (cpython316) rev hash;
+      inherit (cpython315) rev hash;
     };
 
     # Append our flags; the base free-threaded derivation already sets

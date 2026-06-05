@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Deploy the Nixery OCI registry to a remote node (default: m3-task).
 # Nixery serves custom Nix-built Docker images on demand.
-# Our overlay adds python316t-optimized (PGO + ThinLTO + JIT + free-threaded).
+# Our overlay adds python315t-optimized (PGO + ThinLTO + JIT + free-threaded).
 #
 # Usage:
 #   ./scripts/deploy-nixery.sh
@@ -9,7 +9,7 @@
 #
 # After deploy, use from compact-server install:
 #   NIXERY_REGISTRY=<remote>:5000 \
-#   NIXERY_PYTHON_IMAGE=python316t-optimized/uv \
+#   NIXERY_PYTHON_IMAGE=python315t-optimized/uv \
 #     bash compact-server/deploy/install.sh
 set -euo pipefail
 
@@ -110,11 +110,11 @@ fi
 REMOTE
 
 echo ""
-echo "NOTE: python316t-optimized requires the hash in nix/overlays/python-optimized.nix."
+echo "NOTE: python315t-optimized requires the hash in nix/overlays/python-optimized.nix."
 echo "Get it with:"
-echo "  nix-prefetch-github --owner python --repo cpython --rev v3.16.0a1"
+echo "  nix-prefetch-github --owner python --repo cpython --rev v3.15.0b2"
 echo ""
 echo "Then build (first build ~45 min due to PGO profile run):"
 echo "  NIXERY_REGISTRY=$REMOTE:$NIXERY_PORT \\"
-echo "  NIXERY_PYTHON_IMAGE=python316t-optimized/uv \\"
+echo "  NIXERY_PYTHON_IMAGE=python315t-optimized/uv \\"
 echo "    bash compact-server/deploy/install.sh"
