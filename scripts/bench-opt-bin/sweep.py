@@ -593,6 +593,17 @@ def archive_run(built, meta, out: Path, work: Path, flame_dir: Path,
 # Main
 # ----------------------------------------------------------------------------
 
+def avail_mem_gib() -> float:
+    """Best-effort available RAM in GiB (MemAvailable). inf if unknown."""
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) / (1024 * 1024)  # kB -> GiB
+    except Exception:  # noqa: BLE001
+        pass
+    return float("inf")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="bench-opt-bin optimization sweep")
     ap.add_argument("--work", default=str(REPO_ROOT / "bench" / "opt-bin"),
@@ -627,6 +638,13 @@ def main() -> int:
                     help="ALSO mirror curated artifacts (report, ndjson, "
                          "manifest, flamegraphs, gzipped logs) into this dir — "
                          "point it at a tracked path to back the run up via git")
+    ap.add_argument("--max-mem-gib", type=float, default=0.0,
+                    help="RAM budget for the parallel build phase (GiB). 0 = auto "
+                         "(85%% of MemAvailable). The build pool is downscaled so "
+                         "jobs*per-leg stays under budget — prevents OOM on small boxes")
+    ap.add_argument("--per-leg-mem-gib", type=float, default=4.0,
+                    help="estimated peak RAM per concurrent build leg; the fat-LTO "
+                         "link is the high-water mark and BOLT rewrites add more")
     ap.add_argument("--dry-run", action="store_true", help="print the plan and exit")
     args = ap.parse_args()
 
@@ -656,12 +674,31 @@ def main() -> int:
     oversub = 1.5 if args.saturate else 1.0
     per_leg_jobs = max(2, math.ceil(cores * oversub / jobs))
 
+    # Memory guard. Fat-LTO links (and BOLT rewrites) are the RAM high-water
+    # mark, and running N of them at once is exactly what OOM-kills a small box.
+    # Cap the build pool so estimated peak (jobs * per-leg) fits the budget and
+    # recompute per-leg jobs for the narrower pool. Concurrency is the right
+    # lever — a single leg's own peak is irreducible, so we shrink how many run
+    # together rather than pretend one can be made to fit.
+    budget = args.max_mem_gib if args.max_mem_gib > 0 else avail_mem_gib() * 0.85
+    mem_note = ""
+    if math.isfinite(budget):
+        mem_cap = max(1, int(budget // args.per_leg_mem_gib))
+        if mem_cap < jobs:
+            mem_note = (f"  ⤵ mem-guard: {budget:.1f} GiB ÷ {args.per_leg_mem_gib:.1f} "
+                        f"GiB/leg → pool {jobs}→{mem_cap}")
+            jobs = mem_cap
+            per_leg_jobs = max(2, math.ceil(cores * oversub / jobs))
+        if budget < args.per_leg_mem_gib * jobs:  # over even at this pool size
+            mem_note += (f"  ⚠ est peak {args.per_leg_mem_gib * jobs:.1f} GiB > budget "
+                         f"{budget:.1f} GiB at pool={jobs}; OOM still possible")
+
     util_note = ("" if n >= cores else
                  f"  ⚠ {n} legs < {cores} cores: LTO links will under-fill the box; "
                  "use --deep or a smaller flavor")
     if args.dry_run:
         print(f"host cores={cores} legs={n} pool={jobs} per-leg-jobs={per_leg_jobs} "
-              f"saturate={args.saturate}{util_note}")
+              f"saturate={args.saturate}{mem_note}{util_note}")
         for l in legs:
             print(f"  {l.id:24s} cpu={l.target_cpu:10s} alloc={l.alloc:8s} "
                   f"optz={'z' if l.opt_level else '-'} pgo={int(l.pgo)} bolt={int(l.bolt)}")
@@ -675,7 +712,7 @@ def main() -> int:
     need_bolt = any(l.bolt for l in legs)
     need_pgo = any(l.pgo for l in legs)
     print(f"== bench-opt-bin == cores={cores} legs={n} pool={jobs} "
-          f"per-leg-jobs={per_leg_jobs} saturate={args.saturate}{util_note}")
+          f"per-leg-jobs={per_leg_jobs} saturate={args.saturate}{mem_note}{util_note}")
     print(f"   hyperfine={'ok' if have('hyperfine') else 'MISSING'} "
           f"size={'ok' if have('size') else 'MISSING'} "
           f"llvm-profdata={'ok' if profdata else 'MISSING'} "
