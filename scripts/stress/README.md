@@ -14,11 +14,22 @@ as distinct from the clean non-zero exits bad input is *supposed* to produce.
 task stress                       # 16 readers + 2 writers, 30s
 task stress WORKERS=32 WRITERS=4 DURATION=60 SEED=7
 task stress-smoke                 # fast deterministic read-only smoke (CI)
+task soak SOAK=600                # 10-min realistic-mix soak with resource sampling
 
 # or directly:
 python3 scripts/stress/stress.py --workers 16 --writers 3 --duration 30
 python3 scripts/stress/stress.py --iterations 2000 --fuzz-rate 0.5 --seed 1
+python3 scripts/stress/stress.py --soak 600 --sample-interval 30
 ```
+
+## Soak mode
+
+`--soak SECONDS` runs the concurrent mix continuously (writers default to 2) and
+every `--sample-interval` seconds snapshots **index.db size, WAL size, a probe
+`lookup sym` latency, and the count of live `crabcc` fds**. The report's *Soak*
+section flags latency drift (early vs late thirds), WAL that isn't checkpointing,
+and monotonic fd growth (leak signal). Time series is written to
+`bench/stress/soak.ndjson`.
 
 Stdlib only — no pip installs. Auto-detects `target/release/crabcc` →
 `target/debug/crabcc` → `$PATH` (override with `--bin`), and the newest index

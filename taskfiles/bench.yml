@@ -191,3 +191,16 @@ tasks:
     cmds:
       - 'test -f .crabcc/index.db || {{.ROOT_DIR}}/target/debug/crabcc index build >/dev/null'
       - 'python3 scripts/stress/stress.py --workers 8 --iterations 500 --seed 1'
+
+  soak:
+    desc: |
+      Long-running realistic-mix soak of the crabcc CLI — tracks latency drift,
+      index.db/WAL growth, and fd leaks over time. Vars: SOAK (s), WORKERS, SEED.
+    deps: [build-fast]
+    cmds:
+      - 'test -f .crabcc/index.db || {{.ROOT_DIR}}/target/debug/crabcc index build >/dev/null'
+      - >-
+        python3 scripts/stress/stress.py
+        --soak {{.SOAK | default 600}}
+        --workers {{.WORKERS | default 12}}
+        {{if .SEED}}--seed {{.SEED}}{{end}}
