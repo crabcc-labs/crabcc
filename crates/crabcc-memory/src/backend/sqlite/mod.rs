@@ -927,43 +927,25 @@ impl Backend for SqliteBackend {
     fn remind_poll(&self) -> Result<Vec<Reminder>> {
         let conn = self.conn.lock().map_err(|_| anyhow!("poisoned mutex"))?;
         let now = now_secs();
-        // Prepare, collect, then explicitly drop stmt before the UPDATE so
-        // the shared borrow on `conn` is released.
+        // Single atomic UPDATE...RETURNING: concurrent pollers serialize on
+        // SQLite's write lock, so each due reminder is claimed by exactly one
+        // caller (SQLite >= 3.35, shipped since 2021-03-12).
         let mut stmt = conn.prepare(
-            "SELECT id, due_at, message, created_at FROM reminders \
-             WHERE due_at <= ?1 AND delivered = 0 ORDER BY due_at ASC",
+            "UPDATE reminders SET delivered = 1 \
+             WHERE due_at <= ?1 AND delivered = 0 \
+             RETURNING id, due_at, message, created_at",
         )?;
-        let due: Vec<Reminder> = stmt
+        let due = stmt
             .query_map([now], |r| {
                 Ok(Reminder {
                     id: r.get(0)?,
                     due_at: r.get(1)?,
                     message: r.get(2)?,
                     created_at: r.get(3)?,
-                    delivered: false,
+                    delivered: true,
                 })
             })?
-            .collect::<rusqlite::Result<_>>()?;
-        drop(stmt);
-        if !due.is_empty() {
-            // Mark only the exact IDs we returned.  A broad `due_at <= now`
-            // predicate would incorrectly deliver reminders inserted between
-            // the SELECT and this UPDATE (cross-process race).
-            let mut placeholders = String::new();
-            for i in 1..=due.len() {
-                if i > 1 {
-                    placeholders.push_str(", ");
-                }
-                let _ = write!(placeholders, "?{i}");
-            }
-            let sql = format!(
-                "UPDATE reminders SET delivered = 1 WHERE id IN ({placeholders})"
-            );
-            conn.execute(
-                &sql,
-                rusqlite::params_from_iter(due.iter().map(|r| r.id)),
-            )?;
-        }
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(due)
     }
 
