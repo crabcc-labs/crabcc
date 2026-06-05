@@ -1,8 +1,8 @@
 //! `crabcc agent-guard` — periodic janitor for stuck / zombie agent runs.
 //!
-//! Designed to be invoked every 20 min by a LaunchAgent
-//! (`com.crabcc.agent-guard.plist`). One sweep per invocation; the cadence
-//! lives in launchd, not here. Returns 0 when the sweep ran cleanly even
+//! Designed to be invoked every 20 min by an external scheduler (cron /
+//! launchd / systemd). One sweep per invocation; the cadence lives in the
+//! scheduler, not here. Returns 0 when the sweep ran cleanly even
 //! if it killed runs — the caller cares whether the *guard* succeeded,
 //! not whether any agents were misbehaving.
 //!

@@ -7,7 +7,7 @@ body:
     attributes:
       value: |
         Title convention: `fix(<scope>): <summary>` — scopes seen in this repo include
-        `cli`, `viz`, `agents`, `memory`, `mcp`, `macos-app`, `telegram`,
+        `cli`, `viz`, `agents`, `memory`, `mcp`, `telegram`,
         `mobile`, `extension`, `tts`, `events`, `netlog`, `service-discovery`, `jobs`, `docs`.
   - type: textarea
     id: summary

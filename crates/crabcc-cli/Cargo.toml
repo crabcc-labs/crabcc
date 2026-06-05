@@ -82,9 +82,9 @@ linkify                  = { workspace = true }
 htmd                     = { workspace = true }
 clap_complete = "4"
 rusqlite      = { workspace = true }
-# Issue #107 Phase 5a — `crabcc doctor` derives Serialize/Deserialize on
-# its CheckResult / DoctorReport types directly (the surface the menubar
-# app + Chrome extension consume).
+# `crabcc doctor` derives Serialize/Deserialize on its CheckResult /
+# DoctorReport types directly (consumed by the Chrome extension + any
+# JSON tooling).
 # Issue #112 follow-up — `agent_profile` parses internal_agents/*.profile.toml
 # via serde + toml. Same dep used twice; we add it once here.
 serde         = { workspace = true }

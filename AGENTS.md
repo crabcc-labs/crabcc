@@ -170,32 +170,15 @@ docs/                     # In-tree docs (no longer a submodule). RUST-ANTHOLOGY
 schema/001_init.sql                      # Symbol-index schema. Additive only.
 crates/crabcc-memory/schema/001_init.sql # Memory schema (wings/rooms/drawers/…).
 install/                  # crabcc install-claude templates (hooks-claude.json)
-installer/Crabcc.app/     # macOS .app bundle (issue #107) — menubar UI +
-                          # bundled binaries + LaunchAgent templates.
-                          # Built into dist/ via `task dmg`.
 ```
 
-## macOS surface (issue #107)
+## Agent-runs DB
 
-The `Crabcc.app` bundle ships three things behind one drag-to-install:
+`~/.crabcc/_internal.db` (WAL) is the singleton agent-runs store.
+`crabcc agent` writes lifecycle rows; `crabcc agent-ls` / `agent-guard`
+/ `agent-kills` read + maintain it. Schema is additive (same rules as
+the symbol index — never `DROP COLUMN`).
 
-- **Menubar UI** — single-file `installer/Crabcc.app/Contents/MacOS/menubar.swift`,
-  compiled at DMG-build time with `swiftc`. Surfaces live process state,
-  Taskfile entries as a clickable submenu, scheduled LaunchAgent tasks,
-  and recent kill events. Emits JSON-lines telemetry at
-  `~/Library/Logs/Crabcc/menubar.events.jsonl` parallel to the Rust
-  crates' tracing-appender output.
-- **Three LaunchAgents** registered by the installer's
-  `Resources/scripts/install.sh`:
-  `com.crabcc.menubar` (RunAtLoad + KeepAlive-on-crash),
-  `com.crabcc.agentd` (5-min `crabcc refresh` tick, Background QoS),
-  `com.crabcc.agent-guard` (every 20 min — `crabcc agent-guard` sweep).
-- **Singleton agent-runs DB** at `~/.crabcc/_internal.db` (WAL).
-  `crabcc agent` writes lifecycle rows; `crabcc agent-ls` /
-  `agent-guard` / `agent-kills` read + maintain. Schema is additive
-  (same rules as the symbol index — never `DROP COLUMN`).
-
-Build: `task dmg` → `dist/crabcc-<version>.dmg`.
 Bootstrap a fresh machine: `curl -fsSL …/scripts/bootstrap.sh | bash`.
 
 

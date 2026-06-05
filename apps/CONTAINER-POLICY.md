@@ -85,14 +85,10 @@ The deploy target is **Apple Silicon Mac running Docker Desktop** —
 single platform, single arch. We deliberately drop multi-arch manifests
 in this revision because:
 
-- Every consumer today (developer Macs, the menubar `Crabcc.app` host)
-  is `arm64`.
+- Every consumer today (developer Macs) is `arm64`.
 - Multi-arch builds via QEMU emulation roughly double CI time and
   triple build-stage memory. The cost isn't justified until a
   non-arm64 consumer shows up.
-- Apple-Silicon-only is consistent with our build-target choice for
-  the Swift app side (`apps/macos/Project.swift` targets arm64-apple-
-  macos13.0).
 
 If a `linux/amd64` consumer (e.g. a Linux build runner, an EC2 worker)
 ever lands, re-add `--platform linux/amd64,linux/arm64` in the
@@ -109,7 +105,6 @@ Each Dockerfile sits next to a `.dockerignore` covering:
 - `.env`, `*.local.*`, secret files
 - `.crabcc/` (per-repo index databases)
 - `~/.cargo/` (host cache; never copy in)
-- The macOS app surface (`installer/`, `apps/macos/`)
 
 ## Image naming
 
