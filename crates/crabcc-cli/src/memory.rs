@@ -125,6 +125,22 @@ pub enum MemoryCmd {
         #[arg(long, default_value = "cli-ingest")]
         source: String,
     },
+    /// Open the cross-repo memory browser in your browser. Starts the
+    /// `crabcc serve` viewer (binds 127.0.0.1:7878 by default) and lands on
+    /// the `/memory` page, which searches drawers across every indexed repo
+    /// under `$CRABCC_HOME/repos/`. Run it from any repo — same viewer, same
+    /// central memory. Blocks until Ctrl-C.
+    Ui {
+        /// TCP port to bind. 0 picks an ephemeral port.
+        #[arg(long, default_value_t = 7878)]
+        port: u16,
+        /// Bind address. Loopback-only by default; the viewer is unauthenticated.
+        #[arg(long, default_value = "127.0.0.1")]
+        bind: String,
+        /// Start the server but don't auto-open a browser.
+        #[arg(long)]
+        no_open: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -228,7 +244,11 @@ fn time_parse_rfc3339(s: &str) -> Option<i64> {
             let oh: i64 = s.get(20..22)?.parse().ok()?;
             let om: i64 = s.get(23..25)?.parse().ok()?;
             let mag = oh * 3_600 + om * 60;
-            if *sign == b'+' { mag } else { -mag }
+            if *sign == b'+' {
+                mag
+            } else {
+                -mag
+            }
         }
         _ => return None,
     };
@@ -244,8 +264,46 @@ fn time_parse_rfc3339(s: &str) -> Option<i64> {
 }
 
 pub fn run(root: &Path, cmd: MemoryCmd) -> Result<()> {
+    // `ui` launches the long-running viewer, which opens drawer stores
+    // itself — handle it before the per-command `Palace::open` so we don't
+    // hold an extra handle for the lifetime of the blocking server.
+    #[cfg(feature = "viz")]
+    if let MemoryCmd::Ui {
+        port,
+        bind,
+        no_open,
+    } = &cmd
+    {
+        let bind: std::net::IpAddr = bind
+            .parse()
+            .map_err(|e| anyhow!("invalid --bind address '{bind}': {e}"))?;
+        if !bind.is_loopback() {
+            eprintln!(
+                "warning: serving on {bind} (non-loopback). The viewer is \
+                 unauthenticated — only do this on a trusted network."
+            );
+        }
+        return crabcc_viz::serve(crabcc_viz::Config {
+            bind,
+            port: *port,
+            root: root.to_path_buf(),
+            no_open: *no_open,
+            init: true,
+            open_path: Some("/memory".to_string()),
+        });
+    }
+    #[cfg(not(feature = "viz"))]
+    if matches!(cmd, MemoryCmd::Ui { .. }) {
+        return Err(anyhow!(
+            "this crabcc was built without the `viz` feature. Re-install with \
+             `cargo install crabcc-cli --features viz` to enable `crabcc memory ui` \
+             (the dashboard / memory browser)."
+        ));
+    }
+
     let palace = Palace::open(root)?;
     match cmd {
+        MemoryCmd::Ui { .. } => unreachable!("memory ui handled before Palace::open"),
         MemoryCmd::Init => {
             // Palace::open already created/reused the file; emit a JSON ack.
             let body = serde_json::json!({"status": "ok", "root": root.display().to_string()});
@@ -466,9 +524,9 @@ pub fn run(root: &Path, cmd: MemoryCmd) -> Result<()> {
             match action {
                 RemindCmd::Set { message, delay, at } => {
                     let due_at = if let Some(d) = delay {
-                        parse_remind_delay(&d)?   // relative: bare int = now + N
+                        parse_remind_delay(&d)? // relative: bare int = now + N
                     } else if let Some(a) = at {
-                        parse_remind_at(&a)?      // absolute: bare int = epoch
+                        parse_remind_at(&a)? // absolute: bare int = epoch
                     } else {
                         anyhow::bail!("specify either --in <delay> or --at <timestamp>");
                     };
@@ -591,9 +649,7 @@ fn parse_remind_delay(s: &str) -> Result<i64> {
         if ch.is_ascii_digit() {
             num.push(ch);
         } else {
-            let n: i64 = num
-                .parse()
-                .map_err(|_| anyhow!("invalid delay {s:?}"))?;
+            let n: i64 = num.parse().map_err(|_| anyhow!("invalid delay {s:?}"))?;
             num.clear();
             total += match ch {
                 'd' => n * 86_400,
@@ -616,8 +672,7 @@ fn parse_remind_at(s: &str) -> Result<i64> {
     if let Ok(n) = s.parse::<i64>() {
         return Ok(n);
     }
-    time_parse_rfc3339(s)
-        .ok_or_else(|| anyhow!("--at expects epoch seconds or RFC3339, got {s:?}"))
+    time_parse_rfc3339(s).ok_or_else(|| anyhow!("--at expects epoch seconds or RFC3339, got {s:?}"))
 }
 
 /// Per-agent hook config for wiring `memory.remind_poll` as a `send_later`
@@ -672,10 +727,12 @@ fn remind_hooks_json(agent: Option<&str>) -> serde_json::Value {
         }
     });
     match agent {
-        Some(name) => all.get(name).cloned().unwrap_or_else(|| json!({
-            "error": format!("unknown agent {name:?}"),
-            "valid": ["claude-code","opencode","cursor","nullclaw","omp","shell","generic-mcp"]
-        })),
+        Some(name) => all.get(name).cloned().unwrap_or_else(|| {
+            json!({
+                "error": format!("unknown agent {name:?}"),
+                "valid": ["claude-code","opencode","cursor","nullclaw","omp","shell","generic-mcp"]
+            })
+        }),
         None => all,
     }
 }
@@ -801,7 +858,11 @@ mod tests {
         assert_eq!(neg4, z + 4 * 3_600, "-04:00 should yield 4h later in UTC");
         // +05:30 (IST) → 18:30 UTC on 2024-12-31 → 19800 s before midnight UTC.
         let pos530 = parse_before_timestamp("2025-01-01T00:00:00+05:30").unwrap();
-        assert_eq!(pos530, z - (5 * 3_600 + 30 * 60), "+05:30 should yield 5h30m earlier in UTC");
+        assert_eq!(
+            pos530,
+            z - (5 * 3_600 + 30 * 60),
+            "+05:30 should yield 5h30m earlier in UTC"
+        );
     }
 
     #[test]

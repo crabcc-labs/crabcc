@@ -114,8 +114,15 @@ end-to-end:
   Real LongMemEval requires `DATASET=path/to/longmemeval_oracle.json`.
 
 CLI surface: `init`, `remember`, `search`, `get`, `list`, `delete`,
-`forget`, `count`, `health`, `mine {project,sessions}`. MCP exposes
+`forget`, `count`, `health`, `mine {project,sessions}`, `ui`. MCP exposes
 matching `memory.*` tools (10 in total).
+
+`crabcc memory ui` opens the **cross-repo memory browser** in your browser:
+it starts the `crabcc serve` viewer (127.0.0.1:7878) on the `/memory` page,
+which searches drawers across every repo under `$CRABCC_HOME/repos/` —
+run it from any repo, same viewer, same central memory. Requires the `viz`
+feature (shipped builds have it; `cargo install crabcc-cli --features viz`
+otherwise).
 
 Set `CRABCC_AUTO_MEMORY=1` to have query-shaped commands (`sym` / `refs` /
 `callers` / `fuzzy` / `prefix`) silently capture a drawer per call.

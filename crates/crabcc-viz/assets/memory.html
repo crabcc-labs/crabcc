@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>crabcc memory</title>
+<style>
+  :root {
+    --bg: #0e1116; --panel: #161b22; --border: #232a33;
+    --fg: #d7dde5; --muted: #8b949e; --orange: #e85d04; --cyan: #4cc9f0;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; background: var(--bg); z-index: 2;
+  }
+  header .logo { color: var(--orange); font-weight: 700; letter-spacing: .5px; }
+  header .logo b { color: var(--cyan); }
+  #q {
+    flex: 1; padding: 8px 12px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--panel);
+    color: var(--fg); font: inherit;
+  }
+  #q:focus { outline: none; border-color: var(--cyan); }
+  #status { color: var(--muted); white-space: nowrap; font-size: 12px; }
+  main { display: grid; grid-template-columns: minmax(280px, 420px) 1fr; height: calc(100vh - 58px); }
+  @media (max-width: 720px) { main { grid-template-columns: 1fr; } #detail { display: none; } }
+  #list { overflow-y: auto; border-right: 1px solid var(--border); }
+  .hit {
+    padding: 10px 14px; border-bottom: 1px solid var(--border); cursor: pointer;
+  }
+  .hit:hover { background: var(--panel); }
+  .hit.sel { background: #1b2330; border-left: 2px solid var(--cyan); }
+  .hit .meta { display: flex; gap: 8px; align-items: center; margin-bottom: 4px; flex-wrap: wrap; }
+  .badge {
+    font-size: 11px; padding: 1px 7px; border-radius: 10px;
+    background: #20262e; color: var(--cyan); border: 1px solid var(--border);
+  }
+  .badge.wing { color: var(--orange); }
+  .hit .src { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .hit .prev { color: var(--fg); font-size: 12.5px; opacity: .85; max-height: 3em; overflow: hidden; }
+  .hit time { color: var(--muted); font-size: 11px; margin-left: auto; }
+  #detail { overflow-y: auto; padding: 18px 22px; }
+  #detail h2 { color: var(--cyan); font-size: 15px; margin: 0 0 4px; word-break: break-all; }
+  #detail .sub { color: var(--muted); font-size: 12px; margin-bottom: 14px; }
+  #detail pre {
+    white-space: pre-wrap; word-wrap: break-word; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin: 0;
+  }
+  .empty { color: var(--muted); padding: 28px 16px; text-align: center; }
+</style>
+</head>
+<body>
+<header>
+  <span class="logo">crab<b>cc</b> · memory</span>
+  <input id="q" type="search" placeholder="Search drawers across every repo…" autofocus autocomplete="off" />
+  <span id="status">—</span>
+</header>
+<main>
+  <div id="list"><div class="empty">Type to search, or leave blank for recent drawers.</div></div>
+  <div id="detail"><div class="empty">Select a drawer to read its full body.</div></div>
+</main>
+<script>
+  const $q = document.getElementById("q");
+  const $list = document.getElementById("list");
+  const $detail = document.getElementById("detail");
+  const $status = document.getElementById("status");
+  let seq = 0;          // drop out-of-order responses from fast typing
+  let selected = null;
+
+  const esc = (s) => (s ?? "").replace(/[&<>"]/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+  const when = (ts) => ts ? new Date(ts * 1000).toLocaleString() : "";
+
+  async function search() {
+    const mine = ++seq;
+    const q = $q.value.trim();
+    try {
+      const r = await fetch(`/api/memory/search?limit=100&q=${encodeURIComponent(q)}`);
+      if (mine !== seq) return;             // a newer query already fired
+      const data = await r.json();
+      render(data);
+    } catch (e) {
+      if (mine === seq) $status.textContent = "search failed";
+    }
+  }
+
+  function render(data) {
+    const hits = data.hits || [];
+    $status.textContent =
+      `${data.queried_repos} repo${data.queried_repos === 1 ? "" : "s"} · ` +
+      `${data.total} hit${data.total === 1 ? "" : "s"}` + (data.truncated ? " (capped)" : "");
+    if (!hits.length) {
+      $list.innerHTML = `<div class="empty">No drawers match.</div>`;
+      return;
+    }
+    $list.innerHTML = "";
+    for (const h of hits) {
+      const el = document.createElement("div");
+      el.className = "hit";
+      el.innerHTML =
+        `<div class="meta">` +
+          `<span class="badge">${esc(h.repo)}</span>` +
+          `<span class="badge wing">${esc(h.wing)}${h.room ? "/" + esc(h.room) : ""}</span>` +
+          `<time>${esc(when(h.created_at))}</time>` +
+        `</div>` +
+        `<div class="src">${esc(h.source_id)}</div>` +
+        `<div class="prev">${esc(h.body_preview)}</div>`;
+      el.onclick = () => open(h, el);
+      $list.appendChild(el);
+    }
+  }
+
+  async function open(h, el) {
+    if (selected) selected.classList.remove("sel");
+    selected = el; el.classList.add("sel");
+    $detail.innerHTML = `<div class="empty">Loading…</div>`;
+    try {
+      const r = await fetch(
+        `/api/memory/get?repo=${encodeURIComponent(h.repo)}&id=${encodeURIComponent(h.source_id)}`);
+      const d = await r.json();
+      if (!d.found) { $detail.innerHTML = `<div class="empty">Drawer not found.</div>`; return; }
+      $detail.innerHTML =
+        `<h2>${esc(d.source_id)}</h2>` +
+        `<div class="sub">${esc(h.repo)} · ${esc(d.wing)}${d.room ? "/" + esc(d.room) : ""} · ${esc(when(d.created_at))}</div>` +
+        `<pre>${esc(d.body)}</pre>`;
+    } catch (e) {
+      $detail.innerHTML = `<div class="empty">Failed to load drawer.</div>`;
+    }
+  }
+
+  let t;
+  $q.addEventListener("input", () => { clearTimeout(t); t = setTimeout(search, 180); });
+  search();   // initial: recent drawers
+</script>
+</body>
+</html>

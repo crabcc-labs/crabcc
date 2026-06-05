@@ -45,6 +45,7 @@ flowchart LR
 | Outline a file | `crabcc outline path/to/file.rb` |
 | Store / search project memory | `crabcc memory remember <src> <body>` / `crabcc memory search "<query>"` |
 | List drawers in this repo | `crabcc memory list --limit 20` |
+| Browse memory across all repos (web UI) | `crabcc memory ui` (opens the `/memory` page on `crabcc serve`; needs the `viz` feature) |
 | Build & test | `task` (= `cargo build --release && cargo test --workspace`) |
 | Lint gate | `task lint` (= `cargo clippy --workspace --all-targets -- -D warnings`) |
 | Format | `task fmt` |
