@@ -159,9 +159,9 @@ pub fn tools_def() -> Vec<Value> {
         // ── remind (send_later primitive) ────────────────────────────────────
         tool(
             "memory.remind_set",
-            "Schedule a reminder. Pass either `due_at` (absolute epoch seconds) or \
-             `delay` (human string: '1h30m', '2d', '45m', '90s'). \
-             Returns {id, due_at}.",
+            "Schedule a reminder in the repo memory store. Pass either `due_at` \
+             (absolute epoch seconds) or `delay` (human string: '1h30m', '2d', \
+             '45m', '90s'). Returns {id, due_at}.",
             json!({
                 "cwd":     cwd_field,
                 "message": str_field("reminder message surfaced when the reminder fires"),
@@ -173,8 +173,9 @@ pub fn tools_def() -> Vec<Value> {
         ),
         tool(
             "memory.remind_poll",
-            "Atomically fetch all due reminders (due_at ≤ now, not yet delivered) \
-             and mark them delivered. Returns [] when nothing is due. \
+            "Atomically fetch all due reminders from the repo memory store \
+             (due_at ≤ now, not yet delivered) and mark them delivered. \
+             Returns [] when nothing is due. \
              Call this from a PostToolUse hook / agent startup to emulate send_later \
              across Claude Code, OpenCode, Cursor, Nullclaw, OMP, and any MCP client.",
             json!({"cwd": cwd_field}),
@@ -182,8 +183,8 @@ pub fn tools_def() -> Vec<Value> {
         ),
         tool(
             "memory.remind_list",
-            "List reminders without marking them delivered. \
-             Pass include_delivered: true to see fired ones too.",
+            "List reminders from the repo memory store without marking them \
+             delivered. Pass include_delivered: true to see fired ones too.",
             json!({
                 "cwd": cwd_field,
                 "include_delivered": {"type": "boolean",
@@ -193,7 +194,8 @@ pub fn tools_def() -> Vec<Value> {
         ),
         tool(
             "memory.remind_delete",
-            "Cancel a scheduled reminder by id. Returns {deleted: true|false}.",
+            "Cancel a scheduled reminder in the repo memory store by id. \
+             Returns {deleted: true|false}.",
             json!({
                 "cwd": cwd_field,
                 "id":  {"type": "integer"},
@@ -381,7 +383,9 @@ pub fn dispatch(tool: &str, args: &Value, server_root: &Path) -> Result<String> 
                 parse_due_at(s)
                     .ok_or_else(|| anyhow!("invalid delay {s:?}; use '1h30m', '2d', '45m'"))?
             } else {
-                return Err(anyhow!("specify either due_at (epoch seconds) or delay ('1h30m')"));
+                return Err(anyhow!(
+                    "specify either due_at (epoch seconds) or delay ('1h30m')"
+                ));
             };
             let id = palace.remind_set(due_at, message)?;
             Ok(json!({"id": id, "due_at": due_at}).to_string())
@@ -506,17 +510,16 @@ fn remind_hooks_json(agent: Option<&str>) -> Value {
                     [ \"$r\" = '[]' ] || [ -z \"$r\" ] || \
                     printf '%s\\n' \"$r\" | jq -r '.[] | \"\\u23f0 Reminder: \" + .message'";
 
-    let shell_snippet = format!(
-        "_crabcc_remind() {{\n\
+    let shell_snippet = "_crabcc_remind() {\n\
         \x20 local r; r=$(crabcc memory remind poll 2>/dev/null) || return\n\
         \x20 [ \"$r\" = '[]' ] || [ -z \"$r\" ] && return\n\
         \x20 printf '%s\\n' \"$r\" | jq -r '.[] | \"\\u23f0 \" + .message' 2>/dev/null || true\n\
-        }}\n\
+        }\n\
         # bash — append to PROMPT_COMMAND:\n\
-        PROMPT_COMMAND=\"${{PROMPT_COMMAND:+$PROMPT_COMMAND; }}_crabcc_remind\"\n\
+        PROMPT_COMMAND=\"${PROMPT_COMMAND:+$PROMPT_COMMAND; }_crabcc_remind\"\n\
         # zsh — add to precmd:\n\
         autoload -Uz add-zsh-hook && add-zsh-hook precmd _crabcc_remind"
-    );
+        .to_string();
 
     let generic_mcp = "Wire crabcc as an MCP server (command: \"crabcc\", args: [\"--mcp\"]) \
                         and instruct your agent to call memory.remind_poll at session start. \
