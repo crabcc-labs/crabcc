@@ -861,6 +861,36 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Like [`Self::symbols_in_file`] but pairs each symbol with its row id.
+    /// Used by `affected` to feed the call-graph walk (`blast_radius` keys on
+    /// symbol id) without a second lookup.
+    pub fn symbols_in_file_with_ids(&self, file: &str) -> Result<Vec<(i64, Symbol)>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT s.id, s.name, s.kind, s.signature, p.name AS parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
+             FROM symbols s
+             JOIN files f ON s.file_id = f.id
+             LEFT JOIN symbols p ON p.id = s.parent_id
+             WHERE f.path = ?1 AND s.kind != 'sentinel'
+             ORDER BY s.line_start",
+        )?;
+        let rows = stmt.query_map(params![file], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                Symbol {
+                    name: row.get(1)?,
+                    kind: kind_from_str(&row.get::<_, String>(2)?),
+                    signature: self.signature_from_row(row, 3, 9)?,
+                    parent: row.get(4)?,
+                    file: row.get(5)?,
+                    line_start: row.get(6)?,
+                    line_end: row.get(7)?,
+                    visibility: row.get(8)?,
+                },
+            ))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     pub fn find_by_name(&self, name: &str) -> Result<Vec<Symbol>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT s.name, s.kind, s.signature, p.name AS parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc

@@ -43,6 +43,7 @@ flowchart LR
 | Find a definition | `crabcc sym <Name>` |
 | Find references / call sites | `crabcc refs <Name>` / `crabcc callers <Name>` |
 | Outline a file | `crabcc outline path/to/file.rb` |
+| Which tests cover my edit? | `crabcc affected` (working tree) / `crabcc affected --since <ref>` / `--run` to execute |
 | Store / search project memory | `crabcc memory remember <src> <body>` / `crabcc memory search "<query>"` |
 | List drawers in this repo | `crabcc memory list --limit 20` |
 | Build & test | `task` (= `cargo build --release && cargo test --workspace`) |
