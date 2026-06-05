@@ -61,10 +61,10 @@ jobs:
     env:
       RUSTC_WRAPPER: ""  # override global; cargo fmt never invokes rustc
     steps:
-      - uses: ./.github/actions/disk-guard
       - uses: actions/checkout@v6
         with:
           fetch-depth: 1
+      - uses: ./.github/actions/disk-guard
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -78,7 +78,6 @@ jobs:
     name: lint (clippy)
     runs-on: [self-hosted, linux, hetzner, gh-runner]
     steps:
-      - uses: ./.github/actions/disk-guard
       - uses: actions/checkout@v6
         with:
           # Full history so the PR diff (base..head) resolves. Must be a literal
@@ -86,7 +85,7 @@ jobs:
           # yields 1 because 0 is falsy in GitHub Actions expressions, leaving a
           # shallow clone where `git diff <base> <head>` dies with "bad object".
           fetch-depth: 0
-
+      - uses: ./.github/actions/disk-guard
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -193,7 +192,6 @@ jobs:
     name: test (ubuntu, scoped)
     runs-on: [self-hosted, linux, hetzner, gh-runner]
     steps:
-      - uses: ./.github/actions/disk-guard
       - uses: actions/checkout@v6
         with:
           # Full history so the PR diff (base..head) resolves. Must be a literal
@@ -201,6 +199,7 @@ jobs:
           # yields 1 because 0 is falsy in GitHub Actions expressions, leaving a
           # shallow clone where `git diff <base> <head>` dies with "bad object".
           fetch-depth: 0
+      - uses: ./.github/actions/disk-guard
 
       - uses: dtolnay/rust-toolchain@stable
 
