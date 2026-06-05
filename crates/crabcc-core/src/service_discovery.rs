@@ -7,7 +7,7 @@
 //!
 //! The probe is a TCP connect with a short (800 ms) timeout — enough to
 //! tell "service is reachable" from "port is closed / DNS missing" without
-//! blocking the menubar / dashboard for seconds. We intentionally do NOT
+//! blocking the dashboard for seconds. We intentionally do NOT
 //! attempt a protocol-level probe (e.g. `redis-cli ping`, `HEAD /`) here —
 //! that's the job of `crabcc doctor stack` / `crabcc doctor jobs`.
 //!
@@ -34,8 +34,8 @@ pub enum ServiceKind {
     Ollama,
     /// crabcc MCP server reachable over HTTP/SSE — `crabcc --mcp-http :PORT`.
     /// Phase 0 of #204; transport implementation lands in a follow-up PR.
-    /// Distinct kind (vs HttpJsonApi) so consumers (bot, viz dashboard,
-    /// menubar Services panel) can render MCP-specific affordances.
+    /// Distinct kind (vs HttpJsonApi) so consumers (bot, viz dashboard)
+    /// can render MCP-specific affordances.
     Mcp,
     Generic,
 }

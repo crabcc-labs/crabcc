@@ -1,7 +1,7 @@
 //! Singleton SQLite store for `crabcc agent` runs at
 //! `~/.crabcc/_internal.db`. Tracks every run's PID, repo, timestamps,
-//! exit code, and the on-disk paths to its log + meta — so the menubar
-//! app + `crabcc agent ls` can answer "what's running right now" without
+//! exit code, and the on-disk paths to its log + meta — so the dashboard
+//! + `crabcc agent ls` can answer "what's running right now" without
 //! pgrep heuristics or filesystem walks.
 //!
 //! Schema (additive — never DROP COLUMN, mirror `Store::open` rules):
@@ -44,7 +44,7 @@ pub fn open(path: &Path) -> Result<Connection> {
     }
     let conn =
         Connection::open(path).with_context(|| format!("open agent runs db {}", path.display()))?;
-    // Sequoia-tolerant pragmas: WAL keeps reader (menubar) + writer
+    // Sequoia-tolerant pragmas: WAL keeps reader (dashboard) + writer
     // (agent.rs) from blocking each other.
     // mmap + cache PRAGMAs mirror crabcc-core::store::Store::open — keeps
     // index lookups (idx_agent_runs_*, idx_kill_events_*) hitting mapped
@@ -255,7 +255,7 @@ pub fn mark_finished(conn: &Connection, id: &str, exit_code: i32) -> Result<()> 
 }
 
 /// Reap any rows still marked `running` whose PID no longer exists.
-/// Called on process startup so menubar counts don't get pinned at "1
+/// Called on process startup so dashboard counts don't get pinned at "1
 /// running" forever after a hard kill. POSIX-only — on non-unix we
 /// no-op (we don't ship there yet).
 #[cfg(unix)]

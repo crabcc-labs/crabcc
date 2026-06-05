@@ -84,7 +84,7 @@ For a brand-new dev box, `bootstrap.sh` is the bigger sibling of `install.sh`:
 it preflights `rustup`, clones into `~/workspace/bin/crabcc`, builds,
 ad-hoc-codesigns the binaries (Sequoia provenance fix), wires shell aliases,
 **runs `crabcc install-claude --yes`** (skill + commands + RTK detection),
-and optionally brings up Docker/Ollama and the macOS LaunchAgent.
+and optionally brings up the Docker/Ollama stack.
 Idempotent — same script for fresh install **and** upgrade.
 
 ```bash
@@ -100,10 +100,6 @@ gh api -H 'Accept: application/vnd.github.v3.raw' /repos/crabcc-labs/crabcc/cont
 #   --no-aliases      skip shell alias install
 #   --cli-only        binaries only — skip Claude / aliases / Docker
 #   --check-only      preflight only; no writes
-#
-# Opt-ins:
-#   --with-launchd    register the macOS LaunchAgent (background re-index)
-#   --with-macos-app  build + open the .dmg
 ```
 
 ### From source
@@ -145,29 +141,6 @@ Pass `--yes` to skip per-symlink prompts, or `--print-hooks` to dump only the
 hook JSON (`crabcc install-claude --print-hooks > hooks.json`).
 
 Then in Claude Code: `/reload-plugins`.
-
-### macOS `.app` + DMG (optional)
-
-If you want a real `Crabcc.app` you can drag into `/Applications` and grant
-**App Management** privacy permission (System Settings → Privacy & Security →
-App Management):
-
-```bash
-task dmg                       # produces dist/crabcc-<version>.dmg
-open dist/crabcc-*.dmg         # mount + drag Crabcc.app to /Applications
-```
-
-The bundle is ad-hoc codesigned (`com.crabcc.installer`), runs as a menubar
-app (`LSUIElement`), exposes Taskfile entries as a clickable **Run Task**
-submenu, and registers a `com.crabcc.agentd` LaunchAgent that survives
-sleep/wake/restart and refreshes the index every 5 minutes for any repo
-listed in `~/.crabcc/agent/repos.list`.
-
-Uninstall the LaunchAgent without removing the app:
-
-```bash
-scripts/install-macos-helpers.sh --remove
-```
 
 ### Index your repo
 
@@ -597,7 +570,6 @@ crates/crabcc-memory/ ← Palace facade, Backend + Embedder traits, hybrid searc
 crates/crabcc-viz/    ← localhost call-graph dashboard (issue #64)
 schema/001_init.sql   ← SQLite schema (files, symbols, edges)
 internal_agents/      ← per-crate agent profiles + system prompts (Ask B)
-installer/Crabcc.app/ ← macOS .app bundle (issue #107)
 skill/crabcc/         ← Claude Code skill (auto-routing rules)
 commands/             ← Claude Code slash commands
 bench/                ← raw-CLI A/B benchmark harness + visualize

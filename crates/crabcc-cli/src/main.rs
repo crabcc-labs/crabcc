@@ -716,9 +716,9 @@ enum BackupOp {
         timestamp: u64,
     },
     /// Long-running loop. Snapshots every `interval` seconds against
-    /// each repo listed in `~/.crabcc/agent/repos.list`. Wired to the
-    /// `com.crabcc.backup-loop` LaunchAgent (default 15 min). Stay
-    /// foreground; managed lifecycle lives in launchd.
+    /// each repo listed in `~/.crabcc/agent/repos.list`. Runs every 15 min
+    /// by default. Stay foreground; schedule it externally (cron / launchd /
+    /// systemd) for a managed lifecycle.
     Loop {
         #[arg(long, default_value_t = 900u64)]
         interval: u64,

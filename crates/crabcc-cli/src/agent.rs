@@ -641,7 +641,7 @@ pub fn run(req: AgentRequest<'_>) -> Result<()> {
     }
 
     // Open the singleton runs DB. Best-effort: if it fails (locked,
-    // disk full), the agent still runs — the menubar's pgrep + lockfile
+    // disk full), the agent still runs — the pgrep + lockfile
     // fallback will catch this run.
     let db_path = crate::agent_runs_db::default_db_path(&home);
     let db_conn = crate::agent_runs_db::open(&db_path).ok();

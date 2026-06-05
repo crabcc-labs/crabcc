@@ -13,8 +13,8 @@
 # Targets only containers carrying a `com.crabcc.*` label so we never
 # touch unrelated state on the user's host.
 #
-# Default cadence: invoked every 30 min via the existing
-# `com.crabcc.agent-guard` LaunchAgent (issue #107 follow-up wires it).
+# Default cadence: invoke every 30 min via an external scheduler
+# (cron / launchd / systemd).
 # Manual: `bash scripts/container-zombie-guard.sh`.
 #
 # Idempotent. Read-only with --dry-run.
