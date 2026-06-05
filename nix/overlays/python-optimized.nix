@@ -5,6 +5,7 @@
 #   - Copy-and-patch JIT (--enable-experimental-jit)
 #   - aws-lc for the ssl module (ARMv8 hardware crypto)
 #   - mimalloc allocator (lower fragmentation under free-threaded GC)
+#   - mold linker (wild not yet in nixpkgs)
 #   - -fno-semantic-interposition (devirtualisation across TUs)
 #
 # Update rev + hash when a new pre-release tag drops (e.g. 3.15.0b3, 3.15.0rc1):
@@ -35,6 +36,10 @@ in {
       inherit (cpython315) rev hash;
     };
 
+    nativeBuildInputs = (old.nativeBuildInputs or []) ++ [
+      prev.mold-wrapped # parallel linker; wild not yet in nixpkgs
+    ];
+
     buildInputs = (old.buildInputs or []) ++ [
       prev.mimalloc # --with-mimalloc: lower fragmentation under free-threaded GC
     ];
@@ -51,7 +56,7 @@ in {
     env = (old.env or {}) // {
       NIX_CFLAGS_COMPILE =
         ((old.env or {}).NIX_CFLAGS_COMPILE or "")
-        + " -fno-semantic-interposition"; # allows devirt across shared-lib boundaries
+        + " -fno-semantic-interposition -fuse-ld=mold"; # devirt + mold linker
     };
   });
 }
