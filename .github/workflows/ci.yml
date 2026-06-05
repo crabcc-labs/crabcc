@@ -92,14 +92,34 @@ jobs:
 
       - uses: mozilla-actions/sccache-action@v0.0.10
 
-      # mold linker — Apache-2.0, ~3-5x faster link than lld on big
-      # debug + ci profile builds. Apt install is sub-second. The
-      # `command -v mold ||` guard makes this runner-agnostic: on a
-      # self-hosted runner that already provides mold (e.g. the NixOS
-      # bench-node), the apt-get is skipped instead of erroring on a
-      # box with no apt.
-      - name: install mold linker
-        run: command -v mold >/dev/null 2>&1 || sudo apt-get install -y --no-install-recommends mold
+      # Fast linker: try mold, then wild, then fall back to the default
+      # ld. Each install is single-shot (no apt-cache cleanup heroics or
+      # retry loops) — fail fast and degrade. mold and wild are both
+      # 3-5x faster than ld on big debug + ci profile builds, but
+      # neither is a correctness requirement. The runtime override of
+      # CARGO_TARGET_..._RUSTFLAGS replaces the workflow-level default
+      # (which assumes mold) so we don't `-fuse-ld=mold` against a
+      # linker that isn't there.
+      - name: install fast linker (mold → wild → default ld)
+        run: |
+          LINKER=default
+          if command -v mold >/dev/null 2>&1 || \
+             sudo apt-get install -y --no-install-recommends mold 2>/dev/null; then
+            LINKER=mold
+          elif command -v wild >/dev/null 2>&1 || \
+               sudo apt-get install -y --no-install-recommends wild 2>/dev/null; then
+            LINKER=wild
+          else
+            echo "::warning::mold + wild install both failed (likely ENOSPC); using default ld"
+          fi
+          case "$LINKER" in
+            mold|wild)
+              echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-fuse-ld=$LINKER" >> "$GITHUB_ENV"
+              ;;
+            default)
+              echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=" >> "$GITHUB_ENV"
+              ;;
+          esac
 
       # rust-cache caches `~/.cargo` (registry index + cache + git
       # deps) AND `target/` keyed off Cargo.lock + rustc + env-var
@@ -205,12 +225,39 @@ jobs:
 
       - uses: mozilla-actions/sccache-action@v0.0.10
 
-      - name: install mold linker
+      # See lint-job linker step above for the mold → wild → default
+      # rationale. Same logic here.
+      - name: install fast linker (mold → wild → default ld)
         run: |
-          command -v mold >/dev/null 2>&1 || sudo apt-get install -y --no-install-recommends mold
-          # ripgrep must be on PATH for shell_rewrite_e2e::find_swaps_to_ripgrep —
-          # the rewriter only emits the find→rg swap when `rg` is found on PATH.
-          command -v rg >/dev/null 2>&1 || sudo apt-get install -y --no-install-recommends ripgrep
+          LINKER=default
+          if command -v mold >/dev/null 2>&1 || \
+             sudo apt-get install -y --no-install-recommends mold 2>/dev/null; then
+            LINKER=mold
+          elif command -v wild >/dev/null 2>&1 || \
+               sudo apt-get install -y --no-install-recommends wild 2>/dev/null; then
+            LINKER=wild
+          else
+            echo "::warning::mold + wild install both failed (likely ENOSPC); using default ld"
+          fi
+          case "$LINKER" in
+            mold|wild)
+              echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=-C link-arg=-fuse-ld=$LINKER" >> "$GITHUB_ENV"
+              ;;
+            default)
+              echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS=" >> "$GITHUB_ENV"
+              ;;
+          esac
+
+      # ripgrep is required by shell_rewrite_e2e::find_swaps_to_ripgrep
+      # (the rewriter only emits the find→rg swap when `rg` is found on
+      # PATH). Best-effort install: if apt is wedged on ENOSPC, warn
+      # and continue — that one test will then fail with a meaningful
+      # diff instead of this step failing with an apt error.
+      - name: install ripgrep (best-effort)
+        run: |
+          command -v rg >/dev/null 2>&1 || \
+            sudo apt-get install -y --no-install-recommends ripgrep || \
+            echo "::warning::ripgrep install failed; find_swaps_to_ripgrep may fail later with a meaningful diff"
 
       # See lint-job comment above for why this is the only cache
       # layer needed at the dependency-blob level. The `ci-ubuntu`
@@ -224,16 +271,6 @@ jobs:
           cache-on-failure: "true"
           cache-all-crates: "true"
 
-      - name: install cargo-nextest (JUnit reporter)
-        run: |
-          # Use the cached binary if present; compile from source otherwise.
-          # taiki-e/install-action@v2 was consistently failing on this runner
-          # (exit 1 in <100ms before any output) — cargo install is slower but
-          # always works from the registry without hitting GitHub Releases.
-          if ! cargo nextest --version &>/dev/null 2>&1; then
-            cargo install cargo-nextest --locked
-          fi
-
       # Scope policy:
       #   - push to main → full workspace (covers any cross-crate fallout)
       #   - PR → only the crates touched by the diff. Faster feedback, and
@@ -242,6 +279,12 @@ jobs:
       # Same workspace-member filter as the lint job — see comment there
       # for rationale. crates/ paths that aren't workspace members
       # (e.g. crabcc-viz) are dropped before nextest sees them.
+      #
+      # Runs BEFORE `install cargo-nextest` so we can skip the multi-hundred-
+      # MB nextest compile entirely for docs/CI-only PRs (where scope is
+      # empty and nextest never runs). On a disk-pressured Hetzner runner
+      # the install can OOM-kill / saturate / hang the job; for any PR
+      # whose nextest step would skip anyway, just don't install it.
       - name: detect changed crates
         id: scope
         shell: bash
@@ -277,6 +320,20 @@ jobs:
           else
             echo "scope=--workspace" >> "$GITHUB_OUTPUT"
             echo "smoke=1" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: install cargo-nextest (JUnit reporter)
+        # Skip the install entirely when scope is empty -- a docs/CI-only PR
+        # never runs nextest, no need to pay the compile cost (or risk the
+        # runner-disk wedge described above).
+        if: steps.scope.outputs.scope != ''
+        run: |
+          # Use the cached binary if present; compile from source otherwise.
+          # taiki-e/install-action@v2 was consistently failing on this runner
+          # (exit 1 in <100ms before any output) — cargo install is slower but
+          # always works from the registry without hitting GitHub Releases.
+          if ! cargo nextest --version &>/dev/null 2>&1; then
+            cargo install cargo-nextest --locked
           fi
 
       - name: cargo nextest (scoped)
