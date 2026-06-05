@@ -93,6 +93,18 @@ pub enum DeleteSel {
     All,
 }
 
+/// A scheduled reminder — the crabcc equivalent of `send_later`.
+/// Created by `Palace::remind_set`; consumed atomically by `remind_poll`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Reminder {
+    pub id: i64,
+    /// Absolute epoch seconds when the reminder becomes due.
+    pub due_at: i64,
+    pub message: String,
+    pub created_at: i64,
+    pub delivered: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HealthStatus {
     Ok,

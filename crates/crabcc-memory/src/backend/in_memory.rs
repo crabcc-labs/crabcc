@@ -17,6 +17,8 @@ struct Inner {
     next_id: i64,
     rows: HashMap<DrawerId, Stored>,
     sha_index: HashMap<(String, String), DrawerId>,
+    next_reminder_id: i64,
+    reminders: Vec<Reminder>,
 }
 
 struct Stored {
@@ -258,6 +260,53 @@ impl Backend for InMemoryBackend {
             rows.truncate(limit);
         }
         Ok(rows)
+    }
+
+    fn remind_set(&self, due_at: i64, message: &str) -> Result<i64> {
+        let mut inner = self.inner.lock().map_err(|_| anyhow!("poisoned mutex"))?;
+        inner.next_reminder_id += 1;
+        let id = inner.next_reminder_id;
+        inner.reminders.push(Reminder {
+            id,
+            due_at,
+            message: message.to_string(),
+            created_at: now_secs(),
+            delivered: false,
+        });
+        Ok(id)
+    }
+
+    fn remind_poll(&self) -> Result<Vec<Reminder>> {
+        let mut inner = self.inner.lock().map_err(|_| anyhow!("poisoned mutex"))?;
+        let now = now_secs();
+        let mut due = Vec::new();
+        for r in &mut inner.reminders {
+            if r.due_at <= now && !r.delivered {
+                r.delivered = true;
+                due.push(r.clone());
+            }
+        }
+        due.sort_unstable_by_key(|r| r.due_at);
+        Ok(due)
+    }
+
+    fn remind_list(&self, include_delivered: bool) -> Result<Vec<Reminder>> {
+        let inner = self.inner.lock().map_err(|_| anyhow!("poisoned mutex"))?;
+        let mut rows: Vec<Reminder> = inner
+            .reminders
+            .iter()
+            .filter(|r| include_delivered || !r.delivered)
+            .cloned()
+            .collect();
+        rows.sort_unstable_by_key(|r| r.due_at);
+        Ok(rows)
+    }
+
+    fn remind_delete(&self, id: i64) -> Result<bool> {
+        let mut inner = self.inner.lock().map_err(|_| anyhow!("poisoned mutex"))?;
+        let before = inner.reminders.len();
+        inner.reminders.retain(|r| r.id != id);
+        Ok(inner.reminders.len() < before)
     }
 }
 

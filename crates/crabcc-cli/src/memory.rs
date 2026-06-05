@@ -13,6 +13,7 @@ use crabcc_memory::{
     mine::{project::MineProjectOpts, sessions::MineSessionsOpts},
     DeleteSel, Palace, SearchMode, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_PAIR_BYTES,
 };
+use serde_json::json;
 use std::path::{Path, PathBuf};
 
 #[derive(Subcommand, Debug)]
@@ -96,6 +97,13 @@ pub enum MemoryCmd {
         #[command(subcommand)]
         kind: MineKind,
     },
+    /// Schedule, poll, list, or cancel reminders — the crabcc `send_later`
+    /// primitive. Works across Claude Code, OpenCode, Cursor, Nullclaw, OMP,
+    /// and any agent that can call MCP tools or run shell hooks.
+    Remind {
+        #[command(subcommand)]
+        action: RemindCmd,
+    },
     /// Ingest URLs and/or freeform text into memory. Mirrors the HTTP
     /// `POST /api/memory/ingest` surface so the CLI and dashboard agree
     /// on drawer ids (`web:<hash>` for URLs, `text:<hash>` for text).
@@ -116,6 +124,46 @@ pub enum MemoryCmd {
         /// `cli-ingest`; the HTTP path uses `web-ingest`.
         #[arg(long, default_value = "cli-ingest")]
         source: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum RemindCmd {
+    /// Schedule a reminder. Use --in for a relative delay or --at for an
+    /// absolute epoch / RFC3339 timestamp.
+    ///
+    /// Examples:
+    ///   crabcc memory remind set --in 1h "check PR #722"
+    ///   crabcc memory remind set --in 30m "run benchmarks"
+    ///   crabcc memory remind set --at 2026-06-06T09:00:00Z "standup"
+    Set {
+        /// Reminder message surfaced when the reminder fires.
+        message: String,
+        /// Relative delay: '1h', '30m', '2d', '1h30m', '90s'.
+        #[arg(long = "in", value_name = "DELAY", conflicts_with = "at")]
+        delay: Option<String>,
+        /// Absolute timestamp: epoch seconds or RFC3339 (e.g. 2026-01-15T12:00:00Z).
+        #[arg(long, value_name = "TIMESTAMP", conflicts_with = "delay")]
+        at: Option<String>,
+    },
+    /// Atomically fetch all due reminders and mark them delivered.
+    /// Returns [] when nothing is due. Wire as a PostToolUse hook or
+    /// PROMPT_COMMAND to get send_later behaviour in any agent.
+    Poll,
+    /// List scheduled reminders without marking them delivered.
+    List {
+        /// Include already-delivered reminders.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Cancel a scheduled reminder by id.
+    Delete { id: i64 },
+    /// Print per-agent hook config snippets for wiring remind_poll automatically.
+    /// Covers: claude-code, opencode, cursor, nullclaw, omp, shell, generic-mcp.
+    Hooks {
+        /// Filter output to a single agent.
+        #[arg(long, value_name = "AGENT")]
+        agent: Option<String>,
     },
 }
 
@@ -402,6 +450,38 @@ pub fn run(root: &Path, cmd: MemoryCmd) -> Result<()> {
                 serde_json::json!({"ingested": ingested, "errors": errors, "stats": stats})
             );
         }
+        MemoryCmd::Remind { action } => {
+            let palace = Palace::open(root)?;
+            match action {
+                RemindCmd::Set { message, delay, at } => {
+                    let due_at = if let Some(d) = delay {
+                        parse_remind_delay(&d)?
+                    } else if let Some(a) = at {
+                        parse_remind_delay(&a)?
+                    } else {
+                        anyhow::bail!("specify either --in <delay> or --at <timestamp>");
+                    };
+                    let id = palace.remind_set(due_at, &message)?;
+                    println!("{}", json!({"id": id, "due_at": due_at}));
+                }
+                RemindCmd::Poll => {
+                    let due = palace.remind_poll()?;
+                    println!("{}", sonic_rs::to_string(&due)?);
+                }
+                RemindCmd::List { all } => {
+                    let reminders = palace.remind_list(all)?;
+                    println!("{}", sonic_rs::to_string(&reminders)?);
+                }
+                RemindCmd::Delete { id } => {
+                    let deleted = palace.remind_delete(id)?;
+                    println!("{}", json!({"deleted": deleted}));
+                }
+                RemindCmd::Hooks { agent } => {
+                    let out = remind_hooks_json(agent.as_deref());
+                    println!("{}", serde_json::to_string_pretty(&out)?);
+                }
+            }
+        }
         MemoryCmd::Mine { kind } => {
             let session = std::env::var("TERM_SESSION_ID").ok();
             let report = match kind {
@@ -473,6 +553,105 @@ pub fn auto_capture_inner(root: &Path, op: &str, query: &str, count: usize, sess
 
 pub fn env_auto_capture_enabled() -> bool {
     std::env::var("CRABCC_AUTO_MEMORY").ok().as_deref() == Some("1")
+}
+
+/// Parse a user-supplied delay/timestamp into an absolute epoch seconds value.
+/// Accepts: bare integer (epoch), RFC3339 string, or human duration ("1h30m").
+fn parse_remind_delay(s: &str) -> Result<i64> {
+    if let Ok(n) = s.parse::<i64>() {
+        return Ok(n);
+    }
+    if s.contains('T') {
+        return time_parse_rfc3339(s)
+            .ok_or_else(|| anyhow!("invalid timestamp {s:?}; use epoch seconds or RFC3339"));
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let mut total: i64 = 0;
+    let mut num = String::new();
+    for ch in s.chars() {
+        if ch.is_ascii_digit() {
+            num.push(ch);
+        } else {
+            let n: i64 = num
+                .parse()
+                .map_err(|_| anyhow!("invalid delay {s:?}"))?;
+            num.clear();
+            total += match ch {
+                'd' => n * 86_400,
+                'h' => n * 3_600,
+                'm' => n * 60,
+                's' => n,
+                _ => anyhow::bail!("unknown unit {ch:?} in {s:?}; use d/h/m/s"),
+            };
+        }
+    }
+    if !num.is_empty() || total == 0 {
+        anyhow::bail!("invalid delay {s:?}; use '1h30m', '2d', '45m', '90s'");
+    }
+    Ok(now + total)
+}
+
+/// Per-agent hook config for wiring `memory.remind_poll` as a `send_later`
+/// primitive. Identical logic to the MCP module's version; duplicated here
+/// to avoid a shared-utils crate for a single function.
+fn remind_hooks_json(agent: Option<&str>) -> serde_json::Value {
+    let poll_cmd = "r=$(crabcc memory remind poll 2>/dev/null); \
+                    [ \"$r\" = '[]' ] || [ -z \"$r\" ] || \
+                    printf '%s\\n' \"$r\" | jq -r '.[] | \"\\u23f0 Reminder: \" + .message'";
+    let shell_snippet = "_crabcc_remind() {\n\
+        \x20 local r; r=$(crabcc memory remind poll 2>/dev/null) || return\n\
+        \x20 [ \"$r\" = '[]' ] || [ -z \"$r\" ] && return\n\
+        \x20 printf '%s\\n' \"$r\" | jq -r '.[] | \"\\u23f0 \" + .message' 2>/dev/null || true\n\
+        }\n\
+        # bash:\n\
+        PROMPT_COMMAND=\"${PROMPT_COMMAND:+$PROMPT_COMMAND; }_crabcc_remind\"\n\
+        # zsh:\n\
+        autoload -Uz add-zsh-hook && add-zsh-hook precmd _crabcc_remind";
+    let generic = "Wire crabcc as an MCP server (command: \"crabcc\", args: [\"--mcp\"]) \
+                   and call memory.remind_poll at session start.";
+    let all = json!({
+        "claude-code": {
+            "description": "PostToolUse hook — fires on every tool call",
+            "merge_into": "~/.claude/settings.json",
+            "config": {"hooks": {"PostToolUse": [{"matcher": "", "hooks": [{"type": "command", "command": poll_cmd}]}]}}
+        },
+        "opencode": {
+            "description": "System-prompt instruction for OpenCode",
+            "snippet": "Call memory.remind_poll at the start of each session and display any returned reminders."
+        },
+        "cursor": {
+            "description": "Agent rule for Cursor",
+            "merge_into": ".cursor/rules.md",
+            "snippet": "At the start of each conversation call memory.remind_poll and surface any returned reminders."
+        },
+        "nullclaw": {
+            "description": "Session-start hook for Nullclaw",
+            "snippet": "Invoke memory.remind_poll via the crabcc MCP server at session start."
+        },
+        "omp": {
+            "description": "OMP hook or shell prompt integration",
+            "snippet": shell_snippet
+        },
+        "shell": {
+            "description": "PROMPT_COMMAND / precmd — fires on every new prompt",
+            "merge_into": "~/.bashrc or ~/.zshrc",
+            "snippet": shell_snippet
+        },
+        "generic-mcp": {
+            "description": "Any MCP-compatible agent",
+            "snippet": generic
+        }
+    });
+    match agent {
+        Some(name) => all.get(name).cloned().unwrap_or_else(|| json!({
+            "error": format!("unknown agent {name:?}"),
+            "valid": ["claude-code","opencode","cursor","nullclaw","omp","shell","generic-mcp"]
+        })),
+        None => all,
+    }
 }
 
 /// FNV-1a 64-bit. Drawer source-ids are application-level identity

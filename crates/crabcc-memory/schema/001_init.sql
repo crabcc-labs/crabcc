@@ -152,3 +152,15 @@ CREATE INDEX IF NOT EXISTS idx_session_reads_served_at ON session_reads(served_a
 -- Default wing — created lazily on first drawer insert if absent. Schema
 -- doesn't seed it because INSERT OR IGNORE there would race with concurrent
 -- callers; the Backend handles the get-or-create dance under a transaction.
+
+-- send_later primitive: scheduled reminders polled by agents via memory.remind_poll.
+-- Standalone table (no FK into drawers) so remind_poll is a single fast query.
+-- Composite index covers the hot poll path (due_at <= now AND delivered = 0).
+CREATE TABLE IF NOT EXISTS reminders (
+    id          INTEGER PRIMARY KEY,
+    due_at      INTEGER NOT NULL,
+    message     TEXT    NOT NULL,
+    created_at  INTEGER NOT NULL,
+    delivered   INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(due_at, delivered);

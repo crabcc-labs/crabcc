@@ -46,6 +46,27 @@ pub trait Backend: Send + Sync {
     /// Order is implementation-defined but stable per call (id ASC for SQLite).
     /// `limit == 0` means unlimited.
     fn list_drawers(&self, wing: Option<&str>, limit: usize) -> Result<Vec<Drawer>>;
+
+    // ── remind (send_later primitive) ────────────────────────────────────────
+
+    /// Schedule a reminder at `due_at` (epoch seconds). Returns the new reminder id.
+    fn remind_set(&self, _due_at: i64, _message: &str) -> Result<i64> {
+        anyhow::bail!("remind_set not supported by this backend")
+    }
+    /// Atomically fetch all due reminders (due_at ≤ now, undelivered) and mark
+    /// them delivered. Returns an empty vec when nothing is due.
+    /// Call this on every tool-use via a PostToolUse hook to emulate send_later.
+    fn remind_poll(&self) -> Result<Vec<Reminder>> {
+        anyhow::bail!("remind_poll not supported by this backend")
+    }
+    /// List reminders. Pass `include_delivered = true` to include already-fired ones.
+    fn remind_list(&self, _include_delivered: bool) -> Result<Vec<Reminder>> {
+        anyhow::bail!("remind_list not supported by this backend")
+    }
+    /// Cancel a reminder by id. Returns `true` if it existed and was removed.
+    fn remind_delete(&self, _id: i64) -> Result<bool> {
+        anyhow::bail!("remind_delete not supported by this backend")
+    }
 }
 
 /// Lexical-search input — text query plus the same wing/room/limit knobs as
