@@ -35,7 +35,23 @@ use markdown::{to_mdast, ParseOptions};
 /// `Result<Node, String>`) are wrapped as `anyhow::Error` so callers
 /// compose with the rest of `crabcc-core`.
 pub fn parse(input: &str) -> Result<Node> {
-    to_mdast(input, &ParseOptions::gfm())
+    // markdown 1.0.0's `to_mdast` panics (index OOB in its setext-heading AST
+    // builder) on inputs like `a\n=\n=\na\n=` instead of returning Err.
+    // `catch_unwind` restores this function's `Result` contract — and
+    // `sanitize_drawer_body`'s no-panic fallback — for unwinding builds (tests
+    // and any consumer not compiled `panic="abort"`).
+    //
+    // CAVEAT: crabcc's release profile sets `panic = "abort"`, where
+    // `catch_unwind` is a no-op — a release build that also enables the
+    // (default-off) `markdown` feature can still abort here. Shipped builds
+    // don't enable `markdown`, so they're unaffected; the real fix is upstream
+    // in markdown-rs. See the `parse_and_sanitize_survive_adversarial_input`
+    // regression test (runs under the unwinding test profile).
+    let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        to_mdast(input, &ParseOptions::gfm())
+    }))
+    .map_err(|_| anyhow::anyhow!("markdown parser panicked"))?;
+    parsed
         .map_err(|e| anyhow::anyhow!("markdown parse: {e}"))
         .context("md::parse")
 }
@@ -189,6 +205,21 @@ fn collapse_blank_lines(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_and_sanitize_survive_adversarial_input() {
+        // Regression (fuzz `md_parse_sanitize`): this 21-byte input panicked
+        // markdown 1.0.0's `to_mdast` (index OOB in its AST builder). After
+        // containment, both `parse` (returns Ok/Err) and `sanitize_drawer_body`
+        // (falls back) must return without panicking.
+        let raw: &[u8] = &[
+            0x2a, 0x3a, 0x2a, 0x2a, 0x3a, 0x2a, 0x8d, 0x0a, 0x3d, 0x0a, 0x3d, 0x0a, 0x8d, 0x8d,
+            0x0a, 0x3d, 0x0a, 0x3d, 0x0a, 0x8d, 0x09,
+        ];
+        let s = String::from_utf8_lossy(raw);
+        let _ = parse(&s);
+        let _ = sanitize_drawer_body(&s);
+    }
 
     // ---- CommonMark spec compliance — small representative set ---------
 
