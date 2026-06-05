@@ -157,6 +157,15 @@ jobs:
             exit 1
           fi
           echo "disk: ${USE}% blocks / ${IUSE}% inodes — OK"
+
+      # mold linker — installed up front (off the build hot path, right
+      # after the disk guard ensured headroom) so an apt failure surfaces
+      # at prep rather than after checkout + cache restore are paid for.
+      # Apache-2.0, ~3-5x faster link than lld on big debug/ci builds; apt
+      # install is sub-second. `command -v mold ||` keeps it runner-agnostic
+      # (skipped where mold exists or there's no apt, e.g. NixOS bench-node).
+      - name: install mold linker
+        run: command -v mold >/dev/null 2>&1 || sudo apt-get install -y --no-install-recommends mold
       - uses: actions/checkout@v6
         with:
           # Full history so the PR diff (base..head) resolves. Must be a literal
@@ -170,15 +179,6 @@ jobs:
           components: clippy
 
       - uses: mozilla-actions/sccache-action@v0.0.10
-
-      # mold linker — Apache-2.0, ~3-5x faster link than lld on big
-      # debug + ci profile builds. Apt install is sub-second. The
-      # `command -v mold ||` guard makes this runner-agnostic: on a
-      # self-hosted runner that already provides mold (e.g. the NixOS
-      # bench-node), the apt-get is skipped instead of erroring on a
-      # box with no apt.
-      - name: install mold linker
-        run: command -v mold >/dev/null 2>&1 || sudo apt-get install -y --no-install-recommends mold
 
       # rust-cache caches `~/.cargo` (registry index + cache + git
       # deps) AND `target/` keyed off Cargo.lock + rustc + env-var
@@ -311,6 +311,18 @@ jobs:
             exit 1
           fi
           echo "disk: ${USE}% blocks / ${IUSE}% inodes — OK"
+
+      # mold + ripgrep — installed up front (off the build hot path, right
+      # after the disk guard ensured headroom) so an apt failure surfaces at
+      # prep rather than after checkout + cache restore are paid for.
+      # `command -v` keeps it runner-agnostic (skipped where the tool exists
+      # or there's no apt, e.g. the NixOS bench-node).
+      - name: install mold + ripgrep
+        run: |
+          command -v mold >/dev/null 2>&1 || sudo apt-get install -y --no-install-recommends mold
+          # ripgrep must be on PATH for shell_rewrite_e2e::find_swaps_to_ripgrep —
+          # the rewriter only emits the find→rg swap when `rg` is found on PATH.
+          command -v rg >/dev/null 2>&1 || sudo apt-get install -y --no-install-recommends ripgrep
       - uses: actions/checkout@v6
         with:
           # Full history so the PR diff (base..head) resolves. Must be a literal
@@ -322,13 +334,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: mozilla-actions/sccache-action@v0.0.10
-
-      - name: install mold linker
-        run: |
-          command -v mold >/dev/null 2>&1 || sudo apt-get install -y --no-install-recommends mold
-          # ripgrep must be on PATH for shell_rewrite_e2e::find_swaps_to_ripgrep —
-          # the rewriter only emits the find→rg swap when `rg` is found on PATH.
-          command -v rg >/dev/null 2>&1 || sudo apt-get install -y --no-install-recommends ripgrep
 
       # See lint-job comment above for why this is the only cache
       # layer needed at the dependency-blob level. The `ci-ubuntu`
