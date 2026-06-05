@@ -19,8 +19,8 @@
 //! responsible for the meaning, e.g. `&["call"]` for call-chain blast,
 //! `&[]` for everything.
 
-use crate::store::Store;
-use crate::types::{Symbol, SymbolKind};
+use crate::store::{kind_from_str, Store};
+use crate::types::Symbol;
 use anyhow::Result;
 use rusqlite::params_from_iter;
 use serde::Serialize;
@@ -121,7 +121,7 @@ fn hydrate_symbols(store: &Store, ids: Vec<i64>) -> Result<Vec<Symbol>> {
     let conn = store.conn();
     let placeholders: Vec<String> = (0..ids.len()).map(|i| format!("?{}", i + 1)).collect();
     let sql = format!(
-        "SELECT s.name, s.kind, s.signature, NULL, f.path, s.line_start, s.line_end, s.visibility \
+        "SELECT s.name, s.kind, s.signature, NULL, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc \
          FROM symbols s JOIN files f ON s.file_id = f.id \
          WHERE s.id IN ({})",
         placeholders.join(",")
@@ -135,7 +135,9 @@ fn hydrate_symbols(store: &Store, ids: Vec<i64>) -> Result<Vec<Symbol>> {
         Ok(Symbol {
             name: row.get(0)?,
             kind: kind_from_str(&row.get::<_, String>(1)?),
-            signature: row.get(2)?,
+            // Decode honoring `signature_enc` (col 8); a raw `row.get(2)` would
+            // error on an FSST-encoded BLOB under the default `compress` feature.
+            signature: store.signature_from_row(row, 2, 8)?,
             parent: row.get(3)?,
             file: row.get(4)?,
             line_start: row.get(5)?,
@@ -144,23 +146,6 @@ fn hydrate_symbols(store: &Store, ids: Vec<i64>) -> Result<Vec<Symbol>> {
         })
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-}
-
-fn kind_from_str(s: &str) -> SymbolKind {
-    match s {
-        "function" => SymbolKind::Function,
-        "method" => SymbolKind::Method,
-        "class" => SymbolKind::Class,
-        "struct" => SymbolKind::Struct,
-        "enum" => SymbolKind::Enum,
-        "trait" => SymbolKind::Trait,
-        "interface" => SymbolKind::Interface,
-        "const" => SymbolKind::Const,
-        "var" => SymbolKind::Var,
-        "type" => SymbolKind::Type,
-        "macro" => SymbolKind::Macro,
-        _ => SymbolKind::Function,
-    }
 }
 
 #[cfg(test)]
@@ -226,6 +211,30 @@ mod tests {
         );
         assert_eq!(r.depth_map[&3], 2);
         assert_eq!(r.affected.len(), 3, "b, c, d expected: {:?}", r.affected);
+    }
+
+    #[test]
+    #[cfg(feature = "compress")]
+    fn blast_radius_hydrates_fsst_encoded_signature() {
+        // Regression: hydrate_symbols read `s.signature` raw, which errors with
+        // InvalidColumnType on an FSST-encoded BLOB (signature_enc=1) under the
+        // default `compress` feature — failing the whole query. With no codec
+        // loaded, `signature_from_row` returns None for such a row instead.
+        let (_dir, store) = fixture();
+        store
+            .conn()
+            .execute(
+                "UPDATE symbols SET signature = X'deadbeef', signature_enc = 1 WHERE id = 2",
+                [],
+            )
+            .unwrap();
+        // depth 5 from a hydrates b (id 2). Old code: Err(InvalidColumnType).
+        let r = blast_radius(&store, 1, 5, &[]).unwrap();
+        assert!(
+            r.affected.iter().any(|s| s.name == "b"),
+            "b must hydrate despite its encoded signature: {:?}",
+            r.affected
+        );
     }
 
     #[test]

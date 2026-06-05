@@ -741,7 +741,11 @@ impl Store {
     /// Decode a row's `signature` column, honoring `signature_enc`. Centralized
     /// so all three read paths share identical semantics — the alternative was
     /// copy-pasting the same branch into every `query_map` callback.
-    fn signature_from_row(
+    /// Decode a symbol's signature from a query row, honoring the FSST
+    /// `signature_enc` flag. `pub(crate)` so the `query::{blast_radius, why}`
+    /// hydrators can reuse it instead of reading `s.signature` raw (a raw read
+    /// errors on an FSST-encoded BLOB under the default `compress` feature).
+    pub(crate) fn signature_from_row(
         &self,
         row: &rusqlite::Row,
         sig_idx: usize,
@@ -955,7 +959,10 @@ fn kind_str(k: SymbolKind) -> &'static str {
     }
 }
 
-fn kind_from_str(s: &str) -> SymbolKind {
+/// Parse a stored `kind` string into a [`SymbolKind`]. `pub(crate)` so the
+/// `query` hydrators share this one implementation (with its sentinel guard)
+/// rather than keeping divergent copies.
+pub(crate) fn kind_from_str(s: &str) -> SymbolKind {
     match s {
         "method" => SymbolKind::Method,
         "class" => SymbolKind::Class,
