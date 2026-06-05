@@ -9,10 +9,9 @@
 #   -mcpu=apple-m3 — M3-tuned codegen (fused ops, crypto ext, SVE2 hints)
 #   hugepages   — 2 MB pages for V8 code space, reduces JIT TLB pressure
 #   ptr-compress — V8 heap pointers 64→32 bit; ~30% heap savings (4 GB cap)
-#   semi-space  — young-gen sized to 128 MB per semi-space (256 MB total);
-#                 reduces premature promotion and Old-Space GC frequency.
-#                 Baked in via NODE_OPTIONS so it applies to all node invocations.
-#                 Override at runtime: NODE_OPTIONS=--max-semi-space-size=64 node ...
+#   semi-space  — 1 GB per semi-space (2 GB young gen); reduces premature
+#                 promotion and Old-Space GC frequency on high-alloc workloads.
+#                 Baked via NODE_OPTIONS; override at runtime if needed.
 #   shared deps — system libuv + zlib; smaller binary, OS-managed updates
 #   PGO         — NOTE: not applied here. Node.js PGO requires two separate
 #                 configure+build phases (--enable-pgo-generate then
@@ -71,11 +70,8 @@ in {
       ];
 
     postInstall = (old.postInstall or "") + ''
-      # Bake a 256 MB young generation (128 MB per semi-space) into every
-      # node invocation from this image.  --set-default means the user can
-      # still override with a custom NODE_OPTIONS at runtime.
       wrapProgram $out/bin/node \
-        --set-default NODE_OPTIONS "--max-semi-space-size=128"
+        --set-default NODE_OPTIONS "--max-semi-space-size=1024"
     '';
 
     env = (old.env or { }) // {
