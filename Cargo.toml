@@ -15,6 +15,7 @@ exclude = [
 ]
 members = [
     "crates/crabcc-compact",
+    "crates/crabcc-compact-serve",
     "crates/crabcc-cli",
     "crates/crabcc-core",
     "crates/crabcc-fetch",
