@@ -7,5 +7,8 @@
 # to get the newest base packages before our overlay applies.
 { ... }@args:
 import <nixpkgs> (args // {
-  overlays = [ (import ../overlays/python-optimized.nix) ];
+  overlays = [
+    (import ../overlays/python-optimized.nix) # python315t-optimized
+    (import ../overlays/node-optimized.nix)   # node-optimized (Node.js 26 + ThinLTO)
+  ];
 })
