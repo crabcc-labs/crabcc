@@ -85,6 +85,11 @@ claude mcp add crabcc -- crabcc --mcp
 - Skill at `skill/crabcc/SKILL.md` — auto-routes grep / find-shaped questions
   to the right `crabcc` subcommand. Symlinked into `~/.claude/skills/crabcc/`
   by `crabcc install-claude`.
+- Skill at `skill/stop-slop/SKILL.md` — prose hygiene applied by **all** agents
+  (commit messages, PR bodies, docs). Tool-agnostic; see
+  [`AGENTS.md`](./AGENTS.md) → "Prose hygiene". Vendored from
+  <https://github.com/hardikpandya/stop-slop> (MIT,
+  `skill/stop-slop/PROVENANCE.md`).
 
 ## Memory layer — current state
 
