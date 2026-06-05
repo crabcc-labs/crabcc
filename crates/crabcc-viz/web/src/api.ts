@@ -126,6 +126,8 @@ export type ReindexReport = Schemas["ReindexReport"];
 export type TelemetryEvent = Schemas["TelemetryEvent"];
 export type TelemetrySource = Schemas["TelemetrySource"];
 export type TelemetrySnapshot = Schemas["TelemetrySnapshot"];
+export type NetlogResponse = Schemas["NetlogResponse"];
+export type NetlogEvent = Schemas["NetlogEvent"];
 export type OtlpHealth = Schemas["OtlpHealth"];
 export type AgentProfileEntry = Schemas["AgentProfileEntry"];
 export type AgentKillRow = Schemas["AgentKillRow"];
@@ -178,6 +180,10 @@ export const api = {
   services: () => getJson<DiscoveryReport>("/api/services"),
   reindex: () => postJson<ReindexReport>("/api/reindex"),
   randomQuery: () => postJson<RandomQueryResponse>("/api/random-query"),
+  netlog: (sinceTs?: number, limit = 100) =>
+    getJson<NetlogResponse>(
+      `/api/netlog?since=${sinceTs ?? 0}&limit=${limit}`,
+    ),
   telemetry: (sinceTs?: number, limit = 100) =>
     getJson<TelemetrySnapshot>(
       `/api/telemetry?since=${sinceTs ?? 0}&limit=${limit}`,

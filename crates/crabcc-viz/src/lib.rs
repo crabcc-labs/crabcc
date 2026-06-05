@@ -41,7 +41,7 @@ use crabcc_core::store::Store;
 use graph::{graph_snapshot, EdgeOut, NodeOut};
 use memory_view::memory_recent;
 use query::url_decode;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tiny_http::{Header, Method, Request, Response, Server};
 
 const BUNDLED_INDEX: &str = include_str!("../assets/index.html");
@@ -246,6 +246,12 @@ fn handle(request: Request, root: &Path) -> Result<()> {
         },
         "/api/activity" => match activity_tail(root, query) {
             Ok(activity) => respond_json(request, &activity),
+            Err(e) => respond_status(request, 400, &format!("bad request: {e}")),
+        },
+        // #160 Phase 3 — outbound-egress tail: recent infra HTTP + which hosts
+        // the allowlist blocked. Global (not repo-scoped); reads netlog.jsonl.
+        "/api/netlog" => match netlog_tail(query) {
+            Ok(snap) => respond_json(request, &snap),
             Err(e) => respond_status(request, 400, &format!("bad request: {e}")),
         },
         // Live token-savings block for the dashboard: aggregate
@@ -760,6 +766,103 @@ fn parse_activity_query(raw: &str) -> Result<ActivityQuery> {
         limit,
         repo_filter,
     })
+}
+
+// ── netlog egress tail (#160 Phase 3) ───────────────────────────────────────
+
+const NETLOG_DEFAULT_LIMIT: usize = 100;
+const NETLOG_MAX_LIMIT: usize = 1000;
+
+/// One outbound-request record, matching the JSONL netlog writes to
+/// `netlog.jsonl` (`crabcc_cli::netlog`). `ok=false` is an allowlist violation.
+#[derive(Serialize, Deserialize, Clone)]
+struct NetlogEvent {
+    ts: u64,
+    caller: String,
+    op: String,
+    host: String,
+    #[serde(default)]
+    port: u16,
+    ok: bool,
+}
+
+#[derive(Serialize)]
+struct NetlogSnapshot {
+    cursor: u64,
+    /// Count of returned events that were blocked (host not on the allowlist).
+    violations: usize,
+    events: Vec<NetlogEvent>,
+}
+
+/// `$CRABCC_HOME/netlog.jsonl` (or `~/.crabcc/netlog.jsonl`) — mirrors
+/// `crabcc_cli::netlog::netlog_path()`. Egress is global, not repo-scoped.
+fn netlog_log_path() -> Option<PathBuf> {
+    if let Some(home) = std::env::var_os("CRABCC_HOME") {
+        return Some(PathBuf::from(home).join("netlog.jsonl"));
+    }
+    runtime::home_dir()
+        .ok()
+        .map(|h| h.join(".crabcc").join("netlog.jsonl"))
+}
+
+/// Tail the egress log for the live dashboard. `since`/`limit` mirror
+/// `/api/activity`. A missing log → empty snapshot (netlog may not have fired
+/// yet on a fresh machine), never an error.
+fn netlog_tail(query: &str) -> Result<NetlogSnapshot> {
+    let (since, limit) = parse_since_limit(query, NETLOG_DEFAULT_LIMIT, NETLOG_MAX_LIMIT)?;
+    let body = netlog_log_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_default();
+    Ok(netlog_snapshot_from(&body, since, limit))
+}
+
+/// Pure core of [`netlog_tail`]: parse JSONL `body`, drop events at/below
+/// `since`, sort, cap to `limit`, count violations. Testable without the FS.
+fn netlog_snapshot_from(body: &str, since: u64, limit: usize) -> NetlogSnapshot {
+    let mut events: Vec<NetlogEvent> = body
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| sonic_rs::from_str::<NetlogEvent>(l).ok())
+        .filter(|e| e.ts > since)
+        .collect();
+    events.sort_by_key(|e| e.ts);
+    if events.len() > limit {
+        let drop = events.len() - limit;
+        events.drain(..drop);
+    }
+    let cursor = events.last().map(|e| e.ts).unwrap_or(since);
+    let violations = events.iter().filter(|e| !e.ok).count();
+    NetlogSnapshot {
+        cursor,
+        violations,
+        events,
+    }
+}
+
+/// Shared `since`/`limit` query parser (`limit` clamped to `[1, max]`).
+fn parse_since_limit(raw: &str, default_limit: usize, max_limit: usize) -> Result<(u64, usize)> {
+    let mut since = 0u64;
+    let mut limit = default_limit;
+    for pair in raw.split('&').filter(|s| !s.is_empty()) {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        let v = url_decode(v);
+        match k {
+            "since" => {
+                since = v
+                    .parse::<u64>()
+                    .map_err(|_| anyhow::anyhow!("since must be a Unix-epoch second"))?;
+            }
+            "limit" => {
+                limit = v
+                    .parse::<usize>()
+                    .map_err(|_| anyhow::anyhow!("limit must be a positive integer"))?
+                    .clamp(1, max_limit);
+            }
+            _ => {}
+        }
+    }
+    Ok((since, limit))
 }
 
 // ── /api/seed-graph ─────────────────────────────────────────────────────
@@ -2831,6 +2934,45 @@ mod tests {
     use super::query::parse_query;
     use super::*;
 
+    #[test]
+    fn netlog_snapshot_filters_sorts_and_counts_violations() {
+        // Out-of-order lines, a blank, a comment, and one blocked (ok:false).
+        let body = "\
+{\"ts\":30,\"caller\":\"telegram\",\"op\":\"request\",\"host\":\"api.telegram.org\",\"port\":443,\"ok\":true}
+# comment line is ignored
+
+{\"ts\":10,\"caller\":\"morph\",\"op\":\"request\",\"host\":\"api.morphllm.com\",\"port\":443,\"ok\":true}
+{\"ts\":20,\"caller\":\"x\",\"op\":\"request\",\"host\":\"evil.example.com\",\"port\":443,\"ok\":false}
+";
+        let snap = netlog_snapshot_from(body, 0, 100);
+        assert_eq!(snap.events.len(), 3);
+        // Sorted ascending by ts.
+        assert_eq!(
+            snap.events.iter().map(|e| e.ts).collect::<Vec<_>>(),
+            vec![10, 20, 30]
+        );
+        assert_eq!(snap.cursor, 30);
+        assert_eq!(snap.violations, 1); // the evil.example.com block
+
+        // `since` drops events at/below the cursor; `limit` caps from the end.
+        let snap = netlog_snapshot_from(body, 10, 100);
+        assert_eq!(
+            snap.events.iter().map(|e| e.ts).collect::<Vec<_>>(),
+            vec![20, 30]
+        );
+        let snap = netlog_snapshot_from(body, 0, 1);
+        assert_eq!(snap.events.len(), 1);
+        assert_eq!(snap.events[0].ts, 30, "limit keeps the newest");
+    }
+
+    #[test]
+    fn netlog_snapshot_empty_log_is_ok() {
+        let snap = netlog_snapshot_from("", 5, 100);
+        assert!(snap.events.is_empty());
+        assert_eq!(snap.cursor, 5); // falls back to `since`
+        assert_eq!(snap.violations, 0);
+    }
+
     /// Routes the `serve` HTTP handler matches today. Hand-maintained
     /// alongside the match arms — adding a new `/api/...` endpoint
     /// requires adding it here AND in `crates/crabcc-viz/openapi.yaml`.
@@ -2845,6 +2987,7 @@ mod tests {
         "/api/openapi.yaml",
         "/api/bootstrap",
         "/api/activity",
+        "/api/netlog",
         "/api/savings",
         "/api/agents",
         "/api/agents/{id}/log",

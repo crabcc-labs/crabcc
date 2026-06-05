@@ -78,6 +78,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/netlog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Outbound-egress tail — recent infra HTTP + allowlist violations (#160). */
+        get: operations["getNetlog"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/savings": {
         parameters: {
             query?: never;
@@ -573,6 +590,24 @@ export interface components {
         ActivityResponse: {
             items: components["schemas"]["ActivityHit"][];
         };
+        NetlogEvent: {
+            /** @description Unix-epoch second. */
+            ts: number;
+            /** @description Subsystem that made the request (morph */
+            caller: string;
+            op: string;
+            host: string;
+            port: number;
+            /** @description True if the host is on the allowlist; false = blocked violation. */
+            ok: boolean;
+        };
+        NetlogResponse: {
+            /** @description Max ts returned; resend as `since`. */
+            cursor: number;
+            /** @description Count of returned events that were blocked. */
+            violations: number;
+            events: components["schemas"]["NetlogEvent"][];
+        };
         SavingsBucket: {
             queries: number;
             used_tokens: number;
@@ -948,6 +983,31 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ActivityResponse"];
+                };
+            };
+        };
+    };
+    getNetlog: {
+        parameters: {
+            query?: {
+                /** @description Unix-seconds cursor — return rows newer than this. */
+                since?: components["parameters"]["SinceTs"];
+                /** @description Max rows to return. */
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Egress tail. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NetlogResponse"];
                 };
             };
         };
