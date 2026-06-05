@@ -13,4 +13,7 @@ cargo install --locked cargo-nextest cargo-deny cargo-audit cargo-edit just || t
 # Rust components.
 rustup component add clippy rustfmt rust-src
 
+# Claude Code CLI — requires Node (installed via devcontainer feature above).
+npm install -g @anthropic-ai/claude-code || true
+
 echo "[on-create] done"

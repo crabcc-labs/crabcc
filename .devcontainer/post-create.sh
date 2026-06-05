@@ -7,7 +7,11 @@ echo "[post-create] warming cargo + building crabcc"
 # Build the workspace once so rust-analyzer is responsive immediately.
 cargo build --workspace --all-features || true
 
-# Build the index so `crabcc sym <name>` works in the new shell.
+# Install the crabcc binary onto PATH so `crabcc sym <name>` works in the shell.
+# Uses the release profile (same as `task install`) for a stable, fast binary.
+cargo install --path crates/crabcc-cli || true
+
+# Bootstrap the symbol index for the repo.
 if command -v crabcc >/dev/null 2>&1; then
   crabcc index || true
 fi
