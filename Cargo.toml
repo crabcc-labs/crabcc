@@ -13,6 +13,8 @@ exclude = [
     "editors/zed/crabcc",
 ]
 members = [
+    "crates/crabcc-compact",
+    "crates/crabcc-compact-serve",
     "crates/crabcc-cli",
     "crates/crabcc-core",
     "crates/crabcc-fetch",
@@ -39,6 +41,7 @@ license = "MIT"
 repository = "https://github.com/crabcc-labs/crabcc"
 
 [workspace.dependencies]
+crabcc-compact = { path = "crates/crabcc-compact" }
 crabcc-core = { path = "crates/crabcc-core" }
 crabcc-fetch = { path = "crates/crabcc-fetch" }
 crabcc-mcp = { path = "crates/crabcc-mcp" }
