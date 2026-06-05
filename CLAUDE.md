@@ -19,30 +19,30 @@ subcommand answers the question in fewer tokens.
 crabcc index
 
 # 2. Where is `Store` defined?
-crabcc sym Store
+crabcc lookup sym Store
 # → JSON: {name, kind, signature, file, line_start, line_end, parent, …}
 
 # 3. What calls `Store::open`?
-crabcc callers Store::open
+crabcc lookup callers Store::open
 # → list of {file, line, snippet} hits.
 
 # 4. Just the count? (–99.98 % bytes vs full hits)
-crabcc callers Store::open --count
+crabcc lookup callers Store::open --count
 # → {"count": 17}
 
 # 5. Just the deduped file list? (–99.6 % bytes)
-crabcc refs Store --files-only --limit 20
+crabcc lookup refs Store --files-only --limit 20
 # → {"files": ["crates/crabcc-core/src/store.rs", …]}
 
 # 6. Outline a file before reading the whole thing:
-crabcc outline crates/crabcc-core/src/store.rs
+crabcc lookup outline crates/crabcc-core/src/store.rs
 # → every fn / struct / impl with line ranges.
 
 # 7. Misremembered the name? Levenshtein-2 fuzzy:
-crabcc fuzzy strore        # finds "store"
+crabcc lookup fuzzy strore        # finds "store"
 
 # 8. List indexed source files (replaces `ls -R` / `find`):
-crabcc files --under crates/crabcc-core/src --ext rs --limit 50
+crabcc lookup files --under crates/crabcc-core/src --ext rs --limit 50
 
 # 9. Call-graph queries (built from the populated `edges` table):
 crabcc graph build         # one-shot SQL scan, O(files)
@@ -56,7 +56,7 @@ crabcc memory search "<query>"        # KEYWORD only today; semantic in v2.5
 crabcc memory list --limit 20
 
 # 11. Token-savings ledger:
-crabcc track
+crabcc info track
 
 # 12. Cross-repo (v4.5+): query every indexed repo at once.
 crabcc --workspace lookup sym Store
@@ -73,7 +73,7 @@ subcommand has a matching tool. Wire it up with:
 
 ```bash
 claude mcp add crabcc -- crabcc --mcp
-# or, paste-ready: `crabcc install-claude` (also symlinks the skill +
+# or, paste-ready: `crabcc setup install-claude` (also symlinks the skill +
 # slash command into ~/.claude/, prints SessionStart + PreToolUse hook
 # templates without modifying any global Claude config).
 ```
@@ -84,7 +84,7 @@ claude mcp add crabcc -- crabcc --mcp
 - `/crabcc-upgrade` — check the GitHub repo for a newer release (added in v2.1.0).
 - Skill at `skill/crabcc/SKILL.md` — auto-routes grep / find-shaped questions
   to the right `crabcc` subcommand. Symlinked into `~/.claude/skills/crabcc/`
-  by `crabcc install-claude`.
+  by `crabcc setup install-claude`.
 
 ## Memory layer — current state
 
