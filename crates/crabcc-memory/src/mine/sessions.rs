@@ -102,6 +102,29 @@ fn process_file(
                 continue;
             }
         };
+
+        if evt.r#type.as_deref() == Some("compact") {
+            if std::env::var("CRABCC_COMPACT_HOOK").as_deref() == Ok("1") {
+                let body = format!(
+                    "compact session={} code_len={}",
+                    evt.session_id.as_deref().unwrap_or("unknown"),
+                    evt.original_code.as_deref().map(|s| s.len()).unwrap_or(0),
+                );
+                let source_id = format!("compact:{}:{}", stem, report.scanned);
+                let pre = palace.count()?;
+                palace.remember("compact", Some("raw"), &source_id, &body)?;
+                let post = palace.count()?;
+                if post > pre {
+                    report.record_inserted();
+                } else {
+                    report.record_dedup();
+                }
+            } else {
+                report.record_skip();
+            }
+            continue;
+        }
+
         let role = evt
             .message
             .as_ref()
@@ -175,7 +198,17 @@ fn format_pair(user: &str, assistant: &str, cap: usize) -> String {
 #[derive(Debug, Deserialize)]
 struct RawEvent {
     #[serde(default)]
+    r#type: Option<String>,
+    #[serde(default)]
     message: Option<RawMessage>,
+    // compact entry fields
+    #[serde(default)]
+    original_code: Option<String>,
+    #[serde(default)]
+    session_id: Option<String>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    metadata: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -381,5 +414,30 @@ mod tests {
         assert!(drawers
             .iter()
             .any(|d| d.source_id.starts_with("session:b:")));
+    }
+
+    #[test]
+    fn compact_jsonl_entry_stored_when_hook_enabled() {
+        let dir = tempdir().unwrap();
+        let f = dir.path().join("compact.jsonl");
+        let line = serde_json::json!({
+            "type": "compact",
+            "session_id": "s1",
+            "original_code": "fn main(){}"
+        });
+        std::fs::write(&f, format!("{line}\n")).unwrap();
+        let palace = Palace::ephemeral();
+
+        // SAFETY: test-only env mutation; tests in this module run single-threaded.
+        unsafe { std::env::set_var("CRABCC_COMPACT_HOOK", "1") };
+        let report =
+            mine_sessions(&palace, dir.path(), &MineSessionsOpts::default()).unwrap();
+        unsafe { std::env::remove_var("CRABCC_COMPACT_HOOK") };
+
+        assert_eq!(report.inserted, 1, "compact entry should be stored");
+        let drawers = palace.list_drawers(Some("compact"), 5).unwrap();
+        assert_eq!(drawers.len(), 1);
+        assert!(drawers[0].body.contains("session=s1"));
+        assert!(drawers[0].body.contains("code_len=11"));
     }
 }
