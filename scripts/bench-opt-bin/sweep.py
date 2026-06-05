@@ -289,12 +289,10 @@ def build_leg(leg: Leg, work: Path, jobs: int, profdata_tool: str | None,
     return leg
 
 
-def bolt_runtime_lib() -> str | None:
-    """Locate libbolt_rt_instr.a — the static runtime BOLT links into an
-    `-instrument`ed binary. Distro `llvm-bolt` packages install it under
-    /usr/lib/llvm-NN/lib/, but BOLT derives a bare /usr/lib/ default and aborts
-    with "library not found" there, so we find the real path and pass it
-    explicitly via --runtime-instrumentation-lib."""
+def bolt_runtime_abs() -> str | None:
+    """Absolute path to libbolt_rt_instr.a — the static runtime BOLT links into
+    an `-instrument`ed binary. Distro `llvm-bolt` packages install it under
+    /usr/lib/llvm-NN/lib/, not the bare /usr/lib default BOLT derives."""
     for cfg in ("llvm-config", "llvm-config-18", "llvm-config-17", "llvm-config-16"):
         exe = shutil.which(cfg)
         if not exe:
@@ -315,6 +313,24 @@ def bolt_runtime_lib() -> str | None:
     return None
 
 
+def bolt_runtime_arg() -> str | None:
+    """Value for --runtime-instrumentation-lib. BOLT does not treat this as a
+    plain path: it APPENDS it to its own derived library dir — the install
+    prefix's /lib, taken from the *unresolved* llvm-bolt path (so /usr/lib for
+    /usr/bin/llvm-bolt, NOT the symlink target). An absolute path therefore
+    doubles into /usr/lib/usr/lib/... So locate the runtime and return it
+    relative to that base (e.g. 'llvm-18/lib/libbolt_rt_instr.a')."""
+    lib = bolt_runtime_abs()
+    if not lib:
+        return None
+    bolt = shutil.which("llvm-bolt")
+    base = (Path(bolt).parent.parent / "lib") if bolt else Path("/usr/lib")
+    try:
+        return os.path.relpath(lib, base)
+    except ValueError:  # different drive (Windows); fall back to absolute
+        return lib
+
+
 def bolt_optimize(binary: Path, leg_dir: Path, log) -> Path:
     """Instrument → workload → optimize the ELF layout post-link."""
     inst = leg_dir / f"{BIN}.inst"
@@ -322,7 +338,7 @@ def bolt_optimize(binary: Path, leg_dir: Path, log) -> Path:
     inst_cmd = ["llvm-bolt", str(binary), "-instrument",
                 f"-instrumentation-file={fdata}", "-instrumentation-file-append-pid",
                 "-o", str(inst)]
-    rt_lib = bolt_runtime_lib()
+    rt_lib = bolt_runtime_arg()
     if rt_lib:
         inst_cmd.append(f"--runtime-instrumentation-lib={rt_lib}")
     subprocess.run(inst_cmd, check=True, stdout=log.file, stderr=subprocess.STDOUT)
@@ -738,7 +754,7 @@ def main() -> int:
     profdata = llvm_profdata()
     # BOLT needs the tools *and* the static instrumentation runtime it links in;
     # a distro llvm-bolt with no findable libbolt_rt_instr.a fails mid-instrument.
-    bolt_rt = bolt_runtime_lib()
+    bolt_rt = bolt_runtime_abs()
     bolt_ok = have("llvm-bolt") and have("merge-fdata") and bolt_rt is not None
     need_bolt = any(l.bolt for l in legs)
     need_pgo = any(l.pgo for l in legs)
