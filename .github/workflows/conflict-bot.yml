@@ -185,6 +185,15 @@ jobs:
         with:
           node-version: '20'
 
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.meta.outputs.skip != 'true' && steps.clean.outputs.result == 'conflict'
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.meta.outputs.skip != 'true' && steps.clean.outputs.result == 'conflict'
+        with:
+          shared-key: conflict-bot
+          save-if: 'false'
+
       - name: Install Codex CLI
         if: steps.meta.outputs.skip != 'true' && steps.clean.outputs.result == 'conflict'
         run: npm install -g @openai/codex
