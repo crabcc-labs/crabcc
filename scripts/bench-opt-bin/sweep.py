@@ -487,10 +487,12 @@ def render_report(legs: list[Leg], meta: dict) -> str:
             f"{kib(l.rodata_bytes)} | {kib(l.total_size_bytes)} |")
     if any(l.bolt for l in by_size):
         lines += ["",
-                  "¹ BOLT legs are **unstripped** — stripping a BOLT output corrupts its "
-                  "segment layout (SIGSEGV), so `.symtab`/`.strtab` are retained. The `file` "
-                  "and `total` columns are inflated by that; **`.text`/`.rodata` are the "
-                  "comparable footprint metrics** for BOLT rows."]
+                  "¹ BOLT footprint is **not apples-to-apples** here. BOLT legs are unstripped "
+                  "(stripping a BOLT output corrupts its segment layout → SIGSEGV), so "
+                  "`.symtab`/`.strtab` inflate `file`/`total`; and BOLT **relocates hot code "
+                  "into a new segment**, so the per-section `.text`/`.rodata` from `size -A` "
+                  "undercount it. Treat BOLT footprint as approximate — a dedicated executable "
+                  "PT_LOAD-segment sum would be needed for a fair number."]
 
     # Winner callout + paste-ready config.
     if by_speed:
