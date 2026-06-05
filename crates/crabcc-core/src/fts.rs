@@ -58,15 +58,18 @@ pub struct FuzzyHit {
 /// drops out relative to the old behavior. Distance ≤ 2.
 const MAX_EDIT_DISTANCE: usize = 2;
 
-/// Fuzzy stops scanning once it has gathered `max(limit * FUZZY_SCAN_FACTOR,
-/// FUZZY_SCAN_FLOOR)` candidates (or `limit` exact, distance-0 hits). This
-/// bounds latency when a short/common query matches a large slice of the
-/// corpus — the dominant cost there is computing the DP for every matching
-/// row, and once the result `limit` can be filled there's no point continuing.
-/// The trade-off is approximate ranking *only* in that plentiful-match case
-/// (the top `limit` come from the rows scanned before the bail, not a global
-/// ranking); when matches are sparse the cap is never hit and results are
-/// exact. The floor keeps a healthy pool even for small `limit`s.
+/// Fuzzy's expensive DP scan stops once it has gathered
+/// `max(limit * FUZZY_SCAN_FACTOR, FUZZY_SCAN_FLOOR)` candidates (or `limit`
+/// exact, distance-0 hits). This bounds latency when a short/common query
+/// matches a large slice of the corpus — the dominant cost there is the DP for
+/// every matching row, and once `limit` can be filled there's no point
+/// continuing. The only approximation is among the *fuzzy* (distance 1-2)
+/// matches in that plentiful case: their ranking comes from the rows scanned
+/// before the cap, not a global ranking. **Exact (distance-0) matches are never
+/// dropped** — if the cap is hit before `limit` exact hits, a cheap
+/// equality-only pass (phase 2 in `fuzzy`) recovers any exact matches past the
+/// cap. When matches are sparse the cap is never hit and results are exact.
+/// The floor keeps a healthy pool even for small `limit`s.
 const FUZZY_SCAN_FACTOR: usize = 32;
 const FUZZY_SCAN_FLOOR: usize = 512;
 
@@ -120,7 +123,11 @@ impl Fts {
             .saturating_mul(FUZZY_SCAN_FACTOR)
             .max(FUZZY_SCAN_FLOOR);
         let mut exact = 0usize;
-        for row in &self.rows {
+        // Phase 1 — the full fuzzy scan (the expensive bounded-Levenshtein DP),
+        // bounded by the cap so a query matching a large slice of the corpus
+        // can't blow up latency.
+        let mut rows = self.rows.iter();
+        for row in rows.by_ref() {
             let mut best = lev.distance(&q, &row.name_lower, MAX_EDIT_DISTANCE);
             for t in &row.tokens {
                 if best == Some(0) {
@@ -139,6 +146,23 @@ impl Fts {
                 // a full pool — bounds latency on dense-match queries.
                 if exact >= limit || scored.len() >= cap {
                     break;
+                }
+            }
+        }
+        // Phase 2 — if we bailed on the candidate cap before collecting `limit`
+        // exact hits, a distance-0 match could still be sitting *past* the cap.
+        // Recover those with a cheap string-equality pass over the remaining
+        // rows (no DP), so the bail never silently drops an exact match in
+        // favor of fuzzier ones. This scans disjoint rows from phase 1, and
+        // costs nothing when phase 1 already exhausted the corpus.
+        if exact < limit {
+            for row in rows {
+                if exact >= limit {
+                    break;
+                }
+                if row.name_lower == q || row.tokens.contains(&q) {
+                    scored.push((0, row));
+                    exact += 1;
                 }
             }
         }
@@ -473,6 +497,42 @@ mod tests {
         assert!(hits.iter().all(|h| h.name.starts_with("get_user_")));
         // All are token-exact (distance 0 → score 1.0).
         assert!(hits.iter().all(|h| h.score == 1.0), "expected exact hits");
+    }
+
+    #[test]
+    fn fuzzy_recovers_exact_match_past_the_cap() {
+        // > FUZZY_SCAN_FLOOR (512) distance-2 names, then a single exact match
+        // last. Phase 1's DP scan bails at the cap before reaching the exact;
+        // phase 2's equality recovery must still surface it (and rank it top).
+        let mk = |name: String| crate::types::Symbol {
+            name,
+            kind: SymbolKind::Function,
+            signature: None,
+            parent: None,
+            file: "a.rs".into(),
+            line_start: 1,
+            line_end: 1,
+            visibility: None,
+        };
+        // 520 distinct two-char suffixes → each is distance 2 from "user".
+        let mut syms: Vec<_> = (0..520u32)
+            .map(|i| {
+                let a = (b'a' + (i / 26) as u8) as char;
+                let b = (b'a' + (i % 26) as u8) as char;
+                mk(format!("user{a}{b}"))
+            })
+            .collect();
+        syms.push(mk("user".to_string())); // the exact match, last in row order
+        let fts = Fts::from_symbols(syms);
+
+        let hits = fts.fuzzy("user", 5).unwrap();
+        assert_eq!(
+            hits[0].name,
+            "user",
+            "exact match past the cap must be recovered and ranked first: {:?}",
+            hits.iter().map(|h| (&h.name, h.score)).collect::<Vec<_>>()
+        );
+        assert_eq!(hits[0].score, 1.0);
     }
 
     #[test]
