@@ -1,0 +1,365 @@
+# Conflict resolution bot. Closes the biggest bail leak in merge-bot.yml:
+# when a PR has merge conflicts with main, this bot drives a git rebase
+# and lets Codex resolve each conflict hunk preserving both sides' intent.
+#
+# Triggers:
+#   - pull_request.labeled with `needs-manual-rebase`  (instant response
+#     to merge-bot's bail-conflict path)
+#   - schedule */5  (catches anything missed; eligibility filter scopes
+#     to PRs with the label + no activity in last 5min)
+#   - workflow_dispatch  (manual)
+#
+# Per-PR flow:
+#   1. Checkout PR head with full history
+#   2. Install Codex CLI, point at Aperture (same config as codex-auto-fix.yml)
+#   3. `git rebase origin/<base>`
+#      - clean: push --force-with-lease, remove label, Discord "rebased"
+#      - conflicts: hand off to Codex to resolve each hunk, then continue
+#        the rebase. On success, push + label removal + Discord "resolved".
+#        On Codex bail (declines to guess, schema/Cargo.lock conflicts,
+#        too many files, etc): `git rebase --abort`, comment with reason,
+#        add `conflict-bot-bailed` label, Discord "bailed".
+#
+# Safety hatches:
+#   - `conflict-bot-bailed` label exempts the PR from re-attempts. Human
+#     removes it (or pushes any new commit, which resets the label too)
+#     to re-arm.
+#   - PRs from forks are skipped (no push access to fork heads).
+#   - Codex prompt forbids touching `crates/crabcc-memory/schema/`,
+#     Cargo.lock semantic merges, and >10 conflicted files.
+#   - `--force-with-lease` push, never `--force`.
+#   - Sequential matrix (max-parallel: 1) so two PRs don't fight for the
+#     same workspace state.
+#
+# Secrets:
+#   APERTURE_HOSTNAME    Same as codex-auto-fix.yml
+#   DISCORD_WEBHOOK_URL  Optional; unset = ::warning:: instead of notify
+
+name: Conflict bot
+
+on:
+  pull_request:
+    types: [labeled]
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: 'PR number'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: conflict-bot-${{ github.event.inputs.pr || github.event.pull_request.number || 'scan' }}
+  cancel-in-progress: false
+
+jobs:
+  triage:
+    name: Find PRs needing rebase
+    # Gate the label-event path: only fire when our specific label was added.
+    # Schedule + dispatch fall through to the scan below.
+    if: |
+      github.event_name != 'pull_request' ||
+      github.event.label.name == 'needs-manual-rebase'
+    runs-on: [self-hosted, linux, hetzner]
+    outputs:
+      prs: ${{ steps.find.outputs.prs }}
+    steps:
+      - name: Resolve PR list
+        id: find
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          case "${{ github.event_name }}" in
+            workflow_dispatch)
+              printf 'prs=["%s"]\n' "${{ github.event.inputs.pr }}" >> "$GITHUB_OUTPUT"
+              ;;
+            pull_request)
+              printf 'prs=["%s"]\n' "${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+              ;;
+            schedule)
+              NOW=$(date -u +%s)
+              five_min_ago=$(( NOW - 300 ))
+              prs=$(gh pr list --state open --label needs-manual-rebase --limit 100 \
+                --json number,updatedAt,isDraft,labels,headRepositoryOwner \
+                --jq '
+                  [ .[] |
+                    select(.isDraft == false) |
+                    select((.labels // []) | any(.name == "conflict-bot-bailed") | not) |
+                    select((.updatedAt | fromdateiso8601) < '"$five_min_ago"') |
+                    (.number | tostring)
+                  ]')
+              echo "prs=$prs" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+  rebase:
+    needs: triage
+    if: needs.triage.outputs.prs != '[]' && needs.triage.outputs.prs != ''
+    name: Rebase PR #${{ matrix.pr }}
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        pr: ${{ fromJSON(needs.triage.outputs.prs) }}
+    runs-on: [self-hosted, linux, hetzner]
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+      APERTURE_HOSTNAME: ${{ secrets.APERTURE_HOSTNAME }}
+      REPO: ${{ github.repository }}
+      RUN_ID: ${{ github.run_id }}
+      SERVER: ${{ github.server_url }}
+    steps:
+      - name: Resolve head + fork guard
+        id: meta
+        run: |
+          set -euo pipefail
+          meta=$(gh pr view ${{ matrix.pr }} \
+            --json headRefName,headRefOid,baseRefName,state,isDraft,headRepositoryOwner,labels,title,url)
+          state=$(jq -r '.state' <<<"$meta")
+          draft=$(jq -r '.isDraft' <<<"$meta")
+          head_owner=$(jq -r '.headRepositoryOwner.login // empty' <<<"$meta")
+          base_owner='${{ github.repository_owner }}'
+          if [ "$state" != "OPEN" ] || [ "$draft" = "true" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -n "$head_owner" ] && [ "$head_owner" != "$base_owner" ]; then
+            echo "fork; skip"; echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          {
+            echo "head_ref=$(jq -r '.headRefName' <<<"$meta")"
+            echo "head_sha=$(jq -r '.headRefOid' <<<"$meta")"
+            echo "base_ref=$(jq -r '.baseRefName' <<<"$meta")"
+            echo "title=$(jq -r '.title' <<<"$meta")"
+            echo "url=$(jq -r '.url' <<<"$meta")"
+            echo "skip=false"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Checkout PR head
+        if: steps.meta.outputs.skip != 'true'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.meta.outputs.head_ref }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git
+        if: steps.meta.outputs.skip != 'true'
+        run: |
+          git config user.name 'crabcc-conflict-bot[bot]'
+          git config user.email 'crabcc-conflict-bot@users.noreply.github.com'
+          git fetch origin "${{ steps.meta.outputs.base_ref }}" --quiet
+
+      - name: Try clean rebase first
+        if: steps.meta.outputs.skip != 'true'
+        id: clean
+        run: |
+          set +e
+          git rebase "origin/${{ steps.meta.outputs.base_ref }}" 2>/tmp/rebase.log
+          rc=$?
+          set -e
+          if [ "$rc" = "0" ]; then
+            echo "result=clean" >> "$GITHUB_OUTPUT"
+          else
+            # Did rebase actually start? If yes, we're mid-rebase with
+            # conflicts. If no (e.g. unrelated error), bail without aborting
+            # anything we didn't start.
+            if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then
+              echo "result=conflict" >> "$GITHUB_OUTPUT"
+              echo "mid-rebase with conflicts; handing off to Codex"
+            else
+              echo "result=error" >> "$GITHUB_OUTPUT"
+              cat /tmp/rebase.log
+            fi
+          fi
+
+      - uses: actions/setup-node@v4
+        if: steps.meta.outputs.skip != 'true' && steps.clean.outputs.result == 'conflict'
+        with:
+          node-version: '20'
+
+      - name: Install Codex CLI
+        if: steps.meta.outputs.skip != 'true' && steps.clean.outputs.result == 'conflict'
+        run: npm install -g @openai/codex
+
+      - name: Write Codex config -> Aperture
+        if: steps.meta.outputs.skip != 'true' && steps.clean.outputs.result == 'conflict'
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.codex
+          cat > ~/.codex/config.toml <<EOF
+          model = "gpt-5.5"
+          model_reasoning_effort = "high"
+          model_auto_compact_token_limit = 220000
+          model_provider = "aperture"
+
+          [model_providers.aperture]
+          name = "Tailscale Aperture"
+          base_url = "http://${APERTURE_HOSTNAME}/v1"
+          env_key = "OPENAI_API_KEY"
+          wire_api = "responses"
+          EOF
+
+      - name: Codex resolves conflicts
+        if: steps.meta.outputs.skip != 'true' && steps.clean.outputs.result == 'conflict'
+        env:
+          OPENAI_API_KEY: 'aperture-tailnet'
+        run: |
+          set -euo pipefail
+          PR=${{ matrix.pr }}
+          BASE=${{ steps.meta.outputs.base_ref }}
+          cat > /tmp/codex-prompt.md <<PROMPT
+          You are an automated merge-conflict resolver running on PR #$PR of \`$REPO\`.
+          The repository is mid-rebase: \`git rebase origin/$BASE\` hit conflicts.
+          Read \`CLAUDE.md\` and \`AGENTS.md\` first so you follow repo conventions.
+
+          GOAL
+          - Resolve every conflict hunk preserving the intent of BOTH sides,
+            then complete the rebase. Push is NOT your job -- the workflow
+            handles that after verifying you finished cleanly.
+
+          PROCESS
+          1. \`git status\` to see conflicted files.
+          2. For each conflicted file:
+             - Read it. Markers are \`<<<<<<< HEAD\` / \`=======\` / \`>>>>>>> <sha>\`.
+               HEAD is the base side ($BASE); the other side is the PR commit
+               currently being replayed.
+             - Choose a resolution that satisfies both sides:
+               * Orthogonal changes (different functions / different lines) -> merge both.
+               * Same line, same intent -> prefer the side with more context.
+               * Same line, different intent -> ABORT (see below).
+             - Do NOT introduce new logic beyond what either side wrote.
+             - \`git add <file>\` once resolved.
+          3. \`git rebase --continue\` (or \`git rebase --skip\` if the commit
+             is empty after resolution).
+          4. Repeat steps 1-3 until \`git status\` says nothing to commit AND
+             \`.git/rebase-merge\` and \`.git/rebase-apply\` are gone.
+          5. Final sanity check: \`cargo check --workspace --all-targets\`
+             on the post-rebase tree. If it breaks because of a conflict
+             resolution, ABORT.
+
+          ABORT CONDITIONS -- when ANY of these is true, run \`git rebase --abort\`,
+          write a one-paragraph reason to \`/tmp/conflict-bot-bail.md\`, and STOP:
+            - A conflict you cannot confidently resolve
+            - Any conflicted file under \`crates/crabcc-memory/schema/\`
+              (schema is human-only per CLAUDE.md)
+            - \`Cargo.lock\` conflicts -- those need \`cargo update\`, not hand-merging
+            - Public API signature changes conflicting on both sides
+            - More than 10 distinct conflicted files
+            - \`cargo check\` fails after your resolutions and you can't fix it
+              with a smaller resolution
+
+          DO NOT push, do not amend, do not squash. Preserve the PR's original
+          commit messages. The workflow takes over from \`/tmp/conflict-bot-bail.md\`
+          or a clean working tree.
+          PROMPT
+
+          codex exec --full-auto --skip-git-repo-check \
+            "$(cat /tmp/codex-prompt.md)" 2>&1 | tee /tmp/codex.log
+
+      - name: Verify post-rebase state
+        if: steps.meta.outputs.skip != 'true'
+        id: verify
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.clean.outputs.result }}" = "error" ]; then
+            echo "outcome=error" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ -f /tmp/conflict-bot-bail.md ]; then
+            echo "outcome=bailed" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # No active rebase + no conflicts in tree = success
+          if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then
+            echo "Codex left rebase mid-flight; aborting"
+            git rebase --abort 2>/dev/null || true
+            printf 'Codex did not complete the rebase before exiting.\n' > /tmp/conflict-bot-bail.md
+            echo "outcome=bailed" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if git status --porcelain | grep -q '^UU '; then
+            echo "unresolved conflicts remain; aborting"
+            git rebase --abort 2>/dev/null || true
+            printf 'Codex finished but left unresolved conflict markers.\n' > /tmp/conflict-bot-bail.md
+            echo "outcome=bailed" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Did HEAD actually move? If origin/head_ref == HEAD, nothing was
+          # rebased -- weird, treat as no-op.
+          if [ "$(git rev-parse HEAD)" = "${{ steps.meta.outputs.head_sha }}" ]; then
+            echo "outcome=noop" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "outcome=success" >> "$GITHUB_OUTPUT"
+
+      - name: Push rebased branch
+        if: steps.meta.outputs.skip != 'true' && steps.verify.outputs.outcome == 'success'
+        run: |
+          set -euo pipefail
+          for delay in 0 2 4 8 16; do
+            [ "$delay" -gt 0 ] && sleep "$delay"
+            if git push --force-with-lease=${{ steps.meta.outputs.head_ref }}:${{ steps.meta.outputs.head_sha }} \
+              origin "HEAD:${{ steps.meta.outputs.head_ref }}"; then
+              exit 0
+            fi
+          done
+          echo "::warning::force-with-lease push failed after retries"
+          exit 1
+
+      - name: Remove rebase label + comment (success)
+        if: steps.meta.outputs.skip != 'true' && steps.verify.outputs.outcome == 'success'
+        run: |
+          PR=${{ matrix.pr }}
+          gh pr edit "$PR" --remove-label "needs-manual-rebase" 2>/dev/null || true
+          gh pr comment "$PR" --body "conflict-bot: rebased onto \`${{ steps.meta.outputs.base_ref }}\` and force-pushed. Conflicts were resolved by Codex; please skim the diff before merge-bot picks this up on the next sweep." || true
+
+      - name: Bail comment + label
+        if: steps.meta.outputs.skip != 'true' && steps.verify.outputs.outcome == 'bailed'
+        run: |
+          PR=${{ matrix.pr }}
+          reason="$(cat /tmp/conflict-bot-bail.md 2>/dev/null || echo 'unspecified')"
+          gh pr edit "$PR" --add-label "conflict-bot-bailed" 2>/dev/null || true
+          body=$(printf '%s\n\n%s\n' \
+            "conflict-bot: bailed on this rebase. \`needs-manual-rebase\` stays; \`conflict-bot-bailed\` added so I won't loop. Remove the label (or push any commit) to re-arm." \
+            "**Reason**: $reason")
+          gh pr comment "$PR" --body "$body" || true
+
+      - name: Discord notify
+        if: always() && steps.meta.outputs.skip != 'true' && steps.verify.outputs.outcome != ''
+        env:
+          OUTCOME: ${{ steps.verify.outputs.outcome }}
+          TITLE: ${{ steps.meta.outputs.title }}
+          URL: ${{ steps.meta.outputs.url }}
+          PR: ${{ matrix.pr }}
+        run: |
+          [ -z "${DISCORD_WEBHOOK_URL:-}" ] && exit 0
+          case "$OUTCOME" in
+            success) color=3066993;  emoji="🔀"; verb="rebased + resolved" ;;
+            bailed)  color=15158332; emoji="🛑"; verb="bailed rebasing" ;;
+            error)   color=15158332; emoji="⚠️"; verb="errored on" ;;
+            noop)    color=10070709; emoji="•"; verb="no-op on" ;;
+            *)       exit 0 ;;
+          esac
+          payload=$(jq -nc \
+            --arg t "$emoji conflict-bot $verb PR #$PR" \
+            --arg d "$TITLE" \
+            --arg u "$URL" \
+            --arg f "$REPO · run $RUN_ID · $SERVER/$REPO/actions/runs/$RUN_ID" \
+            --argjson c "$color" \
+            '{
+              username: "crabcc conflict-bot",
+              embeds: [{
+                title: $t,
+                url: $u,
+                description: $d,
+                color: $c,
+                footer: { text: $f },
+                timestamp: (now | strftime("%Y-%m-%dT%H:%M:%SZ"))
+              }]
+            }')
+          curl -fsS -X POST -H 'Content-Type: application/json' \
+            -d "$payload" "$DISCORD_WEBHOOK_URL" \
+            || echo "::warning::Discord webhook failed"
