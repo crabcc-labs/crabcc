@@ -946,9 +946,22 @@ impl Backend for SqliteBackend {
             .collect::<rusqlite::Result<_>>()?;
         drop(stmt);
         if !due.is_empty() {
+            // Mark only the exact IDs we returned.  A broad `due_at <= now`
+            // predicate would incorrectly deliver reminders inserted between
+            // the SELECT and this UPDATE (cross-process race).
+            let mut placeholders = String::new();
+            for i in 1..=due.len() {
+                if i > 1 {
+                    placeholders.push_str(", ");
+                }
+                let _ = write!(placeholders, "?{i}");
+            }
+            let sql = format!(
+                "UPDATE reminders SET delivered = 1 WHERE id IN ({placeholders})"
+            );
             conn.execute(
-                "UPDATE reminders SET delivered = 1 WHERE due_at <= ?1 AND delivered = 0",
-                [now],
+                &sql,
+                rusqlite::params_from_iter(due.iter().map(|r| r.id)),
             )?;
         }
         Ok(due)

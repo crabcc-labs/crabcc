@@ -9,7 +9,7 @@ cargo build --workspace --all-features || true
 
 # Install the crabcc binary onto PATH so `crabcc sym <name>` works in the shell.
 # Uses the release profile (same as `task install`) for a stable, fast binary.
-cargo install --path crates/crabcc-cli || true
+cargo install --locked --path crates/crabcc-cli || true
 
 # Bootstrap the symbol index for the repo.
 if command -v crabcc >/dev/null 2>&1; then
