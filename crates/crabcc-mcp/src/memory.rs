@@ -506,17 +506,16 @@ fn remind_hooks_json(agent: Option<&str>) -> Value {
                     [ \"$r\" = '[]' ] || [ -z \"$r\" ] || \
                     printf '%s\\n' \"$r\" | jq -r '.[] | \"\\u23f0 Reminder: \" + .message'";
 
-    let shell_snippet = format!(
-        "_crabcc_remind() {{\n\
-        \x20 local r; r=$(crabcc memory remind poll 2>/dev/null) || return\n\
-        \x20 [ \"$r\" = '[]' ] || [ -z \"$r\" ] && return\n\
-        \x20 printf '%s\\n' \"$r\" | jq -r '.[] | \"\\u23f0 \" + .message' 2>/dev/null || true\n\
-        }}\n\
+    let shell_snippet = "_crabcc_remind() {\n\
+         local r; r=$(crabcc memory remind poll 2>/dev/null) || return\n\
+         [ \"$r\" = '[]' ] || [ -z \"$r\" ] && return\n\
+         printf '%s\\n' \"$r\" | jq -r '.[] | \"\\u23f0 \" + .message' 2>/dev/null || true\n\
+        }\n\
         # bash — append to PROMPT_COMMAND:\n\
-        PROMPT_COMMAND=\"${{PROMPT_COMMAND:+$PROMPT_COMMAND; }}_crabcc_remind\"\n\
+        PROMPT_COMMAND=\"${PROMPT_COMMAND:+$PROMPT_COMMAND; }_crabcc_remind\"\n\
         # zsh — add to precmd:\n\
         autoload -Uz add-zsh-hook && add-zsh-hook precmd _crabcc_remind"
-    );
+    .to_string();
 
     let generic_mcp = "Wire crabcc as an MCP server (command: \"crabcc\", args: [\"--mcp\"]) \
                         and instruct your agent to call memory.remind_poll at session start. \
