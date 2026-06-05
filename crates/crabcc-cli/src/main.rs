@@ -681,6 +681,29 @@ enum Cmd {
         #[arg(long)]
         write: bool,
     },
+    /// Graph-derived change impact + targeted test selection. Resolves the
+    /// changed symbols (working tree by default, a `--since REV` range, or
+    /// explicit `--symbol`), walks the call graph upward to the tests that
+    /// transitively exercise them, and emits a ready-to-run test command.
+    Affected {
+        /// Resolve the change from a git range `<REV>...HEAD` instead of the
+        /// working tree (e.g. `--since origin/main`, `--since HEAD~3`).
+        #[arg(long)]
+        since: Option<String>,
+        /// Explicit changed symbol name(s); skips git entirely. Repeatable.
+        #[arg(long = "symbol")]
+        symbol: Vec<String>,
+        /// Max upward-walk depth from each changed symbol.
+        #[arg(long, default_value_t = crabcc_core::affected::DEFAULT_DEPTH)]
+        depth: usize,
+        /// Run the selected tests (via the `run` capture/squeeze path)
+        /// instead of only printing them.
+        #[arg(long)]
+        run: bool,
+        /// Override the command `--run` executes (implies `--run`).
+        #[arg(long)]
+        cmd: Option<String>,
+    },
     /// Audit Claude session logs for token waste.
     Audit {
         #[command(subcommand)]
@@ -1859,6 +1882,48 @@ fn main() -> Result<()> {
         } => {
             edit::run(&root, &store, &target, update, replace, lazy, write)?;
         }
+        Cmd::Affected {
+            since,
+            symbol,
+            depth,
+            run,
+            cmd,
+        } => {
+            use crabcc_core::affected::{affected, ChangeInput};
+            let input = if !symbol.is_empty() {
+                ChangeInput::Symbols(symbol)
+            } else if let Some(rev) = since {
+                ChangeInput::Since(rev)
+            } else {
+                ChangeInput::WorkingTree
+            };
+            let result = affected(&store, &root, input, depth)?;
+            let body = sonic_rs::to_string(&result)?;
+            crabcc_core::track::record(
+                "affected",
+                "change",
+                result.tests.len(),
+                &repo_label(&root),
+                body.len(),
+            );
+            println!("{body}");
+            // --run (or --cmd) executes the selected tests through the
+            // capture/squeeze run path. --cmd overrides the detected command.
+            if run || cmd.is_some() {
+                match cmd.or(result.command) {
+                    Some(command) => {
+                        let words: Vec<String> =
+                            command.split_whitespace().map(str::to_string).collect();
+                        run_cmd::run(&words, 0, 0, 0, 8 * 1024 * 1024, false, None, None, false)?;
+                    }
+                    None => {
+                        eprintln!(
+                            "affected: nothing to run (no runner detected or no tests selected)"
+                        );
+                    }
+                }
+            }
+        }
         Cmd::Rag { op } => match op {
             RagOp::Build { rebuild } => rag::run_build(&root, &store, rebuild)?,
             RagOp::Query { query, limit } => rag::run_query(&root, &query, limit)?,
@@ -2433,6 +2498,7 @@ fn needs_auto_index(c: &Option<Cmd>) -> bool {
             cmd,
             Cmd::Lookup { .. }
                 | Cmd::Graph { .. }
+                | Cmd::Affected { .. }
                 | Cmd::Rag {
                     op: RagOp::Build { .. }
                 }
@@ -2507,6 +2573,7 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::Serve { .. } => "serve",
         Cmd::Read { .. } => "read",
         Cmd::Edit { .. } => "edit",
+        Cmd::Affected { .. } => "affected",
     }
 }
 

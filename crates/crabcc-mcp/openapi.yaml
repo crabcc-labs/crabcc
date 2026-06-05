@@ -137,6 +137,40 @@ paths:
                 type: array
                 items: {$ref: "#/components/schemas/Symbol"}
 
+  /tools/affected:
+    post:
+      tags: [symbol-index]
+      operationId: affected
+      summary: Change impact + targeted test selection.
+      description: |
+        Resolve the changed symbols (working tree by default, a `since` git
+        range, or explicit `symbols`), walk the call graph upward to the tests
+        that transitively exercise them, and return those tests plus a
+        ready-to-run command for the detected runner. Does not execute.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                since:
+                  type: string
+                  description: Git range `<REV>...HEAD` instead of the working tree.
+                symbols:
+                  type: array
+                  items: {type: string}
+                  description: Explicit changed symbol name(s); skips git.
+                depth:
+                  type: integer
+                  description: Max upward-walk depth from each changed symbol (default 3).
+      responses:
+        "200":
+          description: changed_files, changed_symbols, tests, runner, command.
+          content:
+            application/json:
+              schema: {type: object}
+
   /tools/read:
     post:
       tags: [symbol-index]

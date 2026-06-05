@@ -50,6 +50,14 @@ crabcc graph walk Store::open --dir callers --depth 3
 crabcc graph cycles        # SCCs of size ≥ 2
 crabcc graph orphans       # defined fns with no incoming callers
 
+# 9b. After an edit: which tests exercise the change? (verify, cheaply)
+crabcc affected                       # working-tree diff -> selected tests + cmd
+crabcc affected --since origin/main   # a git range instead of the working tree
+crabcc affected --symbol Store::open  # explicit symbol, skip git
+crabcc affected --run                 # also execute the selected tests
+# → {"changed_symbols":[…],"tests":[…],"runner":"cargo",
+#    "command":"cargo test -- open_wal store_roundtrip"}
+
 # 10. Per-repo memory drawer (M0 + M3-light surface):
 crabcc memory remember "doc:1" "<note body>"
 crabcc memory search "<query>"        # KEYWORD only today; semantic in v2.5

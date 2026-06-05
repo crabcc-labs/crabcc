@@ -155,6 +155,23 @@ fn tools_def_symbol() -> Vec<Value> {
             &["file"],
         ),
         tool_schema(
+            "affected",
+            "Graph-derived change impact + targeted test selection. Resolves \
+             the changed symbols (working tree by default, a `since` git range, \
+             or explicit `symbols`), walks the call graph upward to the tests \
+             that transitively exercise them, and returns those tests plus a \
+             ready-to-run command for the detected runner. Use after an edit to \
+             run only the relevant tests instead of the whole suite. Returns a \
+             JSON object with keys: changed_files, changed_symbols, tests, \
+             runner, command. Does NOT execute — run `command` yourself.",
+            json!({
+                "since": str_field("git range <REV>...HEAD instead of the working tree (e.g. origin/main, HEAD~3) (optional)"),
+                "symbols": { "type": "array", "items": { "type": "string" }, "description": "explicit changed symbol name(s); skips git (optional)" },
+                "depth": { "type": "integer", "description": "max upward-walk depth from each changed symbol (default 3)" },
+            }),
+            &[],
+        ),
+        tool_schema(
             "test_context",
             "Bundle every piece of context an LLM needs to generate a unit \
              test for a symbol. Single round-trip replacement for the LSPRAG \
