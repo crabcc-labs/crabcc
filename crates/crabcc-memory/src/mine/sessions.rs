@@ -440,8 +440,7 @@ mod tests {
         let palace = Palace::ephemeral();
 
         unsafe { std::env::set_var("CRABCC_COMPACT_HOOK", "1") };
-        let report =
-            mine_sessions(&palace, dir.path(), &MineSessionsOpts::default()).unwrap();
+        let report = mine_sessions(&palace, dir.path(), &MineSessionsOpts::default()).unwrap();
         unsafe { std::env::remove_var("CRABCC_COMPACT_HOOK") };
 
         assert_eq!(report.inserted, 1, "compact entry should be stored");

@@ -23,7 +23,10 @@ pub fn count_tokens(code: &str) -> u32 {
     // Whitespace-split word count is a reasonable proxy.
     // Multiply by 1.3 to account for punctuation tokens.
     let word_count = code.split_whitespace().count();
-    let punct_extra = code.chars().filter(|c| "{}();,.<>=!&|+-*/".contains(*c)).count();
+    let punct_extra = code
+        .chars()
+        .filter(|c| "{}();,.<>=!&|+-*/".contains(*c))
+        .count();
     (word_count + punct_extra / 3) as u32
 }
 

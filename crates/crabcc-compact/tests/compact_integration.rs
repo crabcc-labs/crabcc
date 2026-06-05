@@ -1,4 +1,6 @@
-use crabcc_compact::{compact_memory, compact_config::CompactConfig, pipeline::run_compact, types::*};
+use crabcc_compact::{
+    compact_config::CompactConfig, compact_memory, pipeline::run_compact, types::*,
+};
 use crabcc_memory::Palace;
 use std::sync::Mutex;
 

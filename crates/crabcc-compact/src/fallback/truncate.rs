@@ -11,10 +11,14 @@ pub fn truncate(text: &str, head_lines: usize, tail_lines: usize) -> String {
         "{}
 ... [{omitted} lines omitted by crabcc-compact fallback] ...
 {}",
-        head.join("
-"),
-        tail.join("
-")
+        head.join(
+            "
+"
+        ),
+        tail.join(
+            "
+"
+        )
     )
 }
 
@@ -33,8 +37,10 @@ c";
     #[test]
     fn long_text_gets_head_and_tail() {
         let lines: Vec<String> = (0..100).map(|i| format!("line {i}")).collect();
-        let text = lines.join("
-");
+        let text = lines.join(
+            "
+",
+        );
         let result = truncate(&text, 5, 5);
         assert!(result.contains("line 0"));
         assert!(result.contains("line 4"));
@@ -47,8 +53,10 @@ c";
     #[test]
     fn exactly_at_boundary_returned_verbatim() {
         let lines: Vec<String> = (0..20).map(|i| format!("line {i}")).collect();
-        let text = lines.join("
-");
+        let text = lines.join(
+            "
+",
+        );
         assert_eq!(truncate(&text, 10, 10), text);
     }
 }

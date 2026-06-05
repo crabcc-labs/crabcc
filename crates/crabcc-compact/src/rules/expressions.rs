@@ -1,14 +1,7 @@
 use crate::types::*;
 
 const FOLDABLE_PATTERNS: &[&str] = &[
-    "1 + 0",
-    "0 + 1",
-    "x * 1",
-    "1 * x",
-    "x + 0",
-    "0 + x",
-    "x - 0",
-    "x / 1",
+    "1 + 0", "0 + 1", "x * 1", "1 * x", "x + 0", "0 + x", "x - 0", "x / 1",
 ];
 
 pub fn find(input: &CompactInput) -> Vec<TransformStep> {

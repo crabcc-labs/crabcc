@@ -1,11 +1,6 @@
 use crate::{
-    compact_config::CompactConfig,
-    coder::RuleBasedCoder,
-    reasoner::RuleBasedReasoner,
-    smoothness::DiffBasedScorer,
-    tokens::count_tokens,
-    traits::*,
-    types::*,
+    coder::RuleBasedCoder, compact_config::CompactConfig, reasoner::RuleBasedReasoner,
+    smoothness::DiffBasedScorer, tokens::count_tokens, traits::*, types::*,
 };
 
 pub fn run_compact(input: CompactInput, config: &CompactConfig) -> anyhow::Result<CompactOutput> {
@@ -67,7 +62,6 @@ pub fn run_compact(input: CompactInput, config: &CompactConfig) -> anyhow::Resul
     })
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,7 +112,10 @@ mod tests {
         let output = run_compact(input.clone(), &config).unwrap();
         assert_eq!(output.compacted_code, input.original_code);
         // Steps must be empty: the disruption-rejection path was taken, not the no-steps path.
-        assert!(output.steps.is_empty(), "disruption-rejected output must have no steps");
+        assert!(
+            output.steps.is_empty(),
+            "disruption-rejected output must have no steps"
+        );
         // Smoothness must be consistent with no transformation (disruption=0).
         assert_eq!(output.smoothness.disruption, 0.0);
     }

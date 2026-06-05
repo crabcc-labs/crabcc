@@ -10,7 +10,12 @@ pub fn store(palace: &Palace, session_id: &str, body: &CompactDrawerBody) -> Res
         return Ok(());
     }
     let json = serde_json::to_string(body)?;
-    palace.remember(WING, Some("enriched"), &format!("compact:{session_id}"), &json)?;
+    palace.remember(
+        WING,
+        Some("enriched"),
+        &format!("compact:{session_id}"),
+        &json,
+    )?;
     Ok(())
 }
 

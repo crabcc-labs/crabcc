@@ -66,7 +66,9 @@ mod tests {
         let code = "let x = 1;\nlet x = 1;\nlet y = 2;\n";
         let steps = find(&input(code));
         assert!(!steps.is_empty(), "should detect consecutive repeated line");
-        assert!(steps.iter().all(|s| s.kind == TransformKind::RedundancyRemoval));
+        assert!(steps
+            .iter()
+            .all(|s| s.kind == TransformKind::RedundancyRemoval));
         assert!(steps.iter().any(|s| s.tokens_saved > 0));
     }
 
@@ -75,7 +77,10 @@ mod tests {
         // Non-consecutive duplicates are NOT detected to stay in sync with the rewrite.
         let code = "let x = 1;\nlet y = 2;\nlet x = 1;\n";
         let steps = find(&input(code));
-        assert!(steps.is_empty(), "non-consecutive duplicates must not be reported");
+        assert!(
+            steps.is_empty(),
+            "non-consecutive duplicates must not be reported"
+        );
     }
 
     #[test]

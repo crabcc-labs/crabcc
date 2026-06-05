@@ -9,7 +9,9 @@ pub fn jaccard_trigrams(a: &str, b: &str) -> f32 {
     }
     let intersection = ta.intersection(&tb).count();
     let union = ta.union(&tb).count();
-    if union == 0 { return 1.0; }
+    if union == 0 {
+        return 1.0;
+    }
     intersection as f32 / union as f32
 }
 
@@ -31,11 +33,16 @@ pub struct NearDupCache {
 #[allow(dead_code)]
 impl NearDupCache {
     pub fn new(capacity: usize) -> Self {
-        Self { recent: std::collections::VecDeque::with_capacity(capacity), capacity }
+        Self {
+            recent: std::collections::VecDeque::with_capacity(capacity),
+            capacity,
+        }
     }
 
     pub fn is_near_dup(&self, text: &str) -> bool {
-        self.recent.iter().any(|seen| jaccard_trigrams(seen, text) >= 0.85)
+        self.recent
+            .iter()
+            .any(|seen| jaccard_trigrams(seen, text) >= 0.85)
     }
 
     pub fn push(&mut self, text: String) {

@@ -59,12 +59,16 @@ mod tests {
     fn parse_toml_overrides_defaults() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("compact.toml");
-        std::fs::write(&path, r#"
+        std::fs::write(
+            &path,
+            r#"
 endpoint = "https://compact.example.ts.net:8080"
 threshold_tokens = 3000
 timeout_ms = 5000
 enrich_trigger = "!enrich"
-"#).unwrap();
+"#,
+        )
+        .unwrap();
         let c: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
         assert_eq!(c.endpoint, "https://compact.example.ts.net:8080");
         assert_eq!(c.threshold_tokens, 3000);

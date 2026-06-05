@@ -20,7 +20,11 @@ impl SmoothnessEvaluator for DiffBasedScorer {
         };
 
         // readability: avg_line_len_score + ident_score / 2
-        let non_empty: Vec<&str> = comp_lines.iter().copied().filter(|l| !l.is_empty()).collect();
+        let non_empty: Vec<&str> = comp_lines
+            .iter()
+            .copied()
+            .filter(|l| !l.is_empty())
+            .collect();
         let avg_line_len = if non_empty.is_empty() {
             0.0
         } else {
@@ -40,7 +44,11 @@ impl SmoothnessEvaluator for DiffBasedScorer {
         // compatibility: same non-empty line count -> 1.0, else 0.8
         let orig_nonempty = orig_lines.iter().filter(|l| !l.is_empty()).count();
         let comp_nonempty = comp_lines.iter().filter(|l| !l.is_empty()).count();
-        let compatibility = if orig_nonempty == comp_nonempty { 1.0 } else { 0.8 };
+        let compatibility = if orig_nonempty == comp_nonempty {
+            1.0
+        } else {
+            0.8
+        };
 
         // preservation: lines in compacted that appear in original / original line count
         let preservation = if orig_lines.is_empty() {

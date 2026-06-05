@@ -33,7 +33,9 @@ mod tests {
         let code = "fn foo() {\n    \n    let x = 1;\n\t\t\n}\n";
         let steps = find(&input(code));
         assert!(!steps.is_empty(), "should detect whitespace-only lines");
-        assert!(steps.iter().all(|s| s.kind == TransformKind::WhitespaceComment));
+        assert!(steps
+            .iter()
+            .all(|s| s.kind == TransformKind::WhitespaceComment));
     }
 
     #[test]

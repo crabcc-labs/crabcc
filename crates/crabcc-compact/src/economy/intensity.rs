@@ -1,7 +1,11 @@
 use super::budget::Budget;
 
 pub fn pick_ratio(budget: &Budget) -> f32 {
-    if budget.pressure() >= 0.8 { 0.3 } else { 0.5 }
+    if budget.pressure() >= 0.8 {
+        0.3
+    } else {
+        0.5
+    }
 }
 
 #[cfg(test)]

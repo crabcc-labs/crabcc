@@ -12,8 +12,7 @@ pub fn append_history(palace: &Palace, file_path: &str, output: &CompactOutput) 
     }
     let version_key = format!(
         "history:{}:saved={}",
-        file_path,
-        output.metrics.tokens_saved,
+        file_path, output.metrics.tokens_saved,
     );
     let body = serde_json::to_string(output)?;
     palace.remember("compact", Some("history"), &version_key, &body)?;
@@ -101,5 +100,4 @@ mod tests {
         assert_eq!(main_entries[0].metrics.tokens_saved, 7);
         unsafe { std::env::remove_var("CRABCC_COMPACT_HOOK") };
     }
-
 }

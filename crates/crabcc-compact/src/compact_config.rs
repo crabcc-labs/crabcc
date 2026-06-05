@@ -1,7 +1,7 @@
+use crate::types::TransformKind;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use crate::types::TransformKind;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactConfig {
@@ -16,9 +16,15 @@ pub struct CompactConfig {
 }
 
 impl CompactConfig {
-    fn default_rules() -> Vec<TransformKind> { vec![] }
-    fn default_min_savings() -> u32 { 0 }
-    fn default_max_disruption() -> f64 { 1.0 }
+    fn default_rules() -> Vec<TransformKind> {
+        vec![]
+    }
+    fn default_min_savings() -> u32 {
+        0
+    }
+    fn default_max_disruption() -> f64 {
+        1.0
+    }
 
     pub fn load(path: Option<PathBuf>) -> anyhow::Result<Self> {
         let candidate = path.unwrap_or_else(default_config_path);

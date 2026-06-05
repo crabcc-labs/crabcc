@@ -1,11 +1,6 @@
 use crate::types::*;
 
-const TRIVIAL_PATTERNS: &[&str] = &[
-    "if true {",
-    "if false {",
-    "if 1 == 1 {",
-    "if 0 == 0 {",
-];
+const TRIVIAL_PATTERNS: &[&str] = &["if true {", "if false {", "if 1 == 1 {", "if 0 == 0 {"];
 
 pub fn find(input: &CompactInput) -> Vec<TransformStep> {
     let mut steps = Vec::new();

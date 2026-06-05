@@ -83,11 +83,19 @@ mod tests {
     use super::*;
 
     fn step(kind: TransformKind) -> TransformStep {
-        TransformStep { kind, description: String::new(), tokens_saved: 0 }
+        TransformStep {
+            kind,
+            description: String::new(),
+            tokens_saved: 0,
+        }
     }
 
     fn step_desc(kind: TransformKind, desc: &str) -> TransformStep {
-        TransformStep { kind, description: desc.to_string(), tokens_saved: 0 }
+        TransformStep {
+            kind,
+            description: desc.to_string(),
+            tokens_saved: 0,
+        }
     }
 
     #[test]
@@ -108,7 +116,11 @@ mod tests {
     #[test]
     fn dead_code_removal_filters_pattern() {
         let code = "let x = 1;\n// TODO: remove me\nlet y = 2;";
-        let out = apply_step(code, &step_desc(TransformKind::DeadCodeRemoval, "TODO: remove me")).unwrap();
+        let out = apply_step(
+            code,
+            &step_desc(TransformKind::DeadCodeRemoval, "TODO: remove me"),
+        )
+        .unwrap();
         assert!(!out.contains("TODO: remove me"));
         assert!(out.contains("let x = 1;"));
         assert!(out.contains("let y = 2;"));
@@ -126,7 +138,10 @@ mod tests {
         // All 8 patterns from FOLDABLE_PATTERNS must be handled by the rewrite.
         let code = "let a = 0 + 1;\nlet b = 1 * x;\nlet c = 0 + x;\nlet d = x - 0;\nlet e = x / 1;";
         let out = apply_step(code, &step(TransformKind::ExpressionFolding)).unwrap();
-        assert_eq!(out, "let a = 1;\nlet b = x;\nlet c = x;\nlet d = x;\nlet e = x;");
+        assert_eq!(
+            out,
+            "let a = 1;\nlet b = x;\nlet c = x;\nlet d = x;\nlet e = x;"
+        );
     }
 
     #[test]
