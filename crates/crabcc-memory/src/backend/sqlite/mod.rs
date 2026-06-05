@@ -914,6 +914,68 @@ impl Backend for SqliteBackend {
         let collected: rusqlite::Result<Vec<Drawer>> = rows.collect();
         Ok(collected?)
     }
+
+    fn remind_set(&self, due_at: i64, message: &str) -> Result<i64> {
+        let conn = self.conn.lock().map_err(|_| anyhow!("poisoned mutex"))?;
+        conn.execute(
+            "INSERT INTO reminders (due_at, message, created_at) VALUES (?1, ?2, ?3)",
+            params![due_at, message, now_secs()],
+        )?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    fn remind_poll(&self) -> Result<Vec<Reminder>> {
+        let conn = self.conn.lock().map_err(|_| anyhow!("poisoned mutex"))?;
+        let now = now_secs();
+        // Single atomic UPDATE...RETURNING: concurrent pollers serialize on
+        // SQLite's write lock, so each due reminder is claimed by exactly one
+        // caller (SQLite >= 3.35, shipped since 2021-03-12).
+        let mut stmt = conn.prepare(
+            "UPDATE reminders SET delivered = 1 \
+             WHERE due_at <= ?1 AND delivered = 0 \
+             RETURNING id, due_at, message, created_at",
+        )?;
+        let due = stmt
+            .query_map([now], |r| {
+                Ok(Reminder {
+                    id: r.get(0)?,
+                    due_at: r.get(1)?,
+                    message: r.get(2)?,
+                    created_at: r.get(3)?,
+                    delivered: true,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(due)
+    }
+
+    fn remind_list(&self, include_delivered: bool) -> Result<Vec<Reminder>> {
+        let conn = self.conn.lock().map_err(|_| anyhow!("poisoned mutex"))?;
+        let sql = if include_delivered {
+            "SELECT id, due_at, message, created_at, delivered \
+             FROM reminders ORDER BY due_at ASC"
+        } else {
+            "SELECT id, due_at, message, created_at, delivered \
+             FROM reminders WHERE delivered = 0 ORDER BY due_at ASC"
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let rows = stmt.query_map([], |r| {
+            Ok(Reminder {
+                id: r.get(0)?,
+                due_at: r.get(1)?,
+                message: r.get(2)?,
+                created_at: r.get(3)?,
+                delivered: r.get::<_, i64>(4)? != 0,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    fn remind_delete(&self, id: i64) -> Result<bool> {
+        let conn = self.conn.lock().map_err(|_| anyhow!("poisoned mutex"))?;
+        let n = conn.execute("DELETE FROM reminders WHERE id = ?1", [id])?;
+        Ok(n > 0)
+    }
 }
 
 #[cfg(test)]

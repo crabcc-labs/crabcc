@@ -13,6 +13,7 @@ use crabcc_memory::{
     mine::{project::MineProjectOpts, sessions::MineSessionsOpts},
     DeleteSel, Palace, SearchMode, DEFAULT_MAX_FILE_BYTES, DEFAULT_MAX_PAIR_BYTES,
 };
+use serde_json::json;
 use std::path::{Path, PathBuf};
 
 #[derive(Subcommand, Debug)]
@@ -96,6 +97,13 @@ pub enum MemoryCmd {
         #[command(subcommand)]
         kind: MineKind,
     },
+    /// Schedule, poll, list, or cancel reminders — the crabcc `send_later`
+    /// primitive. Works across Claude Code, OpenCode, Cursor, Nullclaw, OMP,
+    /// and any agent that can call MCP tools or run shell hooks.
+    Remind {
+        #[command(subcommand)]
+        action: RemindCmd,
+    },
     /// Ingest URLs and/or freeform text into memory. Mirrors the HTTP
     /// `POST /api/memory/ingest` surface so the CLI and dashboard agree
     /// on drawer ids (`web:<hash>` for URLs, `text:<hash>` for text).
@@ -116,6 +124,46 @@ pub enum MemoryCmd {
         /// `cli-ingest`; the HTTP path uses `web-ingest`.
         #[arg(long, default_value = "cli-ingest")]
         source: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum RemindCmd {
+    /// Schedule a reminder. Use --in for a relative delay or --at for an
+    /// absolute epoch / RFC3339 timestamp.
+    ///
+    /// Examples:
+    ///   crabcc memory remind set --in 1h "check PR #722"
+    ///   crabcc memory remind set --in 30m "run benchmarks"
+    ///   crabcc memory remind set --at 2026-06-06T09:00:00Z "standup"
+    Set {
+        /// Reminder message surfaced when the reminder fires.
+        message: String,
+        /// Relative delay: '1h', '30m', '2d', '1h30m', '90s'.
+        #[arg(long = "in", value_name = "DELAY", conflicts_with = "at")]
+        delay: Option<String>,
+        /// Absolute timestamp: epoch seconds or RFC3339 (e.g. 2026-01-15T12:00:00Z).
+        #[arg(long, value_name = "TIMESTAMP", conflicts_with = "delay")]
+        at: Option<String>,
+    },
+    /// Atomically fetch all due reminders and mark them delivered.
+    /// Returns [] when nothing is due. Wire as a PostToolUse hook or
+    /// PROMPT_COMMAND to get send_later behaviour in any agent.
+    Poll,
+    /// List scheduled reminders without marking them delivered.
+    List {
+        /// Include already-delivered reminders.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Cancel a scheduled reminder by id.
+    Delete { id: i64 },
+    /// Print per-agent hook config snippets for wiring remind_poll automatically.
+    /// Covers: claude-code, opencode, cursor, nullclaw, omp, shell, generic-mcp.
+    Hooks {
+        /// Filter output to a single agent.
+        #[arg(long, value_name = "AGENT")]
+        agent: Option<String>,
     },
 }
 
@@ -156,10 +204,9 @@ fn parse_before_timestamp(raw: &str) -> Result<i64> {
     Ok(parsed)
 }
 
-/// Tiny RFC3339 parser (no chrono dep). Handles `YYYY-MM-DDTHH:MM:SSZ`
-/// and `YYYY-MM-DDTHH:MM:SS+00:00` shapes — enough for `--before`.
-/// Returns None on anything weirder; the caller turns that into a clap
-/// error message.
+/// Tiny RFC3339 parser (no chrono dep). Handles `YYYY-MM-DDTHH:MM:SSZ`,
+/// `YYYY-MM-DDTHH:MM:SS+00:00`, and any `±HH:MM` offset.
+/// Returns None on anything malformed; the caller turns that into an error.
 fn time_parse_rfc3339(s: &str) -> Option<i64> {
     let bytes = s.as_bytes();
     if bytes.len() < 20 || bytes[4] != b'-' || bytes[7] != b'-' || bytes[10] != b'T' {
@@ -171,9 +218,21 @@ fn time_parse_rfc3339(s: &str) -> Option<i64> {
     let hour: i64 = s.get(11..13)?.parse().ok()?;
     let minute: i64 = s.get(14..16)?.parse().ok()?;
     let second: i64 = s.get(17..19)?.parse().ok()?;
-    // Days-from-epoch via the proleptic Gregorian "Howard Hinnant"
-    // algorithm — works for any year, no leap-year bookkeeping in the
-    // call site.
+    // Parse timezone offset so e.g. `09:00:00-04:00` → 13:00 UTC, not 09:00 UTC.
+    let offset_secs: i64 = match bytes.get(19)? {
+        b'Z' => 0,
+        sign @ (b'+' | b'-') => {
+            if bytes.len() < 25 || bytes[22] != b':' {
+                return None;
+            }
+            let oh: i64 = s.get(20..22)?.parse().ok()?;
+            let om: i64 = s.get(23..25)?.parse().ok()?;
+            let mag = oh * 3_600 + om * 60;
+            if *sign == b'+' { mag } else { -mag }
+        }
+        _ => return None,
+    };
+    // Days-from-epoch via the proleptic Gregorian "Howard Hinnant" algorithm.
     let y = if month <= 2 { year - 1 } else { year };
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = y - era * 400;
@@ -181,7 +240,7 @@ fn time_parse_rfc3339(s: &str) -> Option<i64> {
     let doy = (153 * m + 2) / 5 + day - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     let days = era * 146_097 + doe - 719_468;
-    Some(days * 86_400 + hour * 3_600 + minute * 60 + second)
+    Some(days * 86_400 + hour * 3_600 + minute * 60 + second - offset_secs)
 }
 
 pub fn run(root: &Path, cmd: MemoryCmd) -> Result<()> {
@@ -402,6 +461,38 @@ pub fn run(root: &Path, cmd: MemoryCmd) -> Result<()> {
                 serde_json::json!({"ingested": ingested, "errors": errors, "stats": stats})
             );
         }
+        MemoryCmd::Remind { action } => {
+            let palace = Palace::open(root)?;
+            match action {
+                RemindCmd::Set { message, delay, at } => {
+                    let due_at = if let Some(d) = delay {
+                        parse_remind_delay(&d)?   // relative: bare int = now + N
+                    } else if let Some(a) = at {
+                        parse_remind_at(&a)?      // absolute: bare int = epoch
+                    } else {
+                        anyhow::bail!("specify either --in <delay> or --at <timestamp>");
+                    };
+                    let id = palace.remind_set(due_at, &message)?;
+                    println!("{}", json!({"id": id, "due_at": due_at}));
+                }
+                RemindCmd::Poll => {
+                    let due = palace.remind_poll()?;
+                    println!("{}", sonic_rs::to_string(&due)?);
+                }
+                RemindCmd::List { all } => {
+                    let reminders = palace.remind_list(all)?;
+                    println!("{}", sonic_rs::to_string(&reminders)?);
+                }
+                RemindCmd::Delete { id } => {
+                    let deleted = palace.remind_delete(id)?;
+                    println!("{}", json!({"deleted": deleted}));
+                }
+                RemindCmd::Hooks { agent } => {
+                    let out = remind_hooks_json(agent.as_deref());
+                    println!("{}", serde_json::to_string_pretty(&out)?);
+                }
+            }
+        }
         MemoryCmd::Mine { kind } => {
             let session = std::env::var("TERM_SESSION_ID").ok();
             let report = match kind {
@@ -473,6 +564,120 @@ pub fn auto_capture_inner(root: &Path, op: &str, query: &str, count: usize, sess
 
 pub fn env_auto_capture_enabled() -> bool {
     std::env::var("CRABCC_AUTO_MEMORY").ok().as_deref() == Some("1")
+}
+
+/// Parse a relative delay (`--in`) into an absolute epoch.
+/// Bare integers are seconds from now ("3600" → now + 1 h), not absolute epochs.
+/// Human durations ("1h30m", "2d", "45m", "90s") are also relative.
+/// RFC3339 strings are rejected — use `--at` for absolute timestamps.
+fn parse_remind_delay(s: &str) -> Result<i64> {
+    if s.contains('T') {
+        anyhow::bail!(
+            "--in expects a relative delay ('1h30m', '45m', '90s', or bare seconds); \
+             use --at for absolute timestamps"
+        );
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    // Bare integer → relative seconds from now.
+    if let Ok(n) = s.parse::<i64>() {
+        return Ok(now + n);
+    }
+    let mut total: i64 = 0;
+    let mut num = String::new();
+    for ch in s.chars() {
+        if ch.is_ascii_digit() {
+            num.push(ch);
+        } else {
+            let n: i64 = num
+                .parse()
+                .map_err(|_| anyhow!("invalid delay {s:?}"))?;
+            num.clear();
+            total += match ch {
+                'd' => n * 86_400,
+                'h' => n * 3_600,
+                'm' => n * 60,
+                's' => n,
+                _ => anyhow::bail!("unknown unit {ch:?} in {s:?}; use d/h/m/s"),
+            };
+        }
+    }
+    if !num.is_empty() || total == 0 {
+        anyhow::bail!("invalid delay {s:?}; use '1h30m', '2d', '45m', '90s', or bare seconds");
+    }
+    Ok(now + total)
+}
+
+/// Parse an absolute timestamp (`--at`) into an epoch.
+/// Accepts epoch seconds (bare integer) or RFC3339 string.
+fn parse_remind_at(s: &str) -> Result<i64> {
+    if let Ok(n) = s.parse::<i64>() {
+        return Ok(n);
+    }
+    time_parse_rfc3339(s)
+        .ok_or_else(|| anyhow!("--at expects epoch seconds or RFC3339, got {s:?}"))
+}
+
+/// Per-agent hook config for wiring `memory.remind_poll` as a `send_later`
+/// primitive. Identical logic to the MCP module's version; duplicated here
+/// to avoid a shared-utils crate for a single function.
+fn remind_hooks_json(agent: Option<&str>) -> serde_json::Value {
+    let poll_cmd = "r=$(crabcc memory remind poll 2>/dev/null); \
+                    [ \"$r\" = '[]' ] || [ -z \"$r\" ] || \
+                    printf '%s\\n' \"$r\" | jq -r '.[] | \"\\u23f0 Reminder: \" + .message'";
+    let shell_snippet = "_crabcc_remind() {\n\
+        \x20 local r; r=$(crabcc memory remind poll 2>/dev/null) || return\n\
+        \x20 [ \"$r\" = '[]' ] || [ -z \"$r\" ] && return\n\
+        \x20 printf '%s\\n' \"$r\" | jq -r '.[] | \"\\u23f0 \" + .message' 2>/dev/null || true\n\
+        }\n\
+        # bash:\n\
+        PROMPT_COMMAND=\"${PROMPT_COMMAND:+$PROMPT_COMMAND; }_crabcc_remind\"\n\
+        # zsh:\n\
+        autoload -Uz add-zsh-hook && add-zsh-hook precmd _crabcc_remind";
+    let generic = "Wire crabcc as an MCP server (command: \"crabcc\", args: [\"--mcp\"]) \
+                   and call memory.remind_poll at session start.";
+    let all = json!({
+        "claude-code": {
+            "description": "PostToolUse hook — fires on every tool call",
+            "merge_into": "~/.claude/settings.json",
+            "config": {"hooks": {"PostToolUse": [{"matcher": "", "hooks": [{"type": "command", "command": poll_cmd}]}]}}
+        },
+        "opencode": {
+            "description": "System-prompt instruction for OpenCode",
+            "snippet": "Call memory.remind_poll at the start of each session and display any returned reminders."
+        },
+        "cursor": {
+            "description": "Agent rule for Cursor",
+            "merge_into": ".cursor/rules.md",
+            "snippet": "At the start of each conversation call memory.remind_poll and surface any returned reminders."
+        },
+        "nullclaw": {
+            "description": "Session-start hook for Nullclaw",
+            "snippet": "Invoke memory.remind_poll via the crabcc MCP server at session start."
+        },
+        "omp": {
+            "description": "OMP hook or shell prompt integration",
+            "snippet": shell_snippet
+        },
+        "shell": {
+            "description": "PROMPT_COMMAND / precmd — fires on every new prompt",
+            "merge_into": "~/.bashrc or ~/.zshrc",
+            "snippet": shell_snippet
+        },
+        "generic-mcp": {
+            "description": "Any MCP-compatible agent",
+            "snippet": generic
+        }
+    });
+    match agent {
+        Some(name) => all.get(name).cloned().unwrap_or_else(|| json!({
+            "error": format!("unknown agent {name:?}"),
+            "valid": ["claude-code","opencode","cursor","nullclaw","omp","shell","generic-mcp"]
+        })),
+        None => all,
+    }
 }
 
 /// FNV-1a 64-bit. Drawer source-ids are application-level identity
@@ -585,6 +790,18 @@ mod tests {
         // 2025-01-01T00:00:00Z is epoch 1735689600.
         let n = parse_before_timestamp("2025-01-01T00:00:00Z").unwrap();
         assert_eq!(n, 1_735_689_600);
+    }
+
+    #[test]
+    fn parse_before_timestamp_rfc3339_offset_applied() {
+        // 2025-01-01T00:00:00Z == epoch 1735689600.
+        // 2025-01-01T00:00:00-04:00 is midnight in UTC-4 == 04:00 UTC == +14400 s.
+        let z = parse_before_timestamp("2025-01-01T00:00:00Z").unwrap();
+        let neg4 = parse_before_timestamp("2025-01-01T00:00:00-04:00").unwrap();
+        assert_eq!(neg4, z + 4 * 3_600, "-04:00 should yield 4h later in UTC");
+        // +05:30 (IST) → 18:30 UTC on 2024-12-31 → 19800 s before midnight UTC.
+        let pos530 = parse_before_timestamp("2025-01-01T00:00:00+05:30").unwrap();
+        assert_eq!(pos530, z - (5 * 3_600 + 30 * 60), "+05:30 should yield 5h30m earlier in UTC");
     }
 
     #[test]
