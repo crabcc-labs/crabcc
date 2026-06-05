@@ -256,8 +256,39 @@ Memory roadmap status (issue #2): M0 (persistent backend) ✅ → M0.5
 M1a (FTS5 BM25 + RRF hybrid) ✅ → M1b (`fastembed-rs`,
 `--features memory-embed`) ✅ → M2
 (miners) ✅ → bench gate (`task memory-bench`, ≥ 96.6% R@5 on synthetic
-fixture) ✅. Future M3-full (KG ops) tracked separately. The Palace
-facade lives at `crates/crabcc-memory/src/palace.rs`.
+fixture) ✅. The Palace facade lives at `crates/crabcc-memory/src/palace.rs`.
+
+### M3-full roadmap
+
+M3 was "KG ops, tracked separately." Below it is broken into shippable
+milestones. The shape draws on
+[rohitg00/agentmemory](https://github.com/rohitg00/agentmemory) (Apache-2.0,
+surveyed 2026-06-05), a TypeScript memory server that ships these features in
+production and reports 95.2% R@5 / 88.2% MRR on the real LongMemEval-S (500
+questions). It validated the same core we already run — SQLite, BM25 ⊕ vector,
+RRF k=60 — so its lifecycle layer is a credible blueprint, not speculation.
+Each milestone respects the additive-schema rule (new columns + idempotent
+`ALTER`, never `DROP`).
+
+- **M3a — KG ranker.** Extract entities and relations from drawer bodies into
+  an `entities` / `edges` pair (mirrors the symbol-index `edges` table). Add a
+  third ranker to `rrf_fuse` (today 2 rankers, `palace/rrf.rs:21`): lexical ⊕
+  vector ⊕ graph-entity match. Add session diversification so one session can
+  not dominate the top-K. Gate on real LongMemEval, not just the synthetic
+  fixture.
+- **M3b — Tiered memory.** Promote the existing `wing` column (already
+  `proj` / `session`) into the four tiers agentmemory uses: working, episodic
+  (session summaries), semantic (extracted facts), procedural (workflows).
+  Consolidation rolls raw turns into episodic, then into semantic facts.
+- **M3c — Lifecycle.** Ebbinghaus-curve decay scoring (`last_access`,
+  `access_count`, `decay_score` columns), auto-eviction below a threshold,
+  contradiction detection, and versioning so a corrected fact supersedes the
+  stale one instead of competing with it in retrieval.
+- **M3d — Capture + privacy.** Grow `CRABCC_AUTO_MEMORY` from one flag into
+  hook-driven capture (SessionStart / Stop / PreCompact analogues), and strip
+  secrets and `<private>` tags before a drawer is written, never after.
+
+Track each as its own issue under epic #2 when work starts.
 
 ## Where things live
 
