@@ -420,7 +420,11 @@ fn bare_name(name: &str) -> &str {
     name.rsplit("::").next().unwrap_or(name)
 }
 
-fn compact_snippet(s: &str) -> String {
+/// `#[doc(hidden)] pub` only so the fuzz harness can drive the multi-byte
+/// truncation path directly (cf. the snippet UTF-8 panic fix); not part of
+/// the supported API.
+#[doc(hidden)]
+pub fn compact_snippet(s: &str) -> String {
     let one_line = s.split_whitespace().fold(String::new(), |mut acc, w| {
         if !acc.is_empty() {
             acc.push(' ');

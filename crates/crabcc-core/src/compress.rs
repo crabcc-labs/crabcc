@@ -151,6 +151,14 @@ impl Codec {
 
     /// Decode a single FSST-encoded slice. Empty input returns empty output.
     ///
+    /// Corrupt or foreign streams degrade to empty rather than risking memory
+    /// unsafety. fsst-rs decodes each code with `symbols.get_unchecked(code)`,
+    /// so a code referencing a symbol this codec lacks — DB corruption, a
+    /// codec-generation mismatch, or a non-FSST blob mis-flagged as encoded —
+    /// is an out-of-bounds read (UB in release, where the `get_unchecked`
+    /// precondition check is compiled out). `codes_in_range` rejects such
+    /// streams first; it is O(bytes) and negligible beside the decode.
+    ///
     /// `#[inline]` — called once per decoded signature on every read
     /// path. Crossing the crate boundary without inlining sacrifices
     /// 5-15% on hot lookup loops once LTO sees the call site.
@@ -159,8 +167,34 @@ impl Codec {
         if encoded.is_empty() {
             return Vec::new();
         }
+        if !codes_in_range(encoded, self.inner.symbol_table().len()) {
+            return Vec::new();
+        }
         self.inner.decompressor().decompress(encoded)
     }
+}
+
+/// True iff every symbol code in `encoded` indexes within an `n_symbols`-entry
+/// table — the precondition fsst-rs's unchecked decode loop assumes but never
+/// verifies. The escape code (`fsst::ESCAPE_CODE`, 255) consumes the following
+/// byte as a raw literal, so that byte is skipped rather than range-checked; a
+/// trailing escape is a truncated stream and is rejected.
+fn codes_in_range(encoded: &[u8], n_symbols: usize) -> bool {
+    let mut i = 0;
+    while i < encoded.len() {
+        if encoded[i] == fsst::ESCAPE_CODE {
+            if i + 1 >= encoded.len() {
+                return false;
+            }
+            i += 2;
+        } else {
+            if encoded[i] as usize >= n_symbols {
+                return false;
+            }
+            i += 1;
+        }
+    }
+    true
 }
 
 #[cfg(all(test, feature = "compress"))]
@@ -227,6 +261,25 @@ mod tests {
         // Empty in / empty out, both directions.
         assert_eq!(codec.compress(b""), b"");
         assert_eq!(codec.decompress(b""), b"");
+    }
+
+    #[test]
+    fn decompress_rejects_out_of_range_code_without_oob() {
+        // Regression (fuzz `fsst_decompress_arbitrary`): decoding bytes that
+        // reference a symbol code beyond this codec's table hits fsst-rs's
+        // `symbols.get_unchecked(code)` — an OOB read (UB in release; caught as
+        // a precondition panic under the debug-assertions fuzz build). The
+        // decode must instead degrade to empty.
+        let corpus = small_corpus();
+        let refs: Vec<&[u8]> = corpus.iter().map(|v| v.as_slice()).collect();
+        let codec = Codec::train(&refs).unwrap();
+        let n = codec.inner.symbol_table().len();
+        assert!(n < 255, "tiny corpus should train < 255 symbols (got {n})");
+        // Code == n is one past the table; pre-fix this OOB'd the symbol slice.
+        assert!(
+            codec.decompress(&[n as u8]).is_empty(),
+            "out-of-range code must degrade to empty, not OOB"
+        );
     }
 
     #[test]
