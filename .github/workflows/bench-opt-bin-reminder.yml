@@ -3,8 +3,11 @@ name: bench-opt-bin reminder
 # Weekly "run or skip?" nudge for the binary-optimization sweep matrix
 # (scripts/bench-opt-bin/sweep.py: target-cpu × allocator × PGO × BOLT + opt-z).
 #
-# Discord incoming webhooks are post-only, so this can't collect a reply — it
-# posts a prompt with a one-click link to dispatch the bench run, and you decide.
+# The sweep is NOT a GitHub Actions workflow — it runs on an ad-hoc OVH box via
+# scripts/bench-opt-bin/provision-ovh.sh (OpenStack), which spins the VM, runs
+# the matrix, pulls results, and tears down. Discord incoming webhooks are
+# post-only, so this can't collect a reply — it posts a prompt with the runbook
+# link + the one-line invocation, and you decide whether to kick it off.
 #
 # ── Required secret ─────────────────────────────────────────────────────
 #   DISCORD_WEBHOOK_URL   Discord incoming-webhook URL. If unset, the job
@@ -30,7 +33,7 @@ jobs:
       - name: Post weekly Discord reminder
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          DISPATCH_URL: ${{ github.server_url }}/${{ github.repository }}/actions/workflows/bench.yml
+          RUNBOOK_URL: ${{ github.server_url }}/${{ github.repository }}/blob/main/scripts/bench-opt-bin/README.md
         run: |
           if [ -z "${DISCORD_WEBHOOK_URL}" ]; then
             echo "::notice::DISCORD_WEBHOOK_URL not set — skipping reminder."
@@ -41,7 +44,7 @@ jobs:
             "username": "crabcc bench",
             "embeds": [{
               "title": "⚙️ Weekly bench-opt-bin reminder — run or skip?",
-              "description": "Run the Rust binary-optimization matrix this week?\n**target-cpu × allocator × PGO × BOLT** + opt-level=z.\n\n▶️ **Run:** open the [bench workflow](${DISPATCH_URL}) → **Run workflow**.\n⏸️ **Skip:** ignore this message.",
+              "description": "Run the Rust binary-optimization matrix this week?\n**target-cpu × allocator × PGO × BOLT** + opt-level=z.\n\n▶️ **Run:** \`source ~/ovh-openrc.sh && ./scripts/bench-opt-bin/provision-ovh.sh\` — spins an OVH box, runs the sweep, posts results, tears down. See the [runbook](${RUNBOOK_URL}).\n⏸️ **Skip:** ignore this message.",
               "color": 15233059,
               "fields": [
                 { "name": "Last headline", "value": "snmalloc fastest (−2.8% index), opt-z smallest (52 MB). BOLT pending runtime-lib fix.", "inline": false }
