@@ -60,6 +60,52 @@ python3 scripts/bench-opt-bin/sweep.py --dry-run
 python3 scripts/bench-opt-bin/sweep.py --jobs 6 --pin 0-3
 ```
 
+## Memory guard (small boxes)
+
+`--max-mem-gib` (default: 85% of `MemAvailable`) caps the build pool so
+`jobs × --per-leg-mem-gib` (default 4 GiB — the fat-LTO link / BOLT-rewrite
+high-water mark) stays under budget, downscaling the pool and warning if a
+single leg still wouldn't fit. This is what lets the deep matrix run on a
+16 GiB box without OOM-killing the parallel LTO links.
+
+## Scenario × arch — per-task, per-machine configs
+
+PGO and BOLT are *workload-specific by construction*: a profile gathered on
+indexing optimizes the index path; one gathered on lookups optimizes queries.
+So the harness has a **scenario** axis that shapes both the PGO/BOLT telemetry
+(build) and the measured ops (Phase B):
+
+```bash
+--scenario index    # parse/write heavy (default) — primary `index`, 2nd `lookup sym`
+--scenario lookup   # query heavy            — primary `lookup refs`, 2nd `lookup callers`
+--scenario graph    # call-graph traversal   — primary `graph walk`, 2nd `lookup sym`
+```
+
+Run the sweep **once per scenario** and each emits its own winner — that's the
+"base config per task/agent group" map. The `--arch` axis makes the target-cpu
+legs architecture-aware:
+
+```bash
+--arch x86-64    # x86-64-v2/v3/v4/native (default on x86 hosts)
+--arch aarch64   # neoverse-n1/v1/v2/native — AWS Graviton2/3/4
+```
+
+aarch64 legs need an aarch64 toolchain; cross-building from x86 warns and the
+legs will error/skip — run them *on* a Graviton box. (crabcc's only vector hot
+path, `cosine`, uses `std::simd` and lowers to NEON automatically, so there's no
+x86-only SIMD penalty on ARM.)
+
+## Measurement isolation (trustworthy small deltas)
+
+PGO/BOLT wins are often 2–5% — smaller than the run-to-run noise on a busy or
+unpinned box. Two flags cut that variance:
+
+```bash
+--pin 0-3        # taskset the measured leg to dedicated cores + chrt -b (SCHED_BATCH)
+--tmpfs[=GiB]    # mount a tmpfs for the measurement fixture (default 4 GiB),
+                 # taking disk/fsync jitter out of the timed op (needs CAP_SYS_ADMIN)
+```
+
 Or via Task: `task bench-opt-bin` (smoke) / `task bench-opt-bin-full`.
 
 Outputs land in `bench/results/` (gitignored, matching every other bench):
