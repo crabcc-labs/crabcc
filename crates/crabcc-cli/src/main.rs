@@ -285,6 +285,11 @@ enum SetupOp {
         /// Print planned operations without touching disk.
         #[arg(long)]
         dry_run: bool,
+        /// Install into `<DIR>/.claude` (and OS-local state under
+        /// `<DIR>/.crabcc`) instead of the ambient home. Provisions a
+        /// separate coding-agent profile; outranks `$CLAUDE_CONFIG_DIR`.
+        #[arg(long, value_name = "DIR")]
+        target_home: Option<PathBuf>,
     },
     /// Check GitHub for a newer release; optionally clean local sidecars.
     Upgrade {
@@ -1178,6 +1183,7 @@ fn main() -> Result<()> {
                 with_ollama_stack,
                 print_stack_instructions,
                 dry_run,
+                target_home,
             } => {
                 return install::run(install::InstallOptions {
                     yes: *yes,
@@ -1185,6 +1191,7 @@ fn main() -> Result<()> {
                     with_ollama_stack: *with_ollama_stack,
                     print_stack_instructions: *print_stack_instructions,
                     dry_run: *dry_run,
+                    target_home: target_home.clone(),
                 });
             }
             SetupOp::Upgrade {

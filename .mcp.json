@@ -6,12 +6,6 @@
       "description": "sym · refs · callers · outline · files · fuzzy for symbol lookup. --dev surface adds _openapi + _health diagnostics. Use --count or --files-only flags whenever the full hit list is not needed (saves 99%+ tokens). Skip memory.* unless explicitly working on the memory layer."
     },
 
-    "repowise": {
-      "command": "repowise",
-      "args": ["mcp", "/Users/lodripeter/workspace/peterlodri-sec/crabcc", "--transport", "stdio"],
-      "description": "PR mode: get_risk(changed_files=[...]) first for blast radius + directive. Then get_answer/get_context/get_symbol for architecture. get_why before any refactor. Skip get_dead_code (cleanup sprint only) and get_overview (already indexed)."
-    },
-
     "context7": {
       "command": "npx",
       "args": ["-y", "@upstash/context7-mcp@latest"],

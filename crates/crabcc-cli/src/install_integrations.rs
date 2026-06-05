@@ -106,6 +106,7 @@ fn install_claude(opts: Options) -> Result<()> {
         with_ollama_stack: false,
         print_stack_instructions: false,
         dry_run: false,
+        target_home: None,
     })
 }
 
