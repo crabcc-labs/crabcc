@@ -10,8 +10,8 @@
 //! total hops. `max_depth` is the cap on the sum of forward+reverse hops,
 //! so `max_depth=4` permits chains up to 4 edges long.
 
-use crate::store::Store;
-use crate::types::{Symbol, SymbolKind};
+use crate::store::{kind_from_str, Store};
+use crate::types::Symbol;
 use ahash::{HashMap, HashSet};
 use anyhow::Result;
 use rusqlite::params;
@@ -212,7 +212,7 @@ fn hydrate_symbols(store: &Store, ids: Vec<i64>) -> Result<Vec<Symbol>> {
     // by querying each id in turn (the chains are bounded by max_depth so
     // this is at most ~20 queries even on pathological inputs).
     let mut stmt = conn.prepare(
-        "SELECT s.name, s.kind, s.signature, f.path, s.line_start, s.line_end, s.visibility \
+        "SELECT s.name, s.kind, s.signature, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc \
          FROM symbols s JOIN files f ON s.file_id = f.id \
          WHERE s.id = ?1",
     )?;
@@ -223,7 +223,11 @@ fn hydrate_symbols(store: &Store, ids: Vec<i64>) -> Result<Vec<Symbol>> {
                 Ok(Symbol {
                     name: row.get(0)?,
                     kind: kind_from_str(&row.get::<_, String>(1)?),
-                    signature: row.get(2)?,
+                    // Decode honoring `signature_enc` (col 7). A raw `row.get(2)`
+                    // would error on an FSST-encoded BLOB (default `compress`
+                    // feature), and the `.ok()` below would then silently drop
+                    // the symbol from the path.
+                    signature: store.signature_from_row(row, 2, 7)?,
                     parent: None,
                     file: row.get(3)?,
                     line_start: row.get(4)?,
@@ -237,23 +241,6 @@ fn hydrate_symbols(store: &Store, ids: Vec<i64>) -> Result<Vec<Symbol>> {
         }
     }
     Ok(out)
-}
-
-fn kind_from_str(s: &str) -> SymbolKind {
-    match s {
-        "function" => SymbolKind::Function,
-        "method" => SymbolKind::Method,
-        "class" => SymbolKind::Class,
-        "struct" => SymbolKind::Struct,
-        "enum" => SymbolKind::Enum,
-        "trait" => SymbolKind::Trait,
-        "interface" => SymbolKind::Interface,
-        "const" => SymbolKind::Const,
-        "var" => SymbolKind::Var,
-        "type" => SymbolKind::Type,
-        "macro" => SymbolKind::Macro,
-        _ => SymbolKind::Function,
-    }
 }
 
 #[cfg(test)]
@@ -305,6 +292,29 @@ mod tests {
         assert_eq!(p.edges.len(), 3, "3 edges in chain: {:?}", p.edges);
         // All edges in this fixture are 'call'.
         assert!(p.edges.iter().all(|(_, _, k, _)| k == "call"));
+    }
+
+    #[test]
+    #[cfg(feature = "compress")]
+    fn why_path_includes_node_with_fsst_encoded_signature() {
+        // Regression: hydrate read `s.signature` raw; on an FSST-encoded BLOB
+        // the per-row query errored and the `.ok()` silently dropped that node
+        // from the path. Encode b's signature and assert the chain is complete.
+        let (_dir, store) = fixture();
+        store
+            .conn()
+            .execute(
+                "UPDATE symbols SET signature = X'deadbeef', signature_enc = 1 WHERE id = 2",
+                [],
+            )
+            .unwrap();
+        let p = why(&store, 1, 4, 5).unwrap().expect("path exists");
+        let names: Vec<&str> = p.nodes.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["a", "b", "c", "d"],
+            "b must not be dropped: {names:?}"
+        );
     }
 
     #[test]

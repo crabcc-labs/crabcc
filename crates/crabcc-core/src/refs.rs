@@ -69,10 +69,11 @@ fn is_identifier_kind(lang: &str, kind: &str) -> bool {
 
 fn line_at(src: &str, row: usize) -> String {
     let raw = src.lines().nth(row).unwrap_or_default().trim();
-    if raw.len() > 80 {
-        format!("{}…", &raw[..80])
-    } else {
-        raw.to_string()
+    // Char-boundary-safe truncation — `&raw[..80]` panics if byte 80 splits a
+    // multibyte char (any non-ASCII line > 80 bytes).
+    match raw.char_indices().nth(80) {
+        Some((idx, _)) => format!("{}…", &raw[..idx]),
+        None => raw.to_string(),
     }
 }
 
@@ -159,5 +160,17 @@ const again = greet("again");
                 h.snippet
             );
         }
+    }
+
+    #[test]
+    fn line_at_truncates_multibyte_without_panicking() {
+        // A long line of 3-byte chars: byte offset 80 lands *inside* a char, so
+        // the old `&raw[..80]` would panic. Truncation must land on a char
+        // boundary instead.
+        let line = "€".repeat(100); // 100 chars, 300 bytes
+        let src = format!("{line}\n");
+        let out = line_at(&src, 0); // must not panic
+        assert!(out.ends_with('…'), "expected ellipsis: {out:?}");
+        assert_eq!(out.chars().count(), 81, "80 chars + ellipsis: {out:?}");
     }
 }

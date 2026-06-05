@@ -422,10 +422,12 @@ fn compact_snippet(s: &str) -> String {
         acc.push_str(w);
         acc
     });
-    if one_line.len() > 80 {
-        format!("{}…", &one_line[..80])
-    } else {
-        one_line
+    // Truncate at a char boundary (the 80th char's byte index), not a fixed
+    // byte offset — `&one_line[..80]` panics if byte 80 splits a multibyte char
+    // (any non-ASCII source line > 80 bytes).
+    match one_line.char_indices().nth(80) {
+        Some((idx, _)) => format!("{}…", &one_line[..idx]),
+        None => one_line,
     }
 }
 
@@ -584,6 +586,15 @@ fn early_stop(mode: &Mode, hits_len: usize, files_len: usize) -> bool {
 mod tests {
     use super::*;
     use crate::index::{build_index, full_index};
+
+    #[test]
+    fn compact_snippet_truncates_multibyte_without_panicking() {
+        // 3-byte chars so byte 80 lands mid-char — the old `&one_line[..80]`
+        // would panic. Must truncate on a char boundary.
+        let out = compact_snippet(&"€".repeat(100));
+        assert!(out.ends_with('…'), "expected ellipsis: {out:?}");
+        assert_eq!(out.chars().count(), 81, "80 chars + ellipsis: {out:?}");
+    }
 
     fn write(p: &Path, body: &str) {
         std::fs::write(p, body).unwrap();
