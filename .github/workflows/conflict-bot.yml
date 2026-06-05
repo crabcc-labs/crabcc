@@ -274,7 +274,7 @@ jobs:
             "$(cat /tmp/codex-prompt.md)" 2>&1 | tee /tmp/codex.log
 
       - name: Verify post-rebase state
-        if: steps.meta.outputs.skip != 'true'
+        if: always() && steps.meta.outputs.skip != 'true'
         id: verify
         run: |
           set -euo pipefail
@@ -291,7 +291,7 @@ jobs:
             printf 'Codex did not complete the rebase before exiting.\n' > /tmp/conflict-bot-bail.md
             echo "outcome=bailed" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          if git status --porcelain | grep -q '^UU '; then
+          if git status --porcelain | grep -qE '^(UU|AA|DD|UA|AU|DU|UD) '; then
             echo "unresolved conflicts remain; aborting"
             git rebase --abort 2>/dev/null || true
             printf 'Codex finished but left unresolved conflict markers.\n' > /tmp/conflict-bot-bail.md
@@ -319,14 +319,21 @@ jobs:
           exit 1
 
       - name: Remove rebase label + comment (success)
-        if: steps.meta.outputs.skip != 'true' && steps.verify.outputs.outcome == 'success'
+        if: always() && steps.meta.outputs.skip != 'true' && steps.verify.outputs.outcome == 'success'
         run: |
           PR=${{ matrix.pr }}
           gh pr edit "$PR" --remove-label "needs-manual-rebase" 2>/dev/null || true
           gh pr comment "$PR" --body "conflict-bot: rebased onto \`${{ steps.meta.outputs.base_ref }}\` and force-pushed. Conflicts were resolved by Codex; please skim the diff before merge-bot picks this up on the next sweep." || true
 
+      - name: Remove rebase label + comment (noop — already up to date)
+        if: always() && steps.meta.outputs.skip != 'true' && steps.verify.outputs.outcome == 'noop'
+        run: |
+          PR=${{ matrix.pr }}
+          gh pr edit "$PR" --remove-label "needs-manual-rebase" 2>/dev/null || true
+          gh pr comment "$PR" --body "conflict-bot: branch is already up to date with \`${{ steps.meta.outputs.base_ref }}\` — no rebase needed. Removed \`needs-manual-rebase\`." || true
+
       - name: Bail comment + label
-        if: steps.meta.outputs.skip != 'true' && steps.verify.outputs.outcome == 'bailed'
+        if: always() && steps.meta.outputs.skip != 'true' && steps.verify.outputs.outcome == 'bailed'
         run: |
           PR=${{ matrix.pr }}
           reason="$(cat /tmp/conflict-bot-bail.md 2>/dev/null || echo 'unspecified')"

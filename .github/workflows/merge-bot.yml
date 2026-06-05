@@ -104,7 +104,7 @@ jobs:
               --jq '
                 .[] |
                 select(.isDraft == false) |
-                select((.labels // []) | any(.name == "do-not-automerge" or .name == "wip") | not) |
+                select((.labels // []) | any(.name == "do-not-automerge" or .name == "wip" or .name == "needs-manual-rebase") | not) |
                 select((.reviewRequests // []) | length == 0) |
                 select((.createdAt | fromdateiso8601) < '"$one_hour_ago"') |
                 select((.updatedAt | fromdateiso8601) < '"$five_min_ago"') |
@@ -250,9 +250,11 @@ jobs:
                else "SUCCESS" end)' <<<"$meta")
 
             # Attempt counter: `[codex-fix]` commits in the PR diff (head ahead of base).
+            # On API error default to MAX_FIX_ATTEMPTS so we bail rather than
+            # dispatch another attempt against an unknown state.
             fix_count=$(gh api "/repos/$REPO/compare/$base_ref...$head_sha" \
               --jq '[.commits[] | select(.commit.message | startswith("[codex-fix]"))] | length' \
-              2>/dev/null || echo 0)
+              2>/dev/null || echo "$MAX_FIX_ATTEMPTS")
 
             head_subject=$(gh api "/repos/$REPO/commits/$head_sha" \
               --jq '.commit.message | split("\n")[0]' 2>/dev/null || echo "")
@@ -276,8 +278,9 @@ jobs:
               decision=skip; reason="reviewer requested changes"
             elif [ "$rollup" = "PENDING" ]; then
               decision=skip; reason="CI in progress"
-            elif [ "$rollup" = "SUCCESS" ] && [ "$mergeable" = "MERGEABLE" ] && [ "$mss" = "CLEAN" ]; then
-              decision=merge; reason="CI green, branch clean"
+            elif [ "$mergeable" = "MERGEABLE" ] && [ "$mss" = "CLEAN" ] && \
+                 { [ "$rollup" = "SUCCESS" ] || [ "$rollup" = "NONE" ]; }; then
+              decision=merge; reason="${rollup} branch clean (no required checks)"
             elif [ "$mss" = "BEHIND" ]; then
               decision=rebase; reason="branch behind $base_ref"
             elif [ "$mergeable" = "CONFLICTING" ] || [ "$mss" = "DIRTY" ]; then
