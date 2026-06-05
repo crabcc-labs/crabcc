@@ -26,6 +26,12 @@ pub fn find_symbol(store: &Store, name: &str) -> Result<Vec<Symbol>> {
 
 /// Same as [`find_symbol`] but restricted to a set of repo-relative
 /// file paths. Used by the `--since SHA` CLI/MCP filter.
+/// Batched [`find_symbol`]: resolve many names in a single query. Used by the
+/// LSP `workspace/symbol` to re-hydrate all its prefix hits at once.
+pub fn find_symbols(store: &Store, names: &[&str]) -> Result<Vec<Symbol>> {
+    store.find_by_names(names)
+}
+
 pub fn find_symbol_in_files(
     store: &Store,
     name: &str,
