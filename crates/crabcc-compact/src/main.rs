@@ -115,11 +115,139 @@ fn epoch_secs() -> u64 {
         .unwrap_or(0)
 }
 
-// Stubs — implemented in Tasks 11, 12, 13
-fn run_promptsubmit() -> Result<()> { Ok(()) }
-fn cmd_status() -> Result<()> { println!("status: not yet implemented"); Ok(()) }
-fn cmd_test() -> Result<()> { println!("test: not yet implemented"); Ok(()) }
-fn cmd_economy() -> Result<()> { println!("economy: not yet implemented"); Ok(()) }
+fn run_promptsubmit() -> Result<()> {
+    let cfg = config::load()?;
+    let mut stdin = String::new();
+    io::stdin().read_to_string(&mut stdin)?;
+
+    let json: Value = match serde_json::from_str(&stdin) {
+        Ok(v) => v,
+        Err(_) => return Ok(()),
+    };
+
+    let prompt = match json.get("prompt").and_then(|p| p.as_str()) {
+        Some(p) => p.to_string(),
+        None => return Ok(()),
+    };
+
+    let (prompt_text, do_enrich) = match enrich::detect_trigger(&prompt, &cfg.enrich_trigger) {
+        Some(stripped) => (stripped, true),
+        None => (prompt.clone(), false),
+    };
+
+    if !gate::above_threshold(&prompt_text, cfg.threshold_tokens) && !do_enrich {
+        return Ok(());
+    }
+
+    let mut budget = Budget::new();
+    let ratio = pick_ratio(&budget);
+
+    let compressed = if gate::above_threshold(&prompt_text, cfg.threshold_tokens) {
+        match client::compact(&cfg.endpoint, &prompt_text, ratio, cfg.timeout_ms) {
+            Ok(r) => {
+                budget.record_compress(
+                    gate::token_estimate(&prompt_text),
+                    gate::token_estimate(&r.compressed),
+                );
+                r.compressed
+            }
+            Err(e) => {
+                log_error(&format!("promptsubmit compact failed: {e:#}"));
+                fallback::truncate(&prompt_text, 50, 50)
+            }
+        }
+    } else {
+        prompt_text.clone()
+    };
+
+    let final_prompt = if do_enrich {
+        match client::enrich(&cfg.endpoint, &compressed, &prompt, cfg.timeout_ms) {
+            Ok(r) => format!("{}
+
+---
+{compressed}", r.plan),
+            Err(e) => {
+                log_error(&format!("enrich failed: {e:#}"));
+                compressed
+            }
+        }
+    } else {
+        compressed
+    };
+
+    if final_prompt == prompt {
+        return Ok(());
+    }
+
+    let output = serde_json::json!({ "updatedPrompt": final_prompt });
+    io::stdout().write_all(serde_json::to_string(&output)?.as_bytes())?;
+    Ok(())
+}
+
+fn cmd_status() -> Result<()> {
+    let cfg = config::load()?;
+    if cfg.endpoint.is_empty() {
+        println!("endpoint: not configured (set endpoint in ~/.config/crabcc/compact.toml)");
+        return Ok(());
+    }
+    match client::health(&cfg.endpoint, cfg.timeout_ms) {
+        Ok(v) => println!("ok — {v}"),
+        Err(e) => println!("unreachable: {e}"),
+    }
+    Ok(())
+}
+
+fn cmd_test() -> Result<()> {
+    let cfg = config::load()?;
+    let payload = generate_test_payload();
+    println!("sending {}-char payload ({} est. tokens) to {}",
+        payload.len(), gate::token_estimate(&payload), cfg.endpoint);
+    let start = std::time::Instant::now();
+    match client::compact(&cfg.endpoint, &payload, 0.5, cfg.timeout_ms) {
+        Ok(r) => {
+            let elapsed = start.elapsed();
+            let savings_pct = if r.original_tokens > 0 {
+                100.0 - (r.compressed_tokens as f32 / r.original_tokens as f32 * 100.0)
+            } else { 0.0 };
+            println!("ok — {orig} → {comp} tokens ({savings_pct:.1}% saved) in {ms}ms",
+                orig = r.original_tokens, comp = r.compressed_tokens, ms = elapsed.as_millis());
+        }
+        Err(e) => println!("error: {e}"),
+    }
+    Ok(())
+}
+
+fn cmd_economy() -> Result<()> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let path = std::path::PathBuf::from(home).join(".crabcc").join("compact.log");
+    if path.exists() {
+        let log = std::fs::read_to_string(&path)?;
+        let lines: Vec<&str> = log.lines().rev().take(20).collect();
+        println!("last 20 log entries (most recent first):");
+        for l in lines { println!("  {l}"); }
+    } else {
+        println!("no log yet at {}", path.display());
+    }
+    Ok(())
+}
+
+fn generate_test_payload() -> String {
+    let snippet = r#"pub fn handle_request(req: HttpRequest, state: web::Data<AppState>) -> impl Responder {
+    let token = req.headers().get("Authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .unwrap_or("");
+    if token.is_empty() { return HttpResponse::Unauthorized().finish(); }
+    match state.db.get_user_by_token(token) {
+        Ok(user) => HttpResponse::Ok().json(user),
+        Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
+    }
+}
+"#;
+    snippet.repeat(80)
+}
+
+// Stubs — implemented in Tasks 12, 13
 fn cmd_setup(_args: &[String]) -> Result<()> { println!("setup: not yet implemented"); Ok(()) }
 fn cmd_uninstall(_args: &[String]) -> Result<()> { println!("uninstall: not yet implemented"); Ok(()) }
 fn run_mcp(_args: &[String]) -> Result<()> { println!("mcp: not yet implemented"); Ok(()) }
