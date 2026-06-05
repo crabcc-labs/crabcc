@@ -1,10 +1,10 @@
 use serde_json::{json, Value};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::collections::HashMap;
-use std::sync::mpsc;
 
 use super::tools;
 
@@ -18,7 +18,10 @@ pub fn run(port: u16) -> anyhow::Result<()> {
         Arc::new(Mutex::new(HashMap::new()));
 
     for stream in listener.incoming() {
-        let stream = match stream { Ok(s) => s, Err(_) => continue };
+        let stream = match stream {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
         let sessions = Arc::clone(&sessions);
         thread::spawn(move || {
             let _ = handle_connection(stream, sessions);
@@ -40,10 +43,15 @@ fn handle_connection(
         let mut line = String::new();
         reader.read_line(&mut line)?;
         let trimmed = line.trim();
-        if trimmed.is_empty() { break; }
+        if trimmed.is_empty() {
+            break;
+        }
         if trimmed.to_ascii_lowercase().starts_with("content-length:") {
-            content_length = trimmed.split(':').nth(1)
-                .and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+            content_length = trimmed
+                .split(':')
+                .nth(1)
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0);
         }
     }
 
@@ -66,9 +74,13 @@ fn handle_sse(
     mut stream: std::net::TcpStream,
     sessions: Arc<Mutex<HashMap<String, mpsc::Sender<String>>>>,
 ) -> anyhow::Result<()> {
-    let session_id = format!("s{}",
+    let session_id = format!(
+        "s{}",
         std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis());
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+    );
 
     let (tx, rx) = mpsc::channel::<String>();
     sessions.lock().unwrap().insert(session_id.clone(), tx);
@@ -77,11 +89,14 @@ fn handle_sse(
         b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n"
     )?;
     stream.write_all(
-        format!("event: endpoint\r\ndata: /message?sessionId={session_id}\r\n\r\n").as_bytes()
+        format!("event: endpoint\r\ndata: /message?sessionId={session_id}\r\n\r\n").as_bytes(),
     )?;
 
     for msg in rx {
-        if stream.write_all(format!("event: message\r\ndata: {msg}\r\n\r\n").as_bytes()).is_err() {
+        if stream
+            .write_all(format!("event: message\r\ndata: {msg}\r\n\r\n").as_bytes())
+            .is_err()
+        {
             break;
         }
     }
@@ -128,7 +143,10 @@ fn handle_message(
     let resp_str = serde_json::to_string(&response)?;
     let sent = {
         let guard = sessions.lock().unwrap();
-        guard.get(session_id).map(|tx| tx.send(resp_str.clone()).is_ok()).unwrap_or(false)
+        guard
+            .get(session_id)
+            .map(|tx| tx.send(resp_str.clone()).is_ok())
+            .unwrap_or(false)
     };
 
     if !sent {
@@ -141,8 +159,13 @@ fn handle_message(
 }
 
 fn extract_session_id(request_line: &str) -> String {
-    request_line.split_whitespace().nth(1).unwrap_or("")
-        .split('?').nth(1).unwrap_or("")
+    request_line
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("")
+        .split('?')
+        .nth(1)
+        .unwrap_or("")
         .split('&')
         .find_map(|p| p.strip_prefix("sessionId=").map(|s| s.to_string()))
         .unwrap_or_default()

@@ -104,6 +104,9 @@ pub enum MemoryCmd {
         #[command(subcommand)]
         action: RemindCmd,
     },
+    /// Summary of compact pipeline history: token savings, avg smoothness.
+    /// Gated by CRABCC_COMPACT_HOOK=1; returns zeroes when unset.
+    CompactStats,
     /// Ingest URLs and/or freeform text into memory. Mirrors the HTTP
     /// `POST /api/memory/ingest` surface so the CLI and dashboard agree
     /// on drawer ids (`web:<hash>` for URLs, `text:<hash>` for text).
@@ -228,7 +231,11 @@ fn time_parse_rfc3339(s: &str) -> Option<i64> {
             let oh: i64 = s.get(20..22)?.parse().ok()?;
             let om: i64 = s.get(23..25)?.parse().ok()?;
             let mag = oh * 3_600 + om * 60;
-            if *sign == b'+' { mag } else { -mag }
+            if *sign == b'+' {
+                mag
+            } else {
+                -mag
+            }
         }
         _ => return None,
     };
@@ -466,9 +473,9 @@ pub fn run(root: &Path, cmd: MemoryCmd) -> Result<()> {
             match action {
                 RemindCmd::Set { message, delay, at } => {
                     let due_at = if let Some(d) = delay {
-                        parse_remind_delay(&d)?   // relative: bare int = now + N
+                        parse_remind_delay(&d)? // relative: bare int = now + N
                     } else if let Some(a) = at {
-                        parse_remind_at(&a)?      // absolute: bare int = epoch
+                        parse_remind_at(&a)? // absolute: bare int = epoch
                     } else {
                         anyhow::bail!("specify either --in <delay> or --at <timestamp>");
                     };
@@ -492,6 +499,17 @@ pub fn run(root: &Path, cmd: MemoryCmd) -> Result<()> {
                     println!("{}", serde_json::to_string_pretty(&out)?);
                 }
             }
+        }
+        MemoryCmd::CompactStats => {
+            let stats = crabcc_compact::compact_memory::compact_stats(&palace)?;
+            println!(
+                "{}",
+                sonic_rs::to_string(&serde_json::json!({
+                    "total_compact_sessions": stats.total,
+                    "total_tokens_saved": stats.total_tokens_saved,
+                    "avg_readability": stats.avg_readability,
+                }))?
+            );
         }
         MemoryCmd::Mine { kind } => {
             let session = std::env::var("TERM_SESSION_ID").ok();
@@ -591,9 +609,7 @@ fn parse_remind_delay(s: &str) -> Result<i64> {
         if ch.is_ascii_digit() {
             num.push(ch);
         } else {
-            let n: i64 = num
-                .parse()
-                .map_err(|_| anyhow!("invalid delay {s:?}"))?;
+            let n: i64 = num.parse().map_err(|_| anyhow!("invalid delay {s:?}"))?;
             num.clear();
             total += match ch {
                 'd' => n * 86_400,
@@ -616,8 +632,7 @@ fn parse_remind_at(s: &str) -> Result<i64> {
     if let Ok(n) = s.parse::<i64>() {
         return Ok(n);
     }
-    time_parse_rfc3339(s)
-        .ok_or_else(|| anyhow!("--at expects epoch seconds or RFC3339, got {s:?}"))
+    time_parse_rfc3339(s).ok_or_else(|| anyhow!("--at expects epoch seconds or RFC3339, got {s:?}"))
 }
 
 /// Per-agent hook config for wiring `memory.remind_poll` as a `send_later`
@@ -672,10 +687,12 @@ fn remind_hooks_json(agent: Option<&str>) -> serde_json::Value {
         }
     });
     match agent {
-        Some(name) => all.get(name).cloned().unwrap_or_else(|| json!({
-            "error": format!("unknown agent {name:?}"),
-            "valid": ["claude-code","opencode","cursor","nullclaw","omp","shell","generic-mcp"]
-        })),
+        Some(name) => all.get(name).cloned().unwrap_or_else(|| {
+            json!({
+                "error": format!("unknown agent {name:?}"),
+                "valid": ["claude-code","opencode","cursor","nullclaw","omp","shell","generic-mcp"]
+            })
+        }),
         None => all,
     }
 }
@@ -801,7 +818,11 @@ mod tests {
         assert_eq!(neg4, z + 4 * 3_600, "-04:00 should yield 4h later in UTC");
         // +05:30 (IST) → 18:30 UTC on 2024-12-31 → 19800 s before midnight UTC.
         let pos530 = parse_before_timestamp("2025-01-01T00:00:00+05:30").unwrap();
-        assert_eq!(pos530, z - (5 * 3_600 + 30 * 60), "+05:30 should yield 5h30m earlier in UTC");
+        assert_eq!(
+            pos530,
+            z - (5 * 3_600 + 30 * 60),
+            "+05:30 should yield 5h30m earlier in UTC"
+        );
     }
 
     #[test]

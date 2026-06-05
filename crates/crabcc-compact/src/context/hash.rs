@@ -6,13 +6,17 @@ pub struct SessionCache {
 }
 
 impl Default for SessionCache {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[allow(dead_code)]
 impl SessionCache {
     pub fn new() -> Self {
-        Self { seen: AHashSet::new() }
+        Self {
+            seen: AHashSet::new(),
+        }
     }
 
     pub fn is_seen(&self, text: &str) -> bool {
