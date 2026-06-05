@@ -37,8 +37,13 @@ pub fn apply_step(code: &str, step: &TransformStep) -> anyhow::Result<String> {
             // Only literal string patterns — no eval, no AST
             let result = code
                 .replace("1 + 0", "1")
+                .replace("0 + 1", "1")
                 .replace("x * 1", "x")
-                .replace("x + 0", "x");
+                .replace("1 * x", "x")
+                .replace("x + 0", "x")
+                .replace("0 + x", "x")
+                .replace("x - 0", "x")
+                .replace("x / 1", "x");
             Ok(result)
         }
 
@@ -114,6 +119,14 @@ mod tests {
         let code = "let a = 1 + 0;\nlet b = x * 1;\nlet c = x + 0;";
         let out = apply_step(code, &step(TransformKind::ExpressionFolding)).unwrap();
         assert_eq!(out, "let a = 1;\nlet b = x;\nlet c = x;");
+    }
+
+    #[test]
+    fn expression_folding_replaces_all_patterns() {
+        // All 8 patterns from FOLDABLE_PATTERNS must be handled by the rewrite.
+        let code = "let a = 0 + 1;\nlet b = 1 * x;\nlet c = 0 + x;\nlet d = x - 0;\nlet e = x / 1;";
+        let out = apply_step(code, &step(TransformKind::ExpressionFolding)).unwrap();
+        assert_eq!(out, "let a = 1;\nlet b = x;\nlet c = x;\nlet d = x;\nlet e = x;");
     }
 
     #[test]

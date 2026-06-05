@@ -7,7 +7,6 @@ use crate::{
     traits::*,
     types::*,
 };
-use crabcc_memory::Palace;
 
 pub fn run_compact(input: CompactInput, config: &CompactConfig) -> anyhow::Result<CompactOutput> {
     let tokens_before = count_tokens(&input.original_code);
@@ -34,19 +33,21 @@ pub fn run_compact(input: CompactInput, config: &CompactConfig) -> anyhow::Resul
 
     // 5. Reject if too disruptive
     if smoothness.disruption > config.max_disruption && !steps.is_empty() {
-        let tokens_after = tokens_before;
+        // Re-score against unchanged code so smoothness is consistent with zero steps.
+        let identity_smoothness =
+            DiffBasedScorer.score(&input.original_code, &input.original_code, &[]);
         return Ok(CompactOutput {
             compacted_code: input.original_code,
             steps: vec![],
             metrics: CompactMetrics {
                 tokens_before,
-                tokens_after,
+                tokens_after: tokens_before,
                 tokens_saved: 0,
                 complexity_before: 1.0,
                 complexity_after: 1.0,
                 process_time_ms: t0.elapsed().as_millis() as u64,
             },
-            smoothness,
+            smoothness: identity_smoothness,
         });
     }
 
@@ -66,18 +67,6 @@ pub fn run_compact(input: CompactInput, config: &CompactConfig) -> anyhow::Resul
     })
 }
 
-pub fn run_compact_with_history(
-    input: CompactInput,
-    config: &CompactConfig,
-    palace: &Palace,
-) -> anyhow::Result<CompactOutput> {
-    let output = run_compact(input.clone(), config)?;
-    if output.metrics.tokens_saved > 0 {
-        let _ = crate::history::append_history(palace, &input.session_id, &output);
-        // best-effort: ignore history errors
-    }
-    Ok(output)
-}
 
 #[cfg(test)]
 mod tests {
@@ -120,11 +109,17 @@ mod tests {
 
     #[test]
     fn high_disruption_returns_original() {
-        let code = "fn foo() {\n\n\n\n    let x = 1;\n\n\n\n    x\n\n\n\n}\n";
+        // Use whitespace-only lines (spaces) so patterns.rs::find() generates steps.
+        // With max_disruption=0.0 and at least one step, the disruption guard fires.
+        let code = "fn foo() {\n    \n    let x = 1;\n    \n    x\n}\n";
         let input = make_input(code);
         let mut config = default_config();
         config.max_disruption = 0.0;
         let output = run_compact(input.clone(), &config).unwrap();
         assert_eq!(output.compacted_code, input.original_code);
+        // Steps must be empty: the disruption-rejection path was taken, not the no-steps path.
+        assert!(output.steps.is_empty(), "disruption-rejected output must have no steps");
+        // Smoothness must be consistent with no transformation (disruption=0).
+        assert_eq!(output.smoothness.disruption, 0.0);
     }
 }

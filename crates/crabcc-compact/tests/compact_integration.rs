@@ -23,6 +23,8 @@ fn pipeline_produces_output_for_blank_heavy_code() {
 
 #[test]
 fn compact_memory_round_trip() {
+    let _guard = ENV_LOCK.lock().unwrap();
+    unsafe { std::env::set_var("CRABCC_COMPACT_HOOK", "1") };
     let palace = Palace::ephemeral();
     let body = CompactDrawerBody {
         original: "fn main() {}".to_string(),
@@ -49,6 +51,7 @@ fn compact_memory_round_trip() {
     };
     compact_memory::store(&palace, "test-session", &body).unwrap();
     let listed = compact_memory::list(&palace, 10).unwrap();
+    unsafe { std::env::remove_var("CRABCC_COMPACT_HOOK") };
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].original, "fn main() {}");
 }
@@ -117,4 +120,27 @@ fn sessions_mine_stores_compact_entries() {
     assert!(report.inserted >= 1, "should have stored compact entry");
     let drawers = palace.list_drawers(Some("compact"), 10).unwrap();
     assert!(!drawers.is_empty(), "compact wing should have entries");
+}
+
+#[test]
+fn dead_code_removal_pipeline_removes_commented_code() {
+    // Verify end-to-end: rule detects + rewrite removes commented-out code lines.
+    let code = "fn foo() {\n    // let x = 1;\n    let y = 2;\n    y\n}\n";
+    let input = CompactInput {
+        session_id: "dc-test".to_string(),
+        original_code: code.to_string(),
+        file_type: "rust".to_string(),
+        project_scope: None,
+    };
+    let config = CompactConfig::default();
+    let output = run_compact(input, &config).unwrap();
+    assert!(
+        !output.compacted_code.contains("// let x = 1;"),
+        "commented-out code line should be absent in output: {:?}",
+        output.compacted_code
+    );
+    assert!(
+        output.compacted_code.contains("let y = 2;"),
+        "live code line must be preserved"
+    );
 }

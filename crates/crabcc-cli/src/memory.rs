@@ -498,7 +498,7 @@ pub fn run(root: &Path, cmd: MemoryCmd) -> Result<()> {
         }
         MemoryCmd::CompactStats => {
             let stats = crabcc_compact::compact_memory::compact_stats(&palace)?;
-            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+            println!("{}", sonic_rs::to_string(&serde_json::json!({
                 "total_compact_sessions": stats.total,
                 "total_tokens_saved": stats.total_tokens_saved,
                 "avg_readability": stats.avg_readability,

@@ -86,6 +86,7 @@ fn process_file(
 
     let mut pending_user: Option<String> = None;
     let mut pair_index: usize = 0;
+    let mut compact_index: usize = 0;
 
     for line in raw.lines() {
         report.scanned += 1;
@@ -105,12 +106,16 @@ fn process_file(
 
         if evt.r#type.as_deref() == Some("compact") {
             if std::env::var("CRABCC_COMPACT_HOOK").as_deref() == Ok("1") {
+                compact_index += 1;
                 let body = format!(
                     "compact session={} code_len={}",
                     evt.session_id.as_deref().unwrap_or("unknown"),
                     evt.original_code.as_deref().map(|s| s.len()).unwrap_or(0),
                 );
-                let source_id = format!("compact:{}:{}", stem, report.scanned);
+                // Use compact_index (stable per-file counter) instead of report.scanned
+                // so that inserting/removing unrelated lines before this entry does not
+                // change the source_id and cause spurious re-insertion on re-runs.
+                let source_id = format!("compact:{}:{}", stem, compact_index);
                 let pre = palace.count()?;
                 palace.remember("compact", Some("raw"), &source_id, &body)?;
                 let post = palace.count()?;
@@ -274,7 +279,12 @@ pub fn write_synthetic_jsonl<P: AsRef<Path>>(path: P, turns: &[(&str, &str)]) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use tempfile::tempdir;
+
+    // Serialize tests that mutate CRABCC_COMPACT_HOOK to avoid races
+    // (env is process-global; cargo test runs threads in parallel by default).
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn pairs_user_assistant_into_drawers() {
@@ -418,6 +428,7 @@ mod tests {
 
     #[test]
     fn compact_jsonl_entry_stored_when_hook_enabled() {
+        let _guard = ENV_LOCK.lock().unwrap();
         let dir = tempdir().unwrap();
         let f = dir.path().join("compact.jsonl");
         let line = serde_json::json!({
@@ -428,7 +439,6 @@ mod tests {
         std::fs::write(&f, format!("{line}\n")).unwrap();
         let palace = Palace::ephemeral();
 
-        // SAFETY: test-only env mutation; tests in this module run single-threaded.
         unsafe { std::env::set_var("CRABCC_COMPACT_HOOK", "1") };
         let report =
             mine_sessions(&palace, dir.path(), &MineSessionsOpts::default()).unwrap();

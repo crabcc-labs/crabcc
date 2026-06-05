@@ -37,6 +37,9 @@ pub fn get_history(palace: &Palace, file_path: &str, limit: usize) -> Result<Vec
 mod tests {
     use super::*;
     use crate::types::{CompactMetrics, SmoothnessScore};
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     fn make_output(tokens_saved: u32) -> CompactOutput {
         CompactOutput {
@@ -61,8 +64,8 @@ mod tests {
 
     #[test]
     fn three_compacts_produce_three_history_entries() {
-        // Enable the feature gate so append_history is not a no-op.
-        std::env::set_var("CRABCC_COMPACT_HOOK", "1");
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("CRABCC_COMPACT_HOOK", "1") };
         let palace = Palace::ephemeral();
         let file_path = "src/main.rs";
 
@@ -72,16 +75,18 @@ mod tests {
         append_history(&palace, file_path, &make_output(20)).unwrap();
 
         let entries = get_history(&palace, file_path, 10).unwrap();
-        assert!(
-            !entries.is_empty(),
-            "expected at least one history entry, got 0"
-        );
-        std::env::remove_var("CRABCC_COMPACT_HOOK");
+        assert_eq!(entries.len(), 3, "expected all three history entries");
+        // Verify content fidelity; order is not guaranteed, so check as a set.
+        let mut saved_values: Vec<u32> = entries.iter().map(|e| e.metrics.tokens_saved).collect();
+        saved_values.sort_unstable();
+        assert_eq!(saved_values, vec![5, 10, 20]);
+        unsafe { std::env::remove_var("CRABCC_COMPACT_HOOK") };
     }
 
     #[test]
     fn get_history_filters_by_file_path() {
-        std::env::set_var("CRABCC_COMPACT_HOOK", "1");
+        let _guard = ENV_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("CRABCC_COMPACT_HOOK", "1") };
         let palace = Palace::ephemeral();
 
         append_history(&palace, "src/lib.rs", &make_output(3)).unwrap();
@@ -94,7 +99,7 @@ mod tests {
         assert_eq!(main_entries.len(), 1);
         assert_eq!(lib_entries[0].metrics.tokens_saved, 3);
         assert_eq!(main_entries[0].metrics.tokens_saved, 7);
-        std::env::remove_var("CRABCC_COMPACT_HOOK");
+        unsafe { std::env::remove_var("CRABCC_COMPACT_HOOK") };
     }
 
 }
