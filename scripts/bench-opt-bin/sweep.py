@@ -356,13 +356,14 @@ def bolt_optimize(binary: Path, leg_dir: Path, log) -> Path:
          "-split-functions", "-split-all-cold", "-split-eh", "-icf=1",
          "-dyno-stats"],
         check=True, stdout=log.file, stderr=subprocess.STDOUT)
-    # Re-strip: the non-BOLT legs inherit profile `strip = true`, so strip the
-    # optimized output too or this leg's footprint numbers are inflated by the
-    # symbol table BOLT required as input.
-    stripper = shutil.which("llvm-strip") or shutil.which("strip")
-    if stripper:
-        subprocess.run([stripper, str(optimized)], check=False,
-                       stdout=log.file, stderr=subprocess.STDOUT)
+    # Do NOT strip a BOLT output. BOLT rewrites the ELF with a custom segment
+    # layout (a new __hot text segment; allocated sections land in a non-default
+    # segment), which binutils strip/objcopy/llvm-strip cannot rewrite — they
+    # warn "section can't be allocated in segment N" and emit a binary that
+    # SIGSEGVs at startup. So BOLT legs keep their symbol table; .text/.rodata
+    # (size -A) stay comparable to stripped legs, only the total `file` size is
+    # inflated by .symtab/.strtab — the footprint table footnotes BOLT rows so
+    # the retained symbol table isn't misread as BOLT "bloat".
     return optimized
 
 
@@ -480,9 +481,16 @@ def render_report(legs: list[Leg], meta: dict) -> str:
     ]
     for l in by_size:
         kib = lambda b: f"{b/1024:.0f}" if b else "—"
+        mark = " ¹" if l.bolt else ""
         lines.append(
-            f"| `{l.id}` | {kib(l.file_bytes)} | {kib(l.text_bytes)} | "
+            f"| `{l.id}`{mark} | {kib(l.file_bytes)} | {kib(l.text_bytes)} | "
             f"{kib(l.rodata_bytes)} | {kib(l.total_size_bytes)} |")
+    if any(l.bolt for l in by_size):
+        lines += ["",
+                  "¹ BOLT legs are **unstripped** — stripping a BOLT output corrupts its "
+                  "segment layout (SIGSEGV), so `.symtab`/`.strtab` are retained. The `file` "
+                  "and `total` columns are inflated by that; **`.text`/`.rodata` are the "
+                  "comparable footprint metrics** for BOLT rows."]
 
     # Winner callout + paste-ready config.
     if by_speed:
