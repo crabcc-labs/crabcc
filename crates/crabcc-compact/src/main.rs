@@ -247,7 +247,77 @@ fn generate_test_payload() -> String {
     snippet.repeat(80)
 }
 
-// Stubs — implemented in Tasks 12, 13
-fn cmd_setup(_args: &[String]) -> Result<()> { println!("setup: not yet implemented"); Ok(()) }
-fn cmd_uninstall(_args: &[String]) -> Result<()> { println!("uninstall: not yet implemented"); Ok(()) }
+fn cmd_setup(args: &[String]) -> Result<()> {
+    let host = args.iter()
+        .find_map(|a| a.strip_prefix("--host="))
+        .unwrap_or("claude-code");
+    match host {
+        "claude-code" => setup_claude_code()?,
+        _ => anyhow::bail!("unknown host: {host}. Supported: claude-code"),
+    }
+    println!("hooks registered for {host}. Restart the CLI to pick them up.");
+    Ok(())
+}
+
+fn setup_claude_code() -> Result<()> {
+    let home = std::env::var("HOME")?;
+    let settings_path = std::path::PathBuf::from(&home)
+        .join(".claude").join("settings.json");
+
+    let raw = if settings_path.exists() {
+        std::fs::read_to_string(&settings_path)?
+    } else {
+        "{}".to_string()
+    };
+
+    let mut settings: serde_json::Map<String, Value> =
+        serde_json::from_str(&raw).unwrap_or_default();
+
+    let hooks = settings.entry("hooks").or_insert_with(|| Value::Object(Default::default()));
+    let hooks = hooks.as_object_mut().unwrap();
+
+    // Use the hooks directory next to this binary's source
+    let hook_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("hooks");
+
+    let posttooluse_script = hook_dir.join("claude-posttooluse.sh").to_string_lossy().to_string();
+    let promptsubmit_script = hook_dir.join("claude-promptsubmit.sh").to_string_lossy().to_string();
+
+    hooks.insert("PostToolUse".to_string(), serde_json::json!([{
+        "hooks": [{"type": "command", "command": posttooluse_script}]
+    }]));
+    hooks.insert("UserPromptSubmit".to_string(), serde_json::json!([{
+        "hooks": [{"type": "command", "command": promptsubmit_script}]
+    }]));
+
+    std::fs::create_dir_all(settings_path.parent().unwrap())?;
+    std::fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
+    println!("wrote hooks to {}", settings_path.display());
+    Ok(())
+}
+
+fn cmd_uninstall(args: &[String]) -> Result<()> {
+    let host = args.iter()
+        .find_map(|a| a.strip_prefix("--host="))
+        .unwrap_or("claude-code");
+    match host {
+        "claude-code" => {
+            let home = std::env::var("HOME")?;
+            let settings_path = std::path::PathBuf::from(home)
+                .join(".claude").join("settings.json");
+            if !settings_path.exists() { return Ok(()); }
+            let raw = std::fs::read_to_string(&settings_path)?;
+            let mut settings: serde_json::Map<String, Value> =
+                serde_json::from_str(&raw).unwrap_or_default();
+            if let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
+                hooks.remove("PostToolUse");
+                hooks.remove("UserPromptSubmit");
+            }
+            std::fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
+            println!("removed hooks from {}", settings_path.display());
+        }
+        _ => anyhow::bail!("unknown host: {host}"),
+    }
+    Ok(())
+}
+
 fn run_mcp(_args: &[String]) -> Result<()> { println!("mcp: not yet implemented"); Ok(()) }
