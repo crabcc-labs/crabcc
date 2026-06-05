@@ -1,0 +1,31 @@
+# netlog replay fixture (issue #160 Phase 2). Each line is a synthetic captured
+# egress record ({ts,caller,op,host,port,ok}) in the same shape netlog writes to
+# $CRABCC_HOME/netlog.jsonl; `ok` is the EXPECTED allowlist verdict. Allowed =
+# real crabcc infra; denied = hosts that must never pass — including
+# 169.254.169.254 (the cloud-metadata IP, a classic SSRF/exfil target) and a
+# suffix-boundary spoof (github.com.evil.com must NOT match github.com).
+#
+# Replayed by `task netlog-replay` (and the workspace test run) through the
+# enforcer in deny mode against the seeded allowlist. Keep in sync with
+# netlog_allowlist.txt: a new allowlist entry that a real caller needs should
+# gain an `ok:true` line here; nothing should be added `ok:true` without a
+# matching allowlist entry.
+{"ts":1730000000,"caller":"upgrade","op":"request","host":"api.github.com","port":443,"ok":true}
+{"ts":1730000001,"caller":"upgrade","op":"request","host":"codeload.github.com","port":443,"ok":true}
+{"ts":1730000002,"caller":"upgrade","op":"request","host":"raw.githubusercontent.com","port":443,"ok":true}
+{"ts":1730000003,"caller":"cargo","op":"request","host":"crates.io","port":443,"ok":true}
+{"ts":1730000004,"caller":"cargo","op":"request","host":"static.crates.io","port":443,"ok":true}
+{"ts":1730000005,"caller":"cargo","op":"request","host":"index.crates.io","port":443,"ok":true}
+{"ts":1730000006,"caller":"bot","op":"request","host":"api.telegram.org","port":443,"ok":true}
+{"ts":1730000007,"caller":"morph","op":"request","host":"api.morphllm.com","port":443,"ok":true}
+{"ts":1730000008,"caller":"llm","op":"request","host":"openrouter.ai","port":443,"ok":true}
+{"ts":1730000009,"caller":"llm","op":"request","host":"api.anthropic.com","port":443,"ok":true}
+{"ts":1730000010,"caller":"llm","op":"request","host":"api.openai.com","port":443,"ok":true}
+{"ts":1730000011,"caller":"ollama","op":"request","host":"localhost","port":11434,"ok":true}
+{"ts":1730000012,"caller":"ollama","op":"request","host":"127.0.0.1","port":11434,"ok":true}
+{"ts":1730000013,"caller":"bootstrap","op":"request","host":"sh.rustup.rs","port":443,"ok":true}
+{"ts":1730000014,"caller":"unknown","op":"request","host":"evil.example.com","port":443,"ok":false}
+{"ts":1730000015,"caller":"unknown","op":"request","host":"pastebin.com","port":443,"ok":false}
+{"ts":1730000016,"caller":"unknown","op":"request","host":"169.254.169.254","port":80,"ok":false}
+{"ts":1730000017,"caller":"unknown","op":"request","host":"example.com","port":443,"ok":false}
+{"ts":1730000018,"caller":"unknown","op":"request","host":"github.com.evil.com","port":443,"ok":false}

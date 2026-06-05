@@ -194,6 +194,17 @@ tasks:
       - "{{.CRABCC}} --root /tmp/crabcc-smoke callers hello --count | jq -e '.count >= 1'"
       - rm -rf /tmp/crabcc-smoke
 
+  netlog-replay:
+    desc: "Replay a fixture egress log through the netlog allowlist enforcer (#160 Phase 2 gate)"
+    summary: |
+      Plays the synthetic captured log at crates/crabcc-cli/src/netlog_replay.jsonl
+      back through the deny-mode enforcer against the seeded allowlist, asserting
+      every real infra host passes and every unknown host (incl. the
+      cloud-metadata SSRF IP) is blocked. Offline + deterministic. The same test
+      also rides along in `task test` (cargo test --workspace).
+    cmds:
+      - "{{.CARGO}} test -p crabcc-cli replay_fixture_enforces_allowlist"
+
   fuzz-check:
     desc: Compile-check the cargo-fuzz target (full run requires nightly + cargo-fuzz)
     cmds:
