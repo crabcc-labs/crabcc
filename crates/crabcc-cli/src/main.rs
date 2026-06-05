@@ -1912,9 +1912,13 @@ fn main() -> Result<()> {
             if run || cmd.is_some() {
                 match cmd.or(result.command) {
                     Some(command) => {
-                        let words: Vec<String> =
-                            command.split_whitespace().map(str::to_string).collect();
-                        run_cmd::run(&words, 0, 0, 0, 8 * 1024 * 1024, false, None, None, false)?;
+                        // The command is shell-quoted (go's `-run '^(a|b)$'`,
+                        // pytest's `-k "a or b"`, jest's `-t "a|b"`). run_cmd
+                        // execs argv directly with no shell, so route through
+                        // `sh -c` to honor the quoting; word-splitting it here
+                        // would pass literal quotes and run zero tests.
+                        let argv = ["sh".to_string(), "-c".to_string(), command];
+                        run_cmd::run(&argv, 0, 0, 0, 8 * 1024 * 1024, false, None, None, false)?;
                     }
                     None => {
                         eprintln!(

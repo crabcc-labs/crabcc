@@ -102,13 +102,14 @@ pub fn affected(
         }
     };
 
-    // 2. Candidate test ids: each changed function/method itself (depth 0)
-    //    plus its transitive callers/referrers (depth 1..=depth).
+    // 2. Candidate test ids: each changed symbol itself (depth 0, so a changed
+    //    test is selected) plus its transitive callers/referrers
+    //    (depth 1..=depth). We walk from EVERY changed symbol, not just
+    //    callables: `WALK_KINDS` includes `ref`, so a changed const/type/struct
+    //    expands to the tests that reference it. (`is_test_symbol` later filters
+    //    the candidates down to actual test functions.)
     let mut cand: BTreeMap<i64, usize> = BTreeMap::new();
-    for (id, sym) in &changed {
-        if !matches!(sym.kind, SymbolKind::Function | SymbolKind::Method) {
-            continue; // only callables have meaningful incoming call/ref edges
-        }
+    for (id, _sym) in &changed {
         bump(&mut cand, *id, 0);
         let br = blast_radius(store, *id, depth, WALK_KINDS)?;
         for (aid, d) in br.depth_map {
@@ -197,7 +198,7 @@ fn hydrate(store: &Store, ids: Vec<i64>) -> Result<Vec<(i64, Symbol)>> {
          FROM symbols s
          JOIN files f ON s.file_id = f.id
          LEFT JOIN symbols p ON p.id = s.parent_id
-         WHERE s.id IN ({})",
+         WHERE s.kind != 'sentinel' AND s.id IN ({})",
         placeholders.join(",")
     );
     let mut stmt = conn.prepare(&sql)?;
@@ -296,7 +297,9 @@ fn build_command(runner: Option<&str>, tests: &[AffectedTest]) -> Option<String>
     names.sort_unstable();
     names.dedup();
     match runner? {
-        // libtest treats multiple free args as an OR filter on test paths.
+        // libtest treats multiple free args as an OR filter, each a SUBSTRING
+        // match on the test path — so selection may over-include (still far
+        // smaller than the whole suite), which suits this heuristic tool.
         "cargo" => Some(format!("cargo test -- {}", names.join(" "))),
         "go" => Some(format!("go test ./... -run '^({})$'", names.join("|"))),
         "pytest" => Some(format!("pytest -k \"{}\"", names.join(" or "))),
@@ -315,7 +318,8 @@ mod tests {
     ///   src/widget.rs: `mod tests` (Class "tests") + unit_test (parent "tests")
     ///   tests/it.rs:   integ_test (integration test, under tests/)
     ///   src/app.rs:    caller (a NON-test fn that also calls core_fn)
-    /// edges (call): unit_test -> core_fn, integ_test -> core_fn, caller -> core_fn
+    ///   src/core.rs:   MAX (a const the unit test references)
+    /// edges: unit_test/integ_test/caller -call-> core_fn; unit_test -ref-> MAX
     fn fixture() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open(&dir.path().join("idx.db")).unwrap();
@@ -336,7 +340,8 @@ mod tests {
              (10, 2, 'tests',    'class',   10, 30, NULL), \
              (2, 2, 'unit_test', 'function', 12, 16, 10), \
              (3, 3, 'integ_test','function', 1, 6, NULL), \
-             (4, 4, 'caller',    'function', 1, 6, NULL)",
+             (4, 4, 'caller',    'function', 1, 6, NULL), \
+             (20, 1, 'MAX',      'const',    2, 2, NULL)",
             [],
         )
         .unwrap();
@@ -344,7 +349,8 @@ mod tests {
             "INSERT INTO edges(src_symbol_id, dst_symbol_id, kind, line) VALUES \
              (2, 1, 'call', 13), \
              (3, 1, 'call', 2), \
-             (4, 1, 'call', 2)",
+             (4, 1, 'call', 2), \
+             (2, 20, 'ref', 14)",
             [],
         )
         .unwrap();
@@ -377,6 +383,26 @@ mod tests {
         assert!(
             !names.contains(&"core_fn"),
             "the change itself is not a test: {names:?}"
+        );
+    }
+
+    #[test]
+    fn selects_tests_referencing_a_changed_const() {
+        // Regression: a changed NON-callable (const MAX) must expand to the
+        // tests that reference it via `ref` edges. The earlier callables-only
+        // filter skipped consts entirely, so this returned no tests.
+        let (dir, store) = fixture();
+        let r = affected(
+            &store,
+            dir.path(),
+            ChangeInput::Symbols(vec!["MAX".into()]),
+            3,
+        )
+        .unwrap();
+        let names: Vec<&str> = r.tests.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            names.contains(&"unit_test"),
+            "test referencing changed const MAX must be selected: {names:?}"
         );
     }
 
