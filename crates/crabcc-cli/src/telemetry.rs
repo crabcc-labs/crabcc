@@ -134,6 +134,12 @@ fn try_init_otlp() -> Option<(OtlpHandle, OtlpLayer)> {
 
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         handle.spawn(async move {
+            // Note: the OTLP exporter is deliberately NOT netlog-guarded (#160).
+            // Its endpoint is operator-configured (OTEL_EXPORTER_OTLP_ENDPOINT)
+            // and points at the user's own collector — e.g. the hardened
+            // install/telemetry-stack behind cloudflared — so it's intentional
+            // egress by definition. Deny-guarding it would block legitimate
+            // custom collectors; the allowlist targets *unexpected* hosts.
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(5))
                 // Auth headers (e.g. `Authorization=Bearer …`) so the exporter
@@ -394,14 +400,27 @@ fn try_init_telegram() -> Option<(TelegramHandle, TelegramLayer)> {
                             "https://api.telegram.org/bot{}/sendMessage",
                             token2
                         );
-                        let _ = client.post(&url)
-                            .json(&serde_json::json!({
-                                "chat_id":    chat_id2.as_str(),
-                                "text":       msg,
-                                "parse_mode": "Markdown",
-                            }))
-                            .send()
-                            .await;
+                        // netlog egress guard (#160): record + enforce before the
+                        // request fires. api.telegram.org is on the seeded
+                        // allowlist, so this is a no-op in normal use; a tampered
+                        // allowlist or deny-mode misconfig fails loudly instead of
+                        // silently exfiltrating via the bot token.
+                        match crate::netlog::guard("telegram", &url) {
+                            Ok(()) => {
+                                let _ = client.post(&url)
+                                    .json(&serde_json::json!({
+                                        "chat_id":    chat_id2.as_str(),
+                                        "text":       msg,
+                                        "parse_mode": "Markdown",
+                                    }))
+                                    .send()
+                                    .await;
+                            }
+                            Err(e) => tracing::warn!(
+                                target: "crabcc::telemetry",
+                                "telegram send blocked by netlog: {e}"
+                            ),
+                        }
                     }
                     _ = &mut shutdown_rx => break,
                     else => break,

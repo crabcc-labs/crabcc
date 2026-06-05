@@ -15,6 +15,7 @@ import {
   ExternalLink,
   Key,
   Server,
+  ShieldAlert,
   Workflow,
 } from "lucide-react";
 import type { AgentSummary } from "../../api";
@@ -22,6 +23,7 @@ import { logMount, logUnmount } from "../../lifecycle";
 import { useNow } from "../../useNow";
 import { AgentsPanel } from "../AgentsPanel";
 import { Icon } from "../icons";
+import { NetlogPanel } from "../NetlogPanel";
 import { OllamaKeyPanel } from "../OllamaKeyPanel";
 import { ServicesPanel } from "../ServicesPanel";
 import { fmtAge } from "../dashboard/selectors";
@@ -87,6 +89,15 @@ export const SystemView = memo(function SystemView({ agents, bootstrap, debug }:
           services
         </h3>
         <ServicesPanel />
+      </section>
+
+      {/* ── egress / netlog (#160) ──────────────────────────────── */}
+      <section className="system-card system-card-wide">
+        <h3 className="system-card-title">
+          <Icon of={ShieldAlert} size={14} className="system-card-ico" aria-hidden="true" />
+          egress (netlog)
+        </h3>
+        <NetlogPanel />
       </section>
 
       {/* ── agents (4 tabs) ─────────────────────────────────────── */}
