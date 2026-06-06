@@ -57,10 +57,11 @@ crawl-postgres = ["crabcc-fetch/crawl-postgres"]
 
 [dependencies]
 walkdir = "2.5.0"
-crabcc-core   = { workspace = true }
-crabcc-fetch  = { workspace = true, features = ["crawl"] }
-crabcc-mcp    = { workspace = true }
-crabcc-memory = { workspace = true }
+crabcc-core    = { workspace = true }
+crabcc-fetch   = { workspace = true, features = ["crawl"] }
+crabcc-mcp     = { workspace = true }
+crabcc-memory  = { workspace = true }
+crabcc-compact = { workspace = true }
 # Image downscaling for the Read hook (`crabcc media downscale`): bound
 # oversized screenshots/photos to Anthropic's effective vision resolution
 # before the model reads them. png+jpeg only -> avoids the avif/exr/webp

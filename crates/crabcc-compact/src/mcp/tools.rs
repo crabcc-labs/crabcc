@@ -1,5 +1,5 @@
-use serde_json::{json, Value};
 use crate::{client, config, economy::Budget};
+use serde_json::{json, Value};
 
 pub struct ToolResult {
     pub content: Value,
@@ -83,16 +83,20 @@ pub fn call_tool(name: &str, params: &Value) -> ToolResult {
                 None => return err("missing 'query' parameter"),
             };
             match client::enrich(&cfg.endpoint, text, query, cfg.timeout_ms) {
-                Ok(r) => ToolResult { content: json!({"plan": r.plan}), is_error: false },
+                Ok(r) => ToolResult {
+                    content: json!({"plan": r.plan}),
+                    is_error: false,
+                },
                 Err(e) => err(format!("enrich failed: {e}")),
             }
         }
-        "compact.status" => {
-            match client::health(&cfg.endpoint, cfg.timeout_ms) {
-                Ok(v) => ToolResult { content: v, is_error: false },
-                Err(e) => err(format!("unreachable: {e}")),
-            }
-        }
+        "compact.status" => match client::health(&cfg.endpoint, cfg.timeout_ms) {
+            Ok(v) => ToolResult {
+                content: v,
+                is_error: false,
+            },
+            Err(e) => err(format!("unreachable: {e}")),
+        },
         "compact.economy" => {
             let b = Budget::new();
             ToolResult {
@@ -109,5 +113,8 @@ pub fn call_tool(name: &str, params: &Value) -> ToolResult {
 }
 
 fn err(msg: impl Into<String>) -> ToolResult {
-    ToolResult { content: json!({"error": msg.into()}), is_error: true }
+    ToolResult {
+        content: json!({"error": msg.into()}),
+        is_error: true,
+    }
 }

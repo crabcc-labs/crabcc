@@ -7,7 +7,9 @@ pub struct Budget {
 }
 
 impl Budget {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     pub fn record_compress(&mut self, original: usize, compressed: usize) {
         self.calls += 1;

@@ -8,7 +8,7 @@ mod gate;
 mod mcp;
 
 use anyhow::Result;
-use economy::{Budget, pick_ratio};
+use economy::{pick_ratio, Budget};
 use serde_json::Value;
 use std::io::{self, Read, Write};
 
@@ -19,14 +19,14 @@ fn main() {
     let subcommand = args.get(1).map(String::as_str).unwrap_or("");
 
     let result = match subcommand {
-        "posttooluse"  => run_posttooluse(),
+        "posttooluse" => run_posttooluse(),
         "promptsubmit" => run_promptsubmit(),
-        "status"       => cmd_status(),
-        "test"         => cmd_test(),
-        "economy"      => cmd_economy(),
-        "setup"        => cmd_setup(&args[2..]),
-        "uninstall"    => cmd_uninstall(&args[2..]),
-        "--mcp"        => run_mcp(&args[2..]),
+        "status" => cmd_status(),
+        "test" => cmd_test(),
+        "economy" => cmd_economy(),
+        "setup" => cmd_setup(&args[2..]),
+        "uninstall" => cmd_uninstall(&args[2..]),
+        "--mcp" => run_mcp(&args[2..]),
         _ => {
             eprintln!("usage: crabcc-compact <posttooluse|promptsubmit|status|test|economy|setup|uninstall|--mcp>");
             std::process::exit(1);
@@ -90,11 +90,14 @@ fn extract_tool_result_content(json: &Value) -> Option<String> {
             return Some(s.to_string());
         }
         if let Some(arr) = content.as_array() {
-            let text: String = arr.iter()
+            let text: String = arr
+                .iter()
                 .filter_map(|b| b.get("text")?.as_str())
                 .collect::<Vec<_>>()
                 .join("\n");
-            if !text.is_empty() { return Some(text); }
+            if !text.is_empty() {
+                return Some(text);
+            }
         }
     }
     None
@@ -102,8 +105,14 @@ fn extract_tool_result_content(json: &Value) -> Option<String> {
 
 pub fn log_error(msg: &str) {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let path = std::path::PathBuf::from(home).join(".crabcc").join("compact.log");
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+    let path = std::path::PathBuf::from(home)
+        .join(".crabcc")
+        .join("compact.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
         let _ = writeln!(f, "{}: {msg}", epoch_secs());
     }
 }
@@ -162,10 +171,13 @@ fn run_promptsubmit() -> Result<()> {
 
     let final_prompt = if do_enrich {
         match client::enrich(&cfg.endpoint, &compressed, &prompt, cfg.timeout_ms) {
-            Ok(r) => format!("{}
+            Ok(r) => format!(
+                "{}
 
 ---
-{compressed}", r.plan),
+{compressed}",
+                r.plan
+            ),
             Err(e) => {
                 log_error(&format!("enrich failed: {e:#}"));
                 compressed
@@ -200,17 +212,27 @@ fn cmd_status() -> Result<()> {
 fn cmd_test() -> Result<()> {
     let cfg = config::load()?;
     let payload = generate_test_payload();
-    println!("sending {}-char payload ({} est. tokens) to {}",
-        payload.len(), gate::token_estimate(&payload), cfg.endpoint);
+    println!(
+        "sending {}-char payload ({} est. tokens) to {}",
+        payload.len(),
+        gate::token_estimate(&payload),
+        cfg.endpoint
+    );
     let start = std::time::Instant::now();
     match client::compact(&cfg.endpoint, &payload, 0.5, cfg.timeout_ms) {
         Ok(r) => {
             let elapsed = start.elapsed();
             let savings_pct = if r.original_tokens > 0 {
                 100.0 - (r.compressed_tokens as f32 / r.original_tokens as f32 * 100.0)
-            } else { 0.0 };
-            println!("ok — {orig} → {comp} tokens ({savings_pct:.1}% saved) in {ms}ms",
-                orig = r.original_tokens, comp = r.compressed_tokens, ms = elapsed.as_millis());
+            } else {
+                0.0
+            };
+            println!(
+                "ok — {orig} → {comp} tokens ({savings_pct:.1}% saved) in {ms}ms",
+                orig = r.original_tokens,
+                comp = r.compressed_tokens,
+                ms = elapsed.as_millis()
+            );
         }
         Err(e) => println!("error: {e}"),
     }
@@ -219,12 +241,16 @@ fn cmd_test() -> Result<()> {
 
 fn cmd_economy() -> Result<()> {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let path = std::path::PathBuf::from(home).join(".crabcc").join("compact.log");
+    let path = std::path::PathBuf::from(home)
+        .join(".crabcc")
+        .join("compact.log");
     if path.exists() {
         let log = std::fs::read_to_string(&path)?;
         let lines: Vec<&str> = log.lines().rev().take(20).collect();
         println!("last 20 log entries (most recent first):");
-        for l in lines { println!("  {l}"); }
+        for l in lines {
+            println!("  {l}");
+        }
     } else {
         println!("no log yet at {}", path.display());
     }
@@ -248,7 +274,8 @@ fn generate_test_payload() -> String {
 }
 
 fn cmd_setup(args: &[String]) -> Result<()> {
-    let host = args.iter()
+    let host = args
+        .iter()
         .find_map(|a| a.strip_prefix("--host="))
         .unwrap_or("claude-code");
     match host {
@@ -262,7 +289,8 @@ fn cmd_setup(args: &[String]) -> Result<()> {
 fn setup_claude_code() -> Result<()> {
     let home = std::env::var("HOME")?;
     let settings_path = std::path::PathBuf::from(&home)
-        .join(".claude").join("settings.json");
+        .join(".claude")
+        .join("settings.json");
 
     let raw = if settings_path.exists() {
         std::fs::read_to_string(&settings_path)?
@@ -273,21 +301,35 @@ fn setup_claude_code() -> Result<()> {
     let mut settings: serde_json::Map<String, Value> =
         serde_json::from_str(&raw).unwrap_or_default();
 
-    let hooks = settings.entry("hooks").or_insert_with(|| Value::Object(Default::default()));
+    let hooks = settings
+        .entry("hooks")
+        .or_insert_with(|| Value::Object(Default::default()));
     let hooks = hooks.as_object_mut().unwrap();
 
     // Use the hooks directory next to this binary's source
     let hook_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("hooks");
 
-    let posttooluse_script = hook_dir.join("claude-posttooluse.sh").to_string_lossy().to_string();
-    let promptsubmit_script = hook_dir.join("claude-promptsubmit.sh").to_string_lossy().to_string();
+    let posttooluse_script = hook_dir
+        .join("claude-posttooluse.sh")
+        .to_string_lossy()
+        .to_string();
+    let promptsubmit_script = hook_dir
+        .join("claude-promptsubmit.sh")
+        .to_string_lossy()
+        .to_string();
 
-    hooks.insert("PostToolUse".to_string(), serde_json::json!([{
-        "hooks": [{"type": "command", "command": posttooluse_script}]
-    }]));
-    hooks.insert("UserPromptSubmit".to_string(), serde_json::json!([{
-        "hooks": [{"type": "command", "command": promptsubmit_script}]
-    }]));
+    hooks.insert(
+        "PostToolUse".to_string(),
+        serde_json::json!([{
+            "hooks": [{"type": "command", "command": posttooluse_script}]
+        }]),
+    );
+    hooks.insert(
+        "UserPromptSubmit".to_string(),
+        serde_json::json!([{
+            "hooks": [{"type": "command", "command": promptsubmit_script}]
+        }]),
+    );
 
     std::fs::create_dir_all(settings_path.parent().unwrap())?;
     std::fs::write(&settings_path, serde_json::to_string_pretty(&settings)?)?;
@@ -296,15 +338,19 @@ fn setup_claude_code() -> Result<()> {
 }
 
 fn cmd_uninstall(args: &[String]) -> Result<()> {
-    let host = args.iter()
+    let host = args
+        .iter()
         .find_map(|a| a.strip_prefix("--host="))
         .unwrap_or("claude-code");
     match host {
         "claude-code" => {
             let home = std::env::var("HOME")?;
             let settings_path = std::path::PathBuf::from(home)
-                .join(".claude").join("settings.json");
-            if !settings_path.exists() { return Ok(()); }
+                .join(".claude")
+                .join("settings.json");
+            if !settings_path.exists() {
+                return Ok(());
+            }
             let raw = std::fs::read_to_string(&settings_path)?;
             let mut settings: serde_json::Map<String, Value> =
                 serde_json::from_str(&raw).unwrap_or_default();
@@ -321,7 +367,8 @@ fn cmd_uninstall(args: &[String]) -> Result<()> {
 }
 
 fn run_mcp(args: &[String]) -> Result<()> {
-    let port: u16 = args.iter()
+    let port: u16 = args
+        .iter()
         .find_map(|a| a.strip_prefix("--port=").and_then(|p| p.parse().ok()))
         .unwrap_or(3456);
     mcp::server::run(port)?;

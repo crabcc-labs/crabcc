@@ -104,6 +104,9 @@ pub enum MemoryCmd {
         #[command(subcommand)]
         action: RemindCmd,
     },
+    /// Summary of compact pipeline history: token savings, avg smoothness.
+    /// Gated by CRABCC_COMPACT_HOOK=1; returns zeroes when unset.
+    CompactStats,
     /// Ingest URLs and/or freeform text into memory. Mirrors the HTTP
     /// `POST /api/memory/ingest` surface so the CLI and dashboard agree
     /// on drawer ids (`web:<hash>` for URLs, `text:<hash>` for text).
@@ -550,6 +553,17 @@ pub fn run(root: &Path, cmd: MemoryCmd) -> Result<()> {
                     println!("{}", serde_json::to_string_pretty(&out)?);
                 }
             }
+        }
+        MemoryCmd::CompactStats => {
+            let stats = crabcc_compact::compact_memory::compact_stats(&palace)?;
+            println!(
+                "{}",
+                sonic_rs::to_string(&serde_json::json!({
+                    "total_compact_sessions": stats.total,
+                    "total_tokens_saved": stats.total_tokens_saved,
+                    "avg_readability": stats.avg_readability,
+                }))?
+            );
         }
         MemoryCmd::Mine { kind } => {
             let session = std::env::var("TERM_SESSION_ID").ok();
