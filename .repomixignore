@@ -16,7 +16,7 @@
 crates/crabcc-core/fuzz/target/
 **/.crabcc/
 
-# DMG / installer build artifacts (issue #107)
+# Build / packaging output dirs
 /dist/
 /build/
 **/dist/
@@ -82,18 +82,6 @@ docs/**
 **/*.dmg
 **/*.gif
 assets/
-
-# ---------------------------------------------------------------------------
-# macOS .app bundle scripts + plists (issue #107)
-#
-# These are install-time shell glue that ships inside Crabcc.app.
-# They're code we author, but for an LLM debugging the *Rust crates*
-# they're noise. Re-include explicitly via `--include` if you're
-# auditing the installer surface specifically.
-# ---------------------------------------------------------------------------
-installer/Crabcc.app/Contents/Resources/scripts/
-installer/Crabcc.app/Contents/Resources/*.plist
-installer/Crabcc.app/Contents/Info.plist
 
 # ---------------------------------------------------------------------------
 # Test fixtures + bench datasets — large by design, low signal per token

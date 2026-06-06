@@ -93,6 +93,11 @@ claude mcp add crabcc -- crabcc --mcp
 - Skill at `skill/crabcc/SKILL.md` — auto-routes grep / find-shaped questions
   to the right `crabcc` subcommand. Symlinked into `~/.claude/skills/crabcc/`
   by `crabcc install-claude`.
+- Skill at `skill/stop-slop/SKILL.md` — prose hygiene applied by **all** agents
+  (commit messages, PR bodies, docs). Tool-agnostic; see
+  [`AGENTS.md`](./AGENTS.md) → "Prose hygiene". Vendored from
+  <https://github.com/hardikpandya/stop-slop> (MIT,
+  `skill/stop-slop/PROVENANCE.md`).
 
 ## Memory layer — current state
 
@@ -117,8 +122,15 @@ end-to-end:
   Real LongMemEval requires `DATASET=path/to/longmemeval_oracle.json`.
 
 CLI surface: `init`, `remember`, `search`, `get`, `list`, `delete`,
-`forget`, `count`, `health`, `mine {project,sessions}`. MCP exposes
+`forget`, `count`, `health`, `mine {project,sessions}`, `ui`. MCP exposes
 matching `memory.*` tools (10 in total).
+
+`crabcc memory ui` opens the **cross-repo memory browser** in your browser:
+it starts the `crabcc serve` viewer (127.0.0.1:7878) on the `/memory` page,
+which searches drawers across every repo under `$CRABCC_HOME/repos/` —
+run it from any repo, same viewer, same central memory. Requires the `viz`
+feature (shipped builds have it; `cargo install crabcc-cli --features viz`
+otherwise).
 
 Set `CRABCC_AUTO_MEMORY=1` to have query-shaped commands (`sym` / `refs` /
 `callers` / `fuzzy` / `prefix`) silently capture a drawer per call.
@@ -154,8 +166,6 @@ respect" for the full list.
    - [`crates/crabcc-core/docs/HOW_IT_WORKS.md`](./crates/crabcc-core/docs/HOW_IT_WORKS.md) — library + internals reference (extractor, parser pool, schema).
    - [`crates/ucracc-lsp/docs/HOW_IT_WORKS.md`](./crates/ucracc-lsp/docs/HOW_IT_WORKS.md) — LSP user + developer reference.
 3. Repo-root `docs/` is in-tree (not a submodule anymore — see commit history). Notable contents:
-   - [`docs/desktop/ARCHITECTURE.md`](./docs/desktop/ARCHITECTURE.md) and [`DESIGN-BRIEF.md`](./docs/desktop/DESIGN-BRIEF.md) — `crabcc-desktop` design + architecture.
    - [`docs/RUST-ANTHOLOGY.md`](./docs/RUST-ANTHOLOGY.md) — Rust patterns reference.
    - [`docs/PROCESS-SPAWNING.md`](./docs/PROCESS-SPAWNING.md) — agent process management notes.
    - `docs/RESEARCH-tts-voice-control-*.md` — TTS dossiers (foss / 2026 candidates).
-   - `docs/desktop/design-refs/` — UI mockup PNGs (~2.6 MB, reference material for the desktop redesign).

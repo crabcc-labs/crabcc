@@ -6,7 +6,6 @@ exclude = [
     # otherwise auto-discovers nested Cargo.toml files when a path-dep
     # references them. See https://github.com/rust-lang/cargo/issues/9853.
     "crates/crabcc-viz",
-    "crates/crabcc-desktop",
     # editors/zed/crabcc: the Zed extension compiles to wasm32-wasip1 via
     # zed_extension_api; it must not join the host workspace build. Built by
     # Zed itself (zed: install dev extension) or `cargo build --target
@@ -32,16 +31,6 @@ members = [
     # feature-gated behind `viz` in crabcc-cli, so the default build is
     # unaffected; viz catches up in v4.0.1 / v4.1. Build standalone:
     # cd crates/crabcc-viz && cargo build --release
-    #
-    # crates/crabcc-desktop: also excluded — gpui-component pulls a hard
-    # dep on `tree-sitter = "0.25"` (links = "tree-sitter", so cargo
-    # enforces a single version workspace-wide), and crabcc-core is on
-    # tree-sitter 0.22 with its grammar fleet at 0.21. Joining the
-    # workspace would force a coordinated tree-sitter-22→25 bump across
-    # six grammar crates. The desktop crate talks to the rest of crabcc
-    # over HTTP/SSE (loopback only), so no path dep is required —
-    # standalone build keeps each side on its own pace.
-    # Build: cd crates/crabcc-desktop && cargo run --release
 ]
 
 [workspace.package]

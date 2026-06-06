@@ -46,6 +46,7 @@ flowchart LR
 | Which tests cover my edit? | `crabcc affected` (working tree) / `crabcc affected --since <ref>` / `--run` to execute |
 | Store / search project memory | `crabcc memory remember <src> <body>` / `crabcc memory search "<query>"` |
 | List drawers in this repo | `crabcc memory list --limit 20` |
+| Browse memory across all repos (web UI) | `crabcc memory ui` (opens the `/memory` page on `crabcc serve`; needs the `viz` feature) |
 | Build & test | `task` (= `cargo build --release && cargo test --workspace`) |
 | Lint gate | `task lint` (= `cargo clippy --workspace --all-targets -- -D warnings`) |
 | Format | `task fmt` |
@@ -162,39 +163,22 @@ crates/
 
 bench/                    # raw-bench.py (vs grep/find), compress-bench.py (FSST gate)
 docs/                     # In-tree docs (no longer a submodule). RUST-ANTHOLOGY.md,
-                          # PROCESS-SPAWNING.md, desktop/{ARCHITECTURE,DESIGN-BRIEF}.md,
+                          # PROCESS-SPAWNING.md,
                           # RESEARCH-tts-voice-control-*.md. Per-crate deep-dives live
                           # under crates/*/docs/ (e.g. crabcc-core/docs/HOW_IT_WORKS.md).
 
 schema/001_init.sql                      # Symbol-index schema. Additive only.
 crates/crabcc-memory/schema/001_init.sql # Memory schema (wings/rooms/drawers/…).
 install/                  # crabcc install-claude templates (hooks-claude.json)
-installer/Crabcc.app/     # macOS .app bundle (issue #107) — menubar UI +
-                          # bundled binaries + LaunchAgent templates.
-                          # Built into dist/ via `task dmg`.
 ```
 
-## macOS surface (issue #107)
+## Agent-runs DB
 
-The `Crabcc.app` bundle ships three things behind one drag-to-install:
+`~/.crabcc/_internal.db` (WAL) is the singleton agent-runs store.
+`crabcc agent` writes lifecycle rows; `crabcc agent-ls` / `agent-guard`
+/ `agent-kills` read + maintain it. Schema is additive (same rules as
+the symbol index — never `DROP COLUMN`).
 
-- **Menubar UI** — single-file `installer/Crabcc.app/Contents/MacOS/menubar.swift`,
-  compiled at DMG-build time with `swiftc`. Surfaces live process state,
-  Taskfile entries as a clickable submenu, scheduled LaunchAgent tasks,
-  and recent kill events. Emits JSON-lines telemetry at
-  `~/Library/Logs/Crabcc/menubar.events.jsonl` parallel to the Rust
-  crates' tracing-appender output.
-- **Three LaunchAgents** registered by the installer's
-  `Resources/scripts/install.sh`:
-  `com.crabcc.menubar` (RunAtLoad + KeepAlive-on-crash),
-  `com.crabcc.agentd` (5-min `crabcc refresh` tick, Background QoS),
-  `com.crabcc.agent-guard` (every 20 min — `crabcc agent-guard` sweep).
-- **Singleton agent-runs DB** at `~/.crabcc/_internal.db` (WAL).
-  `crabcc agent` writes lifecycle rows; `crabcc agent-ls` /
-  `agent-guard` / `agent-kills` read + maintain. Schema is additive
-  (same rules as the symbol index — never `DROP COLUMN`).
-
-Build: `task dmg` → `dist/crabcc-<version>.dmg`.
 Bootstrap a fresh machine: `curl -fsSL …/scripts/bootstrap.sh | bash`.
 
 
@@ -257,8 +241,39 @@ Memory roadmap status (issue #2): M0 (persistent backend) ✅ → M0.5
 M1a (FTS5 BM25 + RRF hybrid) ✅ → M1b (`fastembed-rs`,
 `--features memory-embed`) ✅ → M2
 (miners) ✅ → bench gate (`task memory-bench`, ≥ 96.6% R@5 on synthetic
-fixture) ✅. Future M3-full (KG ops) tracked separately. The Palace
-facade lives at `crates/crabcc-memory/src/palace.rs`.
+fixture) ✅. The Palace facade lives at `crates/crabcc-memory/src/palace.rs`.
+
+### M3-full roadmap
+
+M3 was "KG ops, tracked separately." Below it is broken into shippable
+milestones. The shape draws on
+[rohitg00/agentmemory](https://github.com/rohitg00/agentmemory) (Apache-2.0,
+surveyed 2026-06-05), a TypeScript memory server that ships these features in
+production and reports 95.2% R@5 / 88.2% MRR on the real LongMemEval-S (500
+questions). It validated the same core we already run — SQLite, BM25 ⊕ vector,
+RRF k=60 — so its lifecycle layer is a credible blueprint, not speculation.
+Each milestone respects the additive-schema rule (new columns + idempotent
+`ALTER`, never `DROP`).
+
+- **M3a — KG ranker.** Extract entities and relations from drawer bodies into
+  an `entities` / `edges` pair (mirrors the symbol-index `edges` table). Add a
+  third ranker to `rrf_fuse` (today 2 rankers, `palace/rrf.rs:21`): lexical ⊕
+  vector ⊕ graph-entity match. Add session diversification so one session can
+  not dominate the top-K. Gate on real LongMemEval, not just the synthetic
+  fixture.
+- **M3b — Tiered memory.** Promote the existing `wing` column (already
+  `proj` / `session`) into the four tiers agentmemory uses: working, episodic
+  (session summaries), semantic (extracted facts), procedural (workflows).
+  Consolidation rolls raw turns into episodic, then into semantic facts.
+- **M3c — Lifecycle.** Ebbinghaus-curve decay scoring (`last_access`,
+  `access_count`, `decay_score` columns), auto-eviction below a threshold,
+  contradiction detection, and versioning so a corrected fact supersedes the
+  stale one instead of competing with it in retrieval.
+- **M3d — Capture + privacy.** Grow `CRABCC_AUTO_MEMORY` from one flag into
+  hook-driven capture (SessionStart / Stop / PreCompact analogues), and strip
+  secrets and `<private>` tags before a drawer is written, never after.
+
+Track each as its own issue under epic #2 when work starts.
 
 ## Where things live
 
@@ -268,8 +283,22 @@ facade lives at `crates/crabcc-memory/src/palace.rs`.
 - **Bench fixtures:** mc-mothership at `/Users/peter.lodri/workspace/mc-mothership`
   (NOT inside this repo; never copy or commit it). Pass via `--repo` arg or
   `REPO_FIXTURE` env var.
-- **Skill + slash command:** `skill/crabcc/SKILL.md` and `commands/crabcc-init.md`.
-  Symlink with `crabcc install-claude`.
+- **Skills:** `skill/crabcc/SKILL.md` (+ slash command `commands/crabcc-init.md`,
+  symlink with `crabcc install-claude`), `skill/stop-slop/SKILL.md` (prose
+  hygiene — see "Prose hygiene" below), plus the on-demand audit skills
+  (`skill/warp-speed-audit`, `skill/rust-logging-audit`, `skill/crabcc-taskfile`).
+
+## Prose hygiene — stop-slop (all agents)
+
+Every agent working in this repo applies the **stop-slop** skill
+([`skill/stop-slop/SKILL.md`](skill/stop-slop/SKILL.md)) to prose it writes —
+commit messages, PR descriptions, issue comments, docs, changelog entries.
+Drop throat-clearing openers, adverbs, em-dashes, passive voice, binary
+"not X, it's Y" contrasts, and vague declaratives; name the actor and state
+the point. It is vendored from
+<https://github.com/hardikpandya/stop-slop> (MIT — see
+[`skill/stop-slop/PROVENANCE.md`](skill/stop-slop/PROVENANCE.md)). It does not
+touch code identifiers or quoted output.
 
 ## When unsure
 

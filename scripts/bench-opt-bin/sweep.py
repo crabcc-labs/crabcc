@@ -44,6 +44,7 @@ import hashlib
 import json
 import math
 import os
+import platform
 import re
 import shutil
 import tarfile
@@ -67,6 +68,85 @@ ALLOC_FEATURES = {
     "system": [],
     "mimalloc": ["mimalloc"],
     "jemalloc": ["jemalloc"],
+}
+
+# target-cpu axis per architecture. x86-64-vN are psABI micro-arch levels;
+# aarch64 uses Neoverse cores (AWS Graviton2 = neoverse-n1, Graviton3 =
+# neoverse-v1, Graviton4 = neoverse-v2; Apple = `native`/`apple-m1`). PGO/BOLT
+# and the allocator axis are arch-independent — only the cpu names change.
+CPU_AXES = {
+    "x86-64": {
+        "baseline": "x86-64-v3",
+        "deep": ["x86-64-v2", "x86-64-v3", "x86-64-v4", "native"],
+        "front": ["x86-64-v3", "native"],   # PGO/BOLT corners in the deep matrix
+        "optz": ["x86-64-v3", "x86-64-v4"],
+    },
+    "aarch64": {
+        "baseline": "neoverse-v1",
+        "deep": ["neoverse-n1", "neoverse-v1", "neoverse-v2", "native"],
+        "front": ["neoverse-v1", "native"],
+        "optz": ["neoverse-v1", "neoverse-v2"],
+    },
+}
+
+_CPU_TAGS = {
+    "x86-64-v2": "v2", "x86-64-v3": "v3", "x86-64-v4": "v4",
+    "neoverse-n1": "nn1", "neoverse-v1": "nv1", "neoverse-v2": "nv2",
+    "native": "native",
+}
+
+
+def cpu_tag(cpu: str) -> str:
+    """Short, id-friendly tag for a target-cpu (keeps leg ids like 'v3-bolt')."""
+    return _CPU_TAGS.get(cpu, cpu)
+
+
+def norm_arch(name: str) -> str | None:
+    """Canonicalise a machine/arch string to 'x86-64' | 'aarch64', or None."""
+    m = name.lower()
+    if m in ("x86-64", "x86_64", "amd64", "x64"):
+        return "x86-64"
+    if m in ("aarch64", "arm64"):
+        return "aarch64"
+    return None
+
+
+def host_arch() -> str:
+    return norm_arch(platform.machine()) or "x86-64"
+
+
+# Workload scenarios. Each models a task/agent group's hot path: the same set
+# of commands drives PGO/BOLT *telemetry* at build time AND the measured ops at
+# Phase B, so a binary tuned for `lookup` is profiled and judged on lookups, not
+# indexing. `prep` runs once to establish state (index/graph) the timed ops
+# need; `primary`/`secondary` are (label, argv, prepare-shell-or-None) — a
+# non-None prepare runs before each timed iteration (e.g. reset .crabcc for a
+# cold build). All argv are relative to `<binary> ... --root <root>`.
+SCENARIOS: dict[str, dict] = {
+    # write/parse-heavy — the original behaviour (default).
+    "index": {
+        "prep": [],
+        "primary": ("index", ["index"], "RESET"),
+        "secondary": ("lookup sym", ["lookup", "sym", "Store"], None),
+        "telemetry": [["index"], ["lookup", "sym", "Store"]],
+    },
+    # read/query-heavy — symbol/ref/caller lookups over a built index.
+    "lookup": {
+        "prep": [["index"]],
+        "primary": ("lookup refs", ["lookup", "refs", "Store"], None),
+        "secondary": ("lookup callers", ["lookup", "callers", "Store::open"], None),
+        "telemetry": [["index"], ["lookup", "sym", "Store"],
+                      ["lookup", "refs", "Store"], ["lookup", "callers", "Store::open"]],
+    },
+    # call-graph traversal — build + walk.
+    "graph": {
+        "prep": [["index"], ["graph", "build"]],
+        "primary": ("graph walk", ["graph", "walk", "Store::open", "--dir", "callers",
+                                    "--depth", "3"], None),
+        "secondary": ("lookup sym", ["lookup", "sym", "Store"], None),
+        "telemetry": [["index"], ["graph", "build"],
+                      ["graph", "walk", "Store::open", "--dir", "callers", "--depth", "3"]],
+    },
 }
 
 
@@ -96,47 +176,52 @@ class Leg:
     bloat_top: list = field(default_factory=list)
 
 
-def default_matrix() -> list[Leg]:
+def default_matrix(arch: str = "x86-64") -> list[Leg]:
     """The fractional sweep — ~11 high-signal legs, sized for ~1h on ~32c."""
+    ax = CPU_AXES[arch]
+    base, bt = ax["baseline"], cpu_tag(ax["baseline"])
     legs: list[Leg] = []
     # Reference corners.
-    legs.append(Leg("baseline-v3-system", "x86-64-v3", "system"))
+    legs.append(Leg(f"baseline-{bt}-system", base, "system"))
     legs.append(Leg("native-system", "native", "system"))
-    # Core fractional block: v3 × {mimalloc,jemalloc} × pgo × bolt.
+    # Core fractional block: base × {mimalloc,jemalloc} × pgo × bolt.
     for alloc in ("mimalloc", "jemalloc"):
         for pgo in (False, True):
             for bolt in (False, True):
                 suffix = f"{alloc}{'-pgo' if pgo else ''}{'-bolt' if bolt else ''}"
-                legs.append(Leg(f"v3-{suffix}", "x86-64-v3", alloc, pgo=pgo, bolt=bolt))
+                legs.append(Leg(f"{bt}-{suffix}", base, alloc, pgo=pgo, bolt=bolt))
     # Footprint corner.
-    legs.append(Leg("v3-system-optz", "x86-64-v3", "system", opt_level="z"))
+    legs.append(Leg(f"{bt}-system-optz", base, "system", opt_level="z"))
     return legs
 
 
-def deep_matrix() -> list[Leg]:
+def deep_matrix(arch: str = "x86-64") -> list[Leg]:
     """A wider matrix (~28 legs) for big boxes — enough independent legs to
     keep every core busy *through* the single-threaded fat-LTO link phase,
     where the fractional matrix (11 legs) would leave a 32-vCPU box idle.
 
-    Adds a full target-cpu axis (v2/v3/v4/native) and spreads PGO/BOLT across
-    the strongest cpu×alloc corners."""
-    cpus = ["x86-64-v2", "x86-64-v3", "x86-64-v4", "native"]
+    Adds a full target-cpu axis and spreads PGO/BOLT across the strongest
+    cpu×alloc corners."""
+    ax = CPU_AXES[arch]
+    cpus = ax["deep"]
     allocs = ["system", "mimalloc", "jemalloc"]
     legs: list[Leg] = []
     # 1. Plain cross of cpu × alloc (12).
     for cpu in cpus:
         for alloc in allocs:
-            legs.append(Leg(f"{cpu}-{alloc}", cpu, alloc))
-    # 2. PGO / BOLT / PGO+BOLT on the front-runner corners (v3,native × system,mimalloc) → 12.
-    for cpu in ("x86-64-v3", "native"):
+            legs.append(Leg(f"{cpu_tag(cpu)}-{alloc}", cpu, alloc))
+    # 2. PGO / BOLT / PGO+BOLT on the front-runner corners (× system,mimalloc) → 12.
+    for cpu in ax["front"]:
         for alloc in ("system", "mimalloc"):
             for pgo, bolt in ((True, False), (False, True), (True, True)):
-                sid = f"{cpu}-{alloc}{'-pgo' if pgo else ''}{'-bolt' if bolt else ''}"
+                t = cpu_tag(cpu)
+                sid = f"{t}-{alloc}{'-pgo' if pgo else ''}{'-bolt' if bolt else ''}"
                 legs.append(Leg(sid, cpu, alloc, pgo=pgo, bolt=bolt))
     # 3. Footprint corners (4).
-    for cpu in ("x86-64-v3", "x86-64-v4"):
-        legs.append(Leg(f"{cpu}-system-optz", cpu, "system", opt_level="z"))
-    legs.append(Leg("v3-system-optz-jemalloc", "x86-64-v3", "jemalloc", opt_level="z"))
+    for cpu in ax["optz"]:
+        legs.append(Leg(f"{cpu_tag(cpu)}-system-optz", cpu, "system", opt_level="z"))
+    ob = cpu_tag(ax["optz"][0])
+    legs.append(Leg(f"{ob}-system-optz-jemalloc", ax["optz"][0], "jemalloc", opt_level="z"))
     legs.append(Leg("native-system-optz", "native", "system", opt_level="z"))
     return legs
 
@@ -217,8 +302,10 @@ def cargo_build(leg: Leg, target_dir: Path, env_extra: dict, jobs: int,
     return target_dir / PROFILE / BIN
 
 
-def run_workload(binary: Path, scratch: Path, log, iterations: int = 3):
-    """Drive the heavy path so PGO/BOLT see realistic telemetry."""
+def run_workload(binary: Path, scratch: Path, log, scenario: dict,
+                 iterations: int = 3):
+    """Drive the scenario's hot path so PGO/BOLT see telemetry that matches the
+    task/agent group we're tuning for (not always indexing)."""
     root = scratch / "workload-root"
     if root.exists():
         shutil.rmtree(root)
@@ -226,14 +313,13 @@ def run_workload(binary: Path, scratch: Path, log, iterations: int = 3):
         ".git", "target", "bench", "node_modules", ".crabcc", "dist"))
     for _ in range(iterations):
         shutil.rmtree(root / ".crabcc", ignore_errors=True)
-        subprocess.run([str(binary), "index", "--root", str(root)],
-                       check=False, stdout=log.file, stderr=subprocess.STDOUT)
-        subprocess.run([str(binary), "sym", "Store", "--root", str(root)],
-                       check=False, stdout=log.file, stderr=subprocess.STDOUT)
+        for argv in scenario["telemetry"]:
+            subprocess.run([str(binary), *argv, "--root", str(root)],
+                           check=False, stdout=log.file, stderr=subprocess.STDOUT)
 
 
 def build_leg(leg: Leg, work: Path, jobs: int, profdata_tool: str | None,
-              bolt_ok: bool) -> Leg:
+              bolt_ok: bool, scenario: dict) -> Leg:
     leg_dir = work / leg.id
     leg_dir.mkdir(parents=True, exist_ok=True)
     target_dir = leg_dir / "target"
@@ -260,8 +346,8 @@ def build_leg(leg: Leg, work: Path, jobs: int, profdata_tool: str | None,
                         {"RUSTFLAGS": rustflags(leg, profile_generate=str(pgo_raw))},
                         jobs, log)
             inst_bin = target_dir / PROFILE / BIN
-            # 2. Workload → raw profiles.
-            run_workload(inst_bin, leg_dir, log)
+            # 2. Workload → raw profiles (scenario-shaped telemetry).
+            run_workload(inst_bin, leg_dir, log, scenario)
             # 3. Merge.
             merged = leg_dir / "merged.profdata"
             subprocess.run([profdata_tool, "merge", "-o", str(merged), str(pgo_raw)],
@@ -276,7 +362,7 @@ def build_leg(leg: Leg, work: Path, jobs: int, profdata_tool: str | None,
                                  {"RUSTFLAGS": rustflags(leg)}, jobs, log)
 
         if leg.bolt:
-            binary = bolt_optimize(binary, leg_dir, log)
+            binary = bolt_optimize(binary, leg_dir, log, scenario)
 
         leg.bin_path = str(binary)
         leg.build_seconds = round(time.time() - t0, 1)
@@ -289,16 +375,60 @@ def build_leg(leg: Leg, work: Path, jobs: int, profdata_tool: str | None,
     return leg
 
 
-def bolt_optimize(binary: Path, leg_dir: Path, log) -> Path:
+def bolt_runtime_abs() -> str | None:
+    """Absolute path to libbolt_rt_instr.a — the static runtime BOLT links into
+    an `-instrument`ed binary. Distro `llvm-bolt` packages install it under
+    /usr/lib/llvm-NN/lib/, not the bare /usr/lib default BOLT derives."""
+    for cfg in ("llvm-config", "llvm-config-18", "llvm-config-17", "llvm-config-16"):
+        exe = shutil.which(cfg)
+        if not exe:
+            continue
+        try:
+            libdir = subprocess.check_output([exe, "--libdir"], text=True).strip()
+            cand = Path(libdir) / "libbolt_rt_instr.a"
+            if cand.exists():
+                return str(cand)
+        except Exception:  # noqa: BLE001
+            pass
+    candidates = [Path("/usr/lib/libbolt_rt_instr.a"),
+                  *sorted(Path("/usr/lib").glob("llvm-*/lib/libbolt_rt_instr.a"),
+                          reverse=True)]
+    for cand in candidates:
+        if cand.exists():
+            return str(cand)
+    return None
+
+
+def bolt_runtime_arg() -> str | None:
+    """Value for --runtime-instrumentation-lib. BOLT does not treat this as a
+    plain path: it APPENDS it to its own derived library dir — the install
+    prefix's /lib, taken from the *unresolved* llvm-bolt path (so /usr/lib for
+    /usr/bin/llvm-bolt, NOT the symlink target). An absolute path therefore
+    doubles into /usr/lib/usr/lib/... So locate the runtime and return it
+    relative to that base (e.g. 'llvm-18/lib/libbolt_rt_instr.a')."""
+    lib = bolt_runtime_abs()
+    if not lib:
+        return None
+    bolt = shutil.which("llvm-bolt")
+    base = (Path(bolt).parent.parent / "lib") if bolt else Path("/usr/lib")
+    try:
+        return os.path.relpath(lib, base)
+    except ValueError:  # different drive (Windows); fall back to absolute
+        return lib
+
+
+def bolt_optimize(binary: Path, leg_dir: Path, log, scenario: dict) -> Path:
     """Instrument → workload → optimize the ELF layout post-link."""
     inst = leg_dir / f"{BIN}.inst"
     fdata = leg_dir / "bolt.fdata"
-    subprocess.run(
-        ["llvm-bolt", str(binary), "-instrument",
-         f"-instrumentation-file={fdata}", "-instrumentation-file-append-pid",
-         "-o", str(inst)],
-        check=True, stdout=log.file, stderr=subprocess.STDOUT)
-    run_workload(inst, leg_dir, log, iterations=2)
+    inst_cmd = ["llvm-bolt", str(binary), "-instrument",
+                f"-instrumentation-file={fdata}", "-instrumentation-file-append-pid",
+                "-o", str(inst)]
+    rt_lib = bolt_runtime_arg()
+    if rt_lib:
+        inst_cmd.append(f"--runtime-instrumentation-lib={rt_lib}")
+    subprocess.run(inst_cmd, check=True, stdout=log.file, stderr=subprocess.STDOUT)
+    run_workload(inst, leg_dir, log, scenario, iterations=2)
     # merge-fdata across the per-pid drops.
     merged = leg_dir / "bolt.merged.fdata"
     drops = list(leg_dir.glob("bolt.fdata*"))
@@ -312,13 +442,14 @@ def bolt_optimize(binary: Path, leg_dir: Path, log) -> Path:
          "-split-functions", "-split-all-cold", "-split-eh", "-icf=1",
          "-dyno-stats"],
         check=True, stdout=log.file, stderr=subprocess.STDOUT)
-    # Re-strip: the non-BOLT legs inherit profile `strip = true`, so strip the
-    # optimized output too or this leg's footprint numbers are inflated by the
-    # symbol table BOLT required as input.
-    stripper = shutil.which("llvm-strip") or shutil.which("strip")
-    if stripper:
-        subprocess.run([stripper, str(optimized)], check=False,
-                       stdout=log.file, stderr=subprocess.STDOUT)
+    # Do NOT strip a BOLT output. BOLT rewrites the ELF with a custom segment
+    # layout (a new __hot text segment; allocated sections land in a non-default
+    # segment), which binutils strip/objcopy/llvm-strip cannot rewrite — they
+    # warn "section can't be allocated in segment N" and emit a binary that
+    # SIGSEGVs at startup. So BOLT legs keep their symbol table; .text/.rodata
+    # (size -A) stay comparable to stripped legs, only the total `file` size is
+    # inflated by .symtab/.strtab — the footprint table footnotes BOLT rows so
+    # the retained symbol table isn't misread as BOLT "bloat".
     return optimized
 
 
@@ -343,7 +474,8 @@ def parse_size(binary: Path) -> tuple[int, int, int]:
     return text, rodata, total
 
 
-def measure_leg(leg: Leg, work: Path, pin: str | None, runs: int, log_print):
+def measure_leg(leg: Leg, work: Path, pin: str | None, runs: int, log_print,
+                scenario: dict, root_base: Path):
     binary = Path(leg.bin_path)
     log_print(f"  measure {leg.id} → {binary}")
     leg.file_bytes = binary.stat().st_size
@@ -352,40 +484,50 @@ def measure_leg(leg: Leg, work: Path, pin: str | None, runs: int, log_print):
     except Exception as e:
         log_print(f"    size -A failed: {e}")
 
-    # Runtime: cold `crabcc index` over a fresh fixture copy is the heaviest,
-    # most alloc/IO-representative path. Reset .crabcc each run via --prepare.
-    root = work / "_measure-root"
+    # Fixture root (under tmpfs when --tmpfs, so disk/fsync jitter is out of the
+    # timed op). Shared across legs — copy once; prep re-establishes per leg.
+    root = root_base / "_measure-root"
     if not root.exists():
         shutil.copytree(REPO_ROOT, root, ignore=shutil.ignore_patterns(
             ".git", "target", "bench", "node_modules", ".crabcc", "dist"))
-    pin_prefix = (["taskset", "-c", pin] if pin else [])
-    hj = work / f"{leg.id}.hyperfine.json"
-    index_cmd = " ".join(pin_prefix + [shquote(str(binary)), "index", "--root", shquote(str(root))])
-    try:
-        subprocess.run([
-            "hyperfine", "--warmup", "2", "--runs", str(runs),
-            "--prepare", f"rm -rf {shquote(str(root / '.crabcc'))}",
-            "--export-json", str(hj), index_cmd,
-        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        data = json.loads(hj.read_text())["results"][0]
-        leg.index_mean_s = round(data["mean"], 4)
-        leg.index_stddev_s = round(data.get("stddev") or 0.0, 4)
-    except Exception as e:
-        log_print(f"    hyperfine(index) failed: {e}")
+    # taskset pins the cores; chrt -b (SCHED_BATCH, no RT privilege needed) cuts
+    # wakeup-preemption jitter. Both shrink Phase-B variance.
+    prefix: list[str] = (["taskset", "-c", pin] if pin else [])
+    if pin and shutil.which("chrt"):
+        prefix += ["chrt", "-b", "0"]
 
-    # Warm query micro: index once, then time `sym`.
+    def bench(argv, prepare, warmup, nruns, store):
+        cmd = " ".join(prefix + [shquote(str(binary)), *map(shquote, argv),
+                                 "--root", shquote(str(root))])
+        hf = ["hyperfine", "--warmup", str(warmup), "--runs", str(nruns)]
+        if prepare == "RESET":
+            hf += ["--prepare", f"rm -rf {shquote(str(root / '.crabcc'))}"]
+        elif prepare:
+            hf += ["--prepare", prepare]
+        hjp = work / f"{leg.id}.{store}.json"
+        hf += ["--export-json", str(hjp), cmd]
+        subprocess.run(hf, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return json.loads(hjp.read_text())["results"][0]
+
+    # Establish the state the timed ops need (index/graph), once, with this leg.
+    for argv in scenario["prep"]:
+        subprocess.run([str(binary), *argv, "--root", str(root)],
+                       check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    plabel, pargv, pprep = scenario["primary"]
     try:
-        subprocess.run([str(binary), "index", "--root", str(root)],
-                       check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        qj = work / f"{leg.id}.query.json"
-        query_cmd = " ".join(pin_prefix + [shquote(str(binary)), "sym", "Store", "--root", shquote(str(root))])
-        subprocess.run([
-            "hyperfine", "--warmup", "3", "--runs", str(max(runs, 20)),
-            "--export-json", str(qj), query_cmd,
-        ], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        leg.query_mean_s = round(json.loads(qj.read_text())["results"][0]["mean"], 5)
+        d = bench(pargv, pprep, 2, runs, "hyperfine")
+        leg.index_mean_s = round(d["mean"], 4)
+        leg.index_stddev_s = round(d.get("stddev") or 0.0, 4)
     except Exception as e:
-        log_print(f"    hyperfine(query) failed: {e}")
+        log_print(f"    hyperfine(primary={plabel}) failed: {e}")
+
+    slabel, sargv, sprep = scenario["secondary"]
+    try:
+        d = bench(sargv, sprep, 3, max(runs, 20), "query")
+        leg.query_mean_s = round(d["mean"], 5)
+    except Exception as e:
+        log_print(f"    hyperfine(secondary={slabel}) failed: {e}")
 
 
 def shquote(s: str) -> str:
@@ -402,22 +544,35 @@ def render_report(legs: list[Leg], meta: dict) -> str:
                       key=lambda l: l.index_mean_s)
     by_size = sorted([l for l in ok if l.file_bytes is not None],
                      key=lambda l: l.file_bytes)
+    scen = SCENARIOS.get(meta.get("scenario", "index"), SCENARIOS["index"])
+    plabel = scen["primary"][0]
+    slabel = scen["secondary"][0]
+    iso = []
+    if meta.get("tmpfs"):
+        iso.append("tmpfs")
+    if meta.get("pinned"):
+        iso.append(f"pin {meta['pinned']}+SCHED_BATCH")
+    iso_s = ("  ·  isolation: " + ", ".join(iso)) if iso else ""
     lines = [
         "# bench-opt-bin — optimization sweep report",
         "",
         f"- generated: {meta['generated']}",
-        f"- host: {meta['host']}  ·  cores: {meta['cores']}  ·  pool: {meta['jobs']}",
+        f"- host: {meta['host']}  ·  arch: {meta.get('arch','?')}  ·  "
+        f"cores: {meta['cores']}  ·  pool: {meta['jobs']}{iso_s}",
+        f"- scenario: **{meta.get('scenario','index')}** "
+        f"(primary `{plabel}`, secondary `{slabel}`)",
         f"- profile: `{PROFILE}`  ·  legs: {len(legs)} "
         f"(ok {len(ok)}, skipped {sum(l.status=='skipped' for l in legs)}, "
         f"error {sum(l.status=='error' for l in legs)})",
         f"- wall time: {meta['wall_seconds']}s",
         "",
-        "## Execution speed (cold `crabcc index`, lower is better)",
+        f"## Execution speed (`{plabel}`, lower is better)",
         "",
-        "| leg | alloc | cpu | pgo | bolt | index mean (s) | ±stddev | query (s) | build (s) |",
+        f"| leg | alloc | cpu | pgo | bolt | {plabel} mean (s) | ±stddev | "
+        f"{slabel} (s) | build (s) |",
         "|---|---|---|:--:|:--:|--:|--:|--:|--:|",
     ]
-    base = next((l for l in by_speed if l.id == "baseline-v3-system"), None)
+    base = next((l for l in by_speed if l.id.startswith("baseline-")), None)
     for l in by_speed:
         delta = ""
         if base and base.index_mean_s and l.index_mean_s:
@@ -436,9 +591,18 @@ def render_report(legs: list[Leg], meta: dict) -> str:
     ]
     for l in by_size:
         kib = lambda b: f"{b/1024:.0f}" if b else "—"
+        mark = " ¹" if l.bolt else ""
         lines.append(
-            f"| `{l.id}` | {kib(l.file_bytes)} | {kib(l.text_bytes)} | "
+            f"| `{l.id}`{mark} | {kib(l.file_bytes)} | {kib(l.text_bytes)} | "
             f"{kib(l.rodata_bytes)} | {kib(l.total_size_bytes)} |")
+    if any(l.bolt for l in by_size):
+        lines += ["",
+                  "¹ BOLT footprint is **not apples-to-apples** here. BOLT legs are unstripped "
+                  "(stripping a BOLT output corrupts its segment layout → SIGSEGV), so "
+                  "`.symtab`/`.strtab` inflate `file`/`total`; and BOLT **relocates hot code "
+                  "into a new segment**, so the per-section `.text`/`.rodata` from `size -A` "
+                  "undercount it. Treat BOLT footprint as approximate — a dedicated executable "
+                  "PT_LOAD-segment sum would be needed for a fair number."]
 
     # Winner callout + paste-ready config.
     if by_speed:
@@ -593,6 +757,33 @@ def archive_run(built, meta, out: Path, work: Path, flame_dir: Path,
 # Main
 # ----------------------------------------------------------------------------
 
+def mount_tmpfs(path: Path, size_gib: float) -> bool:
+    """Mount a size-capped tmpfs at `path` (needs CAP_SYS_ADMIN). True on success."""
+    try:
+        subprocess.run(["mount", "-t", "tmpfs", "-o", f"size={int(size_gib * 1024)}m",
+                        "none", str(path)], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def umount_tmpfs(path: Path) -> None:
+    subprocess.run(["umount", str(path)], check=False,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def avail_mem_gib() -> float:
+    """Best-effort available RAM in GiB (MemAvailable). inf if unknown."""
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) / (1024 * 1024)  # kB -> GiB
+    except Exception:  # noqa: BLE001
+        pass
+    return float("inf")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="bench-opt-bin optimization sweep")
     ap.add_argument("--work", default=str(REPO_ROOT / "bench" / "opt-bin"),
@@ -627,16 +818,38 @@ def main() -> int:
                     help="ALSO mirror curated artifacts (report, ndjson, "
                          "manifest, flamegraphs, gzipped logs) into this dir — "
                          "point it at a tracked path to back the run up via git")
+    ap.add_argument("--max-mem-gib", type=float, default=0.0,
+                    help="RAM budget for the parallel build phase (GiB). 0 = auto "
+                         "(85%% of MemAvailable). The build pool is downscaled so "
+                         "jobs*per-leg stays under budget — prevents OOM on small boxes")
+    ap.add_argument("--per-leg-mem-gib", type=float, default=4.0,
+                    help="estimated peak RAM per concurrent build leg; the fat-LTO "
+                         "link is the high-water mark and BOLT rewrites add more")
+    ap.add_argument("--arch", default=None, choices=["x86-64", "aarch64", "native"],
+                    help="target-cpu architecture for the matrix (default: host). "
+                         "aarch64 emits Neoverse legs (Graviton) — needs an aarch64 "
+                         "toolchain, so cross-building from x86 will skip/fail those legs")
+    ap.add_argument("--scenario", default="index", choices=sorted(SCENARIOS),
+                    help="task/agent-group workload that shapes PGO/BOLT telemetry AND "
+                         "the measured ops: index (parse/write), lookup (query), graph")
+    ap.add_argument("--tmpfs", nargs="?", type=float, const=4.0, default=None,
+                    metavar="GIB",
+                    help="mount a tmpfs for the measurement fixture so disk/fsync "
+                         "jitter is out of the timed op (default 4 GiB; needs CAP_SYS_ADMIN)")
     ap.add_argument("--dry-run", action="store_true", help="print the plan and exit")
     args = ap.parse_args()
+
+    arch = norm_arch(args.arch) if args.arch and args.arch != "native" else host_arch()
+    scenario = SCENARIOS[args.scenario]
 
     # --quick is a fixed 2-leg smoke, independent of --deep — the deep matrix
     # renames the smoke candidates, so filtering by id would drop every leg.
     if args.quick:
-        legs = [Leg("baseline-v3-system", "x86-64-v3", "system"),
-                Leg("v3-mimalloc", "x86-64-v3", "mimalloc")]
+        base, bt = CPU_AXES[arch]["baseline"], cpu_tag(CPU_AXES[arch]["baseline"])
+        legs = [Leg(f"baseline-{bt}-system", base, "system"),
+                Leg(f"{bt}-mimalloc", base, "mimalloc")]
     else:
-        legs = deep_matrix() if args.deep else default_matrix()
+        legs = deep_matrix(arch) if args.deep else default_matrix(arch)
     if args.only:
         want = set(args.only.split(","))
         legs = [l for l in legs if l.id in want]
@@ -656,12 +869,36 @@ def main() -> int:
     oversub = 1.5 if args.saturate else 1.0
     per_leg_jobs = max(2, math.ceil(cores * oversub / jobs))
 
+    # Memory guard. Fat-LTO links (and BOLT rewrites) are the RAM high-water
+    # mark, and running N of them at once is exactly what OOM-kills a small box.
+    # Cap the build pool so estimated peak (jobs * per-leg) fits the budget and
+    # recompute per-leg jobs for the narrower pool. Concurrency is the right
+    # lever — a single leg's own peak is irreducible, so we shrink how many run
+    # together rather than pretend one can be made to fit.
+    budget = args.max_mem_gib if args.max_mem_gib > 0 else avail_mem_gib() * 0.85
+    mem_note = ""
+    if math.isfinite(budget):
+        mem_cap = max(1, int(budget // args.per_leg_mem_gib))
+        if mem_cap < jobs:
+            mem_note = (f"  ⤵ mem-guard: {budget:.1f} GiB ÷ {args.per_leg_mem_gib:.1f} "
+                        f"GiB/leg → pool {jobs}→{mem_cap}")
+            jobs = mem_cap
+            per_leg_jobs = max(2, math.ceil(cores * oversub / jobs))
+        if budget < args.per_leg_mem_gib * jobs:  # over even at this pool size
+            mem_note += (f"  ⚠ est peak {args.per_leg_mem_gib * jobs:.1f} GiB > budget "
+                         f"{budget:.1f} GiB at pool={jobs}; OOM still possible")
+
     util_note = ("" if n >= cores else
                  f"  ⚠ {n} legs < {cores} cores: LTO links will under-fill the box; "
                  "use --deep or a smaller flavor")
+    cross = arch != host_arch()
+    arch_note = (f"  ⚠ cross-arch: target {arch} ≠ host {host_arch()} — needs an "
+                 f"{arch} toolchain (cargo target + linker), else legs error/skip"
+                 if cross else "")
     if args.dry_run:
-        print(f"host cores={cores} legs={n} pool={jobs} per-leg-jobs={per_leg_jobs} "
-              f"saturate={args.saturate}{util_note}")
+        print(f"host cores={cores} arch={arch} scenario={args.scenario} legs={n} "
+              f"pool={jobs} per-leg-jobs={per_leg_jobs} saturate={args.saturate}"
+              f"{mem_note}{util_note}{arch_note}")
         for l in legs:
             print(f"  {l.id:24s} cpu={l.target_cpu:10s} alloc={l.alloc:8s} "
                   f"optz={'z' if l.opt_level else '-'} pgo={int(l.pgo)} bolt={int(l.bolt)}")
@@ -671,11 +908,15 @@ def main() -> int:
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
 
     profdata = llvm_profdata()
-    bolt_ok = have("llvm-bolt") and have("merge-fdata")
+    # BOLT needs the tools *and* the static instrumentation runtime it links in;
+    # a distro llvm-bolt with no findable libbolt_rt_instr.a fails mid-instrument.
+    bolt_rt = bolt_runtime_abs()
+    bolt_ok = have("llvm-bolt") and have("merge-fdata") and bolt_rt is not None
     need_bolt = any(l.bolt for l in legs)
     need_pgo = any(l.pgo for l in legs)
-    print(f"== bench-opt-bin == cores={cores} legs={n} pool={jobs} "
-          f"per-leg-jobs={per_leg_jobs} saturate={args.saturate}{util_note}")
+    print(f"== bench-opt-bin == arch={arch} scenario={args.scenario} cores={cores} "
+          f"legs={n} pool={jobs} per-leg-jobs={per_leg_jobs} saturate={args.saturate}"
+          f"{mem_note}{util_note}{arch_note}")
     print(f"   hyperfine={'ok' if have('hyperfine') else 'MISSING'} "
           f"size={'ok' if have('size') else 'MISSING'} "
           f"llvm-profdata={'ok' if profdata else 'MISSING'} "
@@ -684,7 +925,9 @@ def main() -> int:
     if need_pgo and not profdata:
         print("   ! PGO legs will be skipped (install: rustup component add llvm-tools-preview)")
     if need_bolt and not bolt_ok:
-        print("   ! BOLT legs will be skipped (install: llvm-bolt + merge-fdata)")
+        why = ("llvm-bolt + merge-fdata" if not (have("llvm-bolt") and have("merge-fdata"))
+               else "libbolt_rt_instr.a runtime (install the matching llvm-bolt/bolt-NN package)")
+        print(f"   ! BOLT legs will be skipped (missing: {why})")
     # hyperfine + `size` produce the entire point of the run (timing + footprint).
     # Without them every leg's measurement fails and we'd emit an empty-looking
     # but "successful" report after an expensive build phase — abort up front
@@ -696,29 +939,51 @@ def main() -> int:
               f"--allow-missing-tools to build without measuring.", file=sys.stderr)
         return 2
 
+    # Measurement fixture base — optionally a tmpfs so disk/fsync jitter stays
+    # out of the timed op. Small (source copy + index DB), so a few GiB is plenty.
+    tmpfs_mount = None
+    root_base = work
+    if args.tmpfs:
+        tmpfs_mount = work / "_tmpfs"
+        tmpfs_mount.mkdir(parents=True, exist_ok=True)
+        if mount_tmpfs(tmpfs_mount, args.tmpfs):
+            root_base = tmpfs_mount
+            print(f"   tmpfs: {args.tmpfs:.0f} GiB at {tmpfs_mount} — measurement fixture in RAM")
+        else:
+            tmpfs_mount = None
+            print("   ! tmpfs mount failed (need CAP_SYS_ADMIN) — measuring on disk")
+
     started = time.time()
+    try:
+        # Phase A — parallel builds.
+        print(f"\n-- phase A: building {len(legs)} legs ({jobs}-wide) --")
+        built: list[Leg] = []
+        with ThreadPoolExecutor(max_workers=jobs) as pool:
+            futs = {pool.submit(build_leg, l, work, per_leg_jobs, profdata, bolt_ok,
+                                scenario): l for l in legs}
+            for fut in as_completed(futs):
+                leg = fut.result()
+                built.append(leg)
+                print(f"   [{leg.status:7s}] {leg.id}"
+                      + (f"  build={leg.build_seconds}s" if leg.build_seconds else "")
+                      + (f"  ({leg.detail})" if leg.detail else ""))
 
-    # Phase A — parallel builds.
-    print(f"\n-- phase A: building {len(legs)} legs ({jobs}-wide) --")
-    built: list[Leg] = []
-    with ThreadPoolExecutor(max_workers=jobs) as pool:
-        futs = {pool.submit(build_leg, l, work, per_leg_jobs, profdata, bolt_ok): l
-                for l in legs}
-        for fut in as_completed(futs):
-            leg = fut.result()
-            built.append(leg)
-            print(f"   [{leg.status:7s}] {leg.id}"
-                  + (f"  build={leg.build_seconds}s" if leg.build_seconds else "")
-                  + (f"  ({leg.detail})" if leg.detail else ""))
-
-    # Phase B — serial measurement.
-    print(f"\n-- phase B: measuring (serial{', pinned '+args.pin if args.pin else ''}) --")
-    for leg in sorted([l for l in built if l.status == "ok"], key=lambda l: l.id):
-        measure_leg(leg, work, args.pin, args.runs, print)
+        # Phase B — serial measurement.
+        pinned = f", pinned {args.pin}+SCHED_BATCH" if args.pin else ""
+        print(f"\n-- phase B: measuring (serial{pinned}) --")
+        for leg in sorted([l for l in built if l.status == "ok"], key=lambda l: l.id):
+            measure_leg(leg, work, args.pin, args.runs, print, scenario, root_base)
+    finally:
+        if tmpfs_mount:
+            umount_tmpfs(tmpfs_mount)
 
     meta = {
         "generated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "host": os.uname().nodename,
+        "arch": arch,
+        "scenario": args.scenario,
+        "tmpfs": bool(tmpfs_mount),
+        "pinned": args.pin or None,
         "cores": cores,
         "jobs": jobs,
         "wall_seconds": round(time.time() - started, 1),

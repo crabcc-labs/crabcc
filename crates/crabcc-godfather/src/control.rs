@@ -2,8 +2,8 @@
 //!
 //! Restart is intentionally limited to **known launch shapes** so the
 //! supervisor can't be tricked into running arbitrary commands as
-//! the user. Today: `viz` (`crabcc serve`), `desktop`
-//! (`crabcc-desktop`). Other apps return `RestartError::UnknownLaunch`.
+//! the user. Today: `viz` (`crabcc serve`). Other apps return
+//! `RestartError::UnknownLaunch`.
 //!
 //! `attach` doesn't auto-spawn LLDB — too OS / permission fraught.
 //! It returns the canonical command for the caller to copy into a
@@ -103,7 +103,6 @@ pub fn restart_app(godfather: &crate::Godfather, app: &str) -> Result<u32> {
             c.arg("serve");
             c
         }
-        "desktop" => Command::new("crabcc-desktop"),
         other => return Err(ControlError::UnknownLaunch(other.to_string()).into()),
     };
     cmd.stdin(std::process::Stdio::null());

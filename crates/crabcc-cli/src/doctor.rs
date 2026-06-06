@@ -2,8 +2,8 @@
 //! Phase 5a.
 //!
 //! Operator-facing: each check returns a structured [`CheckResult`]
-//! that the menubar app (issue #107 Part A) and Chrome extension
-//! (issue #107 Part B) consume as JSON. The text formatter is for
+//! that the Chrome extension (issue #107 Part B) and other JSON tooling
+//! consume. The text formatter is for
 //! humans running ` crabcc doctor` from a terminal.
 //!
 //! ## Surface (this branch)
@@ -20,7 +20,7 @@
 //! - ` doctor stack init` / ` doctor stack up` / ` doctor stack repair`
 //!   (the operational variants overlap with ` crabcc ollama-stack`)
 //! - ` doctor agent` — needs a structured dry-run from agent.rs
-//! - ` doctor extension` / ` doctor menubar` — wait on #107 Parts A/B
+//! - ` doctor extension` — waits on the Chrome extension (#107 Part B)
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};

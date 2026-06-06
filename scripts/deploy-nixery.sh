@@ -110,11 +110,14 @@ fi
 REMOTE
 
 echo ""
-echo "NOTE: python315t-optimized requires the hash in nix/overlays/python-optimized.nix."
-echo "Get it with:"
-echo "  nix-prefetch-github --owner python --repo cpython --rev v3.15.0b2"
+echo "Available custom images (Nixery builds on first pull, cached after):"
+echo "  python315t-optimized/uv   — CPython 3.15b2, PGO + ThinLTO + JIT + no-GIL (~45 min first build)"
+echo "  node-optimized/coreutils  — Node.js 26 + ThinLTO (~15 min first build)"
 echo ""
-echo "Then build (first build ~45 min due to PGO profile run):"
+echo "compact-server (Python):"
 echo "  NIXERY_REGISTRY=$REMOTE:$NIXERY_PORT \\"
 echo "  NIXERY_PYTHON_IMAGE=python315t-optimized/uv \\"
 echo "    bash compact-server/deploy/install.sh"
+echo ""
+echo "Generic Node.js container:"
+echo "  docker run --rm $REMOTE:$NIXERY_PORT/node-optimized/coreutils node --version"

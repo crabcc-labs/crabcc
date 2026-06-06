@@ -767,6 +767,107 @@ paths:
                 properties:
                   count: {type: integer}
 
+  /tools/memory.remind_set:
+    post:
+      tags: [memory]
+      operationId: memory_remind_set
+      summary: Schedule a reminder in the repo memory store.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [message]
+              properties:
+                cwd: {type: string}
+                message: {type: string}
+                due_at: {type: integer}
+                delay: {type: string}
+      responses:
+        "200":
+          description: "{id, due_at}."
+          content:
+            application/json:
+              schema: {type: object}
+
+  /tools/memory.remind_poll:
+    post:
+      tags: [memory]
+      operationId: memory_remind_poll
+      summary: Fetch + mark-delivered all due reminders from the memory store.
+      requestBody:
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CwdRequest"}
+      responses:
+        "200":
+          description: Due reminders (empty when none).
+          content:
+            application/json:
+              schema: {type: array, items: {type: object}}
+
+  /tools/memory.remind_list:
+    post:
+      tags: [memory]
+      operationId: memory_remind_list
+      summary: List reminders from the memory store without delivering them.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                cwd: {type: string}
+                include_delivered: {type: boolean}
+      responses:
+        "200":
+          description: Reminders.
+          content:
+            application/json:
+              schema: {type: array, items: {type: object}}
+
+  /tools/memory.remind_delete:
+    post:
+      tags: [memory]
+      operationId: memory_remind_delete
+      summary: Cancel a scheduled reminder in the memory store by id.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                cwd: {type: string}
+                id: {type: integer}
+      responses:
+        "200":
+          description: "{deleted: bool}."
+          content:
+            application/json:
+              schema: {type: object}
+
+  /tools/memory.remind_hooks:
+    post:
+      tags: [memory]
+      operationId: memory_remind_hooks
+      summary: Per-agent hook snippets that auto-run memory.remind_poll.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                agent: {type: string}
+      responses:
+        "200":
+          description: Hook configuration snippets.
+          content:
+            application/json:
+              schema: {type: object}
+
   /tools/_openapi:
     post:
       tags: [server]

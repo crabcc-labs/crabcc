@@ -3,8 +3,8 @@
 #
 # Spawns cloudflared in the background, tails its log until the
 # trycloudflare.com URL appears, and prints it. PID + URL state lives in
-# ~/.crabcc/cloudflared.{pid,url}; the log lives next to the other
-# Crabcc.app logs at ~/Library/Logs/Crabcc/cloudflared.log.
+# ~/.crabcc/cloudflared.{pid,url}; the log lives at
+# ~/Library/Logs/Crabcc/cloudflared.log.
 #
 # Usage:
 #   bash scripts/cloudflared-tunnel.sh start    # spawn + print URL (default)

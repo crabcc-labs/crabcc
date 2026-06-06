@@ -99,18 +99,16 @@ tasks:
       - "{{.CARGO}} clippy --workspace --all-targets -- -D warnings"
 
   chore:
-    desc: All-in-one DX chore — fmt, lint, test, dmg, doctor. Use before opening a release PR.
+    desc: All-in-one DX chore — fmt, lint, test, doctor. Use before opening a release PR.
     summary: |
       Runs the full validation chain that gates a release-ready PR:
-      fmt-check → clippy (-D warnings) → tests → DMG build →
-      doctor --quiet. Each step short-circuits on failure so you see
-      the first thing that broke. Stand-alone — does not run prep-pr
-      or write any artifacts beyond dist/crabcc-<version>.dmg.
+      fmt-check → clippy (-D warnings) → tests → doctor --quiet. Each
+      step short-circuits on failure so you see the first thing that
+      broke. Stand-alone — does not run prep-pr or write any artifacts.
     cmds:
       - task: fmt-check
       - task: lint
       - task: test
-      - task: dmg
       - task: doctor
       - task: agent-status
 

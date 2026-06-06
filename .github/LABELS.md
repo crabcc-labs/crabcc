@@ -36,7 +36,7 @@ The pairing **`enhancement` + (one of: `feature` / `performance` / `ci` / `depen
 
 ## Scope vocabulary (used in titles, not as labels)
 
-`cli`, `viz`, `agents`, `memory`, `mcp`, `desktop`, `macos-app`, `telegram`, `mobile`, `extension`, `cua`, `tts`, `events`, `netlog`, `security`, `service-discovery`, `mdns`, `jobs`, `docs`.
+`cli`, `viz`, `agents`, `memory`, `mcp`, `telegram`, `mobile`, `extension`, `cua`, `tts`, `events`, `netlog`, `security`, `service-discovery`, `mdns`, `jobs`, `docs`.
 
 Multiple scopes are comma-joined: `feat(mcp,telegram): …` (see #204).
 
@@ -56,7 +56,7 @@ Multiple scopes are comma-joined: `feat(mcp,telegram): …` (see #204).
 
 | # | Title | Labels |
 |---|---|---|
-| 236 | `perf(desktop): senior-Rust review of …state.rs` | `enhancement, lang:rust, performance, v3.0, priority:medium` |
+| 236 | `perf(viz): senior-Rust review of …graph.rs` | `enhancement, lang:rust, performance, v3.0, priority:medium` |
 | 238 | `feat(mobile): Happy-inspired agent session forwarding` | `enhancement, feature, v3.0` |
 | 242 | `feat(tts): TTS word-timing alignment` | `enhancement, feature, v3.0, priority:low` |
 

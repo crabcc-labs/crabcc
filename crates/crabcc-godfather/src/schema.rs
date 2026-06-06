@@ -15,7 +15,7 @@
 //! |---|---|---|
 //! | `_crab_metadata` | Install fingerprint + schema_version | 1 row, KV-shaped |
 //! | `_crab_host` | OS / arch / capacity / hashed identifiers | 1 row, refreshed each boot |
-//! | `_crab_session` | One row per app boot (viz / desktop / agent / cli) | many |
+//! | `_crab_session` | One row per app boot (viz / agent / cli) | many |
 //! | `_crab_event` | Typed event log (info / warn / error / crash / debug) | many |
 //! | `_crab_resource_sample` | RSS / CPU samples linked to a session | many |
 //! | `_crab_crash` | Crash event detail — exit code / signal / log tail | 0..N per session |
@@ -31,7 +31,7 @@ pub const SCHEMA_VERSION: i64 = 2;
 
 pub fn apply(conn: &Connection) -> Result<()> {
     conn.execute_batch(
-        // WAL keeps the embedded library writers (cli, desktop, viz)
+        // WAL keeps the embedded library writers (cli, viz)
         // and the standalone supervisor (`crabcc-godfather watch`)
         // from blocking each other on the same DB file.
         "PRAGMA journal_mode = WAL;\n\
@@ -70,7 +70,7 @@ pub fn apply(conn: &Connection) -> Result<()> {
             ts          INTEGER NOT NULL,\n\
             session_id  TEXT,\n\
             severity    TEXT NOT NULL,  -- 'debug'|'info'|'warn'|'error'|'crash'\n\
-            source      TEXT NOT NULL,  -- 'viz'|'desktop'|'agent'|'cli'|...\n\
+            source      TEXT NOT NULL,  -- 'viz'|'agent'|'cli'|...\n\
             category    TEXT NOT NULL,\n\
             message     TEXT NOT NULL,\n\
             payload     TEXT             -- optional JSON blob\n\

@@ -6,7 +6,7 @@
 /result
 /result-*
 .direnv/
-# DMG installer build outputs (scripts/build-dmg.sh)
+# Build / packaging output dirs
 /dist/
 /build/
 .DS_Store
