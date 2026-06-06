@@ -12,6 +12,8 @@
 // `tests/<name>.rs` is the root of its binary; `mod foo;` looks in the
 // same directory, not a subdirectory. `#[path = ...]` points at the
 // real files under `tests/integration/`.
+#[path = "integration/affected.rs"]
+mod affected;
 #[path = "integration/agent_dry_run.rs"]
 mod agent_dry_run;
 #[path = "integration/auto_index.rs"]

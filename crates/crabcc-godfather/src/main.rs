@@ -77,7 +77,7 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
-    /// Relaunch a known app (`viz` / `desktop`).
+    /// Relaunch a known app (`viz`).
     Restart {
         #[arg(long)]
         app: String,

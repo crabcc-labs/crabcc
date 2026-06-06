@@ -281,6 +281,33 @@ fn dispatch_tool_inner(
             memory::auto_capture(root, "test_context", name, 1, &args);
             Ok(serde_json::to_string(&envelope)?)
         }
+        "affected" => {
+            use crabcc_core::affected::{affected, ChangeInput, DEFAULT_DEPTH};
+            let depth = args
+                .get("depth")
+                .and_then(|v| v.as_u64())
+                .map(|d| d as usize)
+                .unwrap_or(DEFAULT_DEPTH);
+            let symbols: Vec<String> = args
+                .get("symbols")
+                .and_then(|v| v.as_array())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|s| s.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let input = if !symbols.is_empty() {
+                ChangeInput::Symbols(symbols)
+            } else if let Some(rev) = args.get("since").and_then(|v| v.as_str()) {
+                ChangeInput::Since(rev.to_string())
+            } else {
+                ChangeInput::WorkingTree
+            };
+            let result = affected(store, root, input, depth)?;
+            memory::auto_capture(root, "affected", "change", result.tests.len(), &args);
+            Ok(serde_json::to_string(&result)?)
+        }
         "write_file" => {
             let path = args
                 .get("path")

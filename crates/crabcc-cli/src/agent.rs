@@ -359,8 +359,8 @@ impl AgentRuntime for SubprocessRuntime {
 
         // Write meta.json BEFORE spawn so the SSE polling layer
         // (`/api/agents`) never observes the run with empty fields. The
-        // window between spawn and write_meta used to leave the desktop
-        // / web dashboard rendering all-em-dash rows for a few hundred
+        // window between spawn and write_meta used to leave the web
+        // dashboard rendering all-em-dash rows for a few hundred
         // ms — long enough for users to think the agent crashed.
         // write_meta doesn't depend on the child PID; write_pid still
         // has to come after spawn since it needs `child.id()`.
@@ -641,7 +641,7 @@ pub fn run(req: AgentRequest<'_>) -> Result<()> {
     }
 
     // Open the singleton runs DB. Best-effort: if it fails (locked,
-    // disk full), the agent still runs — the menubar's pgrep + lockfile
+    // disk full), the agent still runs — the pgrep + lockfile
     // fallback will catch this run.
     let db_path = crate::agent_runs_db::default_db_path(&home);
     let db_conn = crate::agent_runs_db::open(&db_path).ok();

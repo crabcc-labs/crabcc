@@ -73,7 +73,6 @@ Materializes under `~/.crabcc/integrations/os/`:
 
 - `com.crabcc.mcp.plist` — macOS LaunchAgent (`--mcp-http` on :8091)
 - `crabcc-mcp.service` — systemd user unit (Linux)
-- macOS app + agentd: `task dmg`
 
 ## Kernel (containers / custom Linux)
 

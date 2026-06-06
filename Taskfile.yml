@@ -33,7 +33,7 @@
 #
 # Modular layout — tasks live in taskfiles/:
 #   taskfiles/build.yml      build, test, lint, fmt, smoke, coverage, images-*
-#   taskfiles/install.yml    install, dmg, man, aliases, doctor, version, setup
+#   taskfiles/install.yml    install, man, aliases, doctor, version, setup
 #   taskfiles/release.yml    release, local-ci, prep-pr, gen-summary, docs-refresh
 #   taskfiles/bench.yml      bench, bench-compress, memory-smoke, memory-bench
 #   taskfiles/viz.yml        viz, repomix, repomix-context, docs:ingest
@@ -79,14 +79,6 @@ vars:
   USER_CRABCC_DIR:   '{{.HOME}}/.crabcc'
   INTERNAL_DB:       '{{.HOME}}/.crabcc/_internal.db'
 
-  # macOS surfaces (issue #107). Build outputs land in dist/; the .app
-  # bundle source lives under installer/.
-  DMG_DIR:           '{{.ROOT_DIR}}/dist'
-  DMG_OUT:           '{{.ROOT_DIR}}/dist/crabcc-{{.CRABCC_VERSION}}.dmg'
-  APP_BUNDLE_SRC:    '{{.ROOT_DIR}}/installer/Crabcc.app'
-  APP_INSTALLED:     /Applications/Crabcc.app
-  LOGS_DIR:          '{{.HOME}}/Library/Logs/Crabcc'
-  LAUNCH_AGENTS_DIR: '{{.HOME}}/Library/LaunchAgents'
 
   # Repomix output (token-minimized bundle for LLM ingestion).
   REPOMIX_OUT: '{{.ROOT_DIR}}/.repomix/crabcc.xml'

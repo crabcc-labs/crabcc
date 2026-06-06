@@ -97,7 +97,6 @@ flowchart LR
 
   subgraph standalone["Standalone builds"]
     VIZ[crabcc-viz<br/>call-graph UI]
-    DESK[crabcc-desktop<br/>GPUI dashboard]
     TG[crabcc-telegram]
   end
 
@@ -114,7 +113,6 @@ flowchart LR
   LSP --> CORE
   CHR --> CORE
   VIZ -.->|HTTP/SSE| CORE
-  DESK -.->|loopback| VIZ
 
   classDef core fill:#2d6a4f,stroke:#95d5b2,color:#fff
   classDef edge fill:#457b9d,stroke:#a8dadc,color:#fff
@@ -122,10 +120,10 @@ flowchart LR
 
   class CORE,MEM,MCP,CLI core
   class LSP,CHR,FETCH,GF edge
-  class VIZ,DESK,TG,HITL,NOTIFY solo
+  class VIZ,TG,HITL,NOTIFY solo
 ```
 
-Excluded from the workspace (build in-crate): `crabcc-viz`, `crabcc-desktop`, `apps/crabcc-telegram` — see comments in root `Cargo.toml`.
+Excluded from the workspace (build in-crate): `crabcc-viz`, `apps/crabcc-telegram` — see comments in root `Cargo.toml`.
 
 ---
 

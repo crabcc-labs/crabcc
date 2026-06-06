@@ -30,6 +30,7 @@ pub mod forge;
 mod git_analytics;
 mod graph;
 mod memory_view;
+mod memory_workspace;
 mod query;
 pub mod runtime;
 
@@ -40,6 +41,7 @@ use crabcc_core::graph::CallGraph;
 use crabcc_core::store::Store;
 use graph::{graph_snapshot, EdgeOut, NodeOut};
 use memory_view::memory_recent;
+use memory_workspace::memory_search;
 use query::url_decode;
 use serde::{Deserialize, Serialize};
 use tiny_http::{Header, Method, Request, Response, Server};
@@ -52,6 +54,10 @@ const BUNDLED_INDEX: &str = include_str!("../assets/index.html");
 //
 // Regenerate after editing `web/src/`: `cd crates/crabcc-viz/web && bun run build`.
 const BUNDLED_LIVE: &str = include_str!("../web/dist/live.html");
+/// The cross-repo memory browser at `/memory`. Hand-rolled and
+/// self-contained (no React build step) so `crabcc memory ui` can open a
+/// working page on any checkout without running `bun run build`.
+const BUNDLED_MEMORY: &str = include_str!("../assets/memory.html");
 
 /// OpenAPI 3.1 source-of-truth for the `/live` HTTP API (issue #170 phase 0).
 ///
@@ -80,6 +86,9 @@ pub struct Config {
     /// dashboard's first bootstrap call has real numbers (not zeros).
     /// Cheap on warm repos (one mtime sweep + sidecar load).
     pub init: bool,
+    /// Path the auto-opened browser lands on (e.g. `/memory`). `None` opens
+    /// the dashboard root. Ignored when `no_open` is set.
+    pub open_path: Option<String>,
 }
 
 impl Config {
@@ -90,6 +99,7 @@ impl Config {
             root,
             no_open: true,
             init: true,
+            open_path: None,
         }
     }
 }
@@ -127,7 +137,8 @@ pub fn serve(cfg: Config) -> Result<()> {
     let addr = listener.local_addr()?;
     print_banner(&cfg, addr, init_outcome.as_ref());
     if !cfg.no_open {
-        let url = format!("http://{}:{}", addr.ip(), addr.port());
+        let path = cfg.open_path.as_deref().unwrap_or("");
+        let url = format!("http://{}:{}{}", addr.ip(), addr.port(), path);
         if let Err(e) = open_browser(&url) {
             tracing::debug!("browser auto-open skipped: {e}");
         }
@@ -234,6 +245,8 @@ fn handle(request: Request, root: &Path) -> Result<()> {
         // stays as a back-compat alias for the old URL.
         "/" | "/index.html" | "/live" => respond_html(request, BUNDLED_LIVE),
         "/graph" => respond_html(request, BUNDLED_INDEX),
+        // Cross-repo memory browser — the front-door for `crabcc memory ui`.
+        "/memory" => respond_html(request, BUNDLED_MEMORY),
         "/api/events" => sse_events(request, root.to_path_buf()),
         "/api/health" => respond_json(request, &serde_json::json!({ "status": "ok" })),
         // #172 — surface the hand-maintained OpenAPI spec so the
@@ -313,6 +326,11 @@ fn handle(request: Request, root: &Path) -> Result<()> {
         "/api/memory/recent" => match memory_recent(root, query) {
             Ok(snap) => respond_json(request, &snap),
             Err(e) => respond_status(request, 500, &format!("memory snapshot failed: {e}")),
+        },
+        // Cross-repo aggregate search powering the `/memory` browser.
+        "/api/memory/search" => match memory_search(root, query) {
+            Ok(snap) => respond_json(request, &snap),
+            Err(e) => respond_status(request, 500, &format!("memory search failed: {e}")),
         },
         "/api/memory/graph" => match memory_graph(root, query) {
             Ok(snap) => respond_json(request, &snap),
@@ -1303,7 +1321,7 @@ fn agents_launch(mut request: Request, root: &Path) -> Result<()> {
     if let Some(p) = &req.profile {
         // Server-emitted profile ids are bare filenames; the CLI flag
         // wants the `internal/<id>` namespace prefix. Pre-pend here
-        // so desktop / web clients don't need to know the namespace.
+        // so web clients don't need to know the namespace.
         cmd.arg("--profile").arg(format!("internal/{p}"));
     }
     if req.no_refresh {
@@ -2472,13 +2490,27 @@ struct DrawerDetail {
 
 fn memory_get(root: &Path, query: &str) -> Result<DrawerDetail> {
     let mut id = String::new();
+    let mut repo: Option<String> = None;
     for pair in query.split('&').filter(|s| !s.is_empty()) {
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
-        if k == "id" {
-            id = url_decode(v);
+        match k {
+            "id" => id = url_decode(v),
+            // Set by the cross-repo `/memory` browser so a hit from another
+            // repo opens that repo's db, not the one the server launched in.
+            "repo" => repo = Some(url_decode(v)).filter(|s| !s.is_empty()),
+            _ => {}
         }
     }
-    let memory_path = root.join(".crabcc").join("memory.db");
+    // `repo=<key>` → `$CRABCC_HOME/repos/<key>/memory.db` (traversal-guarded).
+    // Otherwise the current repo: centralised path first, legacy fallback.
+    let memory_path = match repo.as_deref() {
+        Some(key) => memory_workspace::repo_db_path(key)
+            .unwrap_or_else(|| root.join(".crabcc").join("memory.db")),
+        None => crabcc_memory::resolve_db_path(root)
+            .ok()
+            .filter(|p| p.exists())
+            .unwrap_or_else(|| root.join(".crabcc").join("memory.db")),
+    };
     if id.is_empty() || !memory_path.exists() {
         return Ok(DrawerDetail {
             found: false,
@@ -3008,6 +3040,7 @@ mod tests {
         "/api/seed-graph",
         "/api/debug/dump",
         "/api/memory/recent",
+        "/api/memory/search",
         "/api/events",
         // Forge (GitHub/Gitea) PR viewer
         "/api/forge/config",

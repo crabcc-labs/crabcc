@@ -149,6 +149,74 @@ tasks:
         --threshold {{.THRESHOLD}}
         --output target/bench/memory.ndjson
 
+  # ---------------------------------------------------------------------------
+  # Nixery binary optimization matrix (node-optimized + python315t-optimized)
+  # ---------------------------------------------------------------------------
+
+  bench-nixery:
+    desc: |
+      bloaty + BOLT sweep for Nix-built node-optimized and python315t-optimized
+      bins. Phase A (nix-build + BOLT) runs parallel; Phase B (bloaty + hyperfine
+      startup latency) serial. Needs: nix-build, bloaty, hyperfine, llvm-bolt.
+      Results → bench/results/nixery-REPORT.md.
+    vars:
+      JOBS: '{{.JOBS | default ""}}'
+      PIN:  '{{.PIN | default ""}}'
+      RUNS: '{{.RUNS | default "20"}}'
+    cmds:
+      - >-
+        python3 scripts/bench-opt-bin/sweep-nixery.py
+        {{if .JOBS}}--jobs {{.JOBS}}{{end}}
+        {{if .PIN}}--pin {{.PIN}}{{end}}
+        --runs {{.RUNS}}
+
+  bench-nixery-no-bolt:
+    desc: |
+      bloaty-only sweep (no BOLT instrumentation) — fast local run to check
+      binary sizes after overlay changes. Skips the BOLT instrument→workload→
+      optimize loop so it completes in ~nix-build time. Needs: nix-build, bloaty.
+    cmds:
+      - 'python3 scripts/bench-opt-bin/sweep-nixery.py --no-bolt'
+
+  bench-nixery-cargo-bloat:
+    desc: |
+      Full nixery sweep + cargo-bloat on crabcc-compact-serve. Surfaces the
+      top symbols by size in the Rust binary alongside the Nix binary analysis.
+      Adds a cargo build step on top of the nixery sweep.
+    vars:
+      JOBS: '{{.JOBS | default ""}}'
+      RUNS: '{{.RUNS | default "20"}}'
+    cmds:
+      - >-
+        python3 scripts/bench-opt-bin/sweep-nixery.py
+        {{if .JOBS}}--jobs {{.JOBS}}{{end}}
+        --runs {{.RUNS}}
+        --cargo-bloat
+
+  bench-nixery-node:
+    desc: node-optimized legs only (base + BOLT), no Python build.
+    cmds:
+      - 'python3 scripts/bench-opt-bin/sweep-nixery.py --only node-base,node-bolt'
+
+  bench-nixery-python:
+    desc: python315t-optimized legs only (base + BOLT), no Node build.
+    cmds:
+      - 'python3 scripts/bench-opt-bin/sweep-nixery.py --only python-base,python-bolt'
+
+  bench-nixery-all:
+    desc: |
+      Run all nixery bench tasks in parallel: Rust opt-bin sweep (full matrix)
+      + nixery node/python sweep + cargo-bloat. Use on a big box — each task
+      runs its own build phase concurrently. Results in bench/results/.
+    deps:
+      - bench-opt-bin-full
+      - bench-nixery
+
+  bench-nixery-dry:
+    desc: Print the nixery bench plan without building anything.
+    cmds:
+      - 'python3 scripts/bench-opt-bin/sweep-nixery.py --dry-run'
+
   bench-agent-mcp:
     desc: |
       Agent->MCP hot-path bench: synthesized claude_code / nullclaw /
@@ -169,3 +237,38 @@ tasks:
           {{.CARGO}} run -q --release -p crabcc-mcp --features bench --example agent_replay --
             --root "{{.ROOT}}" --bin {{.ROOT_DIR}}/target/release/crabcc --profile "$p";
         done
+
+  stress:
+    desc: |
+      Parallel stress + fuzz the crabcc CLI — hammers the subcommand surface
+      from many workers with valid + mutated args, flags panics/segfaults/hangs
+      as distinct from clean usage errors. Vars: WORKERS, WRITERS, DURATION, SEED.
+    deps: [build-fast]
+    cmds:
+      - 'test -f .crabcc/index.db || {{.ROOT_DIR}}/target/debug/crabcc index build >/dev/null'
+      - >-
+        python3 scripts/stress/stress.py
+        --workers {{.WORKERS | default 16}}
+        --writers {{.WRITERS | default 2}}
+        --duration {{.DURATION | default 30}}
+        {{if .SEED}}--seed {{.SEED}}{{end}}
+
+  stress-smoke:
+    desc: Fast read-only stress smoke (CI-friendly — no writers, fixed seed, deterministic).
+    deps: [build-fast]
+    cmds:
+      - 'test -f .crabcc/index.db || {{.ROOT_DIR}}/target/debug/crabcc index build >/dev/null'
+      - 'python3 scripts/stress/stress.py --workers 8 --iterations 500 --seed 1'
+
+  soak:
+    desc: |
+      Long-running realistic-mix soak of the crabcc CLI — tracks latency drift,
+      index.db/WAL growth, and fd leaks over time. Vars: SOAK (s), WORKERS, SEED.
+    deps: [build-fast]
+    cmds:
+      - 'test -f .crabcc/index.db || {{.ROOT_DIR}}/target/debug/crabcc index build >/dev/null'
+      - >-
+        python3 scripts/stress/stress.py
+        --soak {{.SOAK | default 600}}
+        --workers {{.WORKERS | default 12}}
+        {{if .SEED}}--seed {{.SEED}}{{end}}

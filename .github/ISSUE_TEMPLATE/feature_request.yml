@@ -7,7 +7,7 @@ body:
     attributes:
       value: |
         Title convention: `feat(<scope>): <summary>`. Common scopes: `cli`, `viz`,
-        `agents`, `memory`, `mcp`, `desktop`, `macos-app`, `telegram`, `mobile`,
+        `agents`, `memory`, `mcp`, `telegram`, `mobile`,
         `extension`, `tts`, `events`, `netlog`, `service-discovery`, `jobs`.
   - type: textarea
     id: overview

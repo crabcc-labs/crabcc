@@ -23,12 +23,50 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-rusqlite = { version = "0.31", features = ["bundled"] }
-crabcc-core = { path = "..", features = ["compress"] }
+# Must track crabcc-core's rusqlite (workspace pins 0.39, bundled) — two
+# semver-incompatible rusqlite versions pull in two `libsqlite3-sys` crates,
+# both declaring `links = "sqlite3"`, which cargo rejects.
+rusqlite = { version = "0.39", features = ["bundled"] }
+crabcc-core = { path = "..", features = ["compress", "markdown"] }
 
 [[bin]]
 name = "fsst_sqlite_roundtrip"
 path = "fuzz_targets/fsst_sqlite_roundtrip.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fsst_decompress_arbitrary"
+path = "fuzz_targets/fsst_decompress_arbitrary.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "md_parse_sanitize"
+path = "fuzz_targets/md_parse_sanitize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pattern_find_callers"
+path = "fuzz_targets/pattern_find_callers.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fts_fuzzy_prefix"
+path = "fuzz_targets/fts_fuzzy_prefix.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "snippet_utf8"
+path = "fuzz_targets/snippet_utf8.rs"
 test = false
 doc = false
 bench = false

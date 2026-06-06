@@ -39,10 +39,6 @@ node_modules/
 .rust-analyzer/
 bench/longmemeval/
 **/longmemeval_oracle.json
-
-# macOS app surface — not needed in the Linux container
-installer/
-apps/macos/
 apps/crabcc-iterm2/
 
 # CI / test outputs

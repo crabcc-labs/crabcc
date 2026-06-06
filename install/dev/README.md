@@ -115,5 +115,5 @@ COMPOSE_PROFILES=heavy docker compose -f install/dev/docker-compose.yml up
 ## Out of scope (delegated)
 
 - Browser-side livereload (Server-Sent Events from esbuild → browser) → issue #107.
-- Multi-arch buildx CI workflow → bundled with the menubar app's release pipeline (issue #107 Part A).
+- Multi-arch buildx CI workflow → folded into the release pipeline.
 - Production Compose stack with TLS / external DB / horizontal scaling — this stack is **dev only**.

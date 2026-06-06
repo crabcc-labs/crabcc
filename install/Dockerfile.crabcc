@@ -1,7 +1,7 @@
-# Multi-stage build for the crabcc binary itself — issue #105 / #107.
+# Multi-stage build for the crabcc binary itself — issue #105.
 #
-# Forward-looking: used by future hosted runs, the menubar app's bundled-
-# binary path, and the dev compose overlay (install/dev/docker-compose.yml).
+# Forward-looking: used by future hosted runs and the dev compose
+# overlay (install/dev/docker-compose.yml).
 #
 # Build:
 #   DOCKER_BUILDKIT=1 docker build \

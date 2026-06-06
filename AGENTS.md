@@ -31,8 +31,10 @@ Query/index ops are under `crabcc lookup …`; agent ops under `crabcc agent …
 | Find a definition | `crabcc lookup sym <Name>` |
 | Find references / callers | `crabcc lookup refs <Name>` / `crabcc lookup callers <Name>` |
 | Outline a file | `crabcc lookup outline path/to/file.rs` |
+| Which tests cover my edit? | `crabcc affected` (working tree) / `--since <ref>` / `--run` to execute |
 | Store / search memory | `crabcc memory remember <src> <body>` / `crabcc memory search "<query>"` |
 | List memory drawers | `crabcc memory list --limit 20` |
+| Browse memory (all repos) | `crabcc memory ui` (cross-repo web browser; needs the `viz` feature) |
 | Run a crabcc agent | `crabcc agent run "<task>" --backend ollama` |
 | Agent run status | `crabcc agent ls --limit 5` |
 | Wire agent integrations | `crabcc setup install-integrations --target all --project --yes` |

@@ -1,5 +1,4 @@
-// Smoke tests for the tool-family icon set. Mirrors the Rust-side
-// unit tests in `crabcc-desktop/src/icons.rs`: every icon produces
+// Smoke tests for the tool-family icon set: every icon produces
 // output, declares a 16×16 viewBox, and uses `currentColor` (not
 // hardcoded theme hexes) so consumers can theme-tint without a
 // per-palette fork.

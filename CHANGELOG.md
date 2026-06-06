@@ -8,6 +8,23 @@ All notable changes to crabcc are documented here. Format follows
 
 ### Added
 
+- **`crabcc affected` — graph-derived change impact + targeted test
+  selection.** Closes the agent loop's *verify* step. Resolves the changed
+  symbols (working tree by default, a `--since REV` git range, or explicit
+  `--symbol NAME`), walks the call graph **upward** from each
+  (`query::blast_radius`, reverse `call`/`ref` edges) to the tests that
+  transitively exercise them, and emits a ready-to-run, filtered command for
+  the detected runner (`cargo`/`go`/`pytest`/`npm`): e.g. `cargo test --
+  open_wal store_roundtrip` instead of the whole suite. `--run` executes it
+  through the `run` capture/squeeze path; the MCP `affected` tool returns the
+  command for the agent to run. Test detection is heuristic (the index does
+  not record `#[test]` attributes): file path (`tests/`, `*_test`, `*.spec`),
+  name (`test_*`, Go `Test*`), or parent module (`mod tests` — catches Rust
+  unit tests whose file is not under `tests/`). New core: `crabcc_core::affected`,
+  `gitdiff::changed_files_worktree`, `Store::symbols_in_file_with_ids`.
+  *Known limit:* a test that touches a symbol only inside a macro argument
+  (`assert_eq!(f(), x)`) is not linked — crabcc's extractor records the
+  outermost call (the macro), so bind the call (`let r = f();`) to be selected.
 - **`crabcc research` — deep-research handoff bridge.** Closes the loop
   `crabcc init` opens. `crabcc research brief` turns the machine-readable
   `.crabcc/onboard/research-plan.json` into a ready-to-run brief for the

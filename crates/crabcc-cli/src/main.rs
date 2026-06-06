@@ -285,6 +285,11 @@ enum SetupOp {
         /// Print planned operations without touching disk.
         #[arg(long)]
         dry_run: bool,
+        /// Install into `<DIR>/.claude` (and OS-local state under
+        /// `<DIR>/.crabcc`) instead of the ambient home. Provisions a
+        /// separate coding-agent profile; outranks `$CLAUDE_CONFIG_DIR`.
+        #[arg(long, value_name = "DIR")]
+        target_home: Option<PathBuf>,
     },
     /// Check GitHub for a newer release; optionally clean local sidecars.
     Upgrade {
@@ -676,6 +681,29 @@ enum Cmd {
         #[arg(long)]
         write: bool,
     },
+    /// Graph-derived change impact + targeted test selection. Resolves the
+    /// changed symbols (working tree by default, a `--since REV` range, or
+    /// explicit `--symbol`), walks the call graph upward to the tests that
+    /// transitively exercise them, and emits a ready-to-run test command.
+    Affected {
+        /// Resolve the change from a git range `<REV>...HEAD` instead of the
+        /// working tree (e.g. `--since origin/main`, `--since HEAD~3`).
+        #[arg(long)]
+        since: Option<String>,
+        /// Explicit changed symbol name(s); skips git entirely. Repeatable.
+        #[arg(long = "symbol")]
+        symbol: Vec<String>,
+        /// Max upward-walk depth from each changed symbol.
+        #[arg(long, default_value_t = crabcc_core::affected::DEFAULT_DEPTH)]
+        depth: usize,
+        /// Run the selected tests (via the `run` capture/squeeze path)
+        /// instead of only printing them.
+        #[arg(long)]
+        run: bool,
+        /// Override the command `--run` executes (implies `--run`).
+        #[arg(long)]
+        cmd: Option<String>,
+    },
     /// Audit Claude session logs for token waste.
     Audit {
         #[command(subcommand)]
@@ -716,9 +744,9 @@ enum BackupOp {
         timestamp: u64,
     },
     /// Long-running loop. Snapshots every `interval` seconds against
-    /// each repo listed in `~/.crabcc/agent/repos.list`. Wired to the
-    /// `com.crabcc.backup-loop` LaunchAgent (default 15 min). Stay
-    /// foreground; managed lifecycle lives in launchd.
+    /// each repo listed in `~/.crabcc/agent/repos.list`. Runs every 15 min
+    /// by default. Stay foreground; schedule it externally (cron / launchd /
+    /// systemd) for a managed lifecycle.
     Loop {
         #[arg(long, default_value_t = 900u64)]
         interval: u64,
@@ -1178,6 +1206,7 @@ fn main() -> Result<()> {
                 with_ollama_stack,
                 print_stack_instructions,
                 dry_run,
+                target_home,
             } => {
                 return install::run(install::InstallOptions {
                     yes: *yes,
@@ -1185,6 +1214,7 @@ fn main() -> Result<()> {
                     with_ollama_stack: *with_ollama_stack,
                     print_stack_instructions: *print_stack_instructions,
                     dry_run: *dry_run,
+                    target_home: target_home.clone(),
                 });
             }
             SetupOp::Upgrade {
@@ -1852,6 +1882,52 @@ fn main() -> Result<()> {
         } => {
             edit::run(&root, &store, &target, update, replace, lazy, write)?;
         }
+        Cmd::Affected {
+            since,
+            symbol,
+            depth,
+            run,
+            cmd,
+        } => {
+            use crabcc_core::affected::{affected, ChangeInput};
+            let input = if !symbol.is_empty() {
+                ChangeInput::Symbols(symbol)
+            } else if let Some(rev) = since {
+                ChangeInput::Since(rev)
+            } else {
+                ChangeInput::WorkingTree
+            };
+            let result = affected(&store, &root, input, depth)?;
+            let body = sonic_rs::to_string(&result)?;
+            crabcc_core::track::record(
+                "affected",
+                "change",
+                result.tests.len(),
+                &repo_label(&root),
+                body.len(),
+            );
+            println!("{body}");
+            // --run (or --cmd) executes the selected tests through the
+            // capture/squeeze run path. --cmd overrides the detected command.
+            if run || cmd.is_some() {
+                match cmd.or(result.command) {
+                    Some(command) => {
+                        // The command is shell-quoted (go's `-run '^(a|b)$'`,
+                        // pytest's `-k "a or b"`, jest's `-t "a|b"`). run_cmd
+                        // execs argv directly with no shell, so route through
+                        // `sh -c` to honor the quoting; word-splitting it here
+                        // would pass literal quotes and run zero tests.
+                        let argv = ["sh".to_string(), "-c".to_string(), command];
+                        run_cmd::run(&argv, 0, 0, 0, 8 * 1024 * 1024, false, None, None, false)?;
+                    }
+                    None => {
+                        eprintln!(
+                            "affected: nothing to run (no runner detected or no tests selected)"
+                        );
+                    }
+                }
+            }
+        }
         Cmd::Rag { op } => match op {
             RagOp::Build { rebuild } => rag::run_build(&root, &store, rebuild)?,
             RagOp::Query { query, limit } => rag::run_query(&root, &query, limit)?,
@@ -2355,6 +2431,7 @@ fn run_serve(root: &Path, port: u16, bind: &str, no_open: bool, init: bool) -> R
         root: root.to_path_buf(),
         no_open,
         init,
+        open_path: None,
     })
 }
 
@@ -2426,6 +2503,7 @@ fn needs_auto_index(c: &Option<Cmd>) -> bool {
             cmd,
             Cmd::Lookup { .. }
                 | Cmd::Graph { .. }
+                | Cmd::Affected { .. }
                 | Cmd::Rag {
                     op: RagOp::Build { .. }
                 }
@@ -2500,6 +2578,7 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::Serve { .. } => "serve",
         Cmd::Read { .. } => "read",
         Cmd::Edit { .. } => "edit",
+        Cmd::Affected { .. } => "affected",
     }
 }
 
