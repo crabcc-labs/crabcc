@@ -429,61 +429,82 @@ impl SqliteBackend {
     /// compute cosine in Rust, return top-K. Used when `memory-vec` is
     /// disabled or when the query embedding isn't 384-dim.
     fn query_brute(&self, q: &Query) -> Result<QueryResult> {
-        let conn = self.conn.lock().map_err(|_| anyhow!("poisoned mutex"))?;
-        let mut sql = String::from(
-            "SELECT d.id, d.body, d.body_enc, d.source_id, w.name AS wing, r.name AS room, e.bytes
-             FROM drawers d
-             JOIN wings w ON w.id = d.wing_id
-             LEFT JOIN rooms r ON r.id = d.room_id
-             JOIN drawer_embeddings e ON e.drawer_id = d.id
-             WHERE 1=1",
-        );
-        let mut args: Vec<rusqlite::types::Value> = Vec::new();
-        if let Some(w) = &q.wing {
-            sql.push_str(" AND w.name = ?");
-            args.push(w.clone().into());
-        }
-        if let Some(r) = &q.room {
-            sql.push_str(" AND r.name = ?");
-            args.push(r.clone().into());
-        }
-        let mut stmt = conn.prepare(&sql)?;
-        let params_refs: Vec<&dyn rusqlite::ToSql> =
-            args.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
-        let rows = stmt.query_map(params_refs.as_slice(), |row| {
-            let id: i64 = row.get(0)?;
-            let body = self.body_from_row(row, 1, 2)?;
-            let source: String = row.get(3)?;
-            let wing: String = row.get(4)?;
-            let room: Option<String> = row.get(5)?;
-            let bytes: Vec<u8> = row.get(6)?;
-            Ok((id, body, source, wing, room, bytes))
-        })?;
+        // Score every matching drawer (filtered by wing/room) by cosine over
+        // its embedding, top-K by score. Bodies are NOT decoded during the
+        // scan: FSST-decompressing every drawer body only to discard all but
+        // `limit` of them was the dominant cost on this path. We score on the
+        // embedding blob alone, then fetch + decode bodies for just the
+        // survivors via get().
+        let scored: Vec<(f32, i64, String, String, Option<String>)> = {
+            let conn = self.conn.lock().map_err(|_| anyhow!("poisoned mutex"))?;
+            let mut sql = String::from(
+                "SELECT d.id, d.source_id, w.name AS wing, r.name AS room, e.bytes
+                 FROM drawers d
+                 JOIN wings w ON w.id = d.wing_id
+                 LEFT JOIN rooms r ON r.id = d.room_id
+                 JOIN drawer_embeddings e ON e.drawer_id = d.id
+                 WHERE 1=1",
+            );
+            let mut args: Vec<rusqlite::types::Value> = Vec::new();
+            if let Some(w) = &q.wing {
+                sql.push_str(" AND w.name = ?");
+                args.push(w.clone().into());
+            }
+            if let Some(r) = &q.room {
+                sql.push_str(" AND r.name = ?");
+                args.push(r.clone().into());
+            }
+            let mut stmt = conn.prepare(&sql)?;
+            let params_refs: Vec<&dyn rusqlite::ToSql> =
+                args.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+            let rows = stmt.query_map(params_refs.as_slice(), |row| {
+                let id: i64 = row.get(0)?;
+                let source: String = row.get(1)?;
+                let wing: String = row.get(2)?;
+                let room: Option<String> = row.get(3)?;
+                let bytes: Vec<u8> = row.get(4)?;
+                Ok((id, source, wing, room, bytes))
+            })?;
 
-        // `scored` capacity hint: `q.limit.max(64)` skips early Vec doublings
-        // in the common case without over-allocating on small queries.
-        let mut scored: Vec<(f32, DrawerHit)> = Vec::with_capacity(q.limit.max(64));
-        for row in rows {
-            let (id, body, source, wing, room, bytes) = row?;
-            let emb = blob_to_vec(&bytes);
-            let score = cosine(&q.embedding, &emb);
-            scored.push((
+            // `scored` capacity hint: `q.limit.max(64)` skips early Vec doublings
+            // in the common case without over-allocating on small queries.
+            let mut scored: Vec<(f32, i64, String, String, Option<String>)> =
+                Vec::with_capacity(q.limit.max(64));
+            for row in rows {
+                let (id, source, wing, room, bytes) = row?;
+                let emb = blob_to_vec(&bytes);
+                let score = cosine(&q.embedding, &emb);
+                scored.push((score, id, source, wing, room));
+            }
+            scored.sort_unstable_by(|a, b| {
+                b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            scored.truncate(q.limit);
+            scored
+        }; // scan-side conn lock released here so get() can re-lock.
+
+        // Decode bodies for the survivors only. get() re-locks the same mutex,
+        // so it MUST run after the scan lock above is dropped.
+        let ids: Vec<DrawerId> = scored.iter().map(|s| s.1).collect();
+        let bodies: std::collections::HashMap<DrawerId, String> = self
+            .get(&ids)?
+            .drawers
+            .into_iter()
+            .map(|d| (d.id, d.body))
+            .collect();
+
+        let hits = scored
+            .into_iter()
+            .map(|(score, id, source, wing, room)| DrawerHit {
+                id,
                 score,
-                DrawerHit {
-                    id,
-                    score,
-                    source_id: source,
-                    body,
-                    wing,
-                    room,
-                },
-            ));
-        }
-        scored.sort_unstable_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        scored.truncate(q.limit);
-        Ok(QueryResult {
-            hits: scored.into_iter().map(|(_, h)| h).collect(),
-        })
+                source_id: source,
+                body: bodies.get(&id).cloned().unwrap_or_default(),
+                wing,
+                room,
+            })
+            .collect();
+        Ok(QueryResult { hits })
     }
 
     /// sqlite-vec ANN path for unfiltered 384-dim queries. Only reached when

@@ -149,6 +149,27 @@ tasks:
         --threshold {{.THRESHOLD}}
         --output target/bench/memory.ndjson
 
+  bench-agent-mcp:
+    desc: |
+      Agent->MCP hot-path bench: synthesized claude_code / nullclaw /
+      zeroclaw tool-call workloads. Runs the in-process criterion bench
+      (low-noise regression gate) + the e2e stdio replay (real per-call
+      latency) against an indexed fixture (ROOT, default: this repo).
+    vars:
+      ROOT: '{{.ROOT | default .ROOT_DIR}}'
+    cmds:
+      # 1. In-process criterion: serve_io dispatch under each agent profile.
+      - '{{.CARGO}} bench -p crabcc-mcp --features bench --bench agent_workload'
+      # 2. Build the CLI the e2e harness spawns, ensure the fixture is indexed.
+      - '{{.CARGO}} build --release -p crabcc-cli'
+      - 'test -f "{{.ROOT}}/.crabcc/index.db" || {{.ROOT_DIR}}/target/release/crabcc index --root "{{.ROOT}}"'
+      # 3. E2e stdio replay — real process + pipe latency, per agent profile.
+      - >-
+        for p in nullclaw zeroclaw claude_code; do
+          {{.CARGO}} run -q --release -p crabcc-mcp --features bench --example agent_replay --
+            --root "{{.ROOT}}" --bin {{.ROOT_DIR}}/target/release/crabcc --profile "$p";
+        done
+
   # ---------------------------------------------------------------------------
   # Nixery binary optimization matrix (node-optimized + python315t-optimized)
   # ---------------------------------------------------------------------------
