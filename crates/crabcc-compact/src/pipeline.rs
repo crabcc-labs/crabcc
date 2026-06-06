@@ -83,7 +83,7 @@ mod tests {
     fn empty_input_returns_empty_output() {
         let input = make_input("");
         let output = run_compact(input, &default_config()).unwrap();
-        assert!(output.compacted_code.is_empty() || output.compacted_code == "");
+        assert!(output.compacted_code.is_empty());
     }
 
     #[test]

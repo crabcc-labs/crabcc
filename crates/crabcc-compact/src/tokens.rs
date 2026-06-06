@@ -51,12 +51,12 @@ mod tests {
     #[test]
     fn simple_function_reasonable_range() {
         let t = count_tokens("fn main() { }");
-        assert!(t >= 3 && t <= 10, "expected 3..=10, got {t}");
+        assert!((3..=10).contains(&t), "expected 3..=10, got {t}");
     }
 
     #[test]
     fn before_after_savings() {
         let saved = tokens_saved("fn main() {  }  ", "fn main() {}");
-        assert!(saved == 0 || saved > 0); // saturating_sub guarantees >= 0
+        assert!(saved > 0); // collapsing whitespace saves at least one token
     }
 }
