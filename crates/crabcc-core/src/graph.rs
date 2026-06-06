@@ -251,7 +251,7 @@ fn tarjan_scc(adj: &BTreeMap<i64, BTreeSet<i64>>) -> Vec<Vec<i64>> {
                             work.push(Frame::Resume {
                                 node,
                                 iter_pos,
-                                children: children.clone(),
+                                children,
                             });
                             work.push(Frame::Enter(child));
                             descended = true;
