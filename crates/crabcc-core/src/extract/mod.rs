@@ -3,7 +3,7 @@ use crate::store::Store;
 use crate::types::{Edge, Symbol, SymbolKind};
 use ahash::HashMap;
 use anyhow::{anyhow, Result};
-use bumpalo::Bump;
+use bumpalo::{collections::Vec as BumpVec, Bump};
 use std::cell::RefCell;
 use std::path::Path;
 use tree_sitter::{Node, Parser};
@@ -156,8 +156,8 @@ pub fn extract_file_with_edges_with_resolver(
             &mut node_to_src_id,
         );
 
-        // Collect imports for ScopeCtx
-        let imports = collect_imports(root, bytes, lang);
+        // Collect imports for ScopeCtx; Vec backing lives in the per-file arena.
+        let imports = collect_imports(root, bytes, lang, &_scratch);
 
         // Pass 2: walk use/call sites, resolve via resolver, write edges
         let mut edges = Vec::new();
@@ -242,8 +242,8 @@ pub fn extract_from_root_with_resolver(
         &mut node_to_src_id,
     );
 
-    // Collect imports
-    let imports = collect_imports(root, src, lang);
+    // Collect imports; Vec backing lives in the per-file arena.
+    let imports = collect_imports(root, src, lang, &_scratch);
 
     // Pass2: resolve use/call sites
     let mut edges = Vec::new();
@@ -381,8 +381,13 @@ fn walk(
 
 /// Collect imports from the file for ScopeCtx. Returns empty vec for languages
 /// without straightforward import syntax.
-fn collect_imports(root: Node, src: &[u8], lang: &str) -> Vec<ImportSpec> {
-    let mut imports = Vec::new();
+fn collect_imports<'b>(
+    root: Node,
+    src: &[u8],
+    lang: &str,
+    arena: &'b Bump,
+) -> BumpVec<'b, ImportSpec> {
+    let mut imports = BumpVec::new_in(arena);
     let mut cursor = root.walk();
     for child in root.children(&mut cursor) {
         collect_imports_from_node(child, src, lang, &mut imports);
@@ -390,7 +395,12 @@ fn collect_imports(root: Node, src: &[u8], lang: &str) -> Vec<ImportSpec> {
     imports
 }
 
-fn collect_imports_from_node(node: Node, src: &[u8], lang: &str, out: &mut Vec<ImportSpec>) {
+fn collect_imports_from_node<'b>(
+    node: Node,
+    src: &[u8],
+    lang: &str,
+    out: &mut BumpVec<'b, ImportSpec>,
+) {
     match (lang, node.kind()) {
         ("typescript" | "tsx" | "javascript", "import_statement") => {
             // Simplified: collect module name from import statement
