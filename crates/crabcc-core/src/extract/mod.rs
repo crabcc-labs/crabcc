@@ -381,7 +381,12 @@ fn walk(
 
 /// Collect imports from the file for ScopeCtx. Returns empty vec for languages
 /// without straightforward import syntax.
-fn collect_imports<'b>(root: Node, src: &[u8], lang: &str, arena: &'b Bump) -> BumpVec<'b, ImportSpec> {
+fn collect_imports<'b>(
+    root: Node,
+    src: &[u8],
+    lang: &str,
+    arena: &'b Bump,
+) -> BumpVec<'b, ImportSpec> {
     let mut imports = BumpVec::new_in(arena);
     let mut cursor = root.walk();
     for child in root.children(&mut cursor) {
@@ -390,7 +395,12 @@ fn collect_imports<'b>(root: Node, src: &[u8], lang: &str, arena: &'b Bump) -> B
     imports
 }
 
-fn collect_imports_from_node<'b>(node: Node, src: &[u8], lang: &str, out: &mut BumpVec<'b, ImportSpec>) {
+fn collect_imports_from_node<'b>(
+    node: Node,
+    src: &[u8],
+    lang: &str,
+    out: &mut BumpVec<'b, ImportSpec>,
+) {
     match (lang, node.kind()) {
         ("typescript" | "tsx" | "javascript", "import_statement") => {
             // Simplified: collect module name from import statement
