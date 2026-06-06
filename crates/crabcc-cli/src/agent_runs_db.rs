@@ -2,7 +2,7 @@
 //! `~/.crabcc/_internal.db`. Tracks every run's PID, repo, timestamps,
 //! exit code, and the on-disk paths to its log + meta — so the dashboard
 //! + `crabcc agent ls` can answer "what's running right now" without
-//! pgrep heuristics or filesystem walks.
+//!   pgrep heuristics or filesystem walks.
 //!
 //! Schema (additive — never DROP COLUMN, mirror `Store::open` rules):
 //!

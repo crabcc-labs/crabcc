@@ -797,6 +797,70 @@ pub fn run_measure() -> Result<()> {
     Ok(())
 }
 
+/// Answer "is crabcc token-optimization ON?" at a glance: prints the
+/// rewrite/RTK/Morph/media state (from .crabcc-cli.conf + env + PATH) plus
+/// tokens saved in the last 24h. `--oneline` prints a single status line
+/// (used by the SessionStart banner).
+pub fn run_status(root: &Path, oneline: bool) -> Result<()> {
+    let cfg = crate::cli_config::load(root);
+    let rewrite = std::env::var_os("CRABCC_NO_REWRITE").is_none() && cfg.rewrite_enabled;
+    let rtk = cfg.rtk && std::env::var_os("CRABCC_NO_RTK").is_none() && on_path("rtk");
+    let morph = cfg.morph && morph_enabled();
+    let media = std::env::var_os("CRABCC_NO_MEDIA").is_none();
+    let dasel = on_path("dasel");
+    let saved_24h = track::report()
+        .map(|r| r.last_24h.saved_tokens)
+        .unwrap_or(0);
+    let onoff = |b: bool| if b { "ON" } else { "off" };
+
+    if oneline {
+        println!(
+            "crabcc token-opt: {} — rewrite:{} rtk:{} morph:{} media:{} dasel:{} | {} tok saved/24h",
+            if rewrite { "ON" } else { "OFF" },
+            onoff(rewrite),
+            onoff(rtk),
+            onoff(morph),
+            onoff(media),
+            onoff(dasel),
+            saved_24h
+        );
+        return Ok(());
+    }
+
+    println!("crabcc token-opt: {}", if rewrite { "ON ✓" } else { "OFF" });
+    println!("  rewrite engine   {}", onoff(rewrite));
+    println!(
+        "  rtk stage        {}{}",
+        onoff(rtk),
+        if on_path("rtk") {
+            ""
+        } else {
+            "   (rtk not on PATH)"
+        }
+    );
+    println!(
+        "  morph compact    {}{}",
+        onoff(morph),
+        if crate::morph::api_key().is_some() {
+            ""
+        } else {
+            "   (no MORPH_API_KEY — privacy gate)"
+        }
+    );
+    println!("  media downscale  {}", onoff(media));
+    println!(
+        "  dasel transcode  {}{}",
+        onoff(dasel),
+        if dasel { "" } else { "   (dasel not on PATH)" }
+    );
+    println!("  saved (24h)      {saved_24h} tok");
+    println!(
+        "  config           {}",
+        root.join(".crabcc-cli.conf").display()
+    );
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

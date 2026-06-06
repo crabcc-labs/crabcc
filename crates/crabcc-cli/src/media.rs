@@ -72,6 +72,10 @@ pub fn downscale(src: &Path, max_edge: u32) -> PathBuf {
 }
 
 fn try_downscale(src: &Path, max_edge: u32) -> Result<Option<PathBuf>> {
+    // Canonicalise so the cache key is a stable absolute path regardless of
+    // the cwd the Read hook ran from (matches `cache_path`'s "abs-path" doc).
+    let canonical = std::fs::canonicalize(src).unwrap_or_else(|_| src.to_path_buf());
+    let src = canonical.as_path();
     let meta = std::fs::metadata(src)?;
     let mtime_ns = meta.modified()?.duration_since(UNIX_EPOCH)?.as_nanos();
     let ext = src
