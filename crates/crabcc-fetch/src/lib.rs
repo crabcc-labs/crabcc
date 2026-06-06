@@ -16,15 +16,24 @@
 //!    behind a tokio current-thread runtime.
 //!
 //! SSRF guards live in [`is_ingest_safe_url`] and run *before* the
-//! request hits the wire — the viz layer enforces them; the CLI does
-//! not (the CLI runs as the user, internal IPs may be desired).
+//! request hits the wire — the untrusted viz ingest endpoint enforces
+//! them by default; the CLI/crawler/LSP do not (they run as the user,
+//! internal IPs may be desired). Either default is overridable at runtime
+//! via `$CRABCC_FETCH_SSRF` (see [`ssrf_enforced`]).
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
 use std::time::Duration;
 
-const USER_AGENT: &str = concat!("crabcc-fetch/", env!("CARGO_PKG_VERSION"));
+/// Multi-page crawler (frontier, link-following, politeness) built on
+/// top of the single-shot fetch primitives in this crate. Gated behind
+/// the `crawl` feature so the base fetch library (used by `crabcc-viz`
+/// and the CLI `fetch` path) stays free of the SQLite/url deps it pulls.
+#[cfg(feature = "crawl")]
+pub mod crawl;
+
+pub(crate) const USER_AGENT: &str = concat!("crabcc-fetch/", env!("CARGO_PKG_VERSION"));
 
 /// Default per-URL timeout for the CLI path.
 pub const DEFAULT_PER_URL_TIMEOUT: Duration = Duration::from_secs(20);
@@ -339,6 +348,38 @@ pub fn make_client(per_url_timeout: Duration) -> reqwest::Result<reqwest::Client
         .build()
 }
 
+/// Clean a raw HTML document into `(title, markdown)` using the same
+/// per-domain rules as [`fetch_one`]: article/main extraction for the
+/// hosts in [`host_uses_article_extractor`], whole-page conversion
+/// otherwise. Pure (no I/O) so the crawler can hold onto the raw HTML
+/// for link extraction while still producing exactly the cleaned body
+/// the single-shot path returns.
+///
+/// We use `htmd` (turndown.js-inspired, Apache-2.0) instead of
+/// `html2md` because `html2md 0.2.x` ships
+/// `crate-type = ["rlib", "dylib", "staticlib"]`, and the `dylib` link
+/// forces a `panic_unwind` runtime that conflicts with the workspace's
+/// `panic = "abort"` release profile. `htmd::convert` returns
+/// `io::Result<String>`; on parse failure we fall back to an empty
+/// body. `.skip_tags(...)` drops style/script/noscript content
+/// (html2md silently dropped style; htmd defaults to serializing it as
+/// text) so the output stays close to the prior shape for downstream
+/// consumers.
+pub fn clean_html(host: &str, html: &str) -> (Option<String>, String) {
+    let title = extract_title(html);
+    let body_html = if host_uses_article_extractor(host) {
+        extract_main_content(html).unwrap_or(html)
+    } else {
+        html
+    };
+    let markdown = htmd::HtmlToMarkdown::builder()
+        .skip_tags(vec!["script", "style", "noscript"])
+        .build()
+        .convert(body_html)
+        .unwrap_or_default();
+    (title, markdown)
+}
+
 /// Fetch one URL and clean it. Same per-domain branching as the CLI:
 ///   - Reddit hosts → `.json` API
 ///   - Medium/BBC/telex → `<article>`/`<main>` extraction
@@ -356,7 +397,6 @@ pub async fn fetch_one(
         return fetch_reddit_json(client, url, max_body_bytes).await;
     }
     let host = url_host(url).unwrap_or_default();
-    let prefer_main = host_uses_article_extractor(host);
     match client.get(url).send().await {
         Err(e) => {
             tracing::warn!(target: "crabcc_fetch", url = %url, host = %host, error = %e, "fetch failed");
@@ -381,29 +421,7 @@ pub async fn fetch_one(
                     error: Some(e),
                 },
                 Ok(html) => {
-                    let title = extract_title(&html);
-                    let body_html = if prefer_main {
-                        extract_main_content(&html).unwrap_or(&html)
-                    } else {
-                        &html
-                    };
-                    // We use `htmd` (turndown.js-inspired, Apache-2.0)
-                    // instead of `html2md` because `html2md 0.2.x` ships
-                    // `crate-type = ["rlib", "dylib", "staticlib"]`, and
-                    // the `dylib` link forces a `panic_unwind` runtime
-                    // that conflicts with the workspace's
-                    // `panic = "abort"` release profile. `htmd::convert`
-                    // returns `io::Result<String>`; on parse failure we
-                    // fall back to an empty body. `.skip_tags(...)` drops
-                    // style/script/noscript content (html2md silently
-                    // dropped style; htmd defaults to serializing it as
-                    // text) so the output stays close to the prior
-                    // shape for the downstream consumers.
-                    let markdown = htmd::HtmlToMarkdown::builder()
-                        .skip_tags(vec!["script", "style", "noscript"])
-                        .build()
-                        .convert(body_html)
-                        .unwrap_or_default();
+                    let (title, markdown) = clean_html(host, &html);
                     FetchResult {
                         url: url.into(),
                         status,
@@ -476,7 +494,7 @@ async fn fetch_reddit_json(
 /// hit we drop the connection and return an error rather than
 /// silently truncating — silent truncation produced corrupted HTML
 /// that the HTML→Markdown converter couldn't parse cleanly.
-async fn read_body_capped(
+pub(crate) async fn read_body_capped(
     resp: reqwest::Response,
     max_body_bytes: Option<usize>,
 ) -> std::result::Result<String, String> {
@@ -587,13 +605,17 @@ pub async fn fetch_and_clean(urls: &[String], opts: FetchOpts) -> Vec<FetchResul
             )),
         }
     }
-    indexed.sort_by_key(|(i, _)| *i);
+    indexed.sort_unstable_by_key(|(i, _)| *i);
     indexed.into_iter().map(|(_, r)| r).collect()
 }
 
-/// Tunables shared by both call sites. The viz layer flips
-/// `enforce_ssrf` on; the CLI leaves it off so users can fetch their
-/// own LAN servers.
+/// Tunables shared by all call sites.
+///
+/// `enforce_ssrf` follows the trust of the *input*: the viz HTTP ingest
+/// endpoint takes URLs from anyone who can POST, so it defaults **on**;
+/// the CLI/crawler/LSP run as the user (who may legitimately want their
+/// own LAN/localhost), so they default **off**. Either default can be
+/// overridden at runtime via `$CRABCC_FETCH_SSRF` — see [`ssrf_enforced`].
 #[derive(Debug, Clone, Copy)]
 pub struct FetchOpts {
     pub per_url_timeout: Duration,
@@ -603,25 +625,50 @@ pub struct FetchOpts {
 }
 
 impl FetchOpts {
-    /// CLI defaults: 20s per URL, no body cap, no SSRF (user-driven).
+    /// CLI defaults: 20s per URL, no body cap, SSRF off (user-driven).
+    /// Relaxed by default; force on with `CRABCC_FETCH_SSRF=on`.
     pub fn cli() -> Self {
         Self {
             per_url_timeout: DEFAULT_PER_URL_TIMEOUT,
             concurrency: 8,
             max_body_bytes: None,
-            enforce_ssrf: false,
+            enforce_ssrf: ssrf_enforced(false),
         }
     }
 
-    /// Dashboard ingest defaults: shorter timeout, body cap, SSRF on,
-    /// concurrency capped at 4.
+    /// Untrusted-ingest defaults (the viz `/api/memory/ingest` endpoint):
+    /// shorter timeout, body cap, concurrency capped, **SSRF on by
+    /// default** since the URL is attacker-controllable. Relax for your
+    /// own service with `CRABCC_FETCH_SSRF=off`.
     pub fn ingest() -> Self {
         Self {
             per_url_timeout: INGEST_PER_URL_TIMEOUT,
             concurrency: INGEST_CONCURRENCY,
             max_body_bytes: Some(INGEST_MAX_BODY_BYTES),
-            enforce_ssrf: true,
+            enforce_ssrf: ssrf_enforced(true),
         }
+    }
+}
+
+/// Resolve SSRF enforcement from `$CRABCC_FETCH_SSRF`, falling back to
+/// `default` when it's unset or unrecognized.
+///
+/// `off`/`0`/`false`/`no` force it **off** (relaxed — requests may reach
+/// localhost, private ranges, and cloud-metadata IPs); `on`/`1`/`true`/
+/// `yes` force it **on**. The knob lets an operator relax (or lock down)
+/// their own deployment without a rebuild, while the per-call defaults
+/// keep the untrusted viz ingest path guarded out of the box.
+pub fn ssrf_enforced(default: bool) -> bool {
+    resolve_ssrf(std::env::var("CRABCC_FETCH_SSRF").ok().as_deref(), default)
+}
+
+/// Pure core of [`ssrf_enforced`] — separated so it's unit-testable
+/// without mutating the process environment.
+fn resolve_ssrf(value: Option<&str>, default: bool) -> bool {
+    match value.map(|v| v.trim().to_ascii_lowercase()).as_deref() {
+        Some("off" | "0" | "false" | "no") => false,
+        Some("on" | "1" | "true" | "yes") => true,
+        _ => default,
     }
 }
 
@@ -741,6 +788,22 @@ mod tests {
         assert!(o.enforce_ssrf);
         assert!(o.max_body_bytes.is_some());
         assert!(o.concurrency <= INGEST_CONCURRENCY);
+    }
+
+    #[test]
+    fn ssrf_env_override_resolves() {
+        // Explicit values win over the default, case/whitespace-insensitive.
+        for off in ["off", "0", "false", "NO", "  off  "] {
+            assert!(!resolve_ssrf(Some(off), true), "{off} should disable");
+        }
+        for on in ["on", "1", "true", "Yes"] {
+            assert!(resolve_ssrf(Some(on), false), "{on} should enable");
+        }
+        // Unset or unrecognized falls back to the per-call default.
+        assert!(resolve_ssrf(None, true));
+        assert!(!resolve_ssrf(None, false));
+        assert!(resolve_ssrf(Some("maybe"), true));
+        assert!(!resolve_ssrf(Some("maybe"), false));
     }
 
     #[tokio::test]

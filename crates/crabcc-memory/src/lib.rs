@@ -97,5 +97,5 @@ pub use palace::{
 };
 pub use types::{
     DeleteSel, Drawer, DrawerHit, DrawerId, DrawerInsert, GetResult, HealthStatus, Query,
-    QueryResult, Session, Wing,
+    QueryResult, Reminder, Session, Wing,
 };

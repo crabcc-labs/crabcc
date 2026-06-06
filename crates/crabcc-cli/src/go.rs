@@ -83,20 +83,13 @@ pub fn init(root: &Path, db: &Path) -> Result<GoReport> {
         report.files_indexed = store.list_files().map(|v| v.len()).unwrap_or_default();
     }
 
-    // Step 3 — Tantivy sidecar. Best-effort: a missing fuzzy index is
-    // not a fatal failure for `go`, the user can still grep symbols.
-    let fts_dir = root.join(".crabcc").join("tantivy");
-    if let Ok(fts) = crabcc_core::fts::Fts::open(&fts_dir) {
-        let _ = fts.rebuild(&store);
-    }
-
-    // Step 4 — call-graph sidecar.
+    // Step 3 — call-graph sidecar.
     let graph_path = root.join(".crabcc").join("graph.json");
     let graph = crabcc_core::graph::CallGraph::build(&store, root)?;
     graph.save(&graph_path)?;
     report.graph_edges = graph.edge_count;
 
-    // Step 5 — memory palace. Delegated to the crabcc-memory crate so
+    // Step 4 — memory palace. Delegated to the crabcc-memory crate so
     // the same db semantics apply as `crabcc memory init`.
     let palace = crabcc_memory::Palace::open(root)?;
     report.drawer_count = palace.count().unwrap_or_default();

@@ -135,8 +135,14 @@ fn symbol_upgrade_emits_runnable_command() {
 #[test]
 fn find_swaps_to_ripgrep() {
     let (project, home) = indexed_project();
-    let wrapped = rewrite(project.path(), home.path(), "find . -name '*.rs'")
-        .expect("find -name should rewrite");
+    // Without -type f, find may return matching directories; passthrough.
+    assert!(
+        rewrite(project.path(), home.path(), "find . -name '*.rs'").is_none(),
+        "find without -type f must pass through"
+    );
+    // With -type f the rewrite is safe.
+    let wrapped = rewrite(project.path(), home.path(), "find . -name '*.rs' -type f")
+        .expect("find -name -type f should rewrite");
     assert!(
         wrapped.contains("rg --files -g '*.rs'"),
         "expected ripgrep --files swap, got: {wrapped}"

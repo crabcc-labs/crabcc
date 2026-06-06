@@ -8,9 +8,17 @@ echo "[on-create] installing taskfile + cargo extensions"
 sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin
 
 # Cargo helpers used by `task ci` / `task lint` / `task release`.
-cargo install --locked cargo-nextest cargo-deny cargo-audit cargo-edit just || true
+# Install one-by-one so a single failure is visible rather than swallowed.
+for _tool in cargo-nextest cargo-deny cargo-audit cargo-edit just; do
+    cargo install --locked "$_tool" \
+        || echo "[on-create] WARN: failed to install $_tool, continuing"
+done
 
 # Rust components.
 rustup component add clippy rustfmt rust-src
+
+# Claude Code CLI — requires Node (installed via devcontainer feature above).
+npm install -g @anthropic-ai/claude-code \
+    || echo "[on-create] WARN: claude-code CLI install failed — 'claude' will not be available"
 
 echo "[on-create] done"

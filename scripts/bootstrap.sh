@@ -15,9 +15,7 @@
 #   5. Run scripts/install-aliases.sh --all-shells (idempotent).
 #   6. Symlink skill/ + commands/ into ~/.claude/.
 #   7. Docker + Ollama stack — on by default; pass --no-docker to skip.
-#   8. Optional macOS LaunchAgent — only if --with-launchd is passed (macOS).
-#   9. Optional macOS .app build — only if --with-macos-app is passed (macOS).
-#  10. Run `scripts/doctor.sh --quiet` and a built-in --verify check.
+#   8. Run `scripts/doctor.sh --quiet` and a built-in --verify check.
 #
 # Modes:
 #   (TTY, no flags)     interactive menu
@@ -28,13 +26,10 @@
 #   --verify            run verification only — no install
 #   --show-keys         show API keys + secrets created by previous installs
 #   --cli-only          install crabcc + ccc binaries only
-#   --macos-app-only    build + open Crabcc.dmg only (macOS)
 #   --telegram-only     bootstrap Telegram bot scaffolding only
 #   --ollama-only       Docker + Ollama stack + key mint only
 #   --with-docker       no-op (Docker + Ollama is now default-on)
 #   --no-docker         skip Docker + Ollama stack in full install
-#   --with-launchd      include LaunchAgents in full install (macOS)
-#   --with-macos-app    include DMG build in full install (macOS)
 #   --branch <name>     clone a non-main branch (useful for testing)
 #   --check-only        preflight only — no writes
 #   --no-aliases        skip shell alias install
@@ -220,20 +215,6 @@ step_skills_commands() {
     fi
 }
 
-step_macos_app() {
-    if [[ "${IS_MAC:-0}" -ne 1 ]]; then
-        warn "macOS app step skipped (not Darwin)"
-        return 0
-    fi
-    log "building Crabcc.dmg (rebuilds release binaries)"
-    if bash "$CRABCC_HOME/scripts/build-dmg.sh"; then
-        ok "DMG built — opening dist/"
-        open "$CRABCC_HOME/dist/" 2>/dev/null || vlog "skipped 'open dist/' (no DISPLAY?)"
-    else
-        warn "DMG build failed"
-    fi
-}
-
 step_telegram() {
     log "Telegram / HITL stack setup"
     local env_file="$CRABCC_HOME/install/ollama-stack/.env"
@@ -293,19 +274,6 @@ step_ollama_stack() {
     fi
 }
 
-step_launchd() {
-    if [[ "${IS_MAC:-0}" -ne 1 ]]; then
-        warn "launchd step skipped (not Darwin)"
-        return 0
-    fi
-    log "registering crabcc-agentd LaunchAgent"
-    if bash "$CRABCC_HOME/scripts/install-macos-helpers.sh"; then
-        ok "agentd registered"
-    else
-        warn "agentd registration failed"
-    fi
-}
-
 step_doctor() {
     log "running doctor"
     bash "$CRABCC_HOME/scripts/doctor.sh" --quiet \
@@ -345,11 +313,6 @@ do_verify() {
     _v_check "skills symlinked"            test -d "$home/.claude/skills/crabcc"
     _v_check "crabcc-init linked"          bash -c "test -L \"$home/.claude/commands/crabcc-init.md\" -o -f \"$home/.claude/commands/crabcc-init.md\""
     _v_check "crabcc repo present"         test -d "$crabcc_home/.git"
-
-    if [[ "${IS_MAC:-0}" -eq 1 ]]; then
-        _v_check "Crabcc.app present (any of /Applications, $crabcc_home/installer, $crabcc_home/build/dmg/dmg-stage)" \
-            bash -c "test -d /Applications/Crabcc.app -o -d \"$crabcc_home/installer/Crabcc.app\" -o -d \"$crabcc_home/build/dmg/dmg-stage/Crabcc.app\""
-    fi
 
     # Optional surfaces (informational, don't fail)
     if [[ -f "$home/.crabcc.local.api-key" ]]; then
@@ -449,30 +412,28 @@ do_menu() {
 
     1) Install everything             (recommended for first run)
     2) CLI only                       (cargo install crabcc + ccc)
-    3) macOS .app only                (build + open Crabcc.dmg)
-    4) Ollama stack only              (Docker + LiteLLM + key mint)
-    5) Telegram bot only              (init .env, build hint)
-    6) Show API keys created
-    7) Verify current install
-    8) Quit
+    3) Ollama stack only              (Docker + LiteLLM + key mint)
+    4) Telegram bot only              (init .env, build hint)
+    5) Show API keys created
+    6) Verify current install
+    7) Quit
 
 MENU
     local choice
     while :; do
-        printf "  ↳ choice [1-8]: "
+        printf "  ↳ choice [1-7]: "
         if ! IFS= read -r choice </dev/tty 2>/dev/null; then
             warn "no TTY — aborting menu (use a non --menu flag instead)"
             exit 1
         fi
         case "$choice" in
-            1) WITH_DOCKER=1; WITH_LAUNCHD=1; WITH_MACOS_APP=1; return 0 ;;
+            1) WITH_DOCKER=1;    return 0 ;;
             2) CLI_ONLY=1;       return 0 ;;
-            3) MACOS_APP_ONLY=1; return 0 ;;
-            4) OLLAMA_ONLY=1;    return 0 ;;
-            5) TELEGRAM_ONLY=1;  return 0 ;;
-            6) do_show_keys; exit 0 ;;
-            7) do_verify;    exit $? ;;
-            8) ok "bye"; exit 0 ;;
+            3) OLLAMA_ONLY=1;    return 0 ;;
+            4) TELEGRAM_ONLY=1;  return 0 ;;
+            5) do_show_keys; exit 0 ;;
+            6) do_verify;    exit $? ;;
+            7) ok "bye"; exit 0 ;;
             *) printf "  invalid choice — try again\n" ;;
         esac
     done
@@ -492,8 +453,6 @@ main() {
     # CI / "just give me the binary" cases. `--with-docker` is kept
     # as a no-op for backwards compat with older invocations.
     WITH_DOCKER=1
-    WITH_LAUNCHD=0
-    WITH_MACOS_APP=0
     NO_ALIASES=0
     CHECK_ONLY=0
 
@@ -501,7 +460,6 @@ main() {
     VERIFY_ONLY=0
     SHOW_KEYS=0
     CLI_ONLY=0
-    MACOS_APP_ONLY=0
     TELEGRAM_ONLY=0
     OLLAMA_ONLY=0
     VERBOSE=0
@@ -516,13 +474,10 @@ main() {
             --verify)          VERIFY_ONLY=1 ;;
             --show-keys)       SHOW_KEYS=1 ;;
             --cli-only)        CLI_ONLY=1 ;;
-            --macos-app-only)  MACOS_APP_ONLY=1 ;;
             --telegram-only)   TELEGRAM_ONLY=1 ;;
             --ollama-only)     OLLAMA_ONLY=1 ;;
             --with-docker)     WITH_DOCKER=1 ;;       # legacy / no-op (default-on)
             --no-docker)       WITH_DOCKER=0 ;;
-            --with-launchd)    WITH_LAUNCHD=1 ;;
-            --with-macos-app)  WITH_MACOS_APP=1 ;;
             --branch)          BRANCH="$2"; shift ;;
             --check-only)      CHECK_ONLY=1 ;;
             --no-aliases)      NO_ALIASES=1 ;;
@@ -538,8 +493,8 @@ main() {
     if [[ "$SHOW_KEYS"  -eq 1 ]]; then do_show_keys;  return 0;  fi
 
     # Auto-menu when interactive TTY + no install flags chosen
-    local install_flags_count=$(( WITH_DOCKER + WITH_LAUNCHD + WITH_MACOS_APP \
-                                + CLI_ONLY + MACOS_APP_ONLY + TELEGRAM_ONLY + OLLAMA_ONLY \
+    local install_flags_count=$(( WITH_DOCKER \
+                                + CLI_ONLY + TELEGRAM_ONLY + OLLAMA_ONLY \
                                 + CHECK_ONLY ))
     if [[ "$MENU" -eq 1 ]] \
        || ([[ -t 0 ]] && [[ -t 1 ]] && (( install_flags_count == 0 )) \
@@ -551,10 +506,6 @@ main() {
     if [[ "$CLI_ONLY" -eq 1 ]]; then
         step_preflight; step_clone_or_update; step_cli_install; step_codesign_and_smoke
         ok "CLI install complete"
-        return 0
-    fi
-    if [[ "$MACOS_APP_ONLY" -eq 1 ]]; then
-        step_preflight; step_clone_or_update; step_macos_app
         return 0
     fi
     if [[ "$TELEGRAM_ONLY" -eq 1 ]]; then
@@ -576,8 +527,6 @@ main() {
     [[ "$NO_ALIASES" -eq 0 ]] && step_aliases
     step_skills_commands
     [[ "$WITH_DOCKER"    -eq 1 ]] && step_ollama_stack
-    [[ "$WITH_LAUNCHD"   -eq 1 ]] && step_launchd
-    [[ "$WITH_MACOS_APP" -eq 1 ]] && step_macos_app
     step_doctor
 
     echo

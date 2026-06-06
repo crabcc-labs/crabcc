@@ -1,0 +1,38 @@
+name: nix
+
+# Verifies flake.nix: that it evaluates (catches attr-name typos in the .tools
+# fleet + the llm-agents.nix consumption) and that the devShell actually builds
+# and ships the toolchain + key tools. Runs on GitHub-hosted ubuntu (with the
+# Determinate nix installer) rather than the self-hosted hetzner pool, so flake
+# verification is independent of the runner-disk state.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  flake-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: DeterminateSystems/nix-installer-action@main
+      - name: nix flake check
+        run: nix flake check --accept-flake-config --show-trace
+      - name: devShell smoke (toolchain + tools present)
+        run: |
+          nix develop --accept-flake-config --command bash -c '
+            set -euo pipefail
+            rustc --version
+            cargo --version
+            rg --version | head -1
+            qsv --version
+            ast-grep --version
+          '

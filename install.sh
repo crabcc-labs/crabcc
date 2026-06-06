@@ -208,30 +208,35 @@ elif [ -n "$existing_path" ] || [ "$CHECK_ONLY" = "1" ]; then
     # Only spend the gh round-trip when we have an installed binary to
     # compare against (or the user explicitly asked via --check). Cold
     # installs don't need the version probe — they always build.
-    say "checking $REPO for the latest release …"
-    # Strategy 2 — latest release tag.
+    say "checking $REPO main for the version it would build …"
+    # The default install builds the default-branch HEAD, so compare against
+    # HEAD's Cargo.toml version, not a release tag: release tags lag HEAD, and
+    # the repo also publishes rolling `*-index-latest` marker tags that would
+    # otherwise be picked as the newest release. Grep the [workspace.package]
+    # block for the version line; jq isn't required.
     remote_ver="$(
-        gh release list --repo "$REPO" --limit 1 --json tagName --jq '.[0].tagName // ""' 2>/dev/null \
-        | sed 's/^v//'
+        gh api -H "Accept: application/vnd.github.v3.raw" \
+            "/repos/$REPO/contents/Cargo.toml" 2>/dev/null \
+        | awk '
+            /^\[workspace\.package\]/ { in_section = 1; next }
+            /^\[/ { in_section = 0 }
+            in_section && /^[[:space:]]*version[[:space:]]*=/ {
+                match($0, /"[^"]+"/)
+                if (RLENGTH > 0) {
+                    print substr($0, RSTART + 1, RLENGTH - 2)
+                    exit
+                }
+            }
+        '
     )"
-    # Strategy 3 — fall back to Cargo.toml on the default branch when no
-    # releases have been cut yet. We grep the [workspace.package] block
-    # for the version line; jq isn't required.
+    # Fallback: latest real semver release tag, skipping rolling *-index /
+    # *-index-latest markers and pre-releases, if the Cargo.toml fetch failed.
     if [ -z "$remote_ver" ]; then
         remote_ver="$(
-            gh api -H "Accept: application/vnd.github.v3.raw" \
-                "/repos/$REPO/contents/Cargo.toml" 2>/dev/null \
-            | awk '
-                /^\[workspace\.package\]/ { in_section = 1; next }
-                /^\[/ { in_section = 0 }
-                in_section && /^[[:space:]]*version[[:space:]]*=/ {
-                    match($0, /"[^"]+"/)
-                    if (RLENGTH > 0) {
-                        print substr($0, RSTART + 1, RLENGTH - 2)
-                        exit
-                    }
-                }
-            '
+            gh release list --repo "$REPO" --limit 30 --json tagName --jq '.[].tagName' 2>/dev/null \
+            | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' \
+            | head -1 \
+            | sed 's/^v//'
         )"
     fi
 fi
@@ -272,6 +277,12 @@ elif try_install_prebuilt; then
       # serves the Claude skill/command symlinks in step 3.
 else
     say "building (cargo install — this is the slow step, ~2–5 min on a cold cache)"
+    # sccache dramatically speeds up repeated builds (re-installs, CI).
+    # Install once with: cargo install sccache  — then it's transparent.
+    if command -v sccache >/dev/null 2>&1 && [ -z "${RUSTC_WRAPPER:-}" ]; then
+        export RUSTC_WRAPPER=sccache
+        say "  sccache detected — compile cache active"
+    fi
     mkdir -p "$INSTALL_DIR"
     (
         cd "$TMP/src"
@@ -312,7 +323,7 @@ install_completions() {
                 fi
             done
             [ -n "$target" ] || { warn "no writable zsh fpath dir; skipping"; return; }
-            "$crabcc_path" completions zsh > "$target/_${BIN_NAME}"
+            "$crabcc_path" setup completions zsh > "$target/_${BIN_NAME}"
             say "✓ zsh completion → $target/_${BIN_NAME}"
             warn "    add this to ~/.zshrc if it isn't already:"
             warn "        fpath=($target \$fpath); autoload -U compinit && compinit"
@@ -320,13 +331,13 @@ install_completions() {
         bash)
             local target="${HOME}/.local/share/bash-completion/completions"
             mkdir -p "$target"
-            "$crabcc_path" completions bash > "$target/$BIN_NAME"
+            "$crabcc_path" setup completions bash > "$target/$BIN_NAME"
             say "✓ bash completion → $target/$BIN_NAME"
             ;;
         fish)
             local target="${HOME}/.config/fish/completions"
             mkdir -p "$target"
-            "$crabcc_path" completions fish > "$target/$BIN_NAME.fish"
+            "$crabcc_path" setup completions fish > "$target/$BIN_NAME.fish"
             say "✓ fish completion → $target/$BIN_NAME.fish"
             ;;
     esac

@@ -156,6 +156,63 @@ pub fn tools_def() -> Vec<Value> {
             }),
             &[],
         ),
+        // ── remind (send_later primitive) ────────────────────────────────────
+        tool(
+            "memory.remind_set",
+            "Schedule a reminder in the repo memory store. Pass either `due_at` \
+             (absolute epoch seconds) or `delay` (human string: '1h30m', '2d', \
+             '45m', '90s'). Returns {id, due_at}.",
+            json!({
+                "cwd":     cwd_field,
+                "message": str_field("reminder message surfaced when the reminder fires"),
+                "due_at":  {"type": "integer",
+                            "description": "absolute epoch seconds (mutually exclusive with delay)"},
+                "delay":   str_field("relative duration, e.g. '1h', '30m', '2d' (mutually exclusive with due_at)"),
+            }),
+            &["message"],
+        ),
+        tool(
+            "memory.remind_poll",
+            "Atomically fetch all due reminders from the repo memory store \
+             (due_at ≤ now, not yet delivered) and mark them delivered. \
+             Returns [] when nothing is due. \
+             Call this from a PostToolUse hook / agent startup to emulate send_later \
+             across Claude Code, OpenCode, Cursor, Nullclaw, OMP, and any MCP client.",
+            json!({"cwd": cwd_field}),
+            &[],
+        ),
+        tool(
+            "memory.remind_list",
+            "List reminders from the repo memory store without marking them \
+             delivered. Pass include_delivered: true to see fired ones too.",
+            json!({
+                "cwd": cwd_field,
+                "include_delivered": {"type": "boolean",
+                                      "description": "include already-delivered reminders (default false)"},
+            }),
+            &[],
+        ),
+        tool(
+            "memory.remind_delete",
+            "Cancel a scheduled reminder in the repo memory store by id. \
+             Returns {deleted: true|false}.",
+            json!({
+                "cwd": cwd_field,
+                "id":  {"type": "integer"},
+            }),
+            &["id"],
+        ),
+        tool(
+            "memory.remind_hooks",
+            "Print per-agent hook configuration snippets so `memory.remind_poll` \
+             fires automatically on every tool use / session start. \
+             Covers: claude-code, opencode, cursor, nullclaw, omp, shell (bash/zsh), generic-mcp. \
+             Pass `agent` to filter to one agent.",
+            json!({
+                "agent": str_field("optional: claude-code | opencode | cursor | nullclaw | omp | shell | generic-mcp"),
+            }),
+            &[],
+        ),
     ]
 }
 
@@ -318,6 +375,45 @@ pub fn dispatch(tool: &str, args: &Value, server_root: &Path) -> Result<String> 
             let report = palace.mine_sessions(&target, &opts)?;
             Ok(serde_json::to_string(&report)?)
         }
+        "memory.remind_set" => {
+            let message = arg_str(args, "message")?;
+            let due_at = if let Some(n) = args.get("due_at").and_then(|v| v.as_i64()) {
+                n
+            } else if let Some(s) = args.get("delay").and_then(|v| v.as_str()) {
+                parse_due_at(s)
+                    .ok_or_else(|| anyhow!("invalid delay {s:?}; use '1h30m', '2d', '45m'"))?
+            } else {
+                return Err(anyhow!(
+                    "specify either due_at (epoch seconds) or delay ('1h30m')"
+                ));
+            };
+            let id = palace.remind_set(due_at, message)?;
+            Ok(json!({"id": id, "due_at": due_at}).to_string())
+        }
+        "memory.remind_poll" => {
+            let due = palace.remind_poll()?;
+            Ok(serde_json::to_string(&due)?)
+        }
+        "memory.remind_list" => {
+            let include_delivered = args
+                .get("include_delivered")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let reminders = palace.remind_list(include_delivered)?;
+            Ok(serde_json::to_string(&reminders)?)
+        }
+        "memory.remind_delete" => {
+            let id = args
+                .get("id")
+                .and_then(|v| v.as_i64())
+                .ok_or_else(|| anyhow!("missing arg: id"))?;
+            let deleted = palace.remind_delete(id)?;
+            Ok(json!({"deleted": deleted}).to_string())
+        }
+        "memory.remind_hooks" => {
+            let agent = args.get("agent").and_then(|v| v.as_str());
+            Ok(serde_json::to_string_pretty(&remind_hooks_json(agent))?)
+        }
         other => Err(anyhow!("unknown memory tool: {other}")),
     }
 }
@@ -365,6 +461,129 @@ pub fn auto_capture_inner(
 
 pub fn env_auto_capture_enabled() -> bool {
     std::env::var("CRABCC_AUTO_MEMORY").ok().as_deref() == Some("1")
+}
+
+/// Parse a user-supplied delay/timestamp into an absolute epoch value.
+/// Parse the MCP `delay` field into an absolute epoch.
+/// Bare integers are relative seconds from now ("3600" → now + 1 h).
+/// RFC3339 strings and human durations ("1h30m", "2d") are also accepted.
+/// Absolute epoch integers belong in `due_at`, not here.
+fn parse_due_at(s: &str) -> Option<i64> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    if let Ok(n) = s.parse::<i64>() {
+        return Some(now + n);
+    }
+    if s.contains('T') || (s.len() >= 10 && s.as_bytes()[4] == b'-') {
+        return parse_rfc3339_to_epoch(s);
+    }
+    let mut total: i64 = 0;
+    let mut num = String::new();
+    for ch in s.chars() {
+        if ch.is_ascii_digit() {
+            num.push(ch);
+        } else {
+            let n: i64 = num.parse().ok()?;
+            num.clear();
+            total += match ch {
+                'd' => n * 86_400,
+                'h' => n * 3_600,
+                'm' => n * 60,
+                's' => n,
+                _ => return None,
+            };
+        }
+    }
+    if !num.is_empty() || total == 0 {
+        return None;
+    }
+    Some(now + total)
+}
+
+/// Per-agent hook configuration for wiring `memory.remind_poll` as a
+/// `send_later`-style primitive. Covers every MCP-capable agent in the
+/// crabcc ecosystem; filter by `agent` to print a single snippet.
+fn remind_hooks_json(agent: Option<&str>) -> Value {
+    let poll_cmd = "r=$(crabcc memory remind poll 2>/dev/null); \
+                    [ \"$r\" = '[]' ] || [ -z \"$r\" ] || \
+                    printf '%s\\n' \"$r\" | jq -r '.[] | \"\\u23f0 Reminder: \" + .message'";
+
+    let shell_snippet = "_crabcc_remind() {\n\
+        \x20 local r; r=$(crabcc memory remind poll 2>/dev/null) || return\n\
+        \x20 [ \"$r\" = '[]' ] || [ -z \"$r\" ] && return\n\
+        \x20 printf '%s\\n' \"$r\" | jq -r '.[] | \"\\u23f0 \" + .message' 2>/dev/null || true\n\
+        }\n\
+        # bash — append to PROMPT_COMMAND:\n\
+        PROMPT_COMMAND=\"${PROMPT_COMMAND:+$PROMPT_COMMAND; }_crabcc_remind\"\n\
+        # zsh — add to precmd:\n\
+        autoload -Uz add-zsh-hook && add-zsh-hook precmd _crabcc_remind"
+        .to_string();
+
+    let generic_mcp = "Wire crabcc as an MCP server (command: \"crabcc\", args: [\"--mcp\"]) \
+                        and instruct your agent to call memory.remind_poll at session start. \
+                        The tool returns [] when nothing is due, or a list of \
+                        {id, due_at, message, created_at, delivered: false} objects.";
+
+    let all = json!({
+        "claude-code": {
+            "description": "PostToolUse hook — fires on every tool call, surfaces due reminders",
+            "merge_into": "~/.claude/settings.json (or project .claude/settings.json)",
+            "config": {
+                "hooks": {
+                    "PostToolUse": [{
+                        "matcher": "",
+                        "hooks": [{"type": "command", "command": poll_cmd}]
+                    }]
+                }
+            }
+        },
+        "opencode": {
+            "description": "System-prompt instruction for OpenCode MCP integration",
+            "merge_into": "opencode.json → instructions field, or .opencode/AGENTS.md",
+            "snippet": "Call the memory.remind_poll MCP tool at the start of each session \
+                        and display any returned reminders before proceeding."
+        },
+        "cursor": {
+            "description": "Agent rule — instructs Cursor to poll on session start",
+            "merge_into": ".cursor/rules.md or ~/.cursor/rules.md",
+            "snippet": "At the start of each conversation call the memory.remind_poll MCP tool \
+                        and surface any returned reminders to the user."
+        },
+        "nullclaw": {
+            "description": "Session-start hook for Nullclaw agent sessions",
+            "merge_into": ".nullclaw/rules.md or agent config hooks",
+            "snippet": "Invoke memory.remind_poll via the crabcc MCP server at session start \
+                        and print any due reminders before the first response."
+        },
+        "omp": {
+            "description": "Hook for OMP / Oh My Posh prompt integration",
+            "merge_into": "OMP config (custom segment) or agent startup script",
+            "snippet": shell_snippet.clone(),
+            "note": "If using OMP as a shell prompt, add the shell snippet instead. \
+                     If OMP is an AI agent name, use the generic-mcp config."
+        },
+        "shell": {
+            "description": "PROMPT_COMMAND / precmd — fires on every new terminal prompt",
+            "merge_into": "~/.bashrc or ~/.zshrc",
+            "snippet": shell_snippet
+        },
+        "generic-mcp": {
+            "description": "For any MCP-compatible agent: aider, continue.dev, custom agents, etc.",
+            "snippet": generic_mcp
+        }
+    });
+
+    match agent {
+        Some(name) => all.get(name).cloned().unwrap_or_else(|| {
+            json!({
+                "error": format!("unknown agent {name:?}"),
+                "valid": ["claude-code","opencode","cursor","nullclaw","omp","shell","generic-mcp"]
+            })
+        }),
+        None => all,
+    }
 }
 
 fn open_palace(args: &Value, server_root: &Path) -> Result<Palace> {

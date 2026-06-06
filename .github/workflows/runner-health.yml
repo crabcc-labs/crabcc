@@ -1,0 +1,198 @@
+name: runner-health
+
+# Lightweight dashboard for the self-hosted Hetzner fleet.
+# Collects disk / RAM / CPU / load from each runner and surfaces a fleet
+# overview (status, busy flag, queued-job count) in the job summary.
+#
+# Two parallel `probe` shards race to grab the two Hetzner runners so both
+# get measured in the same run.  The follow-on `fleet` job calls the GitHub
+# API to show runner status + busy flags alongside a queue depth snapshot.
+#
+# Trigger manually (Actions → runner-health → Run workflow) or wait for the
+# scheduled run every 2 hours.
+
+on:
+  schedule:
+    - cron: '0 */2 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: runner-health
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  probe:
+    name: probe (${{ matrix.shard }})
+    runs-on: [self-hosted, linux, hetzner]
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        # One shard per Hetzner runner.  With max-parallel matching the fleet
+        # size both jobs dispatch simultaneously; each runner picks one up.
+        shard: [1, 2]
+      max-parallel: 2
+      fail-fast: false
+    steps:
+      - name: machine metrics
+        shell: bash
+        run: |
+          # Heterogeneous fleet: the Ubuntu Hetzner runners AND the NixOS
+          # bench-node carry these labels, and NixOS lacks `hostname` (+ maybe
+          # other tools) on PATH. Don't let one missing optional command abort
+          # the whole probe under `bash -e`.
+          set +e
+          HOST="$(hostname 2>/dev/null || uname -n 2>/dev/null || echo "${HOSTNAME:-unknown}")"
+
+          # Disk — root filesystem
+          ROOT_USE=$(df --output=pcent /   2>/dev/null | tail -1 | tr -dc '0-9')
+          ROOT_AVAIL=$(df -h --output=avail / 2>/dev/null | tail -1 | xargs)
+          ROOT_SIZE=$(df -h --output=size  / 2>/dev/null | tail -1 | xargs)
+
+          # Disk — dedicated cache volume (mounted by install.sh at /var/runner-data)
+          CACHE_BASE=/var/runner-data
+          if mountpoint -q "${CACHE_BASE}" 2>/dev/null; then
+            CACHE_USE=$(df --output=pcent "${CACHE_BASE}"   2>/dev/null | tail -1 | tr -dc '0-9')
+            CACHE_AVAIL=$(df -h --output=avail "${CACHE_BASE}" 2>/dev/null | tail -1 | xargs)
+            CACHE_SIZE=$(df -h --output=size  "${CACHE_BASE}" 2>/dev/null | tail -1 | xargs)
+            CACHE_ROW="| Cache volume (\`${CACHE_BASE}\`) | ${CACHE_USE}% used — ${CACHE_AVAIL} free / ${CACHE_SIZE} |"
+          else
+            CACHE_USE=0
+            CACHE_ROW="| Cache volume | **not mounted** — run \`install.sh --gc-only --cache-volume /dev/sdb\` |"
+          fi
+
+          # ── ALL mounts ─────────────────────────────────────────────────
+          # The / and cache checks above miss a full *other* mount — e.g. a
+          # small tmpfs /tmp or a separate /var that apt ENOSPCs on while
+          # `df /` reads healthy. Find the fullest real mount by BOTH blocks
+          # and inodes, and dump the complete table into the summary so the
+          # culprit is visible without anyone SSHing in.
+          WB=$(df -P  2>/dev/null | awk 'NR>1 && $6!~"^/(dev|proc|sys)"      {gsub("%","",$5); if($5+0>m){m=$5+0;t=$6}} END{print (m+0)"|"t}')
+          WI=$(df -Pi 2>/dev/null | awk 'NR>1 && $6!~"^/(dev|proc|sys)" && $5!="-"{gsub("%","",$5); if($5+0>m){m=$5+0;t=$6}} END{print (m+0)"|"t}')
+          WB_PCT=${WB%%|*}; WB_MNT=${WB##*|}
+          WI_PCT=${WI%%|*}; WI_MNT=${WI##*|}
+
+          # RAM
+          MEM_TOTAL=$(free -h | awk '/^Mem:/{print $2}')
+          MEM_USED=$( free -h | awk '/^Mem:/{print $3}')
+          MEM_FREE=$( free -h | awk '/^Mem:/{print $4}')
+          MEM_PCT=$(free | awk '/^Mem:/{printf "%.0f", $3/$2*100}')
+
+          # CPU
+          NCPU=$(nproc)
+          read -r LOAD1 LOAD5 LOAD15 _ < /proc/loadavg
+
+          # Jobs
+          WORKERS=$(pgrep -c 'Runner\.Worker' 2>/dev/null || echo 0)
+
+          # Write to the step summary for this runner
+          {
+            echo "## ${HOST} — shard ${{ matrix.shard }}"
+            echo "| Metric | Value |"
+            echo "|--------|-------|"
+            echo "| Root fs | ${ROOT_USE}% used — ${ROOT_AVAIL} free / ${ROOT_SIZE} |"
+            echo "${CACHE_ROW}"
+            echo "| **Fullest mount (blocks)** | \`${WB_MNT}\` at **${WB_PCT}%** |"
+            echo "| **Fullest mount (inodes)** | \`${WI_MNT}\` at **${WI_PCT}%** |"
+            echo "| RAM | ${MEM_PCT}% used — ${MEM_USED} used, ${MEM_FREE} free / ${MEM_TOTAL} |"
+            echo "| Load avg (1m / 5m / 15m) | ${LOAD1} / ${LOAD5} / ${LOAD15} across ${NCPU} CPUs |"
+            echo "| Worker processes (active jobs) | ${WORKERS} |"
+            echo "| Measured at | $(date -u '+%Y-%m-%d %H:%M UTC') |"
+            echo ""
+            echo "<details><summary>all mounts — df -h · df -i · mount</summary>"
+            echo ""; echo '```'
+            df -h  2>/dev/null
+            echo; df -i 2>/dev/null
+            echo; mount 2>/dev/null | grep -vE ' (proc|sysfs|cgroup[0-9]?|devpts|mqueue|debugfs|tracefs|securityfs|pstore|bpf|configfs|fusectl) '
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Emit GitHub annotations so the job turns red/yellow and
+          # triggers email/mobile notifications when disk is elevated.
+          # Thresholds: ≥90% → error (job fails), ≥80% → warning (job passes).
+          ALERT=0
+          if [ -n "${ROOT_USE:-}" ] && [ "$ROOT_USE" -ge 90 ]; then
+            echo "::error::${HOST} root fs CRITICAL: ${ROOT_USE}% full (${ROOT_AVAIL} free) — run runner-gc --deep immediately"
+            ALERT=1
+          elif [ -n "${ROOT_USE:-}" ] && [ "$ROOT_USE" -ge 80 ]; then
+            echo "::warning::${HOST} root fs at ${ROOT_USE}% (${ROOT_AVAIL} free) — GC will auto-escalate on next 4h cycle"
+          fi
+          if [ -n "${CACHE_USE:-}" ] && [ "$CACHE_USE" -ge 90 ]; then
+            echo "::error::${HOST} cache volume CRITICAL: ${CACHE_USE}% full — sccache/cargo growth needs attention"
+            ALERT=1
+          elif [ -n "${CACHE_USE:-}" ] && [ "$CACHE_USE" -ge 80 ]; then
+            echo "::warning::${HOST} cache volume at ${CACHE_USE}% — monitor sccache growth"
+          fi
+          # Any OTHER mount running hot is the prime `apt-get ... ENOSPC` suspect
+          # (a full tmpfs/var that the / and cache checks never see). Warn rather
+          # than fail — these include swap-backed tmpfs that can spike benignly —
+          # but name the mount so the culprit is obvious in the annotation.
+          case "$WB_MNT" in /|"$CACHE_BASE") ;; *)
+            [ "${WB_PCT:-0}" -ge 85 ] && echo "::warning::${HOST} mount ${WB_MNT} at ${WB_PCT}% blocks — apt/build writes here can ENOSPC" ;;
+          esac
+          case "$WI_MNT" in /|"$CACHE_BASE") ;; *)
+            [ "${WI_PCT:-0}" -ge 85 ] && echo "::warning::${HOST} mount ${WI_MNT} at ${WI_PCT}% inodes" ;;
+          esac
+          [ "$ALERT" = 1 ] && exit 1 || true
+
+  fleet:
+    name: fleet overview
+    runs-on: [self-hosted, linux, hetzner]
+    needs: probe
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: runner status + queue depth
+        shell: bash
+        env:
+          # /repos/.../actions/runners requires `administration:read`, which
+          # GITHUB_TOKEN cannot hold.  Set RUNNER_ADMIN_TOKEN to a PAT (classic
+          # with `repo` scope, or fine-grained with Administration: Read) to
+          # enable the full fleet table; falls back to GITHUB_TOKEN gracefully.
+          ADMIN_TOKEN: ${{ secrets.RUNNER_ADMIN_TOKEN }}
+          FALLBACK_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          API="https://api.github.com"
+          TOKEN="${ADMIN_TOKEN:-${FALLBACK_TOKEN}}"
+          AUTH=(-H "Authorization: Bearer ${TOKEN}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28")
+
+          # Runner list (requires administration:read; 403 without admin token)
+          HTTP_CODE=$(curl -s -o /tmp/runners.json -w "%{http_code}" \
+            "${AUTH[@]}" "${API}/repos/${REPO}/actions/runners?per_page=50")
+
+          # Queued + in-progress workflow run counts — works with GITHUB_TOKEN
+          QUEUE_TOKEN="${FALLBACK_TOKEN}"
+          QUEUE_AUTH=(-H "Authorization: Bearer ${QUEUE_TOKEN}" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28")
+          QUEUED=$(curl -fsSL "${QUEUE_AUTH[@]}" \
+            "${API}/repos/${REPO}/actions/runs?status=queued&per_page=1" \
+            | jq -r '.total_count // 0')
+          IN_PROGRESS=$(curl -fsSL "${QUEUE_AUTH[@]}" \
+            "${API}/repos/${REPO}/actions/runs?status=in_progress&per_page=1" \
+            | jq -r '.total_count // 0')
+
+          {
+            echo "## Fleet overview"
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "| Runner | Status | Busy | Labels |"
+              echo "|--------|--------|------|--------|"
+              jq -r '
+                .runners[] |
+                "| \(.name) | \(.status) | \(if .busy then "**busy**" else "idle" end) | \(.labels | map(.name) | join(", ")) |"
+              ' /tmp/runners.json
+            else
+              echo "> ⚠️ Runner list unavailable (HTTP ${HTTP_CODE})."
+              echo "> The \`/actions/runners\` endpoint requires \`administration:read\`."
+              echo "> Add a \`RUNNER_ADMIN_TOKEN\` repo secret (classic PAT with \`repo\` scope,"
+              echo "> or fine-grained PAT with Administration: Read) to enable this table."
+            fi
+            echo ""
+            echo "**Queued workflow runs:** ${QUEUED}  "
+            echo "**In-progress workflow runs:** ${IN_PROGRESS}  "
+            echo ""
+            echo "_Snapshot at $(date -u '+%Y-%m-%d %H:%M UTC')_"
+          } >> "$GITHUB_STEP_SUMMARY"

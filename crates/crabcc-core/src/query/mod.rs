@@ -2,10 +2,10 @@ use crate::pattern;
 use crate::refs;
 use crate::store::{EdgeHit, Store};
 use crate::types::{Hit, Symbol, SymbolKind};
-use ahash::AHashMap;
+use ahash::{AHashMap, HashSet};
 use anyhow::Result;
 use serde::Serialize;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 pub mod blast_radius;
@@ -26,6 +26,12 @@ pub fn find_symbol(store: &Store, name: &str) -> Result<Vec<Symbol>> {
 
 /// Same as [`find_symbol`] but restricted to a set of repo-relative
 /// file paths. Used by the `--since SHA` CLI/MCP filter.
+/// Batched [`find_symbol`]: resolve many names in a single query. Used by the
+/// LSP `workspace/symbol` to re-hydrate all its prefix hits at once.
+pub fn find_symbols(store: &Store, names: &[&str]) -> Result<Vec<Symbol>> {
+    store.find_by_names(names)
+}
+
 pub fn find_symbol_in_files(
     store: &Store,
     name: &str,
@@ -328,7 +334,7 @@ fn edge_hits_to_output(
             count: edge_hits.len(),
         }),
         Mode::FilesOnly { limit } => {
-            let mut seen: HashSet<&str> = HashSet::new();
+            let mut seen: HashSet<&str> = HashSet::default();
             let mut files: Vec<String> = Vec::new();
             for h in &edge_hits {
                 if seen.insert(h.file.as_str()) {
@@ -414,7 +420,11 @@ fn bare_name(name: &str) -> &str {
     name.rsplit("::").next().unwrap_or(name)
 }
 
-fn compact_snippet(s: &str) -> String {
+/// `#[doc(hidden)] pub` only so the fuzz harness can drive the multi-byte
+/// truncation path directly (cf. the snippet UTF-8 panic fix); not part of
+/// the supported API.
+#[doc(hidden)]
+pub fn compact_snippet(s: &str) -> String {
     let one_line = s.split_whitespace().fold(String::new(), |mut acc, w| {
         if !acc.is_empty() {
             acc.push(' ');
@@ -422,10 +432,12 @@ fn compact_snippet(s: &str) -> String {
         acc.push_str(w);
         acc
     });
-    if one_line.len() > 80 {
-        format!("{}…", &one_line[..80])
-    } else {
-        one_line
+    // Truncate at a char boundary (the 80th char's byte index), not a fixed
+    // byte offset — `&one_line[..80]` panics if byte 80 splits a multibyte char
+    // (any non-ASCII source line > 80 bytes).
+    match one_line.char_indices().nth(80) {
+        Some((idx, _)) => format!("{}…", &one_line[..idx]),
+        None => one_line,
     }
 }
 
@@ -492,7 +504,7 @@ where
     let needle = name.as_bytes();
     let mut hits: Vec<Hit> = Vec::new();
     let mut files: Vec<String> = Vec::new();
-    let mut seen_files: HashSet<String> = HashSet::new();
+    let mut seen_files: HashSet<String> = HashSet::default();
     let mut summary_hits: Vec<(String, u32)> = Vec::new();
     let mut count: usize = 0;
 
@@ -584,6 +596,15 @@ fn early_stop(mode: &Mode, hits_len: usize, files_len: usize) -> bool {
 mod tests {
     use super::*;
     use crate::index::{build_index, full_index};
+
+    #[test]
+    fn compact_snippet_truncates_multibyte_without_panicking() {
+        // 3-byte chars so byte 80 lands mid-char — the old `&one_line[..80]`
+        // would panic. Must truncate on a char boundary.
+        let out = compact_snippet(&"€".repeat(100));
+        assert!(out.ends_with('…'), "expected ellipsis: {out:?}");
+        assert_eq!(out.chars().count(), 81, "80 chars + ellipsis: {out:?}");
+    }
 
     fn write(p: &Path, body: &str) {
         std::fs::write(p, body).unwrap();
@@ -814,7 +835,7 @@ mod tests {
 
         // Empty filter set drops everything — used by `--since` when no
         // files have changed in the window.
-        let empty: HashSet<String> = HashSet::new();
+        let empty: HashSet<String> = HashSet::default();
         let syms = find_symbol_in_files(&store, "greet", &empty).unwrap();
         assert!(syms.is_empty());
     }
@@ -850,7 +871,7 @@ mod tests {
         // none of the indexed files have changed. Both code paths
         // (edges + walker) must return zero hits without erroring.
         let (dir, store) = fixture_repo();
-        let empty: HashSet<String> = HashSet::new();
+        let empty: HashSet<String> = HashSet::default();
         let out = query_callers(&store, dir.path(), "greet", Mode::Count, Some(&empty)).unwrap();
         match out {
             Output::Count { count } => assert_eq!(count, 0),
@@ -935,7 +956,7 @@ mod tests {
                 // greet has callers in both a.ts and b.ts.
                 assert!(files.contains(&"a.ts".to_string()) || files.contains(&"b.ts".to_string()));
                 // No duplicates per file.
-                let mut seen = std::collections::HashSet::new();
+                let mut seen: HashSet<String> = HashSet::default();
                 for f in &files {
                     assert!(seen.insert(f.clone()), "duplicate file: {f}");
                 }

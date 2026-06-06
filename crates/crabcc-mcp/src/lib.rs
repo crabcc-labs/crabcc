@@ -64,10 +64,7 @@ pub(crate) fn load_or_build_graph(
 /// `gitdiff::changed_files_since`. Returns `Ok(None)` when the arg is
 /// absent so callers can use `Option::as_ref()` to drive the filter
 /// path. A bad git revision surfaces as a tool error per JSON-RPC.
-pub(crate) fn since_filter(
-    args: &Value,
-    root: &Path,
-) -> Result<Option<std::collections::HashSet<String>>> {
+pub(crate) fn since_filter(args: &Value, root: &Path) -> Result<Option<ahash::HashSet<String>>> {
     match args.get("since").and_then(|v| v.as_str()) {
         Some(rev) => Ok(Some(crabcc_core::gitdiff::changed_files_since(root, rev)?)),
         None => Ok(None),
@@ -133,7 +130,7 @@ pub(crate) fn list_indexed_files(
         })
         .map(|(p, _)| p)
         .collect();
-    out.sort();
+    out.sort_unstable();
     if limit > 0 && out.len() > limit {
         out.truncate(limit);
     }
@@ -1434,11 +1431,10 @@ mod tests {
 
     #[test]
     fn handle_tools_call_fuzzy_returns_array_shape() {
-        // The fixture's `full_index` populates SQLite but not Tantivy
-        // (the FTS sidecar is built explicitly via `Fts::rebuild`).
-        // For the dispatcher contract test, we only assert shape — a
-        // separate end-to-end test in the fts module covers retrieval
-        // correctness on a real Tantivy index.
+        // Fuzzy/prefix query the live SQLite index directly (no sidecar),
+        // so the fixture's `full_index` is enough. For the dispatcher
+        // contract test we only assert shape — retrieval correctness is
+        // covered by unit tests in the `fts` module.
         let dir = fixture_root();
         let r = call_tool(dir.path(), "fuzzy", json!({"query": "helo"}));
         let parsed = parse_text_content(&r);

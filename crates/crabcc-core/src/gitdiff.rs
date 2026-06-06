@@ -12,8 +12,8 @@
 //! - Output is the exact format `git diff --name-only` already produces,
 //!   so we don't need to mediate between APIs.
 
+use ahash::HashSet;
 use anyhow::{anyhow, Context, Result};
-use std::collections::HashSet;
 use std::path::Path;
 use std::process::Command;
 
@@ -46,6 +46,38 @@ pub fn changed_files_since(root: &Path, since: &str) -> Result<HashSet<String>> 
         let stderr = String::from_utf8_lossy(&out.stderr);
         return Err(anyhow!(
             "git diff --name-only {since}...HEAD failed: {}",
+            stderr.trim()
+        ));
+    }
+
+    Ok(String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+/// Files changed in the working tree right now — both unstaged and staged
+/// edits relative to `HEAD`, as repo-relative paths. This is the default
+/// input for `affected`: the agent just edited files and hasn't committed.
+///
+/// Union of `git diff --name-only HEAD` (unstaged + staged vs HEAD). We run
+/// it once: `diff HEAD` already includes staged changes, so a single
+/// invocation covers both. Added/Modified/Renamed only (Deleted dropped, as
+/// the index has no rows for them).
+pub fn changed_files_worktree(root: &Path) -> Result<HashSet<String>> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["diff", "--name-only", "--diff-filter=AMR", "HEAD"])
+        .output()
+        .with_context(|| "invoking `git diff --name-only HEAD`")?;
+
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        return Err(anyhow!(
+            "git diff --name-only HEAD failed: {}",
             stderr.trim()
         ));
     }

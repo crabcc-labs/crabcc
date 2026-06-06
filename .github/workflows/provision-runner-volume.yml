@@ -1,0 +1,120 @@
+name: provision-runner-volume
+
+# One-shot workflow: mounts the attached Hetzner volume at /var/runner-data,
+# creates the cache subdirs, patches the actions-runner.service unit with the
+# new TMPDIR/CARGO_HOME/SCCACHE_DIR env vars, and schedules a service restart
+# 60 s after the job finishes (so the job can exit cleanly first).
+#
+# Trigger once after attaching the volume; delete or disable afterwards.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: provision-runner-volume
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  provision:
+    name: provision cache volume
+    runs-on: [self-hosted, linux, hetzner]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 1
+
+      - name: mount volume + patch unit
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEVICE="/dev/disk/by-id/scsi-0HC_Volume_105921366"
+          CACHE_BASE="/var/runner-data"
+
+          # Skip gracefully if the block device is not attached to this host.
+          # The workflow uses broad labels ([self-hosted, linux, hetzner]) so it
+          # may land on bench-node or other non-volume runners.
+          if [ ! -e "$DEVICE" ]; then
+            echo "SKIP: $DEVICE not present on $(hostname) — re-queue or run on the volume host"
+            exit 0
+          fi
+
+          echo "=== block device check ==="
+          lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINT,LABEL "$DEVICE" || lsblk
+
+          # If the Hetzner automount agent already mounted the volume somewhere
+          # else (typically /mnt/HC_Volume_*), unmount it first so we can
+          # re-mount at CACHE_BASE under our fstab entry.
+          CURRENT_MOUNT=$(findmnt -n -o TARGET --source "$DEVICE" 2>/dev/null || true)
+          if [ -n "$CURRENT_MOUNT" ] && [ "$CURRENT_MOUNT" != "$CACHE_BASE" ]; then
+            echo "=== unmounting automount at $CURRENT_MOUNT ==="
+            sudo umount "$DEVICE"
+          fi
+
+          echo "=== quick root-fs cleanup (root fs may be near-full) ==="
+          # Reclaim space before patching so mktemp / awk don't hit ENOSPC.
+          # These are all safe during a live build — only unused data removed.
+          sudo docker container prune -f 2>/dev/null || true
+          sudo docker image prune -f --filter "until=24h" 2>/dev/null || true
+          sudo apt-get clean 2>/dev/null || true
+          sudo journalctl --vacuum-size=50M 2>/dev/null || true
+          df -h /
+
+          echo "=== running install.sh --gc-only --cache-volume ==="
+          sudo bash install/github-runner/install.sh \
+            --gc-only \
+            --cache-volume "$DEVICE"
+
+          echo "=== verifying mount ==="
+          mountpoint -q "$CACHE_BASE" && echo "OK: $CACHE_BASE is mounted" || echo "WARN: not mounted yet"
+          df -h "$CACHE_BASE" || true
+
+          echo "=== verifying unit patch ==="
+          UNIT_PATH=$(find /etc/systemd/system -maxdepth 1 \
+            \( -name 'actions-runner.service' -o -name 'actions.runner.*.service' \) \
+            2>/dev/null | head -1)
+          if [ -n "$UNIT_PATH" ]; then
+            grep "TMPDIR" "$UNIT_PATH" && echo "unit patched OK: $UNIT_PATH" \
+              || echo "WARN: TMPDIR not found in $UNIT_PATH"
+          else
+            echo "WARN: no runner unit file found"
+          fi
+
+          echo "=== scheduling runner restarts in 60 s ==="
+          # Restart ALL runner services on this host — our install.sh writes
+          # 'actions-runner'; GitHub's svc.sh uses
+          # 'actions.runner.<owner>-<repo>.<name>' (one per runner process).
+          # mapfile collects every match; fall back to the default name if none.
+          mapfile -t SVC_NAMES < <(systemctl list-units --type=service --no-legend 2>/dev/null \
+            | awk '$1 ~ /^actions[.-]runner[^-]/ { gsub(/\.service$/, "", $1); print $1 }')
+          if [ ${#SVC_NAMES[@]} -eq 0 ]; then
+            SVC_NAMES=("actions-runner")
+          fi
+          echo "Detected ${#SVC_NAMES[@]} runner service(s): ${SVC_NAMES[*]}"
+          # systemd-run creates a transient timer that fires after this job
+          # exits, so each restart happens cleanly without killing this job.
+          for SVC_NAME in "${SVC_NAMES[@]}"; do
+            sudo systemd-run --on-active=60 \
+              --description="post-provision restart: ${SVC_NAME}" \
+              sudo systemctl restart "${SVC_NAME}"
+            echo "restart scheduled for ${SVC_NAME}"
+          done
+
+      - name: summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Volume provisioning — $(hostname)"
+            echo ""
+            echo "\`\`\`"
+            df -h /var/runner-data 2>/dev/null || echo "/var/runner-data not mounted"
+            echo ""
+            find /etc/systemd/system -maxdepth 1 \
+              \( -name 'actions-runner.service' -o -name 'actions.runner.*.service' \) \
+              2>/dev/null | head -1 | xargs -I{} grep -E "^Environment=" {} 2>/dev/null || true
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"

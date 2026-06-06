@@ -1,9 +1,17 @@
-use crate::types::{Edge, Symbol, SymbolKind};
+use crate::types::{Edge, Symbol, SymbolKind, SymbolName};
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::Path;
 
 const SCHEMA: &str = include_str!("../../../schema/001_init.sql");
+
+/// Bumped each time a new migration is added. Stored in the `meta` table
+/// under the key `migration_level` so we can skip all migration probes
+/// on DBs that are already fully migrated (the common case).
+/// We intentionally do NOT use `PRAGMA user_version` here — that pragma
+/// is read by `tools/index-publish/build-manifest.sh` as the public
+/// schema version and must stay aligned with `meta.schema_version`.
+const STORE_MIGRATION_LEVEL: i32 = 3;
 
 /// Sentinel `files` row path used to anchor unresolved-name `symbols` rows.
 /// The v4 `symbols.file_id` column is `NOT NULL REFERENCES files(id)`, so
@@ -77,38 +85,50 @@ impl Store {
         conn.busy_timeout(std::time::Duration::from_millis(2_000))?;
         conn.execute_batch(SCHEMA).context("apply schema")?;
 
-        // Idempotent migration: pre-FSST DBs lack `symbols.signature_enc`. The
-        // schema above declares it for new DBs; for older indexes we ALTER
-        // TABLE in place. PRAGMA table_info is the standard "does this column
-        // exist?" probe — cheap and read-only.
-        let has_enc: bool = conn
+        // Fast-path: if migration_level is already at STORE_MIGRATION_LEVEL,
+        // all migrations have been applied — skip every PRAGMA table_info probe.
+        // NOTE: we use a meta key, not PRAGMA user_version, because the publish
+        // tooling reads user_version as the public schema version.
+        let migrated_level: i32 = conn
             .query_row(
-                "SELECT 1 FROM pragma_table_info('symbols') WHERE name = 'signature_enc'",
+                "SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'migration_level'",
                 [],
-                |_| Ok(true),
+                |r| r.get(0),
             )
             .optional()
             .unwrap_or(None)
-            .is_some();
-        if !has_enc {
+            .unwrap_or(0);
+        if migrated_level < STORE_MIGRATION_LEVEL {
+            // Idempotent migration: pre-FSST DBs lack `symbols.signature_enc`.
+            let has_enc: bool = conn
+                .query_row(
+                    "SELECT 1 FROM pragma_table_info('symbols') WHERE name = 'signature_enc'",
+                    [],
+                    |_| Ok(true),
+                )
+                .optional()
+                .unwrap_or(None)
+                .is_some();
+            if !has_enc {
+                conn.execute(
+                    "ALTER TABLE symbols ADD COLUMN signature_enc INTEGER NOT NULL DEFAULT 0",
+                    [],
+                )
+                .context("migrate: add symbols.signature_enc")?;
+            }
+            // v2.0 edges migration: no-op stub, kept for future slots.
+            migrate_edges_text(&conn).context("migrate edges schema")?;
+            // v5.0.5: WITHOUT ROWID edges migration.
+            migrate_edges_without_rowid(&conn).context("migrate edges WITHOUT ROWID")?;
+            // Mark as fully migrated — skips all probes on next open.
             conn.execute(
-                "ALTER TABLE symbols ADD COLUMN signature_enc INTEGER NOT NULL DEFAULT 0",
-                [],
+                "INSERT INTO meta(key, value) VALUES('migration_level', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![STORE_MIGRATION_LEVEL.to_string()],
             )
-            .context("migrate: add symbols.signature_enc")?;
+            .context("set migration_level")?;
         }
-        // v2.0 edges migration: pre-v2 DBs have INTEGER `src_symbol`; recreate
-        // the empty table with TEXT (and the dst_kind composite index).
-        migrate_edges_text(&conn).context("migrate edges schema")?;
-        // v5.0.5: drop the synthetic `id` rowid column from `edges` and
-        // convert to WITHOUT ROWID with a composite PK (src, dst, kind, line).
-        // Eliminates the hidden rowid B-tree (~30 % storage reduction) and
-        // makes src-keyed scans use the clustered PK instead of a secondary
-        // index. Idempotent — no-op when `id` column is already absent.
-        migrate_edges_without_rowid(&conn).context("migrate edges WITHOUT ROWID")?;
-        // PRAGMA optimize is a no-op until the query planner has stats; it
-        // becomes useful after ANALYZE. Run it whenever we open — sqlite
-        // makes the call cheap when nothing's changed.
+        // PRAGMA optimize is cheap when nothing changed; run it on every open.
         let _ = conn.execute_batch("PRAGMA optimize;");
 
         // Codec discovery (FSST). The DB path is typically `.crabcc/index.db`;
@@ -396,14 +416,20 @@ impl Store {
             "DELETE FROM edges WHERE src_symbol_id IN (SELECT id FROM symbols WHERE file_id = ?1)",
             params![file_id],
         )?;
-        // INSERT OR IGNORE: the v4 WITHOUT-ROWID composite PK
-        // (src_symbol_id, dst_symbol_id, kind, line) defines edge identity, so
-        // the extractor emitting the same logical edge twice — e.g. a symbol
-        // referenced multiple times on one line (`-> Self { Self { .. } }`) —
-        // collapses to a single row instead of failing the unique constraint.
+        // The edges PK is `(src_symbol_id, dst_symbol_id, kind, line)`, so two
+        // extracted edges that collapse to the same tuple (the same logical
+        // call/ref — common when a name resolves to one symbol, or when
+        // concurrent indexers race a shared db) are the *same* edge. Swallow
+        // only that PK conflict with `ON CONFLICT ... DO NOTHING`: unlike a
+        // blanket `OR IGNORE`, this still lets `CHECK (kind IN (...))`, FK, and
+        // NOT NULL violations surface as errors instead of silently dropping a
+        // malformed edge. Turns the duplicate-tuple
+        // `UNIQUE constraint failed: edges.*` into a no-op rather than failing
+        // the whole file's index — matching the table migration's own dedupe.
         let mut insert = tx.prepare_cached(
-            "INSERT OR IGNORE INTO edges(src_symbol_id, dst_symbol_id, kind, line)
-             VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO edges(src_symbol_id, dst_symbol_id, kind, line)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(src_symbol_id, dst_symbol_id, kind, line) DO NOTHING",
         )?;
         for e in edges {
             let src_name = match e.src_symbol.as_deref() {
@@ -643,9 +669,15 @@ impl Store {
         kind: &str,
         line: i64,
     ) -> Result<()> {
+        // Suppress only the duplicate-tuple PK conflict via
+        // `ON CONFLICT ... DO NOTHING` (a re-resolved edge is the same edge).
+        // A blanket `OR IGNORE` would also swallow the `CHECK (kind IN (...))`
+        // violation this API documents as a surfaced error, silently dropping
+        // a bad-kind edge.
         self.conn.execute(
             "INSERT INTO edges(src_symbol_id, dst_symbol_id, kind, line)
-             VALUES (?1, ?2, ?3, ?4)",
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(src_symbol_id, dst_symbol_id, kind, line) DO NOTHING",
             params![src_symbol_id, dst_symbol_id, kind, line],
         )?;
         Ok(())
@@ -709,7 +741,11 @@ impl Store {
     /// Decode a row's `signature` column, honoring `signature_enc`. Centralized
     /// so all three read paths share identical semantics — the alternative was
     /// copy-pasting the same branch into every `query_map` callback.
-    fn signature_from_row(
+    /// Decode a symbol's signature from a query row, honoring the FSST
+    /// `signature_enc` flag. `pub(crate)` so the `query::{blast_radius, why}`
+    /// hydrators can reuse it instead of reading `s.signature` raw (a raw read
+    /// errors on an FSST-encoded BLOB under the default `compress` feature).
+    pub(crate) fn signature_from_row(
         &self,
         row: &rusqlite::Row,
         sig_idx: usize,
@@ -777,6 +813,30 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Name-only projection of every (non-sentinel) symbol. Used by the
+    /// fuzzy/prefix FTS build path, which only needs name/kind/file/line/parent
+    /// — so this deliberately omits `signature`/`signature_enc` and never pays
+    /// the FSST decompress + allocation that `iter_all_symbols` does per row.
+    pub fn iter_symbol_names(&self) -> Result<Vec<SymbolName>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT s.name, s.kind, p.name AS parent, f.path, s.line_start
+             FROM symbols s
+             JOIN files f ON s.file_id = f.id
+             LEFT JOIN symbols p ON p.id = s.parent_id
+             WHERE s.kind != 'sentinel'",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(SymbolName {
+                name: row.get(0)?,
+                kind: kind_from_str(&row.get::<_, String>(1)?),
+                parent: row.get(2)?,
+                file: row.get(3)?,
+                line_start: row.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     pub fn symbols_in_file(&self, file: &str) -> Result<Vec<Symbol>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT s.name, s.kind, s.signature, p.name AS parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
@@ -801,6 +861,36 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Like [`Self::symbols_in_file`] but pairs each symbol with its row id.
+    /// Used by `affected` to feed the call-graph walk (`blast_radius` keys on
+    /// symbol id) without a second lookup.
+    pub fn symbols_in_file_with_ids(&self, file: &str) -> Result<Vec<(i64, Symbol)>> {
+        let mut stmt = self.conn.prepare_cached(
+            "SELECT s.id, s.name, s.kind, s.signature, p.name AS parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
+             FROM symbols s
+             JOIN files f ON s.file_id = f.id
+             LEFT JOIN symbols p ON p.id = s.parent_id
+             WHERE f.path = ?1 AND s.kind != 'sentinel'
+             ORDER BY s.line_start",
+        )?;
+        let rows = stmt.query_map(params![file], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                Symbol {
+                    name: row.get(1)?,
+                    kind: kind_from_str(&row.get::<_, String>(2)?),
+                    signature: self.signature_from_row(row, 3, 9)?,
+                    parent: row.get(4)?,
+                    file: row.get(5)?,
+                    line_start: row.get(6)?,
+                    line_end: row.get(7)?,
+                    visibility: row.get(8)?,
+                },
+            ))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     pub fn find_by_name(&self, name: &str) -> Result<Vec<Symbol>> {
         let mut stmt = self.conn.prepare_cached(
             "SELECT s.name, s.kind, s.signature, p.name AS parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
@@ -810,6 +900,41 @@ impl Store {
              WHERE s.name = ?1 AND s.kind != 'sentinel'",
         )?;
         let rows = stmt.query_map(params![name], |row| {
+            Ok(Symbol {
+                name: row.get(0)?,
+                kind: kind_from_str(&row.get::<_, String>(1)?),
+                signature: self.signature_from_row(row, 2, 8)?,
+                parent: row.get(3)?,
+                file: row.get(4)?,
+                line_start: row.get(5)?,
+                line_end: row.get(6)?,
+                visibility: row.get(7)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Batched [`find_by_name`]: one `WHERE name IN (…)` query for many names,
+    /// returning the union (order not preserved — callers that care should
+    /// sort). Lets the LSP `workspace/symbol` re-hydrate all its prefix hits in
+    /// a single query instead of one per hit.
+    pub fn find_by_names(&self, names: &[&str]) -> Result<Vec<Symbol>> {
+        if names.is_empty() {
+            return Ok(Vec::new());
+        }
+        let placeholders = (0..names.len())
+            .map(|i| format!("?{}", i + 1))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT s.name, s.kind, s.signature, p.name AS parent, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc
+             FROM symbols s
+             JOIN files f ON s.file_id = f.id
+             LEFT JOIN symbols p ON p.id = s.parent_id
+             WHERE s.name IN ({placeholders}) AND s.kind != 'sentinel'"
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(names.iter().copied()), |row| {
             Ok(Symbol {
                 name: row.get(0)?,
                 kind: kind_from_str(&row.get::<_, String>(1)?),
@@ -899,7 +1024,10 @@ fn kind_str(k: SymbolKind) -> &'static str {
     }
 }
 
-fn kind_from_str(s: &str) -> SymbolKind {
+/// Parse a stored `kind` string into a [`SymbolKind`]. `pub(crate)` so the
+/// `query` hydrators share this one implementation (with its sentinel guard)
+/// rather than keeping divergent copies.
+pub(crate) fn kind_from_str(s: &str) -> SymbolKind {
     match s {
         "method" => SymbolKind::Method,
         "class" => SymbolKind::Class,
@@ -1224,6 +1352,33 @@ mod tests {
         assert!(hits.is_empty());
     }
 
+    #[test]
+    fn find_by_names_batches_union_and_skips_unknown() {
+        let (_dir, store) = tmp_store();
+        let fid = store.upsert_file("a.ts", "h", 0, "typescript").unwrap();
+        store
+            .replace_symbols(
+                fid,
+                &[
+                    sym("alpha", SymbolKind::Function, None),
+                    sym("beta", SymbolKind::Function, None),
+                    sym("gamma", SymbolKind::Function, None),
+                ],
+            )
+            .unwrap();
+        // Batch returns the union; unknown names contribute nothing.
+        let mut got: Vec<String> = store
+            .find_by_names(&["alpha", "gamma", "nope"])
+            .unwrap()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        got.sort();
+        assert_eq!(got, vec!["alpha", "gamma"]);
+        // Equivalent to per-name find_by_name, just one query.
+        assert!(store.find_by_names(&[]).unwrap().is_empty());
+    }
+
     // ────────────────────────────────────────────────────────────────────────
     // v4 regression tests — see docs/superpowers/reviews/v4-hackathon/.
     // These exist to fail loudly until the v4 critical findings are fixed.
@@ -1286,27 +1441,37 @@ mod tests {
         );
     }
 
-    /// Regression: the extractor legitimately emits the *same* logical edge
-    /// twice when a symbol is referenced multiple times on one line — e.g.
-    /// `pub fn make(n: u64) -> Self { Self { n } }` yields two identical
-    /// `(make, Self, ref, line)` edges. Under the v4 WITHOUT-ROWID composite
-    /// PK `(src_symbol_id, dst_symbol_id, kind, line)` those collapse to one
-    /// edge, so `replace_edges` must be idempotent (INSERT OR IGNORE) rather
-    /// than fail with `UNIQUE constraint failed: edges...`. (This panic took
-    /// down full_index in the ucracc-lsp concurrency tests.)
+    /// Regression: duplicate edge tuples in a single `replace_edges` batch must
+    /// collapse to one row, not trip the `(src, dst, kind, line)` PRIMARY KEY
+    /// with `UNIQUE constraint failed: edges.*`. This is the failure that
+    /// surfaced non-deterministically as the `full_index` flake whenever the
+    /// extractor emitted the same logical call twice for one source line.
     #[test]
-    fn replace_edges_tolerates_duplicate_edges() {
+    fn replace_edges_dedupes_duplicate_tuples() {
         let (_dir, store) = tmp_store();
         let fid = store.upsert_file("a.rs", "h", 0, "rust").unwrap();
-        store
+        let src_id = store
             .insert_symbol(
                 fid,
-                "make",
+                "caller",
                 None,
                 SymbolKind::Function,
                 None,
-                4,
-                4,
+                1,
+                3,
+                None,
+                None,
+            )
+            .unwrap();
+        let dst_id = store
+            .insert_symbol(
+                fid,
+                "callee",
+                None,
+                SymbolKind::Function,
+                None,
+                5,
+                7,
                 None,
                 None,
             )
@@ -1314,18 +1479,54 @@ mod tests {
 
         let dup = || Edge {
             src_file: "a.rs".into(),
-            src_symbol: Some("make".into()),
-            dst_name: "Self".into(), // unresolved → sentinel; same id both times
-            kind: "ref".into(),
-            line: 4,
+            src_symbol: Some("caller".into()),
+            dst_name: "callee".into(),
+            kind: "call".into(),
+            line: 2,
         };
 
+        // Two identical edges in the same batch — pre-fix this errored on the
+        // second insert and poisoned the whole file's index.
         store
             .replace_edges(fid, &[dup(), dup()])
-            .expect("replace_edges must tolerate duplicate (src,dst,kind,line) edges");
+            .expect("replace_edges must dedupe duplicate tuples, not fail the batch");
 
-        // The duplicate collapses to exactly one persisted edge row.
-        assert_eq!(store.edge_count().unwrap(), 1);
+        let rows: Vec<_> = store
+            .iter_call_edges_resolved()
+            .unwrap()
+            .into_iter()
+            .filter(|(s, d, _)| *s == src_id && *d == dst_id)
+            .collect();
+        assert_eq!(
+            rows.len(),
+            1,
+            "duplicate edge tuple must collapse to exactly one row; got {rows:?}"
+        );
+    }
+
+    /// The dedupe must be scoped to the PK conflict only: a bad `kind` still
+    /// has to surface the schema `CHECK (kind IN (...))` error rather than be
+    /// silently swallowed (the trap a blanket `INSERT OR IGNORE` would set —
+    /// see PR #655 review). Guards `insert_edge_resolved`'s documented contract.
+    #[test]
+    fn insert_edge_resolved_still_surfaces_bad_kind() {
+        let (_dir, store) = tmp_store();
+        let fid = store.upsert_file("a.rs", "h", 0, "rust").unwrap();
+        let a = store
+            .insert_symbol(fid, "a", None, SymbolKind::Function, None, 1, 2, None, None)
+            .unwrap();
+        let b = store
+            .insert_symbol(fid, "b", None, SymbolKind::Function, None, 3, 4, None, None)
+            .unwrap();
+
+        // Valid kind goes in fine.
+        store.insert_edge_resolved(a, b, "call", 1).unwrap();
+        // Unsupported kind must still error, not be dropped on the floor.
+        let err = store.insert_edge_resolved(a, b, "bogus", 1);
+        assert!(
+            err.is_err(),
+            "bad edge kind must surface the CHECK constraint error, got {err:?}"
+        );
     }
 
     /// CRIT-3: `replace_symbols` must persist `parent_id` when the input

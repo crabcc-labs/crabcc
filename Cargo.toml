@@ -6,7 +6,6 @@ exclude = [
     # otherwise auto-discovers nested Cargo.toml files when a path-dep
     # references them. See https://github.com/rust-lang/cargo/issues/9853.
     "crates/crabcc-viz",
-    "crates/crabcc-desktop",
     # editors/zed/crabcc: the Zed extension compiles to wasm32-wasip1 via
     # zed_extension_api; it must not join the host workspace build. Built by
     # Zed itself (zed: install dev extension) or `cargo build --target
@@ -14,6 +13,8 @@ exclude = [
     "editors/zed/crabcc",
 ]
 members = [
+    "crates/crabcc-compact",
+    "crates/crabcc-compact-serve",
     "crates/crabcc-cli",
     "crates/crabcc-core",
     "crates/crabcc-fetch",
@@ -21,6 +22,7 @@ members = [
     "crates/crabcc-mcp",
     "crates/crabcc-memory",
     "crates/crabcc-memory-bench",
+    "crates/sshq",
     "crates/ucracc-lsp",
     # crates/crabcc-viz: excluded from workspace — v4 CallGraph moved from
     # `BTreeMap<String, …>` to `BTreeMap<i64, …>` and the viz HTML/HTMX
@@ -29,26 +31,17 @@ members = [
     # feature-gated behind `viz` in crabcc-cli, so the default build is
     # unaffected; viz catches up in v4.0.1 / v4.1. Build standalone:
     # cd crates/crabcc-viz && cargo build --release
-    #
-    # crates/crabcc-desktop: also excluded — gpui-component pulls a hard
-    # dep on `tree-sitter = "0.25"` (links = "tree-sitter", so cargo
-    # enforces a single version workspace-wide), and crabcc-core is on
-    # tree-sitter 0.22 with its grammar fleet at 0.21. Joining the
-    # workspace would force a coordinated tree-sitter-22→25 bump across
-    # six grammar crates. The desktop crate talks to the rest of crabcc
-    # over HTTP/SSE (loopback only), so no path dep is required —
-    # standalone build keeps each side on its own pace.
-    # Build: cd crates/crabcc-desktop && cargo run --release
 ]
 
 [workspace.package]
-version = "5.1.0"
+version = "6.2.0"
 edition = "2021"
 rust-version = "1.86"
 license = "MIT"
 repository = "https://github.com/crabcc-labs/crabcc"
 
 [workspace.dependencies]
+crabcc-compact = { path = "crates/crabcc-compact" }
 crabcc-core = { path = "crates/crabcc-core" }
 crabcc-fetch = { path = "crates/crabcc-fetch" }
 crabcc-mcp = { path = "crates/crabcc-mcp" }
@@ -57,17 +50,17 @@ crabcc-viz = { path = "crates/crabcc-viz" }
 
 anyhow = "1"
 ahash = "0.8"
+rayon = "1"
+atty = "0.2"
 clap = { version = "4", features = ["derive"] }
 markdown = { version = "1", default-features = false }
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
 sqlite-vec = "0.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 fsst-rs = "0.5"
 ignore = "0.4"
 memchr = "2"
-rayon = "1"
-tantivy = "0.26"
 tree-sitter = "0.26"
 tree-sitter-typescript = "0.23"
 tree-sitter-javascript = "0.25"
@@ -95,7 +88,9 @@ fastembed = "5"
 tiny_http = "0.12"
 serde_yml = "0.0.13"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "webpki-roots"] }
+# `socks` so `crabcc crawl --proxify socks4|socks5` can actually route
+# through SOCKS proxies (without it reqwest::Proxy::all rejects socks:// URLs).
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "webpki-roots", "socks"] }
 linkify = "0.11"
 # html2md 0.2.x ships with `crate-type = ["rlib", "dylib", "staticlib"]`,
 # which forces a `panic_unwind` runtime link and is incompatible with

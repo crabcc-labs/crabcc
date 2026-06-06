@@ -61,7 +61,7 @@ fn collect_jsonl_files(dir: &Path) -> Result<Vec<PathBuf>> {
             out.push(entry);
         }
     }
-    out.sort();
+    out.sort_unstable();
     Ok(out)
 }
 

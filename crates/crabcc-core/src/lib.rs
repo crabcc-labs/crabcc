@@ -7,9 +7,6 @@
 //!   Always built additively; schema upgrades happen in
 //!   [`store::Store::open`] (see also the `signature_enc` and edge-shape
 //!   migrations).
-//! - `tantivy/` — sidecar full-text index for fuzzy + prefix search (see
-//!   [`fts`]). Rebuilt from the SQLite store on `crabcc index`; refresh
-//!   deliberately doesn't.
 //! - `graph.json` — call-graph sidecar built from the populated `edges`
 //!   table (see [`graph::CallGraph`]).
 //! - `fsst.symbols` — optional FSST codec table for signature-column
@@ -27,7 +24,7 @@
 //! | [`graph`]     | [`graph::CallGraph`]: build / save / walk / cycles / orphans. |
 //! | [`outline`]   | File-level top-symbol list (no bodies). |
 //! | [`pattern`]   | Per-language ast-grep patterns + `lang_for` resolver. |
-//! | [`fts`]       | Tantivy sidecar — fuzzy (Levenshtein 2) and prefix lookup. |
+//! | [`fts`]       | Native fuzzy (Levenshtein 2) + prefix lookup over the live SQLite symbol table. |
 //! | [`refs`]      | Streaming ref/grep adapter (`grep::searcher` + memchr). |
 //! | [`compress`]  | FSST codec — train / encode / decode / round-trip. Feature-gated. |
 //! | [`hash`]      | `sha256_hex` — content-addressed file dedup. |
@@ -59,6 +56,7 @@
 //!   `signatures.signature_enc`. Default ON. Disable with
 //!   `--no-default-features` to drop the dep.
 
+pub mod affected;
 pub mod agent_runtime;
 #[cfg(feature = "compress")]
 pub mod compress;

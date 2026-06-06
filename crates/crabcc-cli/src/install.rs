@@ -98,7 +98,7 @@ const OLLAMA_STACK_FILES: &[(&str, u32, &[u8])] = &[
 ];
 
 /// Caller-provided flags for `crabcc install-claude`.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct InstallOptions {
     pub yes: bool,
     pub print_hooks_only: bool,
@@ -106,18 +106,28 @@ pub struct InstallOptions {
     pub print_stack_instructions: bool,
     /// `--dry-run` — print the planned operations without touching disk.
     pub dry_run: bool,
+    /// `--target-home <DIR>` — install into `<DIR>/.claude` (and OS-local
+    /// state under `<DIR>/.crabcc`) instead of the ambient home. Lets one
+    /// machine provision separate coding-agent profiles.
+    pub target_home: Option<PathBuf>,
 }
 
 /// Resolve the Claude Code config directory.
 ///
 /// Precedence:
-///   1. `$CLAUDE_CONFIG_DIR` if set and non-empty (Claude Code's documented
+///   1. An explicit `target_home` (from `--target-home`) → `<target_home>/.claude`.
+///      Outranks the env var: a per-invocation flag is the most specific signal,
+///      which is what makes multi-profile installs deterministic.
+///   2. `$CLAUDE_CONFIG_DIR` if set and non-empty (Claude Code's documented
 ///      override).
-///   2. `$HOME/.claude` (the documented default on macOS / Linux).
+///   3. `$HOME/.claude` (the documented default on macOS / Linux).
 ///
 /// Returns the resolved path even if it doesn't yet exist — callers create
 /// subdirectories as needed via `link_or_write` below.
-pub fn claude_config_dir() -> Result<PathBuf> {
+pub fn claude_config_dir(target_home: Option<&Path>) -> Result<PathBuf> {
+    if let Some(home) = target_home {
+        return Ok(home.join(".claude"));
+    }
     if let Some(v) = std::env::var_os("CLAUDE_CONFIG_DIR") {
         let s = v.to_string_lossy();
         let trimmed = s.trim();
@@ -173,8 +183,10 @@ pub fn run(opts: InstallOptions) -> Result<()> {
     let yes = opts.yes;
     let dry = opts.dry_run;
 
-    let config_dir = claude_config_dir()?;
-    let config_dir_source = if std::env::var_os("CLAUDE_CONFIG_DIR").is_some() {
+    let config_dir = claude_config_dir(opts.target_home.as_deref())?;
+    let config_dir_source = if opts.target_home.is_some() {
+        "--target-home"
+    } else if std::env::var_os("CLAUDE_CONFIG_DIR").is_some() {
         "CLAUDE_CONFIG_DIR"
     } else {
         "$HOME/.claude default"
@@ -241,9 +253,13 @@ pub fn run(opts: InstallOptions) -> Result<()> {
             println!("(dry-run — would materialize ollama-stack to ~/.crabcc/ollama-stack/)");
         } else {
             // Ollama stack is OS-local user state, not Claude config — keep
-            // it under $HOME/.crabcc/ regardless of $CLAUDE_CONFIG_DIR.
-            let home =
-                home_dir().ok_or_else(|| anyhow!("$HOME unset; cannot place ollama stack"))?;
+            // it under <home>/.crabcc/ regardless of $CLAUDE_CONFIG_DIR. An
+            // explicit --target-home moves it to that profile's home too.
+            let home = opts
+                .target_home
+                .clone()
+                .or_else(home_dir)
+                .ok_or_else(|| anyhow!("$HOME unset; cannot place ollama stack"))?;
             materialize_ollama_stack(&home)?;
             println!();
             println!("Ollama stack materialized; bringing it up...");
@@ -650,21 +666,37 @@ mod tests {
         let prev = std::env::var_os("CLAUDE_CONFIG_DIR");
         std::env::set_var("CLAUDE_CONFIG_DIR", "/tmp/custom-claude");
         assert_eq!(
-            claude_config_dir().unwrap(),
+            claude_config_dir(None).unwrap(),
             PathBuf::from("/tmp/custom-claude")
         );
 
         std::env::set_var("CLAUDE_CONFIG_DIR", "  ");
         // Whitespace-only should fall back to home/.claude.
-        let home_fallback = claude_config_dir().unwrap();
+        let home_fallback = claude_config_dir(None).unwrap();
         assert!(home_fallback.ends_with(".claude"));
 
         std::env::remove_var("CLAUDE_CONFIG_DIR");
-        let default = claude_config_dir().unwrap();
+        let default = claude_config_dir(None).unwrap();
         assert!(default.ends_with(".claude"));
 
         if let Some(p) = prev {
             std::env::set_var("CLAUDE_CONFIG_DIR", p);
+        }
+    }
+
+    #[test]
+    fn target_home_outranks_env_and_derives_dotclaude() {
+        // An explicit --target-home wins over the ambient env var and yields
+        // `<home>/.claude` — the contract multi-profile installs rely on.
+        let prev = std::env::var_os("CLAUDE_CONFIG_DIR");
+        std::env::set_var("CLAUDE_CONFIG_DIR", "/tmp/env-claude");
+        assert_eq!(
+            claude_config_dir(Some(Path::new("/tmp/profile-home"))).unwrap(),
+            PathBuf::from("/tmp/profile-home/.claude")
+        );
+        match prev {
+            Some(p) => std::env::set_var("CLAUDE_CONFIG_DIR", p),
+            None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
         }
     }
 

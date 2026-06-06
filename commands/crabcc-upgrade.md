@@ -54,7 +54,7 @@ credentials) to query the private repo.
      ```
      crabcc upgrade --apply --json
      ```
-     This runs the same check as `--check`, then `rm`s `.crabcc/{index.db,tantivy/,graph.json}`.
+     This runs the same check as `--check`, then `rm`s `.crabcc/{index.db,graph.json}` (and the orphaned `tantivy/` dir if a pre-v6.2 index left one).
    - **If the user has the Ollama auth stack installed** (issue #105):
      ```
      crabcc upgrade --apply --with-stack --json

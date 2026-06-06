@@ -134,8 +134,17 @@ fn try_init_otlp() -> Option<(OtlpHandle, OtlpLayer)> {
 
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         handle.spawn(async move {
+            // Note: the OTLP exporter is deliberately NOT netlog-guarded (#160).
+            // Its endpoint is operator-configured (OTEL_EXPORTER_OTLP_ENDPOINT)
+            // and points at the user's own collector — e.g. the hardened
+            // install/telemetry-stack behind cloudflared — so it's intentional
+            // egress by definition. Deny-guarding it would block legitimate
+            // custom collectors; the allowlist targets *unexpected* hosts.
             let client = reqwest::Client::builder()
                 .timeout(std::time::Duration::from_secs(5))
+                // Auth headers (e.g. `Authorization=Bearer …`) so the exporter
+                // can reach a hardened, token-gated collector.
+                .default_headers(otlp_headers())
                 .build()
                 .unwrap_or_default();
             // Batch up to 50 spans at 1-second intervals.
@@ -168,13 +177,57 @@ fn try_init_otlp() -> Option<(OtlpHandle, OtlpLayer)> {
     ))
 }
 
+/// Headers attached to every OTLP export, from the standard
+/// `OTEL_EXPORTER_OTLP_HEADERS` env var — required to authenticate to a
+/// hardened (token-gated) collector. Empty (no auth) when unset.
+fn otlp_headers() -> reqwest::header::HeaderMap {
+    parse_otlp_headers(&std::env::var("OTEL_EXPORTER_OTLP_HEADERS").unwrap_or_default())
+}
+
+/// Parse the OTel header spec: comma-separated `key=value` pairs (e.g.
+/// `Authorization=Bearer abc,x-org=crabcc`). Malformed pairs are skipped.
+fn parse_otlp_headers(raw: &str) -> reqwest::header::HeaderMap {
+    use reqwest::header::{HeaderName, HeaderValue};
+    let mut map = reqwest::header::HeaderMap::new();
+    for pair in raw.split(',') {
+        let Some((k, v)) = pair.split_once('=') else {
+            continue;
+        };
+        if let (Ok(name), Ok(val)) = (
+            HeaderName::from_bytes(k.trim().as_bytes()),
+            HeaderValue::from_str(v.trim()),
+        ) {
+            map.insert(name, val);
+        }
+    }
+    map
+}
+
 async fn flush_batch(client: &reqwest::Client, url: &str, batch: &mut Vec<serde_json::Value>) {
+    use reqwest::header::{CONTENT_ENCODING, CONTENT_TYPE};
     // Merge into a single ExportTraceServiceRequest.
     let body = serde_json::json!({ "resourceSpans": batch.iter()
         .flat_map(|b| b["resourceSpans"].as_array().cloned().unwrap_or_default())
         .collect::<Vec<_>>() });
-    let _ = client.post(url).json(&body).send().await;
+    let json = serde_json::to_vec(&body).unwrap_or_default();
+    // gzip the body — OTLP span JSON is highly repetitive (~5-10× smaller), and
+    // OTLP/HTTP receivers decompress `Content-Encoding: gzip` transparently.
+    // Fall back to plain JSON if compression fails.
+    let req = client.post(url).header(CONTENT_TYPE, "application/json");
+    let req = match gzip(&json) {
+        Some(gz) => req.header(CONTENT_ENCODING, "gzip").body(gz),
+        None => req.body(json),
+    };
+    let _ = req.send().await;
     batch.clear();
+}
+
+/// gzip `data`, or `None` on encoder error (caller falls back to plain body).
+fn gzip(data: &[u8]) -> Option<Vec<u8>> {
+    use std::io::Write;
+    let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    enc.write_all(data).ok()?;
+    enc.finish().ok()
 }
 
 // ── Telegram notification layer ────────────────────────────────────────────────
@@ -190,7 +243,7 @@ const TELEGRAM_MIN_GAP_SECS: u64 = 60;
 
 struct TelegramLayer {
     tx: tokio::sync::mpsc::Sender<String>,
-    last_sent: std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
+    last_sent: std::sync::Mutex<ahash::HashMap<String, std::time::Instant>>,
 }
 
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for TelegramLayer {
@@ -347,14 +400,27 @@ fn try_init_telegram() -> Option<(TelegramHandle, TelegramLayer)> {
                             "https://api.telegram.org/bot{}/sendMessage",
                             token2
                         );
-                        let _ = client.post(&url)
-                            .json(&serde_json::json!({
-                                "chat_id":    chat_id2.as_str(),
-                                "text":       msg,
-                                "parse_mode": "Markdown",
-                            }))
-                            .send()
-                            .await;
+                        // netlog egress guard (#160): record + enforce before the
+                        // request fires. api.telegram.org is on the seeded
+                        // allowlist, so this is a no-op in normal use; a tampered
+                        // allowlist or deny-mode misconfig fails loudly instead of
+                        // silently exfiltrating via the bot token.
+                        match crate::netlog::guard("telegram", &url) {
+                            Ok(()) => {
+                                let _ = client.post(&url)
+                                    .json(&serde_json::json!({
+                                        "chat_id":    chat_id2.as_str(),
+                                        "text":       msg,
+                                        "parse_mode": "Markdown",
+                                    }))
+                                    .send()
+                                    .await;
+                            }
+                            Err(e) => tracing::warn!(
+                                target: "crabcc::telemetry",
+                                "telegram send blocked by netlog: {e}"
+                            ),
+                        }
                     }
                     _ = &mut shutdown_rx => break,
                     else => break,
@@ -369,7 +435,9 @@ fn try_init_telegram() -> Option<(TelegramHandle, TelegramLayer)> {
         },
         TelegramLayer {
             tx,
-            last_sent: std::sync::Mutex::new(std::collections::HashMap::new()),
+            // `ahash::HashMap` aliases the ahash-hasher variant, which has no
+            // `::new()` — use `default()`. (Fixes a telemetry-feature build rot.)
+            last_sent: std::sync::Mutex::new(ahash::HashMap::default()),
         },
     ))
 }
@@ -460,4 +528,40 @@ fn telemetry_file_writer() -> Option<(
         .ok()?;
     let (w, g) = tracing_appender::non_blocking(file);
     Some((path, w, g))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_otlp_headers_pairs() {
+        let h = parse_otlp_headers("Authorization=Bearer abc123, x-org=crabcc");
+        assert_eq!(h.get("authorization").unwrap(), "Bearer abc123");
+        assert_eq!(h.get("x-org").unwrap(), "crabcc");
+        assert_eq!(h.len(), 2);
+    }
+
+    #[test]
+    fn parse_otlp_headers_skips_malformed_and_empty() {
+        assert!(parse_otlp_headers("").is_empty());
+        assert!(parse_otlp_headers("no-equals-sign").is_empty());
+        // Valid pair survives alongside a malformed one.
+        let h = parse_otlp_headers("bad, X-Token=t");
+        assert_eq!(h.len(), 1);
+        assert_eq!(h.get("x-token").unwrap(), "t");
+    }
+
+    #[test]
+    fn gzip_shrinks_and_roundtrips() {
+        use std::io::Read;
+        let data = br#"{"resourceSpans":[{"scopeSpans":[]}]}"#.repeat(50);
+        let gz = gzip(&data).expect("gzip");
+        assert!(gz.len() < data.len(), "repetitive json should compress");
+        let mut out = Vec::new();
+        flate2::read::GzDecoder::new(&gz[..])
+            .read_to_end(&mut out)
+            .unwrap();
+        assert_eq!(out, data, "gzip must round-trip");
+    }
 }

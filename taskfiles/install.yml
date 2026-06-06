@@ -1,4 +1,4 @@
-# Install / packaging / housekeeping tasks: install, dmg, man, aliases,
+# Install / packaging / housekeeping tasks: install, man, aliases,
 # uninstall, clean, check-deps, doctor, openapi, doc, version.
 version: '3'
 
@@ -22,7 +22,7 @@ tasks:
     vars:
       NO_ALIASES: '{{.NO_ALIASES | default ""}}'
     cmds:
-      - "{{.CARGO}} install --path crates/crabcc-cli --features memory-embed --force"
+      - "{{.CARGO}} install --path crates/crabcc-cli --features memory-embed,telemetry --force"
       - "{{.CRABCC}} --version"
       - 'if [ -z "{{.NO_ALIASES}}" ]; then bash scripts/install-aliases.sh; else echo "NO_ALIASES=1 — skipping alias bootstrap"; fi'
 
@@ -106,21 +106,6 @@ tasks:
     cmds:
       - bash scripts/aliases-check.sh
 
-  dmg:
-    desc: Build dist/crabcc-<version>.dmg — installer .app + menubar UI + LaunchAgent (issue #107)
-    summary: |
-      Stages installer/Crabcc.app, populates Resources/ with release-mode
-      crabcc/ccc binaries, skill/, commands/, and install-aliases.sh,
-      compiles the menubar Swift shim, ad-hoc codesigns the bundle, then
-      packages it into dist/crabcc-<version>.dmg via hdiutil. The .app
-      shows up in System Settings → Privacy & Security → App Management
-      thanks to the proper Info.plist + ad-hoc signature.
-      Pass SKIP_BUILD=1 to reuse target/release/{crabcc,ccc} unchanged.
-    vars:
-      SKIP_BUILD: '{{.SKIP_BUILD | default ""}}'
-    cmds:
-      - bash scripts/build-dmg.sh {{if .SKIP_BUILD}}--skip-build{{end}}
-
   man:
     desc: Render the manpage to a viewable PDF preview (and confirm troff syntax)
     cmds:
@@ -191,17 +176,6 @@ tasks:
       DEPS: '{{.DEPS | default "0"}}'
     cmds:
       - '{{.CARGO}} doc --workspace --no-deps={{if eq .DEPS "1"}}false{{else}}true{{end}}{{if eq .OPEN "1"}} --open{{end}}'
-
-  logs:
-    desc: Tail live Crabcc log files in ~/Library/Logs/Crabcc (Ctrl+C to exit)
-    silent: true
-    cmds:
-      - |
-        mkdir -p {{.LOGS_DIR}}
-        echo "Tailing {{.LOGS_DIR}}/*.log — Ctrl+C to exit"
-        tail -f {{.LOGS_DIR}}/*.log 2>/dev/null \
-          | jq -R -r '. as $line | try (fromjson | "[\(.level)] \(.target): \(.fields.message // .message)") catch $line' \
-          || tail -f {{.LOGS_DIR}}/*.log
 
   version:
     desc: Print the workspace version (parsed from Cargo.toml). --json for machine output.

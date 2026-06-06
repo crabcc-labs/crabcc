@@ -1,15 +1,14 @@
 name: release-ucracc-lsp-image
 
-# Builds + publishes the `ucracc-lsp` Docker image to Docker Hub and
-# cosign-signs it, on each `ucracc-lsp-v*` tag (alongside the binary
-# release in release-ucracc-lsp.yml).
+# Builds + publishes the `ucracc-lsp` image to Docker Hub (private) and
+# cosign-signs it, on each `ucracc-lsp-v*` tag.
 #
-# SCAFFOLD — inert until you wire the secrets. The `preflight` job checks
-# for DOCKERHUB_USERNAME + DOCKERHUB_TOKEN and skips the build with a
-# notice if they're absent, so this never fails a release that hasn't
-# opted in. Signing is keyless (Sigstore/Fulcio via GitHub OIDC) by
-# default; set COSIGN_PRIVATE_KEY + COSIGN_PASSWORD to sign with a key
-# instead. Full setup: docs/COSIGN-SETUP.md.
+# Secrets (configured): docker_user, docker_pat.
+# Fast cloud builder (opt-in): set repo VARIABLE
+#   DOCKER_BUILD_CLOUD_ENDPOINT = "<docker-org>/<builder>"
+# (provision once: docker buildx create --driver cloud <org>/<builder>).
+# Unset -> local buildx + QEMU. Signing keyless by default; COSIGN_PRIVATE_KEY
+# + COSIGN_PASSWORD for key-based. See docs/COSIGN-SETUP.md.
 
 on:
   push:
@@ -17,58 +16,60 @@ on:
 
 permissions:
   contents: read
-  id-token: write   # required for cosign keyless (OIDC) signing
+  id-token: write
 
 jobs:
   preflight:
-    name: preflight (secrets configured?)
     runs-on: ubuntu-latest
     outputs:
       enabled: ${{ steps.check.outputs.enabled }}
     steps:
       - id: check
         env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          DOCKER_USER: ${{ secrets.docker_user }}
+          DOCKER_PAT: ${{ secrets.docker_pat }}
         run: |
-          if [ -n "$DOCKERHUB_USERNAME" ] && [ -n "$DOCKERHUB_TOKEN" ]; then
+          if [ -n "$DOCKER_USER" ] && [ -n "$DOCKER_PAT" ]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
-            echo "::notice title=image publish skipped::Set DOCKERHUB_USERNAME and DOCKERHUB_TOKEN repo secrets to enable. See docs/COSIGN-SETUP.md."
+            echo "::notice title=image publish skipped::Set docker_user + docker_pat."
           fi
 
   image:
-    name: build + push + sign
     needs: preflight
     if: needs.preflight.outputs.enabled == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
-
       - name: log in to Docker Hub
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
+          username: ${{ secrets.docker_user }}
+          password: ${{ secrets.docker_pat }}
+      - name: set up Docker Build Cloud
+        if: vars.DOCKER_BUILD_CLOUD_ENDPOINT != ''
+        uses: docker/setup-buildx-action@v4
+        with:
+          driver: cloud
+          endpoint: ${{ vars.DOCKER_BUILD_CLOUD_ENDPOINT }}
+      - name: set up QEMU (fallback)
+        if: vars.DOCKER_BUILD_CLOUD_ENDPOINT == ''
+        uses: docker/setup-qemu-action@v4
+      - name: set up local buildx (fallback)
+        if: vars.DOCKER_BUILD_CLOUD_ENDPOINT == ''
+        uses: docker/setup-buildx-action@v4
       - name: image metadata
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
-          # Defaults to <user>/ucracc-lsp; override with the DOCKERHUB_IMAGE
-          # secret (e.g. an org namespace like crabcc-labs/ucracc-lsp).
-          images: ${{ secrets.DOCKERHUB_IMAGE || format('{0}/ucracc-lsp', secrets.DOCKERHUB_USERNAME) }}
+          images: ${{ vars.DOCKERHUB_IMAGE_UCRACC_LSP || format('{0}/ucracc-lsp', secrets.docker_user) }}
           tags: |
             type=match,pattern=ucracc-lsp-v(.*),group=1
             type=raw,value=latest
-
       - name: build + push (multi-arch)
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: install/Dockerfile.ucracc-lsp
@@ -78,13 +79,11 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           provenance: true
           sbom: true
-
       - name: install cosign
         uses: sigstore/cosign-installer@v3
-
       - name: cosign sign image
         env:
-          IMAGE: ${{ secrets.DOCKERHUB_IMAGE || format('{0}/ucracc-lsp', secrets.DOCKERHUB_USERNAME) }}
+          IMAGE: ${{ vars.DOCKERHUB_IMAGE_UCRACC_LSP || format('{0}/ucracc-lsp', secrets.docker_user) }}
           DIGEST: ${{ steps.build.outputs.digest }}
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
@@ -92,12 +91,10 @@ jobs:
           set -euo pipefail
           REF="${IMAGE}@${DIGEST}"
           if [ -n "${COSIGN_PRIVATE_KEY:-}" ]; then
-            echo "Signing with provided key (key-based)…"
+            trap 'rm -f cosign.key' EXIT   # remove key even if signing fails
             printf '%s' "$COSIGN_PRIVATE_KEY" > cosign.key
             cosign sign --yes --key cosign.key "$REF"
-            rm -f cosign.key
           else
-            echo "Signing keyless (Sigstore OIDC)…"
             cosign sign --yes "$REF"
           fi
-          echo "::notice title=signed::$REF — verify with: docs/COSIGN-SETUP.md"
+          echo "::notice title=signed::$REF"

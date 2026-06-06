@@ -1,0 +1,35 @@
+# sshq — a token-thrifty `ssh` wrapper for AI coding agents.
+#
+# A one-binary front-end that bakes in the five SSH token-reduction
+# moves so an agent (or a human) never has to remember the flag soup:
+#
+#   1. `-T` (no PTY) + `-q` (no client chatter) so stdout comes back as
+#      clean, unstyled text — no ANSI repaint sequences, no banner.
+#   2. Remote-side output trimming (`--tail` / `--grep` / `--count`) so
+#      only the signal crosses the wire, never a 500-line log dump.
+#   3. `export NO_COLOR=1 TERM=dumb CI=1` injected ahead of the remote
+#      command so colorizing tools emit terse, monochrome output.
+#   4. ControlMaster/ControlPath/ControlPersist multiplexing wired in by
+#      default — single-digit-ms reconnects with zero ssh-config edits.
+#   5. `--script FILE` (or `-` for stdin) streams a multi-line script to
+#      a remote `bash -s`, sidestepping local-shell quote-escaping
+#      entirely (the modern stand-in for a single-quoted heredoc).
+#
+# Deliberately tiny: only `clap` (already a workspace dep) + `anyhow`.
+# It shells out to the system `ssh`; it is not an SSH implementation.
+
+[package]
+name = "sshq"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+repository.workspace   = true
+
+[[bin]]
+name = "sshq"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap   = { workspace = true }

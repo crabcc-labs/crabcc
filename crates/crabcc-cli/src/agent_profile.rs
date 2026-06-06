@@ -130,7 +130,7 @@ fn list_available_profiles(dir: &Path) -> Result<Vec<String>> {
                 .map(str::to_string)
         })
         .collect();
-    out.sort();
+    out.sort_unstable();
     Ok(out)
 }
 

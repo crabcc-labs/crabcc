@@ -30,6 +30,7 @@ pub mod forge;
 mod git_analytics;
 mod graph;
 mod memory_view;
+mod memory_workspace;
 mod query;
 pub mod runtime;
 
@@ -40,8 +41,9 @@ use crabcc_core::graph::CallGraph;
 use crabcc_core::store::Store;
 use graph::{graph_snapshot, EdgeOut, NodeOut};
 use memory_view::memory_recent;
+use memory_workspace::memory_search;
 use query::url_decode;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tiny_http::{Header, Method, Request, Response, Server};
 
 const BUNDLED_INDEX: &str = include_str!("../assets/index.html");
@@ -52,6 +54,10 @@ const BUNDLED_INDEX: &str = include_str!("../assets/index.html");
 //
 // Regenerate after editing `web/src/`: `cd crates/crabcc-viz/web && bun run build`.
 const BUNDLED_LIVE: &str = include_str!("../web/dist/live.html");
+/// The cross-repo memory browser at `/memory`. Hand-rolled and
+/// self-contained (no React build step) so `crabcc memory ui` can open a
+/// working page on any checkout without running `bun run build`.
+const BUNDLED_MEMORY: &str = include_str!("../assets/memory.html");
 
 /// OpenAPI 3.1 source-of-truth for the `/live` HTTP API (issue #170 phase 0).
 ///
@@ -80,6 +86,9 @@ pub struct Config {
     /// dashboard's first bootstrap call has real numbers (not zeros).
     /// Cheap on warm repos (one mtime sweep + sidecar load).
     pub init: bool,
+    /// Path the auto-opened browser lands on (e.g. `/memory`). `None` opens
+    /// the dashboard root. Ignored when `no_open` is set.
+    pub open_path: Option<String>,
 }
 
 impl Config {
@@ -90,6 +99,7 @@ impl Config {
             root,
             no_open: true,
             init: true,
+            open_path: None,
         }
     }
 }
@@ -127,7 +137,8 @@ pub fn serve(cfg: Config) -> Result<()> {
     let addr = listener.local_addr()?;
     print_banner(&cfg, addr, init_outcome.as_ref());
     if !cfg.no_open {
-        let url = format!("http://{}:{}", addr.ip(), addr.port());
+        let path = cfg.open_path.as_deref().unwrap_or("");
+        let url = format!("http://{}:{}{}", addr.ip(), addr.port(), path);
         if let Err(e) = open_browser(&url) {
             tracing::debug!("browser auto-open skipped: {e}");
         }
@@ -234,6 +245,8 @@ fn handle(request: Request, root: &Path) -> Result<()> {
         // stays as a back-compat alias for the old URL.
         "/" | "/index.html" | "/live" => respond_html(request, BUNDLED_LIVE),
         "/graph" => respond_html(request, BUNDLED_INDEX),
+        // Cross-repo memory browser — the front-door for `crabcc memory ui`.
+        "/memory" => respond_html(request, BUNDLED_MEMORY),
         "/api/events" => sse_events(request, root.to_path_buf()),
         "/api/health" => respond_json(request, &serde_json::json!({ "status": "ok" })),
         // #172 — surface the hand-maintained OpenAPI spec so the
@@ -246,6 +259,12 @@ fn handle(request: Request, root: &Path) -> Result<()> {
         },
         "/api/activity" => match activity_tail(root, query) {
             Ok(activity) => respond_json(request, &activity),
+            Err(e) => respond_status(request, 400, &format!("bad request: {e}")),
+        },
+        // #160 Phase 3 — outbound-egress tail: recent infra HTTP + which hosts
+        // the allowlist blocked. Global (not repo-scoped); reads netlog.jsonl.
+        "/api/netlog" => match netlog_tail(query) {
+            Ok(snap) => respond_json(request, &snap),
             Err(e) => respond_status(request, 400, &format!("bad request: {e}")),
         },
         // Live token-savings block for the dashboard: aggregate
@@ -307,6 +326,11 @@ fn handle(request: Request, root: &Path) -> Result<()> {
         "/api/memory/recent" => match memory_recent(root, query) {
             Ok(snap) => respond_json(request, &snap),
             Err(e) => respond_status(request, 500, &format!("memory snapshot failed: {e}")),
+        },
+        // Cross-repo aggregate search powering the `/memory` browser.
+        "/api/memory/search" => match memory_search(root, query) {
+            Ok(snap) => respond_json(request, &snap),
+            Err(e) => respond_status(request, 500, &format!("memory search failed: {e}")),
         },
         "/api/memory/graph" => match memory_graph(root, query) {
             Ok(snap) => respond_json(request, &snap),
@@ -762,6 +786,103 @@ fn parse_activity_query(raw: &str) -> Result<ActivityQuery> {
     })
 }
 
+// ── netlog egress tail (#160 Phase 3) ───────────────────────────────────────
+
+const NETLOG_DEFAULT_LIMIT: usize = 100;
+const NETLOG_MAX_LIMIT: usize = 1000;
+
+/// One outbound-request record, matching the JSONL netlog writes to
+/// `netlog.jsonl` (`crabcc_cli::netlog`). `ok=false` is an allowlist violation.
+#[derive(Serialize, Deserialize, Clone)]
+struct NetlogEvent {
+    ts: u64,
+    caller: String,
+    op: String,
+    host: String,
+    #[serde(default)]
+    port: u16,
+    ok: bool,
+}
+
+#[derive(Serialize)]
+struct NetlogSnapshot {
+    cursor: u64,
+    /// Count of returned events that were blocked (host not on the allowlist).
+    violations: usize,
+    events: Vec<NetlogEvent>,
+}
+
+/// `$CRABCC_HOME/netlog.jsonl` (or `~/.crabcc/netlog.jsonl`) — mirrors
+/// `crabcc_cli::netlog::netlog_path()`. Egress is global, not repo-scoped.
+fn netlog_log_path() -> Option<PathBuf> {
+    if let Some(home) = std::env::var_os("CRABCC_HOME") {
+        return Some(PathBuf::from(home).join("netlog.jsonl"));
+    }
+    runtime::home_dir()
+        .ok()
+        .map(|h| h.join(".crabcc").join("netlog.jsonl"))
+}
+
+/// Tail the egress log for the live dashboard. `since`/`limit` mirror
+/// `/api/activity`. A missing log → empty snapshot (netlog may not have fired
+/// yet on a fresh machine), never an error.
+fn netlog_tail(query: &str) -> Result<NetlogSnapshot> {
+    let (since, limit) = parse_since_limit(query, NETLOG_DEFAULT_LIMIT, NETLOG_MAX_LIMIT)?;
+    let body = netlog_log_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_default();
+    Ok(netlog_snapshot_from(&body, since, limit))
+}
+
+/// Pure core of [`netlog_tail`]: parse JSONL `body`, drop events at/below
+/// `since`, sort, cap to `limit`, count violations. Testable without the FS.
+fn netlog_snapshot_from(body: &str, since: u64, limit: usize) -> NetlogSnapshot {
+    let mut events: Vec<NetlogEvent> = body
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| sonic_rs::from_str::<NetlogEvent>(l).ok())
+        .filter(|e| e.ts > since)
+        .collect();
+    events.sort_by_key(|e| e.ts);
+    if events.len() > limit {
+        let drop = events.len() - limit;
+        events.drain(..drop);
+    }
+    let cursor = events.last().map(|e| e.ts).unwrap_or(since);
+    let violations = events.iter().filter(|e| !e.ok).count();
+    NetlogSnapshot {
+        cursor,
+        violations,
+        events,
+    }
+}
+
+/// Shared `since`/`limit` query parser (`limit` clamped to `[1, max]`).
+fn parse_since_limit(raw: &str, default_limit: usize, max_limit: usize) -> Result<(u64, usize)> {
+    let mut since = 0u64;
+    let mut limit = default_limit;
+    for pair in raw.split('&').filter(|s| !s.is_empty()) {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        let v = url_decode(v);
+        match k {
+            "since" => {
+                since = v
+                    .parse::<u64>()
+                    .map_err(|_| anyhow::anyhow!("since must be a Unix-epoch second"))?;
+            }
+            "limit" => {
+                limit = v
+                    .parse::<usize>()
+                    .map_err(|_| anyhow::anyhow!("limit must be a positive integer"))?
+                    .clamp(1, max_limit);
+            }
+            _ => {}
+        }
+    }
+    Ok((since, limit))
+}
+
 // ── /api/seed-graph ─────────────────────────────────────────────────────
 //
 // "What should the live relation graph show before any agent has run?"
@@ -1200,7 +1321,7 @@ fn agents_launch(mut request: Request, root: &Path) -> Result<()> {
     if let Some(p) = &req.profile {
         // Server-emitted profile ids are bare filenames; the CLI flag
         // wants the `internal/<id>` namespace prefix. Pre-pend here
-        // so desktop / web clients don't need to know the namespace.
+        // so web clients don't need to know the namespace.
         cmd.arg("--profile").arg(format!("internal/{p}"));
     }
     if req.no_refresh {
@@ -2369,13 +2490,27 @@ struct DrawerDetail {
 
 fn memory_get(root: &Path, query: &str) -> Result<DrawerDetail> {
     let mut id = String::new();
+    let mut repo: Option<String> = None;
     for pair in query.split('&').filter(|s| !s.is_empty()) {
         let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
-        if k == "id" {
-            id = url_decode(v);
+        match k {
+            "id" => id = url_decode(v),
+            // Set by the cross-repo `/memory` browser so a hit from another
+            // repo opens that repo's db, not the one the server launched in.
+            "repo" => repo = Some(url_decode(v)).filter(|s| !s.is_empty()),
+            _ => {}
         }
     }
-    let memory_path = root.join(".crabcc").join("memory.db");
+    // `repo=<key>` → `$CRABCC_HOME/repos/<key>/memory.db` (traversal-guarded).
+    // Otherwise the current repo: centralised path first, legacy fallback.
+    let memory_path = match repo.as_deref() {
+        Some(key) => memory_workspace::repo_db_path(key)
+            .unwrap_or_else(|| root.join(".crabcc").join("memory.db")),
+        None => crabcc_memory::resolve_db_path(root)
+            .ok()
+            .filter(|p| p.exists())
+            .unwrap_or_else(|| root.join(".crabcc").join("memory.db")),
+    };
     if id.is_empty() || !memory_path.exists() {
         return Ok(DrawerDetail {
             found: false,
@@ -2531,28 +2666,36 @@ fn memory_ingest(mut request: Request, root: &Path) -> Result<()> {
     // URL fetch phase — async via a per-request runtime. Single-user
     // localhost so the runtime cost is negligible.
     if !urls.is_empty() {
-        let safe: Vec<String> = urls
-            .iter()
-            .filter(|u| match crabcc_fetch::is_ingest_safe_url(u) {
-                Ok(()) => true,
-                Err(reason) => {
-                    errors.push(IngestError {
-                        url: (*u).clone(),
-                        error: reason,
-                    });
-                    false
-                }
-            })
-            .cloned()
-            .collect();
+        // Untrusted input, so SSRF-guarded by default. The operator can
+        // relax their own deployment with CRABCC_FETCH_SSRF=off — but the
+        // override only takes effect if this prefilter is gated on the same
+        // resolver as FetchOpts::ingest(), else localhost/private URLs are
+        // rejected here before the relaxed fetch can run.
+        let enforce_ssrf = crabcc_fetch::ssrf_enforced(true);
+        let safe: Vec<String> = if enforce_ssrf {
+            urls.iter()
+                .filter(|u| match crabcc_fetch::is_ingest_safe_url(u) {
+                    Ok(()) => true,
+                    Err(reason) => {
+                        errors.push(IngestError {
+                            url: (*u).clone(),
+                            error: reason,
+                        });
+                        false
+                    }
+                })
+                .cloned()
+                .collect()
+        } else {
+            urls.clone()
+        };
         if !safe.is_empty() {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()?;
-            let results = rt.block_on(crabcc_fetch::fetch_and_clean(
-                &safe,
-                crabcc_fetch::FetchOpts::ingest(),
-            ));
+            let mut fetch_opts = crabcc_fetch::FetchOpts::ingest();
+            fetch_opts.enforce_ssrf = enforce_ssrf;
+            let results = rt.block_on(crabcc_fetch::fetch_and_clean(&safe, fetch_opts));
             for r in results {
                 if r.error.is_some() || r.content_markdown.is_none() {
                     errors.push(IngestError {
@@ -2823,6 +2966,45 @@ mod tests {
     use super::query::parse_query;
     use super::*;
 
+    #[test]
+    fn netlog_snapshot_filters_sorts_and_counts_violations() {
+        // Out-of-order lines, a blank, a comment, and one blocked (ok:false).
+        let body = "\
+{\"ts\":30,\"caller\":\"telegram\",\"op\":\"request\",\"host\":\"api.telegram.org\",\"port\":443,\"ok\":true}
+# comment line is ignored
+
+{\"ts\":10,\"caller\":\"morph\",\"op\":\"request\",\"host\":\"api.morphllm.com\",\"port\":443,\"ok\":true}
+{\"ts\":20,\"caller\":\"x\",\"op\":\"request\",\"host\":\"evil.example.com\",\"port\":443,\"ok\":false}
+";
+        let snap = netlog_snapshot_from(body, 0, 100);
+        assert_eq!(snap.events.len(), 3);
+        // Sorted ascending by ts.
+        assert_eq!(
+            snap.events.iter().map(|e| e.ts).collect::<Vec<_>>(),
+            vec![10, 20, 30]
+        );
+        assert_eq!(snap.cursor, 30);
+        assert_eq!(snap.violations, 1); // the evil.example.com block
+
+        // `since` drops events at/below the cursor; `limit` caps from the end.
+        let snap = netlog_snapshot_from(body, 10, 100);
+        assert_eq!(
+            snap.events.iter().map(|e| e.ts).collect::<Vec<_>>(),
+            vec![20, 30]
+        );
+        let snap = netlog_snapshot_from(body, 0, 1);
+        assert_eq!(snap.events.len(), 1);
+        assert_eq!(snap.events[0].ts, 30, "limit keeps the newest");
+    }
+
+    #[test]
+    fn netlog_snapshot_empty_log_is_ok() {
+        let snap = netlog_snapshot_from("", 5, 100);
+        assert!(snap.events.is_empty());
+        assert_eq!(snap.cursor, 5); // falls back to `since`
+        assert_eq!(snap.violations, 0);
+    }
+
     /// Routes the `serve` HTTP handler matches today. Hand-maintained
     /// alongside the match arms — adding a new `/api/...` endpoint
     /// requires adding it here AND in `crates/crabcc-viz/openapi.yaml`.
@@ -2837,6 +3019,7 @@ mod tests {
         "/api/openapi.yaml",
         "/api/bootstrap",
         "/api/activity",
+        "/api/netlog",
         "/api/savings",
         "/api/agents",
         "/api/agents/{id}/log",
@@ -2857,6 +3040,7 @@ mod tests {
         "/api/seed-graph",
         "/api/debug/dump",
         "/api/memory/recent",
+        "/api/memory/search",
         "/api/events",
         // Forge (GitHub/Gitea) PR viewer
         "/api/forge/config",

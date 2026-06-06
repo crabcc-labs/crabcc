@@ -302,6 +302,37 @@ impl Palace {
     ) -> Result<crate::mine::MineReport> {
         crate::mine::sessions::mine_sessions(self, dir, opts)
     }
+
+    // ── remind (send_later primitive) ────────────────────────────────────────
+
+    /// Schedule a reminder at `due_at` (epoch seconds). Returns the new reminder id.
+    ///
+    /// The reminder fires when any agent calls [`remind_poll`] after that timestamp.
+    /// This is the crabcc equivalent of the remote `send_later` primitive.
+    pub fn remind_set(&self, due_at: i64, message: &str) -> Result<i64> {
+        self.backend.remind_set(due_at, message)
+    }
+
+    /// Atomically fetch all due reminders (due_at ≤ now, undelivered) and mark
+    /// them delivered. Returns an empty vec when nothing is due.
+    ///
+    /// Wire this into a `PostToolUse` hook (Claude Code), agent startup instruction
+    /// (Cursor, OpenCode, Nullclaw, OMP), or a shell `PROMPT_COMMAND` / `precmd`
+    /// to get cross-agent `send_later` behaviour. See `memory.remind_hooks` for
+    /// per-agent config snippets.
+    pub fn remind_poll(&self) -> Result<Vec<Reminder>> {
+        self.backend.remind_poll()
+    }
+
+    /// List pending (or all) reminders without marking them delivered.
+    pub fn remind_list(&self, include_delivered: bool) -> Result<Vec<Reminder>> {
+        self.backend.remind_list(include_delivered)
+    }
+
+    /// Cancel a scheduled reminder by id. Returns `true` if it existed.
+    pub fn remind_delete(&self, id: i64) -> Result<bool> {
+        self.backend.remind_delete(id)
+    }
 }
 
 #[cfg(test)]

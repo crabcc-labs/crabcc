@@ -1,10 +1,10 @@
 use crate::resolve::{ImportSpec, Resolver, ScopeCtx, SymbolId};
 use crate::store::Store;
 use crate::types::{Edge, Symbol, SymbolKind};
+use ahash::HashMap;
 use anyhow::{anyhow, Result};
 use bumpalo::Bump;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::path::Path;
 use tree_sitter::{Node, Parser};
 
@@ -22,7 +22,7 @@ pub mod resolve_ts;
 // The map is keyed on the `&'static str` lang tag we already pass
 // everywhere, so no allocation on lookup.
 thread_local! {
-    static PARSERS: RefCell<HashMap<&'static str, Parser>> = RefCell::new(HashMap::new());
+    static PARSERS: RefCell<HashMap<&'static str, Parser>> = RefCell::new(HashMap::default());
 }
 
 fn intern_lang(lang: &str) -> Option<&'static str> {
@@ -141,9 +141,9 @@ pub fn extract_file_with_edges_with_resolver(
 
         // Pass 1: collect definitions, write to store, build local_defs + src_id map
         let mut symbols = Vec::new();
-        let mut local_defs: HashMap<String, SymbolId> = HashMap::new();
+        let mut local_defs: HashMap<String, SymbolId> = HashMap::default();
         // tree-sitter Node::id() returns usize and is stable for the Tree's lifetime.
-        let mut node_to_src_id: HashMap<(usize, usize), SymbolId> = HashMap::new();
+        let mut node_to_src_id: HashMap<(usize, usize), SymbolId> = HashMap::default();
         walk_with_store(
             root,
             bytes,
@@ -228,8 +228,8 @@ pub fn extract_from_root_with_resolver(
 
     // Pass1: collect definitions, write to store
     let mut symbols = Vec::new();
-    let mut local_defs: HashMap<String, SymbolId> = HashMap::new();
-    let mut node_to_src_id: HashMap<(usize, usize), SymbolId> = HashMap::new();
+    let mut local_defs: HashMap<String, SymbolId> = HashMap::default();
+    let mut node_to_src_id: HashMap<(usize, usize), SymbolId> = HashMap::default();
     walk_with_store(
         root,
         src,
@@ -1091,13 +1091,12 @@ fn signature_for(node: &Node, src: &[u8], lang: &str) -> Option<String> {
     // or past the buffer. Slice through `get()` so a bad range degrades to
     // "no signature" instead of panicking — a panic here would poison the
     // caller's store mutex and wedge all further indexing.
-    let _tail = src.get(start..)?;
+    let tail = src.get(start..)?;
     let end = body.map(|b| b.start_byte()).unwrap_or_else(|| {
-        // No body — take just the first line.
-        let nl = src[start..]
-            .iter()
-            .position(|&b| b == b'\n')
-            .unwrap_or_default();
+        // No body — take just the first line. Reuse the bounds-checked
+        // `tail` (start <= len already guaranteed by the `?` above) instead
+        // of re-slicing `src[start..]`, which would also leave `tail` unused.
+        let nl = tail.iter().position(|&b| b == b'\n').unwrap_or_default();
         start + nl
     });
     let raw = std::str::from_utf8(src.get(start..end)?).ok()?;

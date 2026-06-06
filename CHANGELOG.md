@@ -8,6 +8,76 @@ All notable changes to crabcc are documented here. Format follows
 
 ### Added
 
+- **`crabcc affected` — graph-derived change impact + targeted test
+  selection.** Closes the agent loop's *verify* step. Resolves the changed
+  symbols (working tree by default, a `--since REV` git range, or explicit
+  `--symbol NAME`), walks the call graph **upward** from each
+  (`query::blast_radius`, reverse `call`/`ref` edges) to the tests that
+  transitively exercise them, and emits a ready-to-run, filtered command for
+  the detected runner (`cargo`/`go`/`pytest`/`npm`): e.g. `cargo test --
+  open_wal store_roundtrip` instead of the whole suite. `--run` executes it
+  through the `run` capture/squeeze path; the MCP `affected` tool returns the
+  command for the agent to run. Test detection is heuristic (the index does
+  not record `#[test]` attributes): file path (`tests/`, `*_test`, `*.spec`),
+  name (`test_*`, Go `Test*`), or parent module (`mod tests` — catches Rust
+  unit tests whose file is not under `tests/`). New core: `crabcc_core::affected`,
+  `gitdiff::changed_files_worktree`, `Store::symbols_in_file_with_ids`.
+  *Known limit:* a test that touches a symbol only inside a macro argument
+  (`assert_eq!(f(), x)`) is not linked — crabcc's extractor records the
+  outermost call (the macro), so bind the call (`let r = f();`) to be selected.
+- **`crabcc research` — deep-research handoff bridge.** Closes the loop
+  `crabcc init` opens. `crabcc research brief` turns the machine-readable
+  `.crabcc/onboard/research-plan.json` into a ready-to-run brief for the
+  deep-research skill (per-topic queries + the storage contract).
+  `crabcc research ingest --topic <t>` (body from `--file` or stdin) stores a
+  topic's findings into the `research` memory wing (room = topic), so
+  `crabcc enrich "<topic>"` surfaces them. `crabcc research status` shows which
+  plan topics have findings yet — *plan in → findings in a known wing → enrich
+  out*, end to end. Reads only the memory Palace + the onboard plan; no symbol
+  Store needed. The `init` research-plan.md + JSON now point at these commands.
+
+### Performance
+
+- **Fuzzy symbol search 3–6× faster, with a constant-time fast-bail.** The
+  native (post-Tantivy) `fuzzy` lookup now uses an allocation-free bounded
+  Levenshtein — profiling showed ~34% of its instructions were in the
+  allocator (four heap `Vec`s per call) and the length-gap prune ran *after*
+  them. Reworked into a reusable scratch with an ASCII byte fast-path: the
+  length prune runs first and the DP rows are allocated once per scan. Bench:
+  `fuzzy/exact/50k` 39→11 ms (3.5×), `fuzzy/nomatch/50k` 33→5 ms (6.5×).
+  Additionally, `fuzzy` now bails once it has `limit` exact hits (or a full
+  candidate pool), so a short/common query matching a large slice of the
+  corpus returns in ~5 µs flat instead of scanning everything; ranking stays
+  exact when matches are sparse. Adds a `fuzzy/dense` bench + a profiling
+  example. (No API or behavior change for sparse queries — distances identical.)
+
+## [6.1.0] — 2026-06-04
+
+### Added
+
+- **Agent token-optimization commands.** `crabcc edit FILE#SYMBOL` (AST-targeted
+  symbol rewrite — `--replace` verbatim splice or `--lazy` Morph Fast Apply;
+  reindexes the touched file after `--write`; CRLF-preserving), `crabcc csv
+  stats|sample|count` (qsv-backed CSV summaries; explicit + opt-in, never drops
+  rows), and `crabcc squeeze` (collapse carriage-return/progress redraws +
+  repeated lines from stdin, surfacing errors/warnings, with a self-describing
+  stderr disclosure). `crabcc read` gains **diff-on-re-read**: re-reading a file
+  edited in-session returns a unified diff vs the last-seen version (additive
+  `session_reads.content`). `crabcc run -- <cmd>` captures+squeezes a command's
+  output and **detaches long/blocking commands to the background instead of
+  killing them** (own session, output to `~/.crabcc/runs/<id>/log`), returning
+  an instant snapshot + a `run <id>` handle; `--follow`/`--list`/`--kill`
+  manage background runs. The PreToolUse rewrite hook routes blocking follows
+  (`tail -f`, `watch`, `journalctl -f`) through `crabcc run --timeout` so they
+  bound + detach instead of hanging, and pagers (`less`/`more <file>`) through
+  the `cat` path.
+- **Nix dev shell.** `flake.nix` devShell (Rust toolchain + the `.tools` CLI
+  fleet + `rtk` from numtide/llm-agents.nix), `.envrc` for nix-direnv, and a
+  `nix flake check` CI job that verifies it on GitHub-hosted runners.
+- **superpowers plugin enabled repo-wide** via project `.claude/settings.json`
+  (official Claude plugin marketplace), activating after the workspace-trust
+  prompt.
+
 - **`ucracc-lsp` 0.4.0 + signed Docker/release pipeline.** The LSP crate is
   bumped to 0.4.0 (Zed integration + `indexPath`). New
   `release-ucracc-lsp-image.yml` builds a multi-arch Docker image

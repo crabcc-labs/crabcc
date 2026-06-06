@@ -51,6 +51,29 @@ tasks:
       - 'echo "" && echo "samply profile written to .summary/profile-memory-search.json"'
       - 'echo "view interactively with:  samply load .summary/profile-memory-search.json"'
 
+  profile-fts:
+    desc: |
+      Profile the native fuzzy/prefix symbol search over REPO_FIXTURE with
+      samply. Indexes the fixture once, then runs N hot lookup calls.
+    deps: [profile-build]
+    summary: |
+      Each `crabcc lookup fuzzy/prefix` invocation rebuilds the in-memory Fts
+      from the SQLite store and scans it (bounded Levenshtein / prefix) — the
+      real CLI hot path after the Tantivy removal. This loop surfaces where the
+      time goes: store load (`iter_all_symbols`) vs the scan itself. For a pure
+      in-process microbench of the scan instead, run
+      `cargo bench -p crabcc-core --features bench --bench fts_search`.
+    vars:
+      N: '{{.N | default "200"}}'
+      Q: '{{.Q | default "Stor"}}'
+    cmds:
+      - 'command -v samply >/dev/null 2>&1 || {{.CARGO}} install samply --locked'
+      - 'mkdir -p .summary'
+      - 'target/profiling/crabcc index --root {{.REPO_FIXTURE}} >/dev/null'
+      - "samply record -o .summary/profile-fts.json -- bash -c 'for i in $(seq 1 {{.N}}); do target/profiling/crabcc --root {{.REPO_FIXTURE}} lookup fuzzy \"{{.Q}}\" >/dev/null; target/profiling/crabcc --root {{.REPO_FIXTURE}} lookup prefix \"{{.Q}}\" >/dev/null; done'"
+      - 'echo "" && echo "samply profile written to .summary/profile-fts.json"'
+      - 'echo "view interactively with:  samply load .summary/profile-fts.json"'
+
   flamegraph-index:
     desc: |
       Alternative profile via cargo-flamegraph (SVG output). Requires DTrace

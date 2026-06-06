@@ -25,6 +25,7 @@ languages = [
     "Go",
     "Swift",
     "Java",
+    "Shell Script",
     "YAML",
     "Markdown",
 ]
@@ -44,5 +45,6 @@ languages = [
 "Go" = "go"
 "Swift" = "swift"
 "Java" = "java"
+"Shell Script" = "shellscript"
 "YAML" = "yaml"
 "Markdown" = "markdown"

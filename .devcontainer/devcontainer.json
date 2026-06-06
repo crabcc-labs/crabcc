@@ -39,7 +39,8 @@
   },
   "remoteEnv": {
     "RUST_BACKTRACE": "1",
-    "CARGO_TERM_COLOR": "always"
+    "CARGO_TERM_COLOR": "always",
+    "CRABCC_AUTO_MEMORY": "1"
   },
   "mounts": [
     "source=${localWorkspaceFolderBasename}-cargo-cache,target=/usr/local/cargo/registry,type=volume",

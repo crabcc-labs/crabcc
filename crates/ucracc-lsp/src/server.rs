@@ -7,12 +7,12 @@ use crabcc_core::{
     fts::Fts,
     graph::CallGraph,
     hash, index,
-    query::{self, find_callers, find_symbol},
+    query::{self, find_callers, find_symbol, find_symbols},
     store::Store,
 };
 use dashmap::DashMap;
 use std::path::PathBuf;
-use std::sync::Arc as StdArc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::SystemTime;
 use tokio::sync::Mutex;
@@ -24,7 +24,6 @@ use tracing::{info, warn};
 pub struct RootConfig {
     pub repo_root: PathBuf,
     pub db_path: PathBuf,
-    pub fts_dir: PathBuf,
 }
 
 pub struct Backend {
@@ -38,42 +37,90 @@ pub struct Backend {
     /// handle without the old `RwLock<State>` read guard.
     pub store: Arc<std::sync::Mutex<Option<Store>>>,
     pub fts: Arc<std::sync::Mutex<Option<Fts>>>,
+    /// Bumped on every store mutation. `ensure_fts` snapshots it before
+    /// building and refuses to install a snapshot whose generation is stale,
+    /// so a build racing a concurrent edit can't overwrite the post-edit clear.
+    pub fts_gen: Arc<AtomicU64>,
     pub graph: Arc<std::sync::Mutex<Option<CallGraph>>>,
     /// Local-only usage/error/perf counters (see stats.rs).
     pub stats: Arc<crate::stats::Stats>,
 }
 
-fn ensure_store(store: &std::sync::Mutex<Option<Store>>, db_path: &std::path::Path) -> bool {
-    let mut g = store.lock().unwrap();
+/// Lazily open a `T` into `slot` the first time it's needed, returning
+/// whether `slot` ends up populated. `ensure_store`/`ensure_fts` share this
+/// exact lock → already-open? → exists? → open → log-on-error shape; only the
+/// opener and the log label differ.
+fn ensure_open<T>(
+    slot: &std::sync::Mutex<Option<T>>,
+    path: &std::path::Path,
+    open: impl FnOnce(&std::path::Path) -> anyhow::Result<T>,
+    label: &str,
+) -> bool {
+    let mut g = slot.lock().unwrap();
     if g.is_some() {
         return true;
     }
-    if !db_path.exists() {
+    if !path.exists() {
         return false;
     }
-    match Store::open(db_path) {
-        Ok(s) => {
-            *g = Some(s);
+    match open(path) {
+        Ok(v) => {
+            *g = Some(v);
             true
         }
         Err(e) => {
-            tracing::warn!(target: "ucracc_lsp", error = %e, "ensure_store failed");
+            tracing::warn!(target: "ucracc_lsp", error = %e, "{} failed", label);
             false
         }
     }
 }
 
-fn ensure_fts(fts: &std::sync::Mutex<Option<Fts>>, fts_dir: &std::path::Path) -> bool {
-    let mut g = fts.lock().unwrap();
-    if g.is_some() {
+fn ensure_store(store: &std::sync::Mutex<Option<Store>>, db_path: &std::path::Path) -> bool {
+    ensure_open(store, db_path, Store::open, "ensure_store")
+}
+
+/// Lazily build the in-memory `Fts` from the live SQLite store and cache it in
+/// `fts`. Fuzzy/prefix no longer read a sidecar — they snapshot the symbol
+/// table directly — so this ensures the store is open, then builds from it.
+///
+/// Concurrency: the snapshot is read under the store lock, but assigned to
+/// `fts` only after that lock is released, so a `did_change`/`did_save`
+/// reindex can commit + clear `fts` in between. To stop this build from racing
+/// a now-stale snapshot back into the slot, we snapshot `fts_gen` before
+/// reading and, under the `fts` lock, install only if the generation is
+/// unchanged (and nobody else already filled the slot). The mutation path
+/// (`invalidate_fts`) bumps the generation + clears the slot under the same
+/// lock, so the check is atomic against it. Locks are never held across both
+/// `store` and `fts` simultaneously, keeping it deadlock-free.
+fn ensure_fts(
+    fts: &std::sync::Mutex<Option<Fts>>,
+    fts_gen: &AtomicU64,
+    store: &std::sync::Mutex<Option<Store>>,
+    db_path: &std::path::Path,
+) -> bool {
+    if fts.lock().unwrap().is_some() {
         return true;
     }
-    if !fts_dir.exists() {
+    if !ensure_store(store, db_path) {
         return false;
     }
-    match Fts::open(fts_dir) {
-        Ok(f) => {
-            *g = Some(f);
+    let gen_before = fts_gen.load(Ordering::SeqCst);
+    let built = {
+        let g = store.lock().unwrap();
+        match g.as_ref() {
+            Some(s) => Fts::from_store(s),
+            None => return false,
+        }
+    };
+    match built {
+        Ok(v) => {
+            let mut slot = fts.lock().unwrap();
+            // Install only if no mutation landed while we were building and
+            // nobody beat us to it. A stale build is simply dropped; the next
+            // request rebuilds against the fresh store.
+            if slot.is_none() && fts_gen.load(Ordering::SeqCst) == gen_before {
+                *slot = Some(v);
+            }
             true
         }
         Err(e) => {
@@ -83,6 +130,15 @@ fn ensure_fts(fts: &std::sync::Mutex<Option<Fts>>, fts_dir: &std::path::Path) ->
     }
 }
 
+/// Mark the symbol store as mutated: bump the FTS generation and drop the
+/// cached snapshot under one lock, so an in-flight `ensure_fts` build that
+/// started before this point cannot install its now-stale snapshot afterwards.
+fn invalidate_fts(fts: &std::sync::Mutex<Option<Fts>>, fts_gen: &AtomicU64) {
+    let mut slot = fts.lock().unwrap();
+    fts_gen.fetch_add(1, Ordering::SeqCst);
+    *slot = None;
+}
+
 impl Backend {
     pub fn new(client: Client) -> Self {
         Self {
@@ -90,12 +146,12 @@ impl Backend {
             root_config: Mutex::new(Arc::new(RootConfig {
                 repo_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
                 db_path: PathBuf::new(),
-                fts_dir: PathBuf::new(),
             })),
             cache: Arc::new(LruCache::new()),
             open_docs: Arc::new(DashMap::new()),
             store: Arc::new(std::sync::Mutex::new(None)),
             fts: Arc::new(std::sync::Mutex::new(None)),
+            fts_gen: Arc::new(AtomicU64::new(0)),
             graph: Arc::new(std::sync::Mutex::new(None)),
             stats: Arc::new(crate::stats::Stats::new()),
         }
@@ -151,7 +207,7 @@ impl LanguageServer for Backend {
         // Honor an editor-supplied `initialization_options.indexPath`
         // (Zed forwards `lsp.ucracc-lsp.initialization_options` from
         // settings.json). It points at the `.crabcc` directory that holds
-        // `index.db` + `tantivy/`. Relative paths resolve against the repo
+        // `index.db`. Relative paths resolve against the repo
         // root. Absent → the default `<root>/.crabcc` auto-discovery, so
         // existing clients (Neovim, the tests) are unaffected.
         //
@@ -171,13 +227,12 @@ impl LanguageServer for Backend {
         // Record paths; do NOT open Store/Fts yet. They're lazy-opened
         // on first use (or prefetched from the `initialized` notification
         // below). This keeps `initialize` in the tens-of-microseconds
-        // range instead of paying the ~1 ms SQLite/tantivy open cost
+        // range instead of paying the ~1 ms SQLite open + symbol-load cost
         // before the editor has even sent a request.
         let mut cfg = self.root_config.lock().await;
         *cfg = Arc::new(RootConfig {
             repo_root: root.clone(),
             db_path: crabcc_dir.join("index.db"),
-            fts_dir: crabcc_dir.join("tantivy"),
         });
         drop(cfg);
 
@@ -203,10 +258,11 @@ impl LanguageServer for Backend {
         // user never sends one, no I/O ever happens.
         let store = self.store.clone();
         let fts = self.fts.clone();
+        let fts_gen = self.fts_gen.clone();
         let cfg = self.root_config.lock().await.clone();
         let prefetch = tokio::task::spawn_blocking(move || {
             let store_ok = ensure_store(&store, &cfg.db_path);
-            let _ = ensure_fts(&fts, &cfg.fts_dir);
+            let _ = ensure_fts(&fts, &fts_gen, &store, &cfg.db_path);
             (store_ok, cfg.repo_root.clone())
         })
         .await;
@@ -281,6 +337,9 @@ impl LanguageServer for Backend {
         // a user might have changed outside the editor (git pull, etc.).
         let store = self.store.clone();
         let graph = self.graph.clone();
+        let fts = self.fts.clone();
+        let fts_gen = self.fts_gen.clone();
+        let cache = self.cache.clone();
         tokio::task::spawn_blocking(move || {
             ensure_store(&store, &cfg.db_path);
             let store_guard = store.lock().unwrap();
@@ -288,6 +347,14 @@ impl LanguageServer for Backend {
                 let _ = index::refresh(&cfg.repo_root, store);
                 drop(store_guard);
                 *graph.lock().unwrap() = None;
+                // `refresh` mutated the symbol table: bump the generation +
+                // drop the snapshot so the next workspace/symbol request
+                // rebuilds it (and an in-flight build can't race it back).
+                invalidate_fts(&fts, &fts_gen);
+                // And re-clear the LRU: a query racing this background refresh
+                // may have re-cached a pre-refresh result after the entry-point
+                // invalidate_all() above but before the new rows landed.
+                cache.invalidate_all();
             }
         });
         let _ = p; // saved file was already re-indexed by did_change/did_open.
@@ -322,7 +389,7 @@ impl LanguageServer for Backend {
         let syms = store.symbols_in_file(&rel).unwrap_or_default();
         let dsyms = handlers::document_symbols(syms);
         self.cache
-            .put(key, CacheValue::DocumentSymbols(StdArc::new(dsyms.clone())));
+            .put(key, CacheValue::DocumentSymbols(Arc::new(dsyms.clone())));
         Ok(Some(DocumentSymbolResponse::Nested(dsyms)))
     }
 
@@ -357,7 +424,7 @@ impl LanguageServer for Backend {
         let hits = find_symbol(store, &word).unwrap_or_default();
         let locs = handlers::definition_locations(&cfg.repo_root, hits);
         self.cache
-            .put(key, CacheValue::Definition(StdArc::new(locs.clone())));
+            .put(key, CacheValue::Definition(Arc::new(locs.clone())));
         if locs.is_empty() {
             return Ok(None);
         }
@@ -416,7 +483,7 @@ impl LanguageServer for Backend {
         hits.dedup_by(|a, b| a.file == b.file && a.line == b.line && a.col == b.col);
         let locs = handlers::reference_locations(&root, hits);
         self.cache
-            .put(cache_key, CacheValue::References(StdArc::new(locs.clone())));
+            .put(cache_key, CacheValue::References(Arc::new(locs.clone())));
         Ok(Some(locs))
     }
 
@@ -443,8 +510,7 @@ impl LanguageServer for Backend {
         };
         let hits = find_symbol(store, &word).unwrap_or_default();
         let h = handlers::hover_for(&hits);
-        self.cache
-            .put(key, CacheValue::Hover(StdArc::new(h.clone())));
+        self.cache.put(key, CacheValue::Hover(Arc::new(h.clone())));
         Ok(h)
     }
 
@@ -462,26 +528,29 @@ impl LanguageServer for Backend {
         if let Some(CacheValue::WorkspaceSymbol(out)) = self.cache.get(&key) {
             return Ok(Some((*out).clone()));
         }
-        ensure_fts(&self.fts, &cfg.fts_dir);
         ensure_store(&self.store, &cfg.db_path);
+        ensure_fts(&self.fts, &self.fts_gen, &self.store, &cfg.db_path);
         let fts_guard = self.fts.lock().unwrap();
         let store_guard = self.store.lock().unwrap();
         let store = match store_guard.as_ref() {
             Some(s) => s,
             None => return Ok(None),
         };
-        let mut syms = Vec::new();
-        if let Some(fts) = fts_guard.as_ref() {
-            for hit in fts.prefix(&q, 50).unwrap_or_default() {
-                // The Fts hit has name + file; re-hydrate via find_symbol
-                // to keep one wire shape across the surface.
-                if let Ok(mut found) = find_symbol(store, &hit.name) {
-                    syms.append(&mut found);
-                }
-            }
+        let mut syms = if let Some(fts) = fts_guard.as_ref() {
+            // Re-hydrate all prefix hits in ONE query (batched `find_symbols`)
+            // instead of an N+1 `find_symbol` per hit. Same wire shape; dedup
+            // below handles any fts/store overlap.
+            let names: Vec<String> = fts
+                .prefix(&q, 50)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|h| h.name)
+                .collect();
+            let name_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+            find_symbols(store, &name_refs).unwrap_or_default()
         } else {
-            syms = find_symbol(store, &q).unwrap_or_default();
-        }
+            find_symbol(store, &q).unwrap_or_default()
+        };
         // De-dup by (name, file, line) to avoid n-of-the-same when fts and store overlap.
         syms.sort_by(|a, b| {
             a.name
@@ -493,7 +562,7 @@ impl LanguageServer for Backend {
         syms.truncate(200);
         let out = handlers::workspace_symbol_legacy(&cfg.repo_root, syms);
         self.cache
-            .put(key, CacheValue::WorkspaceSymbol(StdArc::new(out.clone())));
+            .put(key, CacheValue::WorkspaceSymbol(Arc::new(out.clone())));
         Ok(Some(out))
     }
 
@@ -722,8 +791,18 @@ impl Backend {
         .await
         .unwrap_or_else(|e| Err(anyhow::anyhow!("join: {e}")));
 
-        if let Err(e) = result {
-            warn!(target: "ucracc_lsp", ?uri, error = %e, "index_uri failed");
+        match result {
+            // The store just changed — drop the cached fuzzy/prefix snapshot
+            // AND re-clear the LRU. tower-lsp dispatches notifications
+            // concurrently, so a workspace/symbol racing this edit may have
+            // re-cached a pre-edit result between the entry-point
+            // invalidate_all() and now; clearing again pins post-edit queries
+            // to the fresh rows. The next request rebuilds `fts` lazily.
+            Ok(()) => {
+                invalidate_fts(&self.fts, &self.fts_gen);
+                self.cache.invalidate_all();
+            }
+            Err(e) => warn!(target: "ucracc_lsp", ?uri, error = %e, "index_uri failed"),
         }
     }
 }
@@ -731,7 +810,7 @@ impl Backend {
 /// Pull `indexPath` out of the LSP `initialization_options` blob, if the
 /// client sent one. Accepts both `indexPath` and the snake_case
 /// `index_path` spelling so config copy/paste is forgiving. Returns the
-/// path to the `.crabcc` directory (containing `index.db` + `tantivy/`).
+/// path to the `.crabcc` directory (containing `index.db`).
 fn init_options_index_path(opts: Option<&serde_json::Value>) -> Option<PathBuf> {
     let obj = opts?.as_object()?;
     obj.get("indexPath")

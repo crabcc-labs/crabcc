@@ -1,0 +1,1016 @@
+#!/usr/bin/env python3
+"""bench-opt-bin — advanced binary-optimization sweep harness.
+
+Sweeps the high-effort optimization axes that sit *past* the shipped
+release baseline (opt-level=3 / lto=fat / codegen-units=1 / panic=abort /
+strip):
+
+    target-cpu × allocator × PGO{off,on} × BOLT{off,on}   (+ opt-level=z corner)
+
+Each leg builds `crabcc` on top of the reserved `release-nightly` profile
+(see workspace Cargo.toml — that profile exists precisely for PGO/BOLT/opt-z
+experiments), drives a realistic heavy workload (`crabcc index` over a
+fixture repo) for telemetry, and measures runtime (hyperfine) + footprint
+(`size -A`, file size, optional cargo-bloat). One NDJSON row per leg plus a
+rendered Markdown report.
+
+METHODOLOGY
+-----------
+Two phases, deliberately:
+  * Phase A — BUILD (parallel). The time-dominant part. Each leg compiles in
+    its own CARGO_TARGET_DIR so differing RUSTFLAGS never thrash a shared
+    cache. PGO (instrument → workload → profdata merge → use-build) and BOLT
+    (emit-relocs build → instrument → workload → optimize) happen here.
+  * Phase B — MEASURE (serial). Timing is poisoned by a busy box, so the
+    binaries are measured one at a time, optionally pinned with `taskset`.
+
+This shape is what makes "deep matrix in one hour" real: builds are the
+expensive part and they fan out across cores; measurements stay trustworthy
+because they don't.
+
+REQUIREMENTS (PATH)
+-------------------
+  cargo, rustc, hyperfine, size (binutils), llvm-profdata
+  (`rustup component add llvm-tools-preview`). BOLT legs additionally need
+  `llvm-bolt` + `merge-fdata`. `cargo bloat` is optional (--bloat).
+
+Stdlib only.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import math
+import os
+import platform
+import re
+import shutil
+import tarfile
+import subprocess
+import sys
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass, field, asdict
+from datetime import datetime, timezone
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+PROFILE = "release-nightly"
+PKG = "crabcc-cli"
+BIN = "crabcc"
+
+# Allocator name → extra cargo features. `system` means the std allocator
+# (no global_allocator override); the binary crate already wires
+# `mimalloc` / `jemalloc` features to #[global_allocator] cfg gates.
+ALLOC_FEATURES = {
+    "system": [],
+    "mimalloc": ["mimalloc"],
+    "jemalloc": ["jemalloc"],
+}
+
+# target-cpu axis per architecture. x86-64-vN are psABI micro-arch levels;
+# aarch64 uses Neoverse cores (AWS Graviton2 = neoverse-n1, Graviton3 =
+# neoverse-v1, Graviton4 = neoverse-v2; Apple = `native`/`apple-m1`). PGO/BOLT
+# and the allocator axis are arch-independent — only the cpu names change.
+CPU_AXES = {
+    "x86-64": {
+        "baseline": "x86-64-v3",
+        "deep": ["x86-64-v2", "x86-64-v3", "x86-64-v4", "native"],
+        "front": ["x86-64-v3", "native"],   # PGO/BOLT corners in the deep matrix
+        "optz": ["x86-64-v3", "x86-64-v4"],
+    },
+    "aarch64": {
+        "baseline": "neoverse-v1",
+        "deep": ["neoverse-n1", "neoverse-v1", "neoverse-v2", "native"],
+        "front": ["neoverse-v1", "native"],
+        "optz": ["neoverse-v1", "neoverse-v2"],
+    },
+}
+
+_CPU_TAGS = {
+    "x86-64-v2": "v2", "x86-64-v3": "v3", "x86-64-v4": "v4",
+    "neoverse-n1": "nn1", "neoverse-v1": "nv1", "neoverse-v2": "nv2",
+    "native": "native",
+}
+
+
+def cpu_tag(cpu: str) -> str:
+    """Short, id-friendly tag for a target-cpu (keeps leg ids like 'v3-bolt')."""
+    return _CPU_TAGS.get(cpu, cpu)
+
+
+def norm_arch(name: str) -> str | None:
+    """Canonicalise a machine/arch string to 'x86-64' | 'aarch64', or None."""
+    m = name.lower()
+    if m in ("x86-64", "x86_64", "amd64", "x64"):
+        return "x86-64"
+    if m in ("aarch64", "arm64"):
+        return "aarch64"
+    return None
+
+
+def host_arch() -> str:
+    return norm_arch(platform.machine()) or "x86-64"
+
+
+# Workload scenarios. Each models a task/agent group's hot path: the same set
+# of commands drives PGO/BOLT *telemetry* at build time AND the measured ops at
+# Phase B, so a binary tuned for `lookup` is profiled and judged on lookups, not
+# indexing. `prep` runs once to establish state (index/graph) the timed ops
+# need; `primary`/`secondary` are (label, argv, prepare-shell-or-None) — a
+# non-None prepare runs before each timed iteration (e.g. reset .crabcc for a
+# cold build). All argv are relative to `<binary> ... --root <root>`.
+SCENARIOS: dict[str, dict] = {
+    # write/parse-heavy — the original behaviour (default).
+    "index": {
+        "prep": [],
+        "primary": ("index", ["index"], "RESET"),
+        "secondary": ("lookup sym", ["lookup", "sym", "Store"], None),
+        "telemetry": [["index"], ["lookup", "sym", "Store"]],
+    },
+    # read/query-heavy — symbol/ref/caller lookups over a built index.
+    "lookup": {
+        "prep": [["index"]],
+        "primary": ("lookup refs", ["lookup", "refs", "Store"], None),
+        "secondary": ("lookup callers", ["lookup", "callers", "Store::open"], None),
+        "telemetry": [["index"], ["lookup", "sym", "Store"],
+                      ["lookup", "refs", "Store"], ["lookup", "callers", "Store::open"]],
+    },
+    # call-graph traversal — build + walk.
+    "graph": {
+        "prep": [["index"], ["graph", "build"]],
+        "primary": ("graph walk", ["graph", "walk", "Store::open", "--dir", "callers",
+                                    "--depth", "3"], None),
+        "secondary": ("lookup sym", ["lookup", "sym", "Store"], None),
+        "telemetry": [["index"], ["graph", "build"],
+                      ["graph", "walk", "Store::open", "--dir", "callers", "--depth", "3"]],
+    },
+}
+
+
+@dataclass
+class Leg:
+    """One point in the optimization matrix."""
+
+    id: str
+    target_cpu: str = "x86-64-v3"
+    alloc: str = "system"
+    opt_level: str | None = None  # None → profile default (3); "z" → size
+    pgo: bool = False
+    bolt: bool = False
+
+    # Filled in as the leg runs.
+    status: str = "pending"          # pending|ok|skipped|error
+    detail: str = ""
+    build_seconds: float | None = None
+    bin_path: str | None = None
+    file_bytes: int | None = None
+    text_bytes: int | None = None
+    rodata_bytes: int | None = None
+    total_size_bytes: int | None = None
+    index_mean_s: float | None = None
+    index_stddev_s: float | None = None
+    query_mean_s: float | None = None
+    bloat_top: list = field(default_factory=list)
+
+
+def default_matrix(arch: str = "x86-64") -> list[Leg]:
+    """The fractional sweep — ~11 high-signal legs, sized for ~1h on ~32c."""
+    ax = CPU_AXES[arch]
+    base, bt = ax["baseline"], cpu_tag(ax["baseline"])
+    legs: list[Leg] = []
+    # Reference corners.
+    legs.append(Leg(f"baseline-{bt}-system", base, "system"))
+    legs.append(Leg("native-system", "native", "system"))
+    # Core fractional block: base × {mimalloc,jemalloc} × pgo × bolt.
+    for alloc in ("mimalloc", "jemalloc"):
+        for pgo in (False, True):
+            for bolt in (False, True):
+                suffix = f"{alloc}{'-pgo' if pgo else ''}{'-bolt' if bolt else ''}"
+                legs.append(Leg(f"{bt}-{suffix}", base, alloc, pgo=pgo, bolt=bolt))
+    # Footprint corner.
+    legs.append(Leg(f"{bt}-system-optz", base, "system", opt_level="z"))
+    return legs
+
+
+def deep_matrix(arch: str = "x86-64") -> list[Leg]:
+    """A wider matrix (~28 legs) for big boxes — enough independent legs to
+    keep every core busy *through* the single-threaded fat-LTO link phase,
+    where the fractional matrix (11 legs) would leave a 32-vCPU box idle.
+
+    Adds a full target-cpu axis and spreads PGO/BOLT across the strongest
+    cpu×alloc corners."""
+    ax = CPU_AXES[arch]
+    cpus = ax["deep"]
+    allocs = ["system", "mimalloc", "jemalloc"]
+    legs: list[Leg] = []
+    # 1. Plain cross of cpu × alloc (12).
+    for cpu in cpus:
+        for alloc in allocs:
+            legs.append(Leg(f"{cpu_tag(cpu)}-{alloc}", cpu, alloc))
+    # 2. PGO / BOLT / PGO+BOLT on the front-runner corners (× system,mimalloc) → 12.
+    for cpu in ax["front"]:
+        for alloc in ("system", "mimalloc"):
+            for pgo, bolt in ((True, False), (False, True), (True, True)):
+                t = cpu_tag(cpu)
+                sid = f"{t}-{alloc}{'-pgo' if pgo else ''}{'-bolt' if bolt else ''}"
+                legs.append(Leg(sid, cpu, alloc, pgo=pgo, bolt=bolt))
+    # 3. Footprint corners (4).
+    for cpu in ax["optz"]:
+        legs.append(Leg(f"{cpu_tag(cpu)}-system-optz", cpu, "system", opt_level="z"))
+    ob = cpu_tag(ax["optz"][0])
+    legs.append(Leg(f"{ob}-system-optz-jemalloc", ax["optz"][0], "jemalloc", opt_level="z"))
+    legs.append(Leg("native-system-optz", "native", "system", opt_level="z"))
+    return legs
+
+
+# ----------------------------------------------------------------------------
+# Tooling preflight
+# ----------------------------------------------------------------------------
+
+def have(tool: str) -> bool:
+    return shutil.which(tool) is not None
+
+
+def llvm_profdata() -> str | None:
+    """Find llvm-profdata (PATH, or the rustup llvm-tools sysroot)."""
+    if have("llvm-profdata"):
+        return "llvm-profdata"
+    try:
+        sysroot = subprocess.check_output(
+            ["rustc", "--print", "sysroot"], text=True
+        ).strip()
+    except Exception:
+        return None
+    for p in Path(sysroot).glob("lib/rustlib/*/bin/llvm-profdata"):
+        return str(p)
+    return None
+
+
+# ----------------------------------------------------------------------------
+# Build phase
+# ----------------------------------------------------------------------------
+
+def rustflags(leg: Leg, *, profile_generate: str | None = None,
+              profile_use: str | None = None) -> str:
+    flags = [f"-C target-cpu={leg.target_cpu}"]
+    if leg.opt_level:
+        flags.append(f"-C opt-level={leg.opt_level}")
+    if leg.bolt:
+        # BOLT needs relocations preserved + frame pointers for accurate CFG,
+        # AND an unstripped symbol table to read the function inventory.
+        # `release-nightly` inherits `[profile.release] strip = true`, so the
+        # override is mandatory here — without it BOLT can't process the input.
+        # The optimized output is re-stripped in bolt_optimize() so the
+        # footprint axis stays comparable to the (stripped) non-BOLT legs.
+        flags.append("-C link-args=-Wl,--emit-relocs")
+        flags.append("-C force-frame-pointers=yes")
+        flags.append("-C strip=none")
+    if profile_generate:
+        flags.append(f"-C profile-generate={profile_generate}")
+    if profile_use:
+        flags.append(f"-C profile-use={profile_use}")
+        flags.append("-C llvm-args=-pgo-warn-missing-function")
+    return " ".join(flags)
+
+
+def cargo_build(leg: Leg, target_dir: Path, env_extra: dict, jobs: int,
+                log) -> Path:
+    feats = ALLOC_FEATURES[leg.alloc]
+    cmd = [
+        "cargo", "build", "--profile", PROFILE,
+        "-p", PKG, "--bin", BIN, "--locked",
+    ]
+    if feats:
+        cmd += ["--features", ",".join(feats)]
+    env = {**os.environ, **env_extra,
+           "CARGO_TARGET_DIR": str(target_dir),
+           "CARGO_BUILD_JOBS": str(jobs)}
+    # Per-leg target dirs isolate differing RUSTFLAGS but otherwise force a
+    # full dependency recompile per leg (~N× redundant work). sccache shares
+    # cached crate artifacts across legs whose flags match (the bulk of the
+    # tree differs only in target-cpu / allocator features), turning that
+    # redundancy back into useful throughput. PGO instrument/use legs embed a
+    # profile path so they simply miss the cache — no harm.
+    if shutil.which("sccache") and "RUSTC_WRAPPER" not in env:
+        env["RUSTC_WRAPPER"] = "sccache"
+    log(f"  $ RUSTFLAGS='{env_extra.get('RUSTFLAGS', '')}' {' '.join(cmd)}")
+    subprocess.run(cmd, cwd=REPO_ROOT, env=env, check=True,
+                   stdout=log.file, stderr=subprocess.STDOUT)
+    return target_dir / PROFILE / BIN
+
+
+def run_workload(binary: Path, scratch: Path, log, scenario: dict,
+                 iterations: int = 3):
+    """Drive the scenario's hot path so PGO/BOLT see telemetry that matches the
+    task/agent group we're tuning for (not always indexing)."""
+    root = scratch / "workload-root"
+    if root.exists():
+        shutil.rmtree(root)
+    shutil.copytree(REPO_ROOT, root, ignore=shutil.ignore_patterns(
+        ".git", "target", "bench", "node_modules", ".crabcc", "dist"))
+    for _ in range(iterations):
+        shutil.rmtree(root / ".crabcc", ignore_errors=True)
+        for argv in scenario["telemetry"]:
+            subprocess.run([str(binary), *argv, "--root", str(root)],
+                           check=False, stdout=log.file, stderr=subprocess.STDOUT)
+
+
+def build_leg(leg: Leg, work: Path, jobs: int, profdata_tool: str | None,
+              bolt_ok: bool, scenario: dict) -> Leg:
+    leg_dir = work / leg.id
+    leg_dir.mkdir(parents=True, exist_ok=True)
+    target_dir = leg_dir / "target"
+    logf = open(leg_dir / "build.log", "w")
+
+    class Log:
+        file = logf
+        def __call__(self, msg): logf.write(msg + "\n"); logf.flush()
+
+    log = Log()
+    t0 = time.time()
+    try:
+        if leg.pgo and not profdata_tool:
+            leg.status, leg.detail = "skipped", "llvm-profdata not found"
+            return leg
+        if leg.bolt and not bolt_ok:
+            leg.status, leg.detail = "skipped", "llvm-bolt/merge-fdata not found"
+            return leg
+
+        if leg.pgo:
+            # 1. Instrument build.
+            pgo_raw = leg_dir / "pgo-raw"
+            cargo_build(leg, target_dir,
+                        {"RUSTFLAGS": rustflags(leg, profile_generate=str(pgo_raw))},
+                        jobs, log)
+            inst_bin = target_dir / PROFILE / BIN
+            # 2. Workload → raw profiles (scenario-shaped telemetry).
+            run_workload(inst_bin, leg_dir, log, scenario)
+            # 3. Merge.
+            merged = leg_dir / "merged.profdata"
+            subprocess.run([profdata_tool, "merge", "-o", str(merged), str(pgo_raw)],
+                           check=True, stdout=logf, stderr=subprocess.STDOUT)
+            # 4. Use build (fresh target dir so instrumentation is gone).
+            target_dir2 = leg_dir / "target-use"
+            binary = cargo_build(leg, target_dir2,
+                                 {"RUSTFLAGS": rustflags(leg, profile_use=str(merged))},
+                                 jobs, log)
+        else:
+            binary = cargo_build(leg, target_dir,
+                                 {"RUSTFLAGS": rustflags(leg)}, jobs, log)
+
+        if leg.bolt:
+            binary = bolt_optimize(binary, leg_dir, log, scenario)
+
+        leg.bin_path = str(binary)
+        leg.build_seconds = round(time.time() - t0, 1)
+        leg.status = "ok"
+    except subprocess.CalledProcessError as e:
+        leg.status, leg.detail = "error", f"build failed (see {leg_dir}/build.log)"
+        log(f"ERROR: {e}")
+    finally:
+        logf.close()
+    return leg
+
+
+def bolt_runtime_abs() -> str | None:
+    """Absolute path to libbolt_rt_instr.a — the static runtime BOLT links into
+    an `-instrument`ed binary. Distro `llvm-bolt` packages install it under
+    /usr/lib/llvm-NN/lib/, not the bare /usr/lib default BOLT derives."""
+    for cfg in ("llvm-config", "llvm-config-18", "llvm-config-17", "llvm-config-16"):
+        exe = shutil.which(cfg)
+        if not exe:
+            continue
+        try:
+            libdir = subprocess.check_output([exe, "--libdir"], text=True).strip()
+            cand = Path(libdir) / "libbolt_rt_instr.a"
+            if cand.exists():
+                return str(cand)
+        except Exception:  # noqa: BLE001
+            pass
+    candidates = [Path("/usr/lib/libbolt_rt_instr.a"),
+                  *sorted(Path("/usr/lib").glob("llvm-*/lib/libbolt_rt_instr.a"),
+                          reverse=True)]
+    for cand in candidates:
+        if cand.exists():
+            return str(cand)
+    return None
+
+
+def bolt_runtime_arg() -> str | None:
+    """Value for --runtime-instrumentation-lib. BOLT does not treat this as a
+    plain path: it APPENDS it to its own derived library dir — the install
+    prefix's /lib, taken from the *unresolved* llvm-bolt path (so /usr/lib for
+    /usr/bin/llvm-bolt, NOT the symlink target). An absolute path therefore
+    doubles into /usr/lib/usr/lib/... So locate the runtime and return it
+    relative to that base (e.g. 'llvm-18/lib/libbolt_rt_instr.a')."""
+    lib = bolt_runtime_abs()
+    if not lib:
+        return None
+    bolt = shutil.which("llvm-bolt")
+    base = (Path(bolt).parent.parent / "lib") if bolt else Path("/usr/lib")
+    try:
+        return os.path.relpath(lib, base)
+    except ValueError:  # different drive (Windows); fall back to absolute
+        return lib
+
+
+def bolt_optimize(binary: Path, leg_dir: Path, log, scenario: dict) -> Path:
+    """Instrument → workload → optimize the ELF layout post-link."""
+    inst = leg_dir / f"{BIN}.inst"
+    fdata = leg_dir / "bolt.fdata"
+    inst_cmd = ["llvm-bolt", str(binary), "-instrument",
+                f"-instrumentation-file={fdata}", "-instrumentation-file-append-pid",
+                "-o", str(inst)]
+    rt_lib = bolt_runtime_arg()
+    if rt_lib:
+        inst_cmd.append(f"--runtime-instrumentation-lib={rt_lib}")
+    subprocess.run(inst_cmd, check=True, stdout=log.file, stderr=subprocess.STDOUT)
+    run_workload(inst, leg_dir, log, scenario, iterations=2)
+    # merge-fdata across the per-pid drops.
+    merged = leg_dir / "bolt.merged.fdata"
+    drops = list(leg_dir.glob("bolt.fdata*"))
+    with open(merged, "w") as out:
+        subprocess.run(["merge-fdata", *[str(d) for d in drops]],
+                       check=True, stdout=out, stderr=log.file)
+    optimized = leg_dir / f"{BIN}.bolt"
+    subprocess.run(
+        ["llvm-bolt", str(binary), "-data", str(merged), "-o", str(optimized),
+         "-reorder-blocks=ext-tsp", "-reorder-functions=hfsort",
+         "-split-functions", "-split-all-cold", "-split-eh", "-icf=1",
+         "-dyno-stats"],
+        check=True, stdout=log.file, stderr=subprocess.STDOUT)
+    # Do NOT strip a BOLT output. BOLT rewrites the ELF with a custom segment
+    # layout (a new __hot text segment; allocated sections land in a non-default
+    # segment), which binutils strip/objcopy/llvm-strip cannot rewrite — they
+    # warn "section can't be allocated in segment N" and emit a binary that
+    # SIGSEGVs at startup. So BOLT legs keep their symbol table; .text/.rodata
+    # (size -A) stay comparable to stripped legs, only the total `file` size is
+    # inflated by .symtab/.strtab — the footprint table footnotes BOLT rows so
+    # the retained symbol table isn't misread as BOLT "bloat".
+    return optimized
+
+
+# ----------------------------------------------------------------------------
+# Measure phase (serial)
+# ----------------------------------------------------------------------------
+
+def parse_size(binary: Path) -> tuple[int, int, int]:
+    """Return (.text, .rodata, total) from `size -A`."""
+    out = subprocess.check_output(["size", "-A", str(binary)], text=True)
+    text = rodata = total = 0
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[1].isdigit():
+            name, sz = parts[0], int(parts[1])
+            if name == ".text":
+                text = sz
+            elif name == ".rodata":
+                rodata = sz
+        if line.lower().startswith("total"):
+            total = int(parts[1])
+    return text, rodata, total
+
+
+def measure_leg(leg: Leg, work: Path, pin: str | None, runs: int, log_print,
+                scenario: dict, root_base: Path):
+    binary = Path(leg.bin_path)
+    log_print(f"  measure {leg.id} → {binary}")
+    leg.file_bytes = binary.stat().st_size
+    try:
+        leg.text_bytes, leg.rodata_bytes, leg.total_size_bytes = parse_size(binary)
+    except Exception as e:
+        log_print(f"    size -A failed: {e}")
+
+    # Fixture root (under tmpfs when --tmpfs, so disk/fsync jitter is out of the
+    # timed op). Shared across legs — copy once; prep re-establishes per leg.
+    root = root_base / "_measure-root"
+    if not root.exists():
+        shutil.copytree(REPO_ROOT, root, ignore=shutil.ignore_patterns(
+            ".git", "target", "bench", "node_modules", ".crabcc", "dist"))
+    # taskset pins the cores; chrt -b (SCHED_BATCH, no RT privilege needed) cuts
+    # wakeup-preemption jitter. Both shrink Phase-B variance.
+    prefix: list[str] = (["taskset", "-c", pin] if pin else [])
+    if pin and shutil.which("chrt"):
+        prefix += ["chrt", "-b", "0"]
+
+    def bench(argv, prepare, warmup, nruns, store):
+        cmd = " ".join(prefix + [shquote(str(binary)), *map(shquote, argv),
+                                 "--root", shquote(str(root))])
+        hf = ["hyperfine", "--warmup", str(warmup), "--runs", str(nruns)]
+        if prepare == "RESET":
+            hf += ["--prepare", f"rm -rf {shquote(str(root / '.crabcc'))}"]
+        elif prepare:
+            hf += ["--prepare", prepare]
+        hjp = work / f"{leg.id}.{store}.json"
+        hf += ["--export-json", str(hjp), cmd]
+        subprocess.run(hf, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return json.loads(hjp.read_text())["results"][0]
+
+    # Establish the state the timed ops need (index/graph), once, with this leg.
+    for argv in scenario["prep"]:
+        subprocess.run([str(binary), *argv, "--root", str(root)],
+                       check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    plabel, pargv, pprep = scenario["primary"]
+    try:
+        d = bench(pargv, pprep, 2, runs, "hyperfine")
+        leg.index_mean_s = round(d["mean"], 4)
+        leg.index_stddev_s = round(d.get("stddev") or 0.0, 4)
+    except Exception as e:
+        log_print(f"    hyperfine(primary={plabel}) failed: {e}")
+
+    slabel, sargv, sprep = scenario["secondary"]
+    try:
+        d = bench(sargv, sprep, 3, max(runs, 20), "query")
+        leg.query_mean_s = round(d["mean"], 5)
+    except Exception as e:
+        log_print(f"    hyperfine(secondary={slabel}) failed: {e}")
+
+
+def shquote(s: str) -> str:
+    return "'" + s.replace("'", "'\\''") + "'" if any(c in s for c in " '\"") else s
+
+
+# ----------------------------------------------------------------------------
+# Reporting
+# ----------------------------------------------------------------------------
+
+def render_report(legs: list[Leg], meta: dict) -> str:
+    ok = [l for l in legs if l.status == "ok"]
+    by_speed = sorted([l for l in ok if l.index_mean_s is not None],
+                      key=lambda l: l.index_mean_s)
+    by_size = sorted([l for l in ok if l.file_bytes is not None],
+                     key=lambda l: l.file_bytes)
+    scen = SCENARIOS.get(meta.get("scenario", "index"), SCENARIOS["index"])
+    plabel = scen["primary"][0]
+    slabel = scen["secondary"][0]
+    iso = []
+    if meta.get("tmpfs"):
+        iso.append("tmpfs")
+    if meta.get("pinned"):
+        iso.append(f"pin {meta['pinned']}+SCHED_BATCH")
+    iso_s = ("  ·  isolation: " + ", ".join(iso)) if iso else ""
+    lines = [
+        "# bench-opt-bin — optimization sweep report",
+        "",
+        f"- generated: {meta['generated']}",
+        f"- host: {meta['host']}  ·  arch: {meta.get('arch','?')}  ·  "
+        f"cores: {meta['cores']}  ·  pool: {meta['jobs']}{iso_s}",
+        f"- scenario: **{meta.get('scenario','index')}** "
+        f"(primary `{plabel}`, secondary `{slabel}`)",
+        f"- profile: `{PROFILE}`  ·  legs: {len(legs)} "
+        f"(ok {len(ok)}, skipped {sum(l.status=='skipped' for l in legs)}, "
+        f"error {sum(l.status=='error' for l in legs)})",
+        f"- wall time: {meta['wall_seconds']}s",
+        "",
+        f"## Execution speed (`{plabel}`, lower is better)",
+        "",
+        f"| leg | alloc | cpu | pgo | bolt | {plabel} mean (s) | ±stddev | "
+        f"{slabel} (s) | build (s) |",
+        "|---|---|---|:--:|:--:|--:|--:|--:|--:|",
+    ]
+    base = next((l for l in by_speed if l.id.startswith("baseline-")), None)
+    for l in by_speed:
+        delta = ""
+        if base and base.index_mean_s and l.index_mean_s:
+            pct = (l.index_mean_s - base.index_mean_s) / base.index_mean_s * 100
+            delta = f" ({pct:+.1f}%)"
+        lines.append(
+            f"| `{l.id}` | {l.alloc} | {l.target_cpu} | {'✓' if l.pgo else ''} | "
+            f"{'✓' if l.bolt else ''} | {l.index_mean_s}{delta} | {l.index_stddev_s} | "
+            f"{l.query_mean_s if l.query_mean_s is not None else '—'} | {l.build_seconds} |")
+    lines += [
+        "",
+        "## Binary footprint (lower is better)",
+        "",
+        "| leg | file (KiB) | .text (KiB) | .rodata (KiB) | total (KiB) |",
+        "|---|--:|--:|--:|--:|",
+    ]
+    for l in by_size:
+        kib = lambda b: f"{b/1024:.0f}" if b else "—"
+        mark = " ¹" if l.bolt else ""
+        lines.append(
+            f"| `{l.id}`{mark} | {kib(l.file_bytes)} | {kib(l.text_bytes)} | "
+            f"{kib(l.rodata_bytes)} | {kib(l.total_size_bytes)} |")
+    if any(l.bolt for l in by_size):
+        lines += ["",
+                  "¹ BOLT footprint is **not apples-to-apples** here. BOLT legs are unstripped "
+                  "(stripping a BOLT output corrupts its segment layout → SIGSEGV), so "
+                  "`.symtab`/`.strtab` inflate `file`/`total`; and BOLT **relocates hot code "
+                  "into a new segment**, so the per-section `.text`/`.rodata` from `size -A` "
+                  "undercount it. Treat BOLT footprint as approximate — a dedicated executable "
+                  "PT_LOAD-segment sum would be needed for a fair number."]
+
+    # Winner callout + paste-ready config.
+    if by_speed:
+        w = by_speed[0]
+        feats = ALLOC_FEATURES[w.alloc]
+        rf = rustflags(w).replace(' -C profile-generate', '').strip()
+        lines += [
+            "",
+            "## Fastest config",
+            "",
+            f"**`{w.id}`** — index {w.index_mean_s}s"
+            + (f", {((w.index_mean_s-base.index_mean_s)/base.index_mean_s*100):+.1f}% vs baseline"
+               if base and base.index_mean_s else "") + ".",
+            "",
+            "Reproduce / promote into the `release-nightly` lane:",
+            "",
+            "```bash",
+            f"export RUSTFLAGS=\"{rf}\"",
+            f"cargo build --profile {PROFILE} -p {PKG} --bin {BIN}"
+            + (f" --features {','.join(feats)}" if feats else ""),
+        ]
+        if w.pgo:
+            lines.append("# (+ PGO: see scripts/bench-opt-bin/README.md for the instrument→use loop)")
+        if w.bolt:
+            lines.append("# (+ BOLT post-link: llvm-bolt with the recorded fdata)")
+        lines.append("```")
+
+    skipped = [l for l in legs if l.status in ("skipped", "error")]
+    if skipped:
+        lines += ["", "## Skipped / errored", ""]
+        for l in skipped:
+            lines.append(f"- `{l.id}` — **{l.status}**: {l.detail}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+# ----------------------------------------------------------------------------
+# Flamegraphs + archival
+# ----------------------------------------------------------------------------
+
+def capture_flamegraphs(built: list[Leg], work: Path, flame_dir: Path,
+                        jobs: int, log_print) -> list[Path]:
+    """Render symbolized flamegraph SVGs for the baseline + fastest legs.
+
+    The sweep binaries are stripped (release profile), so we rebuild the two
+    legs of interest under the `profiling` profile (LTO + debug info, no strip
+    — same one `task flamegraph-index` uses) so perf can resolve symbols."""
+    if not (have("flamegraph") and have("perf")):
+        log_print("   flamegraph: skipped (need cargo-flamegraph + perf on PATH)")
+        return []
+    ok = [l for l in built if l.status == "ok" and l.index_mean_s is not None]
+    if not ok:
+        return []
+    fastest = min(ok, key=lambda l: l.index_mean_s)
+    baseline = next((l for l in ok if l.id.startswith("baseline")), None)
+    targets = {l.id: l for l in (baseline, fastest) if l}
+    root = work / "_measure-root"
+    flame_dir.mkdir(parents=True, exist_ok=True)
+    svgs: list[Path] = []
+    for lid, leg in targets.items():
+        svg = flame_dir / f"{lid}.svg"
+        feats = ALLOC_FEATURES[leg.alloc]
+        cmd = ["flamegraph", "--profile", "profiling", "-p", PKG,
+               "--bin", BIN, "-o", str(svg)]
+        if feats:
+            cmd += ["--features", ",".join(feats)]
+        cmd += ["--", "index", "--root", str(root)]
+        env = {**os.environ,
+               "RUSTFLAGS": f"-C target-cpu={leg.target_cpu}",
+               "CARGO_TARGET_DIR": str(work / f"flame-{lid}" / "target"),
+               "CARGO_BUILD_JOBS": str(jobs)}
+        try:
+            shutil.rmtree(root / ".crabcc", ignore_errors=True)
+            subprocess.run(cmd, cwd=REPO_ROOT, env=env, check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if svg.exists():
+                svgs.append(svg)
+                log_print(f"   flamegraph: {svg}")
+        except Exception as e:
+            log_print(f"   flamegraph({lid}) failed: {e}")
+    return svgs
+
+
+def _sha256(p: Path) -> str:
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _targz(dest: Path, src_dir: Path):
+    with tarfile.open(dest, "w:gz") as tar:
+        tar.add(src_dir, arcname=src_dir.name)
+
+
+def archive_run(built, meta, out: Path, work: Path, flame_dir: Path,
+                archive_dir: str | None, log_print) -> Path:
+    """Bundle every generated artifact into a timestamped, self-contained run
+    dir + tarball + MANIFEST (sha256 per file). Optionally mirror the curated
+    subset into a tracked dir so `git commit` durably backs the run up."""
+    ts = re.sub(r"[^0-9]", "", meta["generated"])
+    runid = f"run-{meta['host']}-{ts}"
+    rd = out / runid
+    (rd / "logs").mkdir(parents=True, exist_ok=True)
+    (rd / "hyperfine").mkdir(exist_ok=True)
+
+    shutil.copy(out / "opt-bin-REPORT.md", rd / "REPORT.md")
+    shutil.copy(out / "opt-bin.ndjson", rd / "opt-bin.ndjson")
+    # Copy only THIS run's per-leg artifacts by id — `work` defaults to a
+    # reused dir, so globbing would sweep stale hyperfine/SVG files from prior
+    # runs into this manifest (e.g. a --quick smoke after a full run).
+    for leg in built:
+        lg = work / leg.id / "build.log"
+        if lg.exists():
+            shutil.copy(lg, rd / "logs" / f"{leg.id}.log")
+        for suf in (".hyperfine.json", ".query.json"):
+            j = work / f"{leg.id}{suf}"
+            if j.exists():
+                shutil.copy(j, rd / "hyperfine" / j.name)
+        svg = flame_dir / f"{leg.id}.svg"
+        if svg.exists():
+            (rd / "flamegraphs").mkdir(exist_ok=True)
+            shutil.copy(svg, rd / "flamegraphs" / svg.name)
+
+    artifacts = {str(p.relative_to(rd)): {"bytes": p.stat().st_size,
+                                          "sha256": _sha256(p)}
+                 for p in sorted(rd.rglob("*")) if p.is_file()}
+    manifest = {**meta, "run_id": runid,
+                "legs": [asdict(l) for l in built], "artifacts": artifacts}
+    (rd / "MANIFEST.json").write_text(json.dumps(manifest, indent=2))
+
+    tarball = out / f"{runid}.tar.gz"
+    _targz(tarball, rd)
+    log_print(f"   archive dir: {rd}")
+    log_print(f"   tarball:     {tarball}")
+
+    if archive_dir:
+        adir = Path(archive_dir) / runid
+        (adir).mkdir(parents=True, exist_ok=True)
+        for name in ("REPORT.md", "opt-bin.ndjson", "MANIFEST.json"):
+            shutil.copy(rd / name, adir / name)
+        if (rd / "flamegraphs").exists():
+            shutil.copytree(rd / "flamegraphs", adir / "flamegraphs",
+                            dirs_exist_ok=True)
+        _targz(adir / "logs.tar.gz", rd / "logs")
+        log_print(f"   tracked backup: {adir}  (commit to persist)")
+    return rd
+
+
+# ----------------------------------------------------------------------------
+# Main
+# ----------------------------------------------------------------------------
+
+def mount_tmpfs(path: Path, size_gib: float) -> bool:
+    """Mount a size-capped tmpfs at `path` (needs CAP_SYS_ADMIN). True on success."""
+    try:
+        subprocess.run(["mount", "-t", "tmpfs", "-o", f"size={int(size_gib * 1024)}m",
+                        "none", str(path)], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def umount_tmpfs(path: Path) -> None:
+    subprocess.run(["umount", str(path)], check=False,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def avail_mem_gib() -> float:
+    """Best-effort available RAM in GiB (MemAvailable). inf if unknown."""
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemAvailable:"):
+                return int(line.split()[1]) / (1024 * 1024)  # kB -> GiB
+    except Exception:  # noqa: BLE001
+        pass
+    return float("inf")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="bench-opt-bin optimization sweep")
+    ap.add_argument("--work", default=str(REPO_ROOT / "bench" / "opt-bin"),
+                    help="scratch dir for per-leg builds (default: bench/opt-bin)")
+    ap.add_argument("--out", default=str(REPO_ROOT / "bench" / "results"),
+                    help="dir for NDJSON + report (default: bench/results)")
+    ap.add_argument("--jobs", type=int, default=0,
+                    help="parallel build legs (default: saturate — min(legs, cores))")
+    ap.add_argument("--runs", type=int, default=8, help="hyperfine runs per leg")
+    ap.add_argument("--pin", default=None,
+                    help="taskset core spec for measurements, e.g. '0-3'")
+    ap.add_argument("--only", default=None,
+                    help="comma list of leg ids to run (default: all)")
+    ap.add_argument("--deep", action="store_true",
+                    help="wider ~28-leg matrix (target-cpu axis) — keeps a big "
+                         "box busy through the serial LTO phase")
+    ap.add_argument("--saturate", action="store_true", default=True,
+                    help="oversubscribe per-leg build jobs to fill idle cores "
+                         "during the single-threaded LTO link (default: on)")
+    ap.add_argument("--no-saturate", dest="saturate", action="store_false",
+                    help="size per-leg jobs to exactly cores (no oversubscription)")
+    ap.add_argument("--quick", action="store_true",
+                    help="smoke: baseline + one mimalloc leg, no PGO/BOLT")
+    ap.add_argument("--allow-missing-tools", action="store_true",
+                    help="build even if hyperfine/size are absent (measurements "
+                         "will be skipped — normally the run aborts instead)")
+    ap.add_argument("--flamegraph", action="store_true",
+                    help="render symbolized flamegraph SVGs for baseline + "
+                         "fastest leg (rebuilds them under the `profiling` "
+                         "profile; needs cargo-flamegraph + perf)")
+    ap.add_argument("--archive-dir", default=None,
+                    help="ALSO mirror curated artifacts (report, ndjson, "
+                         "manifest, flamegraphs, gzipped logs) into this dir — "
+                         "point it at a tracked path to back the run up via git")
+    ap.add_argument("--max-mem-gib", type=float, default=0.0,
+                    help="RAM budget for the parallel build phase (GiB). 0 = auto "
+                         "(85%% of MemAvailable). The build pool is downscaled so "
+                         "jobs*per-leg stays under budget — prevents OOM on small boxes")
+    ap.add_argument("--per-leg-mem-gib", type=float, default=4.0,
+                    help="estimated peak RAM per concurrent build leg; the fat-LTO "
+                         "link is the high-water mark and BOLT rewrites add more")
+    ap.add_argument("--arch", default=None, choices=["x86-64", "aarch64", "native"],
+                    help="target-cpu architecture for the matrix (default: host). "
+                         "aarch64 emits Neoverse legs (Graviton) — needs an aarch64 "
+                         "toolchain, so cross-building from x86 will skip/fail those legs")
+    ap.add_argument("--scenario", default="index", choices=sorted(SCENARIOS),
+                    help="task/agent-group workload that shapes PGO/BOLT telemetry AND "
+                         "the measured ops: index (parse/write), lookup (query), graph")
+    ap.add_argument("--tmpfs", nargs="?", type=float, const=4.0, default=None,
+                    metavar="GIB",
+                    help="mount a tmpfs for the measurement fixture so disk/fsync "
+                         "jitter is out of the timed op (default 4 GiB; needs CAP_SYS_ADMIN)")
+    ap.add_argument("--dry-run", action="store_true", help="print the plan and exit")
+    args = ap.parse_args()
+
+    arch = norm_arch(args.arch) if args.arch and args.arch != "native" else host_arch()
+    scenario = SCENARIOS[args.scenario]
+
+    # --quick is a fixed 2-leg smoke, independent of --deep — the deep matrix
+    # renames the smoke candidates, so filtering by id would drop every leg.
+    if args.quick:
+        base, bt = CPU_AXES[arch]["baseline"], cpu_tag(CPU_AXES[arch]["baseline"])
+        legs = [Leg(f"baseline-{bt}-system", base, "system"),
+                Leg(f"{bt}-mimalloc", base, "mimalloc")]
+    else:
+        legs = deep_matrix(arch) if args.deep else default_matrix(arch)
+    if args.only:
+        want = set(args.only.split(","))
+        legs = [l for l in legs if l.id in want]
+        if not legs:
+            print(f"no legs match --only={args.only}", file=sys.stderr)
+            return 2
+
+    # Saturating job math. Fat-LTO's final link is largely single-threaded, so
+    # to keep every core busy we run ~one leg per core (capped by leg count)
+    # rather than a handful of wide builds. During the parallel dep-codegen
+    # bursts that briefly oversubscribes — harmless and intended; it's what
+    # fills the cores the LTO links leave idle. Deepen the matrix (--deep) when
+    # legs < cores so there's enough independent work to stay full.
+    cores = os.cpu_count() or 4
+    n = len(legs)
+    jobs = args.jobs if args.jobs > 0 else max(1, min(n, cores))
+    oversub = 1.5 if args.saturate else 1.0
+    per_leg_jobs = max(2, math.ceil(cores * oversub / jobs))
+
+    # Memory guard. Fat-LTO links (and BOLT rewrites) are the RAM high-water
+    # mark, and running N of them at once is exactly what OOM-kills a small box.
+    # Cap the build pool so estimated peak (jobs * per-leg) fits the budget and
+    # recompute per-leg jobs for the narrower pool. Concurrency is the right
+    # lever — a single leg's own peak is irreducible, so we shrink how many run
+    # together rather than pretend one can be made to fit.
+    budget = args.max_mem_gib if args.max_mem_gib > 0 else avail_mem_gib() * 0.85
+    mem_note = ""
+    if math.isfinite(budget):
+        mem_cap = max(1, int(budget // args.per_leg_mem_gib))
+        if mem_cap < jobs:
+            mem_note = (f"  ⤵ mem-guard: {budget:.1f} GiB ÷ {args.per_leg_mem_gib:.1f} "
+                        f"GiB/leg → pool {jobs}→{mem_cap}")
+            jobs = mem_cap
+            per_leg_jobs = max(2, math.ceil(cores * oversub / jobs))
+        if budget < args.per_leg_mem_gib * jobs:  # over even at this pool size
+            mem_note += (f"  ⚠ est peak {args.per_leg_mem_gib * jobs:.1f} GiB > budget "
+                         f"{budget:.1f} GiB at pool={jobs}; OOM still possible")
+
+    util_note = ("" if n >= cores else
+                 f"  ⚠ {n} legs < {cores} cores: LTO links will under-fill the box; "
+                 "use --deep or a smaller flavor")
+    cross = arch != host_arch()
+    arch_note = (f"  ⚠ cross-arch: target {arch} ≠ host {host_arch()} — needs an "
+                 f"{arch} toolchain (cargo target + linker), else legs error/skip"
+                 if cross else "")
+    if args.dry_run:
+        print(f"host cores={cores} arch={arch} scenario={args.scenario} legs={n} "
+              f"pool={jobs} per-leg-jobs={per_leg_jobs} saturate={args.saturate}"
+              f"{mem_note}{util_note}{arch_note}")
+        for l in legs:
+            print(f"  {l.id:24s} cpu={l.target_cpu:10s} alloc={l.alloc:8s} "
+                  f"optz={'z' if l.opt_level else '-'} pgo={int(l.pgo)} bolt={int(l.bolt)}")
+        return 0
+
+    work = Path(args.work); work.mkdir(parents=True, exist_ok=True)
+    out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
+
+    profdata = llvm_profdata()
+    # BOLT needs the tools *and* the static instrumentation runtime it links in;
+    # a distro llvm-bolt with no findable libbolt_rt_instr.a fails mid-instrument.
+    bolt_rt = bolt_runtime_abs()
+    bolt_ok = have("llvm-bolt") and have("merge-fdata") and bolt_rt is not None
+    need_bolt = any(l.bolt for l in legs)
+    need_pgo = any(l.pgo for l in legs)
+    print(f"== bench-opt-bin == arch={arch} scenario={args.scenario} cores={cores} "
+          f"legs={n} pool={jobs} per-leg-jobs={per_leg_jobs} saturate={args.saturate}"
+          f"{mem_note}{util_note}{arch_note}")
+    print(f"   hyperfine={'ok' if have('hyperfine') else 'MISSING'} "
+          f"size={'ok' if have('size') else 'MISSING'} "
+          f"llvm-profdata={'ok' if profdata else 'MISSING'} "
+          f"bolt={'ok' if bolt_ok else 'MISSING'} "
+          f"sccache={'ok' if have('sccache') else 'off'}")
+    if need_pgo and not profdata:
+        print("   ! PGO legs will be skipped (install: rustup component add llvm-tools-preview)")
+    if need_bolt and not bolt_ok:
+        why = ("llvm-bolt + merge-fdata" if not (have("llvm-bolt") and have("merge-fdata"))
+               else "libbolt_rt_instr.a runtime (install the matching llvm-bolt/bolt-NN package)")
+        print(f"   ! BOLT legs will be skipped (missing: {why})")
+    # hyperfine + `size` produce the entire point of the run (timing + footprint).
+    # Without them every leg's measurement fails and we'd emit an empty-looking
+    # but "successful" report after an expensive build phase — abort up front
+    # instead. --allow-missing-tools opts out (e.g. to validate the build legs).
+    missing = [t for t in ("hyperfine", "size") if not have(t)]
+    if missing and not args.allow_missing_tools:
+        print(f"   ! required measurement tool(s) missing: {', '.join(missing)}.\n"
+              f"     install them (hyperfine; binutils for `size`) or pass "
+              f"--allow-missing-tools to build without measuring.", file=sys.stderr)
+        return 2
+
+    # Measurement fixture base — optionally a tmpfs so disk/fsync jitter stays
+    # out of the timed op. Small (source copy + index DB), so a few GiB is plenty.
+    tmpfs_mount = None
+    root_base = work
+    if args.tmpfs:
+        tmpfs_mount = work / "_tmpfs"
+        tmpfs_mount.mkdir(parents=True, exist_ok=True)
+        if mount_tmpfs(tmpfs_mount, args.tmpfs):
+            root_base = tmpfs_mount
+            print(f"   tmpfs: {args.tmpfs:.0f} GiB at {tmpfs_mount} — measurement fixture in RAM")
+        else:
+            tmpfs_mount = None
+            print("   ! tmpfs mount failed (need CAP_SYS_ADMIN) — measuring on disk")
+
+    started = time.time()
+    try:
+        # Phase A — parallel builds.
+        print(f"\n-- phase A: building {len(legs)} legs ({jobs}-wide) --")
+        built: list[Leg] = []
+        with ThreadPoolExecutor(max_workers=jobs) as pool:
+            futs = {pool.submit(build_leg, l, work, per_leg_jobs, profdata, bolt_ok,
+                                scenario): l for l in legs}
+            for fut in as_completed(futs):
+                leg = fut.result()
+                built.append(leg)
+                print(f"   [{leg.status:7s}] {leg.id}"
+                      + (f"  build={leg.build_seconds}s" if leg.build_seconds else "")
+                      + (f"  ({leg.detail})" if leg.detail else ""))
+
+        # Phase B — serial measurement.
+        pinned = f", pinned {args.pin}+SCHED_BATCH" if args.pin else ""
+        print(f"\n-- phase B: measuring (serial{pinned}) --")
+        for leg in sorted([l for l in built if l.status == "ok"], key=lambda l: l.id):
+            measure_leg(leg, work, args.pin, args.runs, print, scenario, root_base)
+    finally:
+        if tmpfs_mount:
+            umount_tmpfs(tmpfs_mount)
+
+    meta = {
+        "generated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "host": os.uname().nodename,
+        "arch": arch,
+        "scenario": args.scenario,
+        "tmpfs": bool(tmpfs_mount),
+        "pinned": args.pin or None,
+        "cores": cores,
+        "jobs": jobs,
+        "wall_seconds": round(time.time() - started, 1),
+    }
+
+    ndjson = out / "opt-bin.ndjson"
+    with open(ndjson, "w") as f:
+        for leg in built:
+            f.write(json.dumps({**meta, **asdict(leg)}) + "\n")
+    report = out / "opt-bin-REPORT.md"
+    report.write_text(render_report(built, meta))
+    print(f"\n== done in {meta['wall_seconds']}s ==")
+    print(f"   NDJSON: {ndjson}")
+    print(f"   report: {report}")
+
+    # Optional symbolized flamegraphs (baseline + fastest).
+    flame_dir = work / "flamegraphs"
+    if args.flamegraph:
+        print("\n-- flamegraphs --")
+        capture_flamegraphs(built, work, flame_dir, per_leg_jobs, print)
+
+    # Bundle + (optionally) mirror into a tracked dir so nothing is lost when
+    # the box / container is reclaimed.
+    print("\n-- archiving --")
+    archive_run(built, meta, out, work, flame_dir, args.archive_dir, print)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

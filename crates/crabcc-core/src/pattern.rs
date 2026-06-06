@@ -5,11 +5,11 @@
 // tree-sitter walker in `refs.rs`.
 
 use crate::types::Hit;
+use ahash::HashSet;
 #[cfg(test)]
 use anyhow::Result;
 use ast_grep_core::{AstGrep, Pattern};
 use ast_grep_language::SupportLang;
-use std::collections::HashSet;
 
 pub fn lang_for(s: &str) -> Option<SupportLang> {
     Some(match s {
@@ -48,7 +48,7 @@ pub fn find_callers(src: &str, lang: SupportLang, name: &str) -> Vec<Hit> {
     let root = grep.root();
 
     let mut out: Vec<Hit> = Vec::new();
-    let mut seen: HashSet<(usize, usize)> = HashSet::new();
+    let mut seen: HashSet<(usize, usize)> = HashSet::default();
 
     for pattern_src in [bare.as_str(), method.as_str()] {
         let pattern = Pattern::new(pattern_src, lang);
@@ -69,7 +69,7 @@ pub fn find_callers(src: &str, lang: SupportLang, name: &str) -> Vec<Hit> {
             });
         }
     }
-    out.sort_by_key(|h| (h.line, h.col));
+    out.sort_unstable_by_key(|h| (h.line, h.col));
     out
 }
 

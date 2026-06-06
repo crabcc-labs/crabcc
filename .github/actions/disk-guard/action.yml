@@ -1,0 +1,39 @@
+name: Disk guard
+description: >
+  Check disk + inode usage across all mounts on the self-hosted Hetzner fleet.
+  Prunes Docker artefacts and apt caches at 75%; hard-aborts at 90%.
+
+runs:
+  using: composite
+  steps:
+    - name: disk guard
+      shell: bash
+      run: |
+        # Dump EVERY mount's block + inode usage so the culprit is visible in logs.
+        # apt has ENOSPC'd while `df /` read ~15%/3% — it was writing to a mount
+        # the `/`-only check never saw (small tmpfs /tmp, separate /var, etc.).
+        echo "::group::disk (all mounts)"; df -h; echo; df -i; echo "::endgroup::"
+        worst_pct()  { df -P  2>/dev/null | awk 'NR>1 && $6!~"^/(dev|proc|sys|run)"{gsub("%","",$5); if($5+0>m)m=$5+0} END{print m+0}'; }
+        worst_ipct() { df -Pi 2>/dev/null | awk 'NR>1 && $6!~"^/(dev|proc|sys|run)" && $5!="-"{gsub("%","",$5); if($5+0>m)m=$5+0} END{print m+0}'; }
+        hot() { [ "${1:-0}" -ge "$2" ]; }
+        USE="$(worst_pct)"; IUSE="$(worst_ipct)"
+        if hot "${USE:-0}" 75 || hot "${IUSE:-0}" 75; then
+          echo "::warning::disk ${USE}% blocks / ${IUSE}% inodes (fullest mount) before job — emergency prune"
+          # Age filter (2h): spare a sibling job's images built on the same host.
+          docker container prune -f 2>/dev/null || true
+          docker image prune -af --filter "until=2h" 2>/dev/null || true
+          docker builder prune -af --filter "until=2h" 2>/dev/null || true
+          sudo journalctl --vacuum-time=1d 2>/dev/null || true
+          USE="$(worst_pct)"; IUSE="$(worst_ipct)"
+        fi
+        # Always reclaim apt's own write targets — prime ENOSPC suspect.
+        sudo apt-get clean 2>/dev/null || true
+        sudo rm -rf /var/cache/apt/archives/partial/* 2>/dev/null || true
+        for tdir in /tmp /var/tmp; do sudo find "$tdir" -mindepth 1 -maxdepth 1 -mtime +1 -exec rm -rf {} + 2>/dev/null || true; done
+        # Re-measure AFTER cleanup — don't abort on pre-cleanup numbers.
+        USE="$(worst_pct)"; IUSE="$(worst_ipct)"
+        if hot "${USE:-0}" 90 || hot "${IUSE:-0}" 90; then
+          echo "::error::fullest mount still ${USE}% blocks / ${IUSE}% inodes after prune (see df dump above to identify it) — aborting"
+          exit 1
+        fi
+        echo "disk: ${USE}% blocks / ${IUSE}% inodes — OK"

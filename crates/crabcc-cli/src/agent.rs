@@ -1,14 +1,12 @@
 //! `crabcc agent --run <prompt>` — drive an LLM agent through one round
 //! of tool-use against the crabcc MCP surface.
 //!
-//! The runtime sits behind an [`AgentRuntime`] trait so we can swap the
-//! current-day "exec claude as a subprocess on the host" implementation
-//! for a sandboxed one (issue #62, v3.0). The default keeps trust scoped
-//! exactly like `crabcc go` already does — agent processes run with the
-//! invoking user's privileges, full filesystem + network access. The
-//! sandbox impl will reduce that to "this temp dir + crabcc MCP socket
-//! only" once microsandbox (or an alternative) stabilizes; see
-//! `install/agent-runtime.md` for the v3.0 plan.
+//! The runtime sits behind an [`AgentRuntime`] trait so additional backends
+//! (sandboxed, remote, etc.) can be wired in without touching the dispatch
+//! logic. The only current impl is `SubprocessRuntime`: agent processes run
+//! with the invoking user's privileges, full filesystem + network access —
+//! identical to `crabcc go`. See `install/agent-runtime.md` for the design
+//! and threat model.
 //!
 //! Each run gets its own state directory at `~/.crabcc/agents/<id>/`:
 //!
@@ -312,10 +310,8 @@ impl AgentRuntime for SubprocessRuntime {
         cmd.current_dir(req.root);
 
         // Auth pass-through. `Command` already inherits env by default,
-        // so HOME is forwarded — but be explicit because it's a contract:
-        // a future `SandboxRuntime` will need to bind-mount $HOME/.claude/
-        // into the sandbox, and grepping for the env-var names here is
-        // how that future code will know which vars to plumb.
+        // so HOME is forwarded — but be explicit: this list documents the
+        // exact variables any future sandboxed runtime will need to plumb.
         let mut auth_vars: Vec<&str> = vec![
             "HOME",
             "XDG_CONFIG_HOME",
@@ -363,8 +359,8 @@ impl AgentRuntime for SubprocessRuntime {
 
         // Write meta.json BEFORE spawn so the SSE polling layer
         // (`/api/agents`) never observes the run with empty fields. The
-        // window between spawn and write_meta used to leave the desktop
-        // / web dashboard rendering all-em-dash rows for a few hundred
+        // window between spawn and write_meta used to leave the web
+        // dashboard rendering all-em-dash rows for a few hundred
         // ms — long enough for users to think the agent crashed.
         // write_meta doesn't depend on the child PID; write_pid still
         // has to come after spawn since it needs `child.id()`.
@@ -486,23 +482,6 @@ fn tee<R: Read, A: Write, B: Write>(mut src: R, mut log: A, mut out: B) {
             }
             Err(_) => break,
         }
-    }
-}
-
-#[cfg(feature = "agent-sandbox")]
-pub struct SandboxRuntime;
-
-#[cfg(feature = "agent-sandbox")]
-impl AgentRuntime for SandboxRuntime {
-    fn label(&self) -> &'static str {
-        "microsandbox (v3.0 — stub)"
-    }
-    fn run(&self, _req: &AgentRequest<'_>, _run: &RunDir) -> Result<i32> {
-        anyhow::bail!(
-            "sandbox runtime is not yet implemented — see \
-             https://github.com/peterlodri-sec/crabcc/issues/62 (v3.0). \
-             For v2.5.x, omit `--sandbox` to use the host subprocess runtime."
-        )
     }
 }
 
@@ -662,7 +641,7 @@ pub fn run(req: AgentRequest<'_>) -> Result<()> {
     }
 
     // Open the singleton runs DB. Best-effort: if it fails (locked,
-    // disk full), the agent still runs — the menubar's pgrep + lockfile
+    // disk full), the agent still runs — the pgrep + lockfile
     // fallback will catch this run.
     let db_path = crate::agent_runs_db::default_db_path(&home);
     let db_conn = crate::agent_runs_db::open(&db_path).ok();

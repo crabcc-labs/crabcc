@@ -1,7 +1,8 @@
-# `crabcc fuzzy` & `crabcc prefix` — Tantivy-backed name search
+# `crabcc fuzzy` & `crabcc prefix` — native name search
 
-For when you don't remember the exact name. Backed by a Tantivy sidecar at
-`.crabcc/tantivy/`, rebuilt automatically on `crabcc index`.
+For when you don't remember the exact name. Built in-memory from the live
+`.crabcc/index.db` symbol table on each call (no sidecar), so results always
+reflect the current index.
 
 ## Fuzzy match (Levenshtein distance 2)
 
@@ -11,18 +12,24 @@ crabcc fuzzy Asseessment
 
 ```json
 [{"name":"Assessment","kind":"class","file":"app/models/assessment.rb",
-  "line":6,"parent":null,"score":1.42},
+  "line":6,"parent":null,"score":1.0},
  {"name":"Assessable","kind":"module","file":"app/models/concerns/assessable.rb",
-  "line":1,"parent":null,"score":0.97},
+  "line":1,"parent":null,"score":0.5},
  …]
 ```
 
-`score` is Tantivy's BM25-style relevance — higher = closer match.
+`score` is a synthetic closeness rank: `1.0` for an exact match, `0.5` at
+distance 1, `0.33` at distance 2 — higher = closer.
+
+Matching is **token-aware**: a name is split into alphanumeric segments, and the
+query is matched against the whole name *or* any segment. So a typo in one part
+of a `snake_case`/dotted name still matches (`usr` → `get_user_profile` via the
+`user` token).
 
 Common cases this catches:
 - Typos: `Asseessment` → `Assessment` (Levenshtein 1).
 - Plurals: `Assessments` → `Assessment` (Levenshtein 1).
-- Transposed letters: `Aseessment` → `Assessment`.
+- Transposed letters: `Aseessment` → `Assessment` (within the distance-2 cap).
 
 Fails when the name is too far off — Levenshtein cap is 2. Use `prefix` instead.
 
@@ -38,9 +45,8 @@ crabcc prefix getUser
  {"name":"getUserSession","kind":"method","parent":"AuthService", …}]
 ```
 
-Case-insensitive starts-with, backed by `RegexQuery` over the Tantivy `name` field
-(needed because Tantivy's `QueryParser` wildcard doesn't work with tokenized TEXT
-fields — see `crates/crabcc-core/src/fts.rs`).
+Case-insensitive starts-with, also token-aware — `crabcc prefix profile` finds
+`get_user_profile` via the `profile` segment. Shortest matched unit ranks first.
 
 ## Custom limit
 
@@ -49,20 +55,22 @@ crabcc fuzzy logger --limit 5
 crabcc prefix is_ --limit 50
 ```
 
-Default limit: 20.
+Default limit: 20. When a short/common query matches a large slice of the corpus,
+`fuzzy` fast-bails once it has filled the limit — so it returns in microseconds
+rather than scanning every symbol.
 
-## Re-syncing the sidecar
+## Freshness
 
-The Tantivy sidecar is rebuilt automatically by `crabcc index`. `crabcc refresh`
-deliberately does **not** rebuild it — the SQLite index is fast to refresh, but
-Tantivy is a few seconds per rebuild. If your fuzzy/prefix results lag the SQLite
-index after many refreshes:
+Because fuzzy/prefix read the live `index.db`, they're never stale on their own —
+there is nothing to re-sync. `crabcc fts-rebuild` still exists but is a **no-op**
+kept for backward compatibility; it just reports the searchable symbol count:
 
 ```bash
-crabcc fts-rebuild
+crabcc fts-rebuild   # {"indexed":38214}
 ```
 
-Output: `{"indexed":38214}` — the symbol count just rebuilt.
+If results lag your edits, the index itself is stale — run `crabcc refresh` (or
+`crabcc index`).
 
 ## When NOT to use
 

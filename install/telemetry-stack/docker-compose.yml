@@ -1,0 +1,59 @@
+# Hardened, public-facing telemetry backend for crabcc.
+#
+# Runs on its OWN instance, separate from install/ollama-stack — a compromise
+# of the public telemetry endpoint can't pivot into the inference stack. It is
+# exposed ONLY through a Cloudflare tunnel, so the host opens ZERO inbound
+# ports (no 443, no raw OTLP 4317/4318). OpenObserve ingests OTLP natively and
+# serves its own UI + SQL, so there's no Grafana/rotel to manage.
+#
+#   crabcc clients ──OTLP/HTTP+gzip+Bearer──┐
+#                                            ▼  (outbound tunnel, no open ports)
+#                                   cloudflared ──► openobserve:5080
+#                                                     └─ Parquet on the volume
+#
+# See README.md for the deploy + hardening checklist and the client env vars.
+name: crabcc-telemetry
+
+networks:
+  telemetry:
+    driver: bridge
+
+volumes:
+  openobserve_data:
+
+services:
+  openobserve:
+    image: public.ecr.aws/zinclabs/openobserve:latest
+    restart: unless-stopped
+    environment:
+      # No defaults — fail closed if .env is missing (`:?` aborts the up).
+      ZO_ROOT_USER_EMAIL: ${ZO_ROOT_USER_EMAIL:?set ZO_ROOT_USER_EMAIL in .env}
+      ZO_ROOT_USER_PASSWORD: ${ZO_ROOT_USER_PASSWORD:?set ZO_ROOT_USER_PASSWORD in .env}
+      ZO_DATA_DIR: /data
+      ZO_HTTP_ADDR: 0.0.0.0
+      ZO_HTTP_PORT: "5080"
+      # Telemetry is append-heavy — bound local retention.
+      ZO_COMPACT_DATA_RETENTION_DAYS: ${ZO_RETENTION_DAYS:-30}
+      # Don't leak build/version banners to anonymous callers.
+      ZO_TELEMETRY: "false"
+    volumes:
+      - openobserve_data:/data
+    networks: [telemetry]
+    # Intentionally NO `ports:` — the host publishes nothing. All access is via
+    # the cloudflared tunnel below. Do not add a host port mapping.
+    profiles: [telemetry]
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      # Named-tunnel token from Cloudflare Zero Trust. Configure the tunnel's
+      # public hostname to route to http://openobserve:5080 (see README).
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?set CLOUDFLARE_TUNNEL_TOKEN in .env}
+    networks: [telemetry]
+    depends_on: [openobserve]
+    # Opt-in flag: the whole telemetry stack only starts under
+    # `--profile telemetry` / `COMPOSE_PROFILES=telemetry`, so it stays OFF by
+    # default even when this compose is loaded alongside a box's other stacks.
+    profiles: [telemetry]

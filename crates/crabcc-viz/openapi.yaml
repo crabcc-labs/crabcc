@@ -104,6 +104,22 @@ paths:
               schema:
                 $ref: "#/components/schemas/ActivityResponse"
 
+  /api/netlog:
+    get:
+      tags: [activity]
+      summary: Outbound-egress tail — recent infra HTTP + allowlist violations (#160).
+      operationId: getNetlog
+      parameters:
+        - $ref: "#/components/parameters/SinceTs"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Egress tail.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NetlogResponse"
+
   /api/savings:
     get:
       tags: [activity]
@@ -429,6 +445,37 @@ paths:
                 type: object
                 additionalProperties: true
 
+  /api/memory/search:
+    get:
+      tags: [meta]
+      summary: Cross-repo aggregate substring search over crabcc-memory drawers.
+      description: Powers the /memory browser. Walks $CRABCC_HOME/repos/*/memory.db
+        and matches body/source_id, newest first. Pass repo=<key> to scope to one repo.
+      operationId: getMemorySearch
+      parameters:
+        - in: query
+          name: q
+          schema: { type: string }
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+        - in: query
+          name: repo
+          schema: { type: string }
+        - in: query
+          name: mode
+          description: Ranking mode. Empty query always lists newest-first.
+          schema: { type: string, enum: [hybrid, lexical, vector], default: hybrid }
+      responses:
+        "200":
+          description: Aggregate ranked hits (free-form for now; tracked opaquely
+            until the memory dashboard panel stabilises).
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+
   /api/events:
     get:
       tags: [stream]
@@ -608,6 +655,27 @@ components:
         items:
           type: array
           items: { $ref: "#/components/schemas/ActivityHit" }
+
+    NetlogEvent:
+      type: object
+      required: [ts, caller, op, host, port, ok]
+      properties:
+        ts: { type: integer, description: Unix-epoch second. }
+        caller: { type: string, description: Subsystem that made the request (morph, telegram, …). }
+        op: { type: string }
+        host: { type: string }
+        port: { type: integer }
+        ok: { type: boolean, description: True if the host is on the allowlist; false = blocked violation. }
+
+    NetlogResponse:
+      type: object
+      required: [cursor, violations, events]
+      properties:
+        cursor: { type: integer, description: Max ts returned; resend as `since`. }
+        violations: { type: integer, description: Count of returned events that were blocked. }
+        events:
+          type: array
+          items: { $ref: "#/components/schemas/NetlogEvent" }
 
     SavingsBucket:
       type: object

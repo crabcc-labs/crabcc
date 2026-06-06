@@ -6,7 +6,7 @@
 //!
 //! Surfaces measured per size:
 //!   * `document_symbol` — read path, output grows with the file.
-//!   * `workspace_symbol` — tantivy prefix query across the whole index.
+//!   * `workspace_symbol` — native prefix query across the whole index.
 //!   * `references`       — call-graph fan-in (many callers of one fn).
 //!   * `hover`            — point lookup (should stay ~flat vs size).
 //!   * `did_change`       — write path: full reparse + store replace.
@@ -16,7 +16,7 @@
 //!   # quick compile+smoke (one iteration, no measurement):
 //!   cargo bench -p ucracc-lsp --bench fixture_scale -- --test
 
-use crabcc_core::{fts::Fts, store::Store};
+use crabcc_core::store::Store;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::hint::black_box;
 use std::sync::Arc;
@@ -79,8 +79,6 @@ fn setup(n: usize) -> Bed {
     std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
     let store = Store::open(&db_path).expect("open store");
     crabcc_core::index::full_index(&root, &store).expect("full_index");
-    let fts = Fts::open(&root.join(".crabcc/tantivy")).expect("open fts");
-    fts.rebuild(&store).expect("fts rebuild");
 
     let rt = Arc::new(Runtime::new().unwrap());
     let (service, _socket) = LspService::new(Backend::new);

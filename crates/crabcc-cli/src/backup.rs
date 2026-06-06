@@ -175,7 +175,7 @@ pub fn list(home: &Path, repo_root: &Path) -> Result<Vec<BackupEntry>> {
             })
         })
         .collect();
-    out.sort_by_key(|a| std::cmp::Reverse(a.timestamp));
+    out.sort_unstable_by_key(|a| std::cmp::Reverse(a.timestamp));
     Ok(out)
 }
 
@@ -232,7 +232,7 @@ pub fn auto_snapshot_after_index(repo_root: &Path) {
     snapshot_with_trigger(repo_root, "auto-index");
 }
 
-/// Long-running loop driven by the `com.crabcc.backup-loop` LaunchAgent.
+/// Long-running snapshot loop (schedule it via cron / launchd / systemd).
 /// Snapshots every `interval` seconds against every repo listed in
 /// `~/.crabcc/agent/repos.list`. Each snapshot writes a row to
 /// `backup_runs` (trigger='auto-loop') so the dashboard's history

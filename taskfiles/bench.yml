@@ -57,6 +57,47 @@ tasks:
     cmds:
       - 'CRABCC="target/release/crabcc" bash scripts/bench-flow-matrix.sh'
 
+  bench-opt-bin:
+    desc: |
+      Advanced binary-optimization smoke sweep (2 legs, no PGO/BOLT) — proves
+      the harness shape on any box. Full matrix: `task bench-opt-bin-full`.
+      One-hour OVHcloud run: scripts/bench-opt-bin/provision-ovh.sh.
+    cmds:
+      - 'python3 scripts/bench-opt-bin/sweep.py --quick'
+
+  bench-opt-bin-full:
+    desc: |
+      Full fractional optimization matrix (~11 legs):
+      target-cpu × allocator × PGO{off,on} × BOLT{off,on} + opt-level=z corner,
+      on the reserved `release-nightly` profile. Builds saturate the box
+      (one leg per core, oversubscribed through the serial LTO link),
+      measurements run serially (PIN = taskset core spec). Needs hyperfine +
+      binutils `size` + llvm-tools-preview (+ llvm-bolt for BOLT legs; sccache
+      auto-used if present). Results → bench/results/opt-bin-REPORT.md.
+    vars:
+      JOBS: '{{.JOBS | default ""}}'
+      PIN:  '{{.PIN | default ""}}'
+      RUNS: '{{.RUNS | default "8"}}'
+    cmds:
+      - >-
+        python3 scripts/bench-opt-bin/sweep.py
+        {{if .JOBS}}--jobs {{.JOBS}}{{end}}
+        {{if .PIN}}--pin {{.PIN}}{{end}}
+        --runs {{.RUNS}}
+
+  bench-opt-bin-deep:
+    desc: |
+      Wider ~28-leg matrix (adds the full target-cpu axis v2/v3/v4/native) —
+      sized so a big box (≥32 vCPU) stays busy *through* the single-threaded
+      fat-LTO link phase, where the 11-leg matrix would leave it half-idle.
+      This is what `provision-ovh.sh` runs. PIN measurements to a small core
+      set. Results → bench/results/opt-bin-REPORT.md.
+    vars:
+      PIN:  '{{.PIN | default "0-3"}}'
+      RUNS: '{{.RUNS | default "8"}}'
+    cmds:
+      - 'python3 scripts/bench-opt-bin/sweep.py --deep --pin {{.PIN}} --runs {{.RUNS}}'
+
   compress:
     desc: Train FSST symbol table on the current index + re-encode all rows + report stats
     deps: [build]
@@ -128,3 +169,127 @@ tasks:
           {{.CARGO}} run -q --release -p crabcc-mcp --features bench --example agent_replay --
             --root "{{.ROOT}}" --bin {{.ROOT_DIR}}/target/release/crabcc --profile "$p";
         done
+
+  # ---------------------------------------------------------------------------
+  # Nixery binary optimization matrix (node-optimized + python315t-optimized)
+  # ---------------------------------------------------------------------------
+
+  bench-nixery:
+    desc: |
+      bloaty + BOLT sweep for Nix-built node-optimized and python315t-optimized
+      bins. Phase A (nix-build + BOLT) runs parallel; Phase B (bloaty + hyperfine
+      startup latency) serial. Needs: nix-build, bloaty, hyperfine, llvm-bolt.
+      Results → bench/results/nixery-REPORT.md.
+    vars:
+      JOBS: '{{.JOBS | default ""}}'
+      PIN:  '{{.PIN | default ""}}'
+      RUNS: '{{.RUNS | default "20"}}'
+    cmds:
+      - >-
+        python3 scripts/bench-opt-bin/sweep-nixery.py
+        {{if .JOBS}}--jobs {{.JOBS}}{{end}}
+        {{if .PIN}}--pin {{.PIN}}{{end}}
+        --runs {{.RUNS}}
+
+  bench-nixery-no-bolt:
+    desc: |
+      bloaty-only sweep (no BOLT instrumentation) — fast local run to check
+      binary sizes after overlay changes. Skips the BOLT instrument→workload→
+      optimize loop so it completes in ~nix-build time. Needs: nix-build, bloaty.
+    cmds:
+      - 'python3 scripts/bench-opt-bin/sweep-nixery.py --no-bolt'
+
+  bench-nixery-cargo-bloat:
+    desc: |
+      Full nixery sweep + cargo-bloat on crabcc-compact-serve. Surfaces the
+      top symbols by size in the Rust binary alongside the Nix binary analysis.
+      Adds a cargo build step on top of the nixery sweep.
+    vars:
+      JOBS: '{{.JOBS | default ""}}'
+      RUNS: '{{.RUNS | default "20"}}'
+    cmds:
+      - >-
+        python3 scripts/bench-opt-bin/sweep-nixery.py
+        {{if .JOBS}}--jobs {{.JOBS}}{{end}}
+        --runs {{.RUNS}}
+        --cargo-bloat
+
+  bench-nixery-node:
+    desc: node-optimized legs only (base + BOLT), no Python build.
+    cmds:
+      - 'python3 scripts/bench-opt-bin/sweep-nixery.py --only node-base,node-bolt'
+
+  bench-nixery-python:
+    desc: python315t-optimized legs only (base + BOLT), no Node build.
+    cmds:
+      - 'python3 scripts/bench-opt-bin/sweep-nixery.py --only python-base,python-bolt'
+
+  bench-nixery-all:
+    desc: |
+      Run all nixery bench tasks in parallel: Rust opt-bin sweep (full matrix)
+      + nixery node/python sweep + cargo-bloat. Use on a big box — each task
+      runs its own build phase concurrently. Results in bench/results/.
+    deps:
+      - bench-opt-bin-full
+      - bench-nixery
+
+  bench-nixery-dry:
+    desc: Print the nixery bench plan without building anything.
+    cmds:
+      - 'python3 scripts/bench-opt-bin/sweep-nixery.py --dry-run'
+
+  bench-agent-mcp:
+    desc: |
+      Agent->MCP hot-path bench: synthesized claude_code / nullclaw /
+      zeroclaw tool-call workloads. Runs the in-process criterion bench
+      (low-noise regression gate) + the e2e stdio replay (real per-call
+      latency) against an indexed fixture (ROOT, default: this repo).
+    vars:
+      ROOT: '{{.ROOT | default .ROOT_DIR}}'
+    cmds:
+      # 1. In-process criterion: serve_io dispatch under each agent profile.
+      - '{{.CARGO}} bench -p crabcc-mcp --features bench --bench agent_workload'
+      # 2. Build the CLI the e2e harness spawns, ensure the fixture is indexed.
+      - '{{.CARGO}} build --release -p crabcc-cli'
+      - 'test -f "{{.ROOT}}/.crabcc/index.db" || {{.ROOT_DIR}}/target/release/crabcc index --root "{{.ROOT}}"'
+      # 3. E2e stdio replay — real process + pipe latency, per agent profile.
+      - >-
+        for p in nullclaw zeroclaw claude_code; do
+          {{.CARGO}} run -q --release -p crabcc-mcp --features bench --example agent_replay --
+            --root "{{.ROOT}}" --bin {{.ROOT_DIR}}/target/release/crabcc --profile "$p";
+        done
+
+  stress:
+    desc: |
+      Parallel stress + fuzz the crabcc CLI — hammers the subcommand surface
+      from many workers with valid + mutated args, flags panics/segfaults/hangs
+      as distinct from clean usage errors. Vars: WORKERS, WRITERS, DURATION, SEED.
+    deps: [build-fast]
+    cmds:
+      - 'test -f .crabcc/index.db || {{.ROOT_DIR}}/target/debug/crabcc index build >/dev/null'
+      - >-
+        python3 scripts/stress/stress.py
+        --workers {{.WORKERS | default 16}}
+        --writers {{.WRITERS | default 2}}
+        --duration {{.DURATION | default 30}}
+        {{if .SEED}}--seed {{.SEED}}{{end}}
+
+  stress-smoke:
+    desc: Fast read-only stress smoke (CI-friendly — no writers, fixed seed, deterministic).
+    deps: [build-fast]
+    cmds:
+      - 'test -f .crabcc/index.db || {{.ROOT_DIR}}/target/debug/crabcc index build >/dev/null'
+      - 'python3 scripts/stress/stress.py --workers 8 --iterations 500 --seed 1'
+
+  soak:
+    desc: |
+      Long-running realistic-mix soak of the crabcc CLI — tracks latency drift,
+      index.db/WAL growth, and fd leaks over time. Vars: SOAK (s), WORKERS, SEED.
+    deps: [build-fast]
+    cmds:
+      - 'test -f .crabcc/index.db || {{.ROOT_DIR}}/target/debug/crabcc index build >/dev/null'
+      - >-
+        python3 scripts/stress/stress.py
+        --soak {{.SOAK | default 600}}
+        --workers {{.WORKERS | default 12}}
+        {{if .SEED}}--seed {{.SEED}}{{end}}

@@ -26,7 +26,7 @@ crabcc README; for the navigation LSP that consumes us see
   - [SQLite schema](#sqlite-schema)
   - [Tree-sitter integration](#tree-sitter-integration)
   - [Edges and the call graph](#edges-and-the-call-graph)
-  - [Tantivy sidecar (FTS)](#tantivy-sidecar-fts)
+  - [Native fuzzy/prefix search (FTS)](#native-fuzzyprefix-search-fts)
   - [FSST signature compression](#fsst-signature-compression)
   - [Watch / refresh / refresh_delta](#watch--refresh--refresh_delta)
 - [Extending `crabcc-core`](#extending-crabcc-core)
@@ -57,7 +57,6 @@ Per-repo state goes under `<repo>/.crabcc/`:
 | Path | Role | Built by | Rebuilt by |
 |---|---|---|---|
 | `index.db` | SQLite store: `files`, `symbols`, `edges`, `meta` | `index::full_index` / `refresh` | `Store::open` runs idempotent migrations |
-| `tantivy/` | Fuzzy + prefix index over symbol names | `Fts::rebuild` | `crabcc index` rebuilds; `refresh` does **not** |
 | `graph.json` | Call-graph sidecar — built from `edges`, mmap-friendly | `graph::CallGraph::build_from_edges` + `save` | on demand |
 | `fsst.symbols` | Optional FSST codec table for signature compression | `compress::train` (offline) | one-time training; reused thereafter |
 | `track.json` | Token-savings telemetry per CLI call | `track::record` | append-only |
@@ -109,7 +108,7 @@ the MCP server, the CLI's `--json`, and `ucracc-lsp`'s
 | `compress` | FSST codec — train / encode / decode signatures. Feature-gated on `compress`. | `store` for signature roundtrips |
 | `config` | Disk paths + repo-root resolution helpers | CLI, every consumer |
 | `extract` | tree-sitter parsers, per-language walkers, symbol + edge extraction. **New public API in v0.2:** `language()`, `extract_from_root()`. | `index`, `ucracc-lsp` |
-| `fts` | Tantivy sidecar — fuzzy (Levenshtein 2) + prefix lookup over symbol names | `crabcc fuzzy`, `crabcc prefix`, `ucracc-lsp::workspace/symbol` |
+| `fts` | Native fuzzy (Levenshtein 2, token-aware) + prefix lookup, built in-memory from the live symbol table | `crabcc fuzzy`, `crabcc prefix`, `ucracc-lsp::workspace/symbol` |
 | `gitdiff` | `git diff --name-only SHA1..SHA2` → file set, for `--since SHA` filters | `query` |
 | `graph` | `CallGraph` — build / save / walk / cycles / orphans | `crabcc graph *`, `ucracc-lsp::outgoingCalls` |
 | `hash` | `sha256_hex`, content-addressed envelope fingerprint | `store::upsert_file`, dedup |
@@ -336,23 +335,33 @@ both maps. `walk(name, dir, depth)` is BFS over either map.
 `callers`". The struct serializes to `graph.json` for sharing /
 diffing.
 
-### Tantivy sidecar (FTS)
+### Native fuzzy/prefix search (FTS)
 
-`fts::Fts` wraps a Tantivy index living at `.crabcc/tantivy/`. Schema:
-`name (TEXT)`, `kind (STRING)`, `file (STRING)`, `line (u64)`, `parent
-(STRING)`. All STORED so a single hit round-trips the full record.
+`fts::Fts` is an in-memory view of the symbol names, built straight from the
+live SQLite store via `Fts::from_store(&store)` (which uses a name-only
+projection, `Store::iter_symbol_names`, so the FSST-compressed `signature`
+column is never decoded). Each `Row` precomputes the lowercased name and its
+alphanumeric **tokens**, so matching works *within* a `snake_case`/dotted name —
+matching what the former tokenized Tantivy index did. Replaced the Tantivy
+sidecar in v6.2.0 ([#700](https://github.com/crabcc-labs/crabcc/pull/700)),
+which removed ~20 transitive crates from the build.
 
 Two query shapes:
 
-- `fuzzy(query, limit)` — Levenshtein-2 on `name`. For typo tolerance:
-  `strore` → `store`.
-- `prefix(query, limit)` — regex `^query.*` on `name`. For
-  `workspace/symbol` autocompletion-style lookups.
+- `fuzzy(query, limit)` — bounded Levenshtein (distance ≤ 2) against the whole
+  name or any token (`strore` → `store`; `usr` → `get_user_profile`). The DP is
+  allocation-free over bytes (ASCII fast path) with a reusable scratch, and
+  fast-bails once it has `limit` exact hits or a full candidate pool — so a
+  query matching most of the corpus returns in ~µs ([#713](https://github.com/crabcc-labs/crabcc/pull/713)).
+- `prefix(query, limit)` — case-insensitive starts-with on the whole name or any
+  token, shortest match first. For `workspace/symbol` autocompletion.
 
-`Fts::rebuild(&store)` drops + rewrites the whole index from the
-SQLite store. `crabcc index` calls it after `full_index`; `crabcc
-refresh` does **not** (FTS stays as-of-last-index until rebuilt — a
-documented gotcha in the skill).
+`score` is a synthetic closeness rank (`1.0` exact, `0.5` at distance 1, `0.33`
+at distance 2), not BM25. Because the view is rebuilt from the live store on each
+call (and cached + invalidated-on-edit in the LSP), **results always reflect the
+current index — there is no sidecar and no staleness window.** The `crabcc
+fts-rebuild` CLI command is retained as a no-op (reports the symbol count) for
+backward compatibility.
 
 ### FSST signature compression
 

@@ -51,8 +51,8 @@ Drop a `.mcp.json` at the repo root:
 | `files`    | List indexed files. Filters: `under`, `lang`, `ext`, `limit`.            |
 | `index`    | Full rebuild.                                                            |
 | `refresh`  | Incremental refresh (mtime + sha256).                                    |
-| `fuzzy`    | Levenshtein distance 2 over symbol names (Tantivy).                      |
-| `prefix`   | Case-insensitive starts-with over symbol names (Tantivy).                |
+| `fuzzy`    | Levenshtein distance 2 over symbol names (token-aware, native).          |
+| `prefix`   | Case-insensitive starts-with over symbol names (token-aware, native).    |
 
 For wire-level request/response examples, see [`wire-protocol.md`](./wire-protocol.md).
 For the all-in-one cheatsheet, see [`MCP.md`](./MCP.md).

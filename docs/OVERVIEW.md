@@ -41,7 +41,7 @@ flowchart TB
   end
 
   subgraph disk["💾 On disk"]
-    IDX[".crabcc/index.db<br/>tantivy/ · graph.json"]
+    IDX[".crabcc/index.db<br/>graph.json · fsst.symbols"]
     HOME["$CRABCC_HOME/repos/&lt;slug&gt;/memory.db"]
   end
 
@@ -97,7 +97,6 @@ flowchart LR
 
   subgraph standalone["Standalone builds"]
     VIZ[crabcc-viz<br/>call-graph UI]
-    DESK[crabcc-desktop<br/>GPUI dashboard]
     TG[crabcc-telegram]
   end
 
@@ -114,7 +113,6 @@ flowchart LR
   LSP --> CORE
   CHR --> CORE
   VIZ -.->|HTTP/SSE| CORE
-  DESK -.->|loopback| VIZ
 
   classDef core fill:#2d6a4f,stroke:#95d5b2,color:#fff
   classDef edge fill:#457b9d,stroke:#a8dadc,color:#fff
@@ -122,10 +120,10 @@ flowchart LR
 
   class CORE,MEM,MCP,CLI core
   class LSP,CHR,FETCH,GF edge
-  class VIZ,DESK,TG,HITL,NOTIFY solo
+  class VIZ,TG,HITL,NOTIFY solo
 ```
 
-Excluded from the workspace (build in-crate): `crabcc-viz`, `crabcc-desktop`, `apps/crabcc-telegram` — see comments in root `Cargo.toml`.
+Excluded from the workspace (build in-crate): `crabcc-viz`, `apps/crabcc-telegram` — see comments in root `Cargo.toml`.
 
 ---
 
@@ -137,7 +135,6 @@ flowchart TB
   subgraph repo["&lt;your-repo&gt;/"]
     CC[".crabcc/"]
     CC --> DB[(index.db<br/>files · symbols · edges)]
-    CC --> TAN[tantivy/<br/>fuzzy + prefix]
     CC --> GJ[graph.json<br/>call-graph sidecar]
     CC --> FSST[fsst.symbols<br/>signature codec]
     CC --> TRK[track.json<br/>token savings]
@@ -153,13 +150,12 @@ flowchart TB
   classDef file fill:#4ea8de,stroke:#023e8a,color:#023e8a
 
   class DB,MEMDB sql
-  class TAN,GJ,FSST,TRK,INT,LOG file
+  class GJ,FSST,TRK,INT,LOG file
 ```
 
 | Path | Built by | Queried by |
 |------|----------|------------|
 | `index.db` | `crabcc index` / `refresh` | `sym`, `refs`, `callers`, `outline`, `files` |
-| `tantivy/` | index + `fts-rebuild` | `fuzzy`, `prefix` |
 | `graph.json` | `crabcc graph build` | `graph walk`, viz, LSP call hierarchy |
 | `memory.db` | `memory remember` / `mine` | `memory search` (hybrid RRF) |
 
@@ -174,14 +170,12 @@ flowchart LR
   P --> E[extract<br/>symbols + edges]
   E --> S[(SQLite upsert)]
   E --> ED[edges table<br/>O files not O n²]
-  S --> FTS[Tantivy rebuild<br/>on full index]
   ED --> GB[graph build<br/>optional]
 
   style W fill:#ffe066,stroke:#ff6b6b
   style P fill:#ff9f1c,stroke:#e85d04
   style E fill:#06d6a0,stroke:#1b4332
   style S fill:#4cc9f0,stroke:#0077b6
-  style FTS fill:#c77dff,stroke:#7b2cbf
   style GB fill:#80ffdb,stroke:#40916c
 ```
 
@@ -199,8 +193,8 @@ flowchart TD
   D -->|definition| SYM[sym → SQL name = ?]
   D -->|references| REF{Shape?}
   D -->|callers| CAL{edges populated?}
-  D -->|typo name| FUZ[fuzzy → Tantivy]
-  D -->|prefix| PRE[prefix → Tantivy]
+  D -->|typo name| FUZ[fuzzy → in-memory scan of index.db]
+  D -->|prefix| PRE[prefix → in-memory scan of index.db]
   D -->|file skeleton| OUT[outline → SQL by file_id]
   D -->|past notes| MEM[memory search → RRF]
 

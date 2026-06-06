@@ -1,0 +1,7 @@
+# cargo-fuzz build + run output — never committed
+target/
+corpus/
+artifacts/
+run-logs/
+matrix-*/
+Cargo.lock

@@ -2,7 +2,7 @@
 //!
 //! Returns the induced subgraph (nodes + their inter-edges) needed by
 //! the interactive canvas, with each node enriched from the symbol
-//! store so the desktop drawer can render the full header without a
+//! store so the canvas drawer can render the full header without a
 //! follow-up RPC.
 
 use crate::query::parse_query;
@@ -31,7 +31,7 @@ pub(crate) struct NodeOut {
     /// `function` / `struct` / `enum` / `trait` / `const` / `type` /
     /// `macro`. `None` for nodes whose id couldn't be matched (call
     /// targets the indexer didn't catch — extern crate fns, std, etc).
-    /// Added in #301 so the desktop graph drawer can render a kind
+    /// Added in #301 so the graph drawer can render a kind
     /// badge without a follow-up RPC.
     #[serde(skip_serializing_if = "Option::is_none")]
     kind: Option<String>,
@@ -159,7 +159,7 @@ pub(crate) fn graph_snapshot(root: &Path, query: &str) -> Result<GraphSnapshot> 
     // The frontier from `incoming` / `outgoing` excludes the root itself.
     // Add it back at depth 0 so the canvas has a recognizable focus point.
     // Each node is enriched with kind / file / line / signature via
-    // `NodeOut::from_id_with_store` (#301) so the desktop drawer can
+    // `NodeOut::from_id_with_store` (#301) so the graph drawer can
     // render the full symbol header without a follow-up RPC.
     let mut nodes: Vec<NodeOut> =
         std::iter::once(NodeOut::from_id_with_store(q.root.clone(), 0, &store))

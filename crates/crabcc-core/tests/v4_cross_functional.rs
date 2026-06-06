@@ -14,7 +14,7 @@
 //! This file covers layer (3): the seams between layers (1)/(2) and the
 //! rest of the workspace.
 
-use std::collections::HashSet;
+use ahash::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 

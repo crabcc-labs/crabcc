@@ -52,13 +52,12 @@ model_list:
       stream_timeout: 60
       max_parallel_requests: 8
 
-  # Summary lane — used by the desktop's sampling-offer when a peer
-  # asks for `includeContext` so the host can pre-summarise resource
-  # snippets before stuffing them into the primary model's context.
-  # Qwen3-4B picked to share a tokenizer family with the qwen3.5:35b
-  # primary (predictable token accounting after concatenation) and to
-  # fit comfortably alongside the 35B in unified memory on a ≥32 GB
-  # host. See crates/crabcc-desktop/docs/MCP-SAMPLING-OFFER.md §7.
+  # Summary lane — pre-summarises resource snippets before stuffing
+  # them into the primary model's context (e.g. an MCP sampling offer
+  # that requests `includeContext`). Qwen3-4B picked to share a
+  # tokenizer family with the qwen3.5:35b primary (predictable token
+  # accounting after concatenation) and to fit comfortably alongside
+  # the 35B in unified memory on a ≥32 GB host.
   - model_name: qwen3:4b
     litellm_params:
       model: ollama_chat/qwen3:4b

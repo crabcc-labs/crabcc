@@ -99,6 +99,12 @@ another tool or showing the user a clean list.
 Claude Code on most setups — use them by default. Plain `grep -rn` and `find . -name`
 should be considered deprecated for repo work.
 
+> **Big-file throughput tip:** for `awk` / `sort` / `grep` / `rg` over multi-GB
+> *ASCII* files, prefix `LC_ALL=C` (e.g. `LC_ALL=C awk '{print $1}' huge.log`) —
+> it skips per-character UTF-8 classification for a 2–10× speedup. Drop it when the
+> data is genuinely multibyte: the C locale changes collation, regex character
+> classes (`[[:alpha:]]`), and case folding, so it's only safe for byte/ASCII work.
+
 ## Output shape
 
 All commands print compact JSON to stdout. Symbols include `{name, kind, signature,
@@ -108,10 +114,12 @@ snippet}`. Pipe through `jq` whenever you need to reshape — see examples above
 ## Re-indexing
 
 - `crabcc refresh` → incremental, mtime + sha256 keyed (~250ms no-op on 13k files).
-- `crabcc index` → full rebuild, also rebuilds Tantivy fuzzy/prefix sidecar.
-- `crabcc fts-rebuild` → rebuild fuzzy/prefix sidecar only.
+- `crabcc index` → full rebuild of the SQLite symbol index.
+- `crabcc fts-rebuild` → no-op, kept for back-compat (fuzzy/prefix read the live
+  index directly now, so there is no separate sidecar to rebuild).
 
-If lookups return stale results, run `refresh` first.
+Fuzzy/prefix always reflect the current `index.db`, so they're never stale on
+their own. If lookups return stale results, run `refresh` first.
 
 ## Token-cost rule of thumb
 

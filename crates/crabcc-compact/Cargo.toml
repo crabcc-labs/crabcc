@@ -1,0 +1,24 @@
+[package]
+name = "crabcc-compact"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "crabcc-compact"
+path = "src/main.rs"
+
+[dependencies]
+anyhow     = { workspace = true }
+clap       = { workspace = true }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+tokio      = { workspace = true }
+reqwest    = { workspace = true, features = ["blocking", "json"] }
+toml       = { workspace = true }
+tracing    = { workspace = true }
+tracing-subscriber = { workspace = true }
+ahash      = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

@@ -1,7 +1,6 @@
 // Tool-family line-icon set — 11 single-purpose icons matching the
 // greenfield design system spec (16 px stroke 1.5, one icon per tool
-// family). Closes sub-task 1 of issue #389 on the React side; mirrors
-// crates/crabcc-desktop/src/icons.rs.
+// family). Closes sub-task 1 of issue #389 on the React side.
 //
 // Each icon is exported as a `() => JSX.Element` returning an inline
 // `<svg>` with `currentColor` strokes, so the consumer controls the

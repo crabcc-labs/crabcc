@@ -135,11 +135,6 @@ Pattern: `task <name> VAR=value` (e.g. `task viz PORT=8080`,
 - `scripts/prep-pr.sh` — invoked by `task prep-pr`.
 - `scripts/check-deps.sh` — invoked by `task check-deps`.
 - `scripts/version.sh` — sourced by `CRABCC_VERSION` and `task version`.
-- `scripts/build-dmg.sh` — invoked by `task dmg` (issue #107). Stages
-  `installer/Crabcc.app`, swiftc-compiles `menubar.swift`, ad-hoc
-  codesigns, hands off to `hdiutil` → `dist/crabcc-<version>.dmg`.
 - `scripts/bootstrap.sh` — `curl | bash`-able fresh-machine setup.
   Standalone (not a `task` target) — meant to run before the repo
   exists locally.
-- `scripts/install-macos-helpers.sh` — register/remove the
-  `com.crabcc.agentd` LaunchAgent without building the DMG.

@@ -1,13 +1,21 @@
 # Profiling crabcc
 
-Three Taskfile targets cover the daily-driver perf-investigation workflow. None are wired into `task ci` — profiling is on-demand by design.
+These Taskfile targets cover the daily-driver perf-investigation workflow. None are wired into `task ci` — profiling is on-demand by design.
 
 | Target | Tool | Sudo? | Output |
 |---|---|---|---|
 | `task profile-build` | cargo | no | `target/profiling/crabcc` (release codegen + line-table debuginfo) |
 | `task profile-index REPO_FIXTURE=PATH` | [samply](https://github.com/mstange/samply) | no (macOS + Linux) | `.summary/profile-index.json` (open with `samply load`) |
 | `task profile-memory-search [N=200] [Q="..."]` | samply | no | `.summary/profile-memory-search.json` |
+| `task profile-fts [N=200] [Q="..."]` | samply | no | `.summary/profile-fts.json` |
 | `task flamegraph-index REPO_FIXTURE=PATH` | [cargo-flamegraph](https://github.com/flamegraph-rs/flamegraph) | **yes** on macOS (DTrace) | `.summary/flamegraph-index.svg` |
+
+## Profiling the symbol search path
+
+Fuzzy/prefix lookup is now a native SQLite-backed scan (no Tantivy). Two angles:
+
+- **End-to-end, via the CLI** — `task profile-fts` indexes `REPO_FIXTURE`, then samples N hot `crabcc lookup fuzzy/prefix` calls. Each call rebuilds the in-memory `Fts` from the store and scans it, so the profile shows the real split between `Store::iter_symbol_names` (the name-only load) and the bounded-Levenshtein / prefix scan.
+- **In-process microbench** — `cargo bench -p crabcc-core --features bench --bench fts_search` runs a criterion matrix of corpus size (1k / 10k / 50k) × query shape (fuzzy exact/typo1/typo2/nomatch, prefix broad/narrow) plus `Fts::from_symbols` build cost. Use this to compare scan implementations without SQLite or process-spawn noise. The `fuzzy_prefix_scale_roughly_linearly` unit test guards the same path against an accidental O(N²) regression on every `cargo test`.
 
 `samply` is the recommended default — it works on macOS without sudo, supports both DTrace and the kernel's mach task ports, and ships a browser-based flamegraph viewer with much better zoom + symbol resolution than a static SVG. Reach for `cargo-flamegraph` only when you specifically want a single SVG to attach to an issue.
 
@@ -66,12 +74,11 @@ When profiling the indexer, the top hot frames should be (rough expectation agai
 2. `crabcc_core::extract::walk` — Rust dispatch over AST nodes
 3. `rusqlite::Connection::execute` — symbol/edge inserts
 4. `crabcc_core::store::Store::insert_*` — wrapper logic + FSST encode
-5. `crabcc_core::fts::Fts::add` — Tantivy commit batching
 
 For memory.search, expect:
 
 1. `crabcc_memory::backend::cosine` — vector distance loop (target for `--features simd-cosine`)
-2. `tantivy::query::BooleanQuery::weight` — BM25 scoring
+2. `crabcc_memory` FTS5 BM25 — lexical scoring in SQLite
 3. `crabcc_memory::palace::rrf_fuse` — small but visible
 4. `sonic_rs::to_string` — encode tail (should be < 5%)
 

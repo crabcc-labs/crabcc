@@ -11,8 +11,6 @@ launchctl load ~/Library/LaunchAgents/com.crabcc.mcp.plist
 crabcc doctor
 ```
 
-For the full menubar + agentd stack, use `task dmg` / `Crabcc.app` (issue #107).
-
 ## Linux (systemd user unit)
 
 ```bash

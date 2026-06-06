@@ -1,5 +1,5 @@
-//! `Godfather` — the main facade. Embedded callers (cli / desktop /
-//! viz) construct one at startup, record their session, drop it on
+//! `Godfather` — the main facade. Embedded callers (cli / viz)
+//! construct one at startup, record their session, drop it on
 //! exit. Everything's a thin wrapper around the per-table modules.
 //!
 //! ## Privacy opt-out
@@ -76,7 +76,7 @@ impl Godfather {
     /// Same, but at an explicit path — useful for tests + CLI
     /// `--db /tmp/foo.db` overrides.
     pub fn open_at(path: &Path) -> Result<Self> {
-        Self::open_at_with(path, telemetry_enabled_from_env())
+        Self::open_at_with(path, std::env::var_os("CRABCC_NO_TELEMETRY").is_none())
     }
 
     /// Lower-level constructor that takes the telemetry flag
@@ -375,10 +375,6 @@ impl Godfather {
     pub fn telemetry_enabled(&self) -> bool {
         self.telemetry_enabled
     }
-}
-
-fn telemetry_enabled_from_env() -> bool {
-    std::env::var_os("CRABCC_NO_TELEMETRY").is_none()
 }
 
 fn default_db_path() -> Result<PathBuf> {

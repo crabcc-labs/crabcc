@@ -147,15 +147,71 @@ fn shq(s: &str) -> String {
 /// Plan a rewrite for `cmd`. `is_symbol` is consulted only for the
 /// bare-identifier grep/rg case, so the (DB-backed) predicate is never
 /// invoked for the common non-search command.
-pub fn plan(cmd: &str, is_symbol: &dyn Fn(&str) -> bool) -> Option<Rewrite> {
+pub fn plan(cmd: &str, is_symbol: &dyn Fn(&str) -> bool, cwd: Option<&Path>) -> Option<Rewrite> {
     let toks = tokenize(cmd)?;
     let (prog, rest) = toks.split_first()?;
     match prog.as_str() {
         "grep" => plan_grep(rest, is_symbol),
         "rg" => plan_rg(rest, is_symbol),
         "find" => plan_find(rest),
-        "cat" => plan_cat(rest),
+        "cat" => plan_cat(rest, cwd),
+        // Blocking follows -> `crabcc run --timeout` so they bound + detach to
+        // the background (snapshot now, keep running) instead of pinning the
+        // agent. A pager of a file is just that file, so route it like `cat`.
+        "tail" => plan_follow(prog, rest, "tail-f->crabcc-run"),
+        "journalctl" => plan_follow(prog, rest, "journalctl-f->crabcc-run"),
+        "watch" => plan_watch(prog, rest),
+        "less" | "more" => plan_cat(rest, cwd),
         _ => None,
+    }
+}
+
+/// `crabcc run --timeout` wrap horizon for a bounded blocking follow.
+const RUN_TIMEOUT_SECS: u64 = 30;
+
+/// A `tail`/`journalctl` follow flag: `-f`, `-F`, `--follow`, or a combined
+/// short flag containing f/F (e.g. `-fn`).
+fn is_follow_flag(a: &str) -> bool {
+    a == "--follow"
+        || (a.starts_with('-')
+            && !a.starts_with("--")
+            && a.len() > 1
+            && (a.contains('f') || a.contains('F')))
+}
+
+/// Wrap a follow command in `crabcc run --timeout N -- <cmd>` so it captures a
+/// bounded snapshot, squeezes it, then detaches to the background. Fires only
+/// when a follow flag is present; `tail -n 100` and friends pass through.
+fn plan_follow(prog: &str, rest: &[String], rule: &'static str) -> Option<Rewrite> {
+    if !rest.iter().any(|a| is_follow_flag(a)) {
+        return None;
+    }
+    Some(run_wrap(prog, rest, rule))
+}
+
+/// `watch` repeats forever, so it always blocks; wrap it when it has a command.
+fn plan_watch(prog: &str, rest: &[String]) -> Option<Rewrite> {
+    if rest.is_empty() {
+        return None;
+    }
+    Some(run_wrap(prog, rest, "watch->crabcc-run"))
+}
+
+fn run_wrap(prog: &str, rest: &[String], rule: &'static str) -> Rewrite {
+    let mut argv = vec![shq(prog)];
+    argv.extend(rest.iter().map(|a| shq(a)));
+    Rewrite {
+        inner: format!(
+            "crabcc run --timeout {RUN_TIMEOUT_SECS} -- {}",
+            argv.join(" ")
+        ),
+        rule,
+        key: prog.to_string(),
+        note: Some(format!(
+            "blocking follow bounded to ~{RUN_TIMEOUT_SECS}s then detached to the background; \
+             `crabcc run --follow <id>` for more output, `--kill <id>` to stop"
+        )),
+        track_op: "rewrite",
     }
 }
 
@@ -167,44 +223,30 @@ pub fn plan(cmd: &str, is_symbol: &dyn Fn(&str) -> bool) -> Option<Rewrite> {
 /// it is never compacted — the read cache *is* the optimization. Multiple
 /// files or any flag -> passthrough (plain `cat` is still compaction-worthy
 /// via the post-stage chain).
-fn plan_cat(args: &[String]) -> Option<Rewrite> {
+fn plan_cat(args: &[String], cwd: Option<&Path>) -> Option<Rewrite> {
     let [file] = args else { return None };
     if file.starts_with('-') {
         return None;
     }
     if file.ends_with(".json") {
+        // Fall back to cat when the file is invalid / mid-edit so the agent
+        // always gets the raw bytes it asked for, not a jq parse error.
+        let f = shq(file);
         return Some(Rewrite {
-            inner: format!("jq -c . {}", shq(file)),
+            inner: format!("jq -c . {f} || cat {f}"),
             rule: "cat-json->jq",
             key: file.clone(),
             note: Some("minified JSON (jq -c); pipe to `jq '<filter>'` to select fields".into()),
             track_op: "rewrite",
         });
     }
-    if let Some(fmt) = structured_data_format(file) {
-        // yaml/toml/xml -> compact JSON via dasel: one dense, uniform,
-        // jq-queryable shape regardless of source format (a big win for
-        // tag-heavy XML; normalises the rest). Dropped to plain `cat` when
-        // `dasel` isn't on PATH (run() filters on the emitted program).
-        // NOT byte-exact: comments are dropped, key order may change — so
-        // the note points back to raw `cat`.
-        return Some(Rewrite {
-            inner: format!("dasel -f {} -w json --pretty=false", shq(file)),
-            rule: "cat->dasel-json",
-            key: file.clone(),
-            note: Some(format!(
-                "{fmt} -> compact JSON (dasel; comments dropped - `cat {}` for raw); query with `dasel`/`jq`",
-                shq(file)
-            )),
-            track_op: "rewrite",
-        });
-    }
     if is_source_file(file) {
-        // Resolve to the absolute path when the file exists so the read
-        // binds to the agent's cwd (cat's frame of reference), not
-        // crabcc's repo root; fall back to the literal path otherwise
-        // (where a missing file makes both `cat` and `read` error alike).
-        let target = std::fs::canonicalize(file)
+        // Resolve to the absolute path relative to the Bash tool's cwd so
+        // the read binds to the agent's frame of reference, not crabcc's
+        // process cwd. Fall back to the literal path when the file doesn't
+        // exist (both `cat` and `crabcc read` would fail alike).
+        let base = cwd.map(|d| d.join(file)).unwrap_or_else(|| file.into());
+        let target = std::fs::canonicalize(&base)
             .ok()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|| file.clone());
@@ -220,22 +262,6 @@ fn plan_cat(args: &[String]) -> Option<Rewrite> {
         });
     }
     None
-}
-
-/// Structured-data extensions dasel can transcode to compact JSON.
-/// Returns the source-format label for the header note, or `None`.
-fn structured_data_format(file: &str) -> Option<&'static str> {
-    match Path::new(file)
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(str::to_ascii_lowercase)
-        .as_deref()
-    {
-        Some("yaml" | "yml") => Some("yaml"),
-        Some("toml") => Some("toml"),
-        Some("xml") => Some("xml"),
-        _ => None,
-    }
 }
 
 /// Source extensions where `crabcc read`'s outline stub is meaningful.
@@ -282,6 +308,10 @@ struct GrepOpts {
     ignore_case: bool,
     word: bool,
     fixed: bool,
+    /// `grep -H` — force filename prefix on every match line.
+    with_filename: bool,
+    /// `grep -h` — suppress filename prefix (even with multiple files).
+    no_filename: bool,
     positionals: Vec<String>,
 }
 
@@ -297,7 +327,9 @@ fn parse_short_flags(args: &[String], allow_recursive: bool) -> Option<GrepOpts>
             for ch in a[1..].chars() {
                 match ch {
                     'r' | 'R' if allow_recursive => o.recursive = true,
-                    'I' | 's' | 'H' | 'h' => {} // no-ops vs ripgrep defaults
+                    'I' | 's' => {} // binary-skip / suppress-errors: rg default matches
+                    'H' => o.with_filename = true,
+                    'h' => o.no_filename = true,
                     'n' => o.line_numbers = true,
                     'l' => o.files_only = true,
                     'c' => o.count = true,
@@ -330,6 +362,18 @@ fn plan_grep(args: &[String], is_symbol: &dyn Fn(&str) -> bool) -> Option<Rewrit
         return Some(symbol_upgrade(pattern, o.files_only, "grep->crabcc-refs"));
     }
 
+    // Without -r/-R, grep on a directory prints an error (or skips it).
+    // rg always recurses into directories, so the swap would silently add
+    // results that grep never returns. Passthrough when any explicit path
+    // is a directory and the user didn't opt into recursion.
+    if !o.recursive
+        && paths
+            .iter()
+            .any(|p| std::fs::metadata(p).is_ok_and(|m| m.is_dir()))
+    {
+        return None;
+    }
+
     // Faithful ripgrep swap — only when the pattern is regex-compatible
     // (or a fixed string).
     if !o.fixed && !regex_compatible(pattern) {
@@ -351,11 +395,14 @@ fn plan_rg(args: &[String], is_symbol: &dyn Fn(&str) -> bool) -> Option<Rewrite>
 }
 
 fn plan_find(args: &[String]) -> Option<Rewrite> {
-    // Only the `find PATH... -name GLOB [-type f]` shape maps cleanly to
-    // `rg --files -g GLOB PATH`. Any other predicate -> passthrough.
+    // Only the `find PATH... -name GLOB -type f` shape maps cleanly to
+    // `rg --files -g GLOB PATH`. `-type f` is required: without it, `find`
+    // can return directories that match the glob, but `rg --files` only
+    // lists files, which would silently drop those directory entries.
     let mut paths = Vec::new();
     let mut glob: Option<String> = None;
     let mut iglob = false;
+    let mut type_f = false;
     let mut i = 0;
     while i < args.len() {
         let a = &args[i];
@@ -372,6 +419,7 @@ fn plan_find(args: &[String]) -> Option<Rewrite> {
                 if args.get(i + 1)?.as_str() != "f" {
                     return None; // only plain files map to `rg --files`
                 }
+                type_f = true;
                 i += 2;
             }
             s if s.starts_with('-') => return None, // unknown predicate
@@ -380,6 +428,9 @@ fn plan_find(args: &[String]) -> Option<Rewrite> {
                 i += 1;
             }
         }
+    }
+    if !type_f {
+        return None; // without -type f, find may match dirs; rg --files doesn't
     }
     let glob = glob?;
     let flag = if iglob { "--iglob" } else { "-g" };
@@ -436,6 +487,12 @@ fn rg_swap(o: &GrepOpts, pattern: &str, paths: &[String]) -> Rewrite {
     if o.count {
         inner.push_str(" -c");
     }
+    if o.with_filename {
+        inner.push_str(" --with-filename");
+    }
+    if o.no_filename {
+        inner.push_str(" --no-filename");
+    }
     inner.push(' ');
     inner.push_str(&shq(pattern));
     for p in paths {
@@ -467,31 +524,11 @@ const COMPACTABLE: &[&str] = &[
     "cat", "gh", "git", "rg", "grep", "find", "curl", "jq", "tree",
 ];
 
-/// First token of a simple (no-metacharacter) command, if it's worth
-/// piping through a compaction stage.
-fn compactable_program(cmd: &str) -> Option<String> {
-    let toks = tokenize(cmd)?;
-    let prog = toks.into_iter().next()?;
-    COMPACTABLE.contains(&prog.as_str()).then_some(prog)
-}
-
 /// Morph Compact is enabled iff a key is present (privacy gate) and not
 /// explicitly disabled. The network cost (~1s+ on large inputs) is opt-in
 /// via the key; RTK does the bulk, local, free reduction below it.
 fn morph_enabled() -> bool {
     std::env::var_os("MORPH_API_KEY").is_some() && std::env::var_os("CRABCC_NO_MORPH").is_none()
-}
-
-/// The rtk filter matching a command's output format, if rtk ships one
-/// (rtk's filters are command-aware + roughly lossless, not summarisers).
-fn rtk_filter_for(prog: &str) -> Option<&'static str> {
-    match prog {
-        "grep" | "rg" => Some("grep"),
-        "find" => Some("find"),
-        "cargo" => Some("cargo-test"),
-        "pytest" => Some("pytest"),
-        _ => None,
-    }
 }
 
 /// An `rtk pipe --filter <f>` stage. **Auto-engages** (part of the default
@@ -505,7 +542,16 @@ fn rtk_stage(prog: &str) -> Option<String> {
     let filter = std::env::var("CRABCC_RTK_PIPE")
         .ok()
         .filter(|f| !f.trim().is_empty())
-        .or_else(|| rtk_filter_for(prog).map(String::from))?;
+        .or_else(|| {
+            let f: Option<&str> = match prog {
+                "grep" | "rg" => Some("grep"),
+                "find" => Some("find"),
+                "cargo" => Some("cargo-test"),
+                "pytest" => Some("pytest"),
+                _ => None,
+            };
+            f.map(String::from)
+        })?;
     Some(format!("rtk pipe --filter {}", shq(&filter)))
 }
 
@@ -527,7 +573,13 @@ fn header(rw: &Rewrite, saved: usize) -> String {
 /// repo index, plans a rewrite, records it (trace + ledger) and prints
 /// the Claude Code PreToolUse envelope. Prints nothing when there is no
 /// safe rewrite.
-pub fn run(root: &Path, db: &Path, command: &str, session_id: Option<&str>) -> Result<()> {
+pub fn run(
+    root: &Path,
+    db: &Path,
+    command: &str,
+    session_id: Option<&str>,
+    cwd: Option<&Path>,
+) -> Result<()> {
     // Precedence: env disable-flag > .crabcc-cli.conf > built-in default.
     if std::env::var_os("CRABCC_NO_REWRITE").is_some() {
         return Ok(());
@@ -560,10 +612,19 @@ pub fn run(root: &Path, db: &Path, command: &str, session_id: Option<&str>) -> R
     // Dropped if the emitted tool (rg, jq, ...) isn't on PATH — never
     // hand the agent a command its environment can't run. `crabcc` is
     // always present (we are it).
-    let planned = plan(command, &is_symbol).filter(|rw| {
+    let mut planned = plan(command, &is_symbol, cwd).filter(|rw| {
         let prog = rw.inner.split_whitespace().next().unwrap_or("");
         prog == "crabcc" || on_path(prog)
     });
+    // Propagate session_id into `crabcc read` rewrites so the session-reads
+    // cache in the target process sees the same session as the hook. Without
+    // this the re-read outline-stub optimisation never fires in hook-driven
+    // usage (the read process starts with no session and bypasses the cache).
+    if let (Some(rw), Some(sid)) = (planned.as_mut(), session_id) {
+        if rw.inner.starts_with("crabcc read ") && !rw.inner.contains("--session-id") {
+            rw.inner = format!("{} --session-id {}", rw.inner, shq(sid));
+        }
+    }
 
     // Open the dev-debug ledger only for an actual rewrite candidate, so
     // the hot path (the vast majority of Bash commands, which don't
@@ -597,7 +658,9 @@ pub fn run(root: &Path, db: &Path, command: &str, session_id: Option<&str>) -> R
         None => (
             command.to_string(),
             None,
-            compactable_program(command).is_some(),
+            tokenize(command)
+                .and_then(|t| t.into_iter().next())
+                .is_some_and(|p| COMPACTABLE.contains(&p.as_str())),
         ),
     };
 
@@ -648,11 +711,6 @@ pub fn run(root: &Path, db: &Path, command: &str, session_id: Option<&str>) -> R
     if !chain.is_empty() {
         hdr.push_str(&format!(" | +{}", chain.join("+")));
     }
-    // The header `printf` + piped stages mean the wrapped command's exit
-    // code is the last stage's, not the engine command's — so a `grep`/`rg`
-    // that exits 1 on no-match now exits 0. stdout is still faithful (empty
-    // => the model sees "no matches") and the agent reads output, not the
-    // code, so this is an accepted nuance, not output loss.
     let wrapped = format!("printf '%s\\n' {}; {}", shq(&hdr), inner);
 
     let chain_str = chain.join("+");
@@ -739,10 +797,10 @@ pub fn run_measure() -> Result<()> {
     Ok(())
 }
 
-/// `crabcc shell status` — answer "is crabcc token-opt ON?" at a glance.
-/// Reflects the engine's *actual* gating: `.crabcc-cli.conf` ⊕ the
-/// `CRABCC_NO_*` env flags ⊕ what's on PATH ⊕ whether `MORPH_API_KEY` is
-/// set. `--oneline` is the SessionStart banner form.
+/// Answer "is crabcc token-optimization ON?" at a glance: prints the
+/// rewrite/RTK/Morph/media state (from .crabcc-cli.conf + env + PATH) plus
+/// tokens saved in the last 24h. `--oneline` prints a single status line
+/// (used by the SessionStart banner).
 pub fn run_status(root: &Path, oneline: bool) -> Result<()> {
     let cfg = crate::cli_config::load(root);
     let rewrite = std::env::var_os("CRABCC_NO_REWRITE").is_none() && cfg.rewrite_enabled;
@@ -823,17 +881,17 @@ mod tests {
         // grep / rg for an indexed bare identifier, repo-wide, case-
         // sensitive, non-count -> `crabcc lookup refs` (+ --files-only),
         // with a header that discloses the rg fallback.
-        let g = plan("grep -rn Store .", &only_store).unwrap();
+        let g = plan("grep -rn Store .", &only_store, None).unwrap();
         assert_eq!(g.inner, "crabcc lookup refs Store");
         assert_eq!(g.rule, "grep->crabcc-refs");
         assert_eq!(g.track_op, "refs");
 
         assert_eq!(
-            plan("grep -rln Store", &only_store).unwrap().inner,
+            plan("grep -rln Store", &only_store, None).unwrap().inner,
             "crabcc lookup refs Store --files-only"
         );
 
-        let r = plan("rg Store", &only_store).unwrap();
+        let r = plan("rg Store", &only_store, None).unwrap();
         assert_eq!(r.inner, "crabcc lookup refs Store");
         assert_eq!(r.rule, "rg->crabcc-refs");
 
@@ -848,19 +906,21 @@ mod tests {
     fn falls_back_to_ripgrep_when_symbol_upgrade_is_unsafe() {
         // Unknown symbol, path-scoped, or case-insensitive -> faithful rg
         // swap (symbol scope/case can't be preserved by `lookup refs`).
-        let unknown = plan("grep -rn Nonexistent .", &never).unwrap();
+        let unknown = plan("grep -rn Nonexistent .", &never, None).unwrap();
         assert_eq!(unknown.inner, "rg -n Nonexistent .");
         assert_eq!(unknown.track_op, "rewrite");
         assert_eq!(
-            plan("grep -rn Store src/", &only_store).unwrap().inner,
+            plan("grep -rn Store src/", &only_store, None)
+                .unwrap()
+                .inner,
             "rg -n Store src/"
         );
         assert_eq!(
-            plan("grep -rin Store .", &only_store).unwrap().inner,
+            plan("grep -rin Store .", &only_store, None).unwrap().inner,
             "rg -i -n Store ."
         );
         // rg for a non-symbol is left alone (rg->rg is a no-op).
-        assert_eq!(plan("rg Nonexistent", &never), None);
+        assert_eq!(plan("rg Nonexistent", &never, None), None);
     }
 
     #[test]
@@ -868,27 +928,33 @@ mod tests {
         // Literal phrase, single file, and fixed-string forms all map to
         // a semantics-preserving rg invocation.
         assert_eq!(
-            plan("grep -rn 'fn open' .", &never).unwrap().inner,
+            plan("grep -rn 'fn open' .", &never, None).unwrap().inner,
             "rg -n 'fn open' ."
         );
         assert_eq!(
-            plan("grep -n foo file.rs", &never).unwrap().inner,
+            plan("grep -n foo file.rs", &never, None).unwrap().inner,
             "rg -n foo file.rs"
         );
         assert_eq!(
-            plan("grep -rnF 'a+b' .", &never).unwrap().inner,
+            plan("grep -rnF 'a+b' .", &never, None).unwrap().inner,
             "rg -F -n 'a+b' ."
         );
     }
 
     #[test]
     fn find_name_maps_to_ripgrep_files() {
+        // -type f required: without it, find may return matching directories
+        // that rg --files would silently drop — so we pass through instead.
+        assert!(plan("find . -name '*.rs'", &never, None).is_none());
+
         assert_eq!(
-            plan("find . -name '*.rs'", &never).unwrap().inner,
+            plan("find . -name '*.rs' -type f", &never, None)
+                .unwrap()
+                .inner,
             "rg --files -g '*.rs' ."
         );
         assert_eq!(
-            plan("find src -iname '*.RS' -type f", &never)
+            plan("find src -iname '*.RS' -type f", &never, None)
                 .unwrap()
                 .inner,
             "rg --files --iglob '*.RS' src"
@@ -898,35 +964,18 @@ mod tests {
     #[test]
     fn cat_json_minifies_via_jq() {
         assert_eq!(
-            plan("cat config.json", &never).unwrap().inner,
-            "jq -c . config.json"
+            plan("cat config.json", &never, None).unwrap().inner,
+            "jq -c . config.json || cat config.json"
         );
-        assert_eq!(plan("cat src/a.json", &never).unwrap().rule, "cat-json->jq");
+        assert_eq!(
+            plan("cat src/a.json", &never, None).unwrap().rule,
+            "cat-json->jq"
+        );
         // Non-source text, flags, or multiple files are left to plain `cat`.
-        assert_eq!(plan("cat README.md", &never), None);
-        assert_eq!(plan("cat -n a.json", &never), None);
-        assert_eq!(plan("cat a.json b.json", &never), None);
-    }
-
-    #[test]
-    fn cat_structured_data_transcodes_via_dasel() {
-        // yaml/yml/toml/xml -> compact JSON via dasel (dropped to plain cat
-        // by run() when dasel isn't on PATH). plan() is pure so it emits the
-        // rewrite regardless of local install.
-        for (f, label) in [
-            ("config.yaml", "yaml"),
-            ("k8s.yml", "yaml"),
-            ("Cargo.toml", "toml"),
-            ("pom.xml", "xml"),
-        ] {
-            let r = plan(&format!("cat {f}"), &never).unwrap();
-            assert_eq!(r.inner, format!("dasel -f {f} -w json --pretty=false"));
-            assert_eq!(r.rule, "cat->dasel-json");
-            assert!(r.note.as_deref().unwrap().contains(label), "{:?}", r.note);
-        }
-        // .md / .csv are not transcoded (left to plain cat).
-        assert_eq!(plan("cat notes.md", &never), None);
-        assert_eq!(plan("cat data.csv", &never), None);
+        assert_eq!(plan("cat README.md", &never, None), None);
+        assert_eq!(plan("cat config.yaml", &never, None), None);
+        assert_eq!(plan("cat -n a.json", &never, None), None);
+        assert_eq!(plan("cat a.json b.json", &never, None), None);
     }
 
     #[test]
@@ -935,14 +984,61 @@ mod tests {
         // outline stub on re-read; accuracy-preserving, never compacted).
         // Non-existent paths canonicalise to the literal fallback, so the
         // assertion is deterministic regardless of the test's cwd.
-        let r = plan("cat nope_xyz.rs", &never).unwrap();
+        let r = plan("cat nope_xyz.rs", &never, None).unwrap();
         assert_eq!(r.inner, "crabcc read nope_xyz.rs");
         assert_eq!(r.rule, "cat->crabcc-read");
         assert_eq!(r.track_op, "read");
         assert_eq!(
-            plan("cat src/missing_zzz.go", &never).unwrap().rule,
+            plan("cat src/missing_zzz.go", &never, None).unwrap().rule,
             "cat->crabcc-read"
         );
+    }
+
+    #[test]
+    fn blocking_follows_route_to_crabcc_run() {
+        // tail -f / -F / --follow -> bounded, detached `crabcc run`.
+        let r = plan("tail -f /var/log/app.log", &never, None).unwrap();
+        assert_eq!(
+            r.inner,
+            "crabcc run --timeout 30 -- tail -f /var/log/app.log"
+        );
+        assert_eq!(r.rule, "tail-f->crabcc-run");
+        assert_eq!(
+            plan("tail -F app.log", &never, None).unwrap().rule,
+            "tail-f->crabcc-run"
+        );
+        // Non-follow tail passes through (it terminates on its own).
+        assert_eq!(plan("tail -n 100 app.log", &never, None), None);
+        assert_eq!(plan("tail app.log", &never, None), None);
+
+        // watch always blocks -> wrap (when it has a command).
+        assert_eq!(
+            plan("watch ls", &never, None).unwrap().inner,
+            "crabcc run --timeout 30 -- watch ls"
+        );
+        assert_eq!(plan("watch", &never, None), None);
+
+        // journalctl follow -> wrap; non-follow passes through.
+        assert_eq!(
+            plan("journalctl -f", &never, None).unwrap().rule,
+            "journalctl-f->crabcc-run"
+        );
+        assert_eq!(plan("journalctl -u nginx", &never, None), None);
+    }
+
+    #[test]
+    fn pager_of_a_file_routes_like_cat() {
+        // `less FILE` / `more FILE` == viewing that file -> the cat path.
+        assert_eq!(
+            plan("less nope_xyz.rs", &never, None).unwrap().rule,
+            "cat->crabcc-read"
+        );
+        assert_eq!(
+            plan("more config.json", &never, None).unwrap().rule,
+            "cat-json->jq"
+        );
+        // Flags / multiple args pass through (same guard as cat).
+        assert_eq!(plan("less -N a.rs", &never, None), None);
     }
 
     #[test]
@@ -957,7 +1053,7 @@ mod tests {
             "find . -name '*.rs' -exec rm {} ;",
             "grep 'unbalanced",
         ] {
-            assert_eq!(plan(c, &never), None, "should pass through: {c}");
+            assert_eq!(plan(c, &never, None), None, "should pass through: {c}");
         }
         // Divergent regex (`+`/`?`), unknown/long flags, stdin-form grep,
         // non-grep/find programs, empty input, and unsupported find
@@ -975,7 +1071,7 @@ mod tests {
             "find . -mtime -1",
             "find . -name '*.rs' -delete",
         ] {
-            assert_eq!(plan(c, &never), None, "should pass through: {c}");
+            assert_eq!(plan(c, &never, None), None, "should pass through: {c}");
         }
     }
 }

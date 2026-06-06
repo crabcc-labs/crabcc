@@ -18,8 +18,12 @@ tasks:
       retrieval (ort fetches onnxruntime at build time; dev `build-fast`
       skips it to stay lean + offline).
     cmds:
-      - "{{.CARGO}} build --release -p crabcc-cli --features memory-embed"
+      # Build the rest of the workspace FIRST, then the featured crabcc-cli
+      # LAST — otherwise the plain workspace build overwrites
+      # target/release/crabcc with a default-feature binary (no memory-embed,
+      # no telemetry).
       - "{{.CARGO}} build --release"
+      - "{{.CARGO}} build --release -p crabcc-cli --features memory-embed,telemetry"
 
   build-fast:
     desc: Iteration-friendly build (-O1, minimal debug info, ~half the time)
@@ -95,18 +99,16 @@ tasks:
       - "{{.CARGO}} clippy --workspace --all-targets -- -D warnings"
 
   chore:
-    desc: All-in-one DX chore — fmt, lint, test, dmg, doctor. Use before opening a release PR.
+    desc: All-in-one DX chore — fmt, lint, test, doctor. Use before opening a release PR.
     summary: |
       Runs the full validation chain that gates a release-ready PR:
-      fmt-check → clippy (-D warnings) → tests → DMG build →
-      doctor --quiet. Each step short-circuits on failure so you see
-      the first thing that broke. Stand-alone — does not run prep-pr
-      or write any artifacts beyond dist/crabcc-<version>.dmg.
+      fmt-check → clippy (-D warnings) → tests → doctor --quiet. Each
+      step short-circuits on failure so you see the first thing that
+      broke. Stand-alone — does not run prep-pr or write any artifacts.
     cmds:
       - task: fmt-check
       - task: lint
       - task: test
-      - task: dmg
       - task: doctor
       - task: agent-status
 
@@ -189,6 +191,17 @@ tasks:
       - "{{.CRABCC}} --root /tmp/crabcc-smoke sym hello | jq -e '.[0].name == \"hello\"'"
       - "{{.CRABCC}} --root /tmp/crabcc-smoke callers hello --count | jq -e '.count >= 1'"
       - rm -rf /tmp/crabcc-smoke
+
+  netlog-replay:
+    desc: "Replay a fixture egress log through the netlog allowlist enforcer (#160 Phase 2 gate)"
+    summary: |
+      Plays the synthetic captured log at crates/crabcc-cli/src/netlog_replay.jsonl
+      back through the deny-mode enforcer against the seeded allowlist, asserting
+      every real infra host passes and every unknown host (incl. the
+      cloud-metadata SSRF IP) is blocked. Offline + deterministic. The same test
+      also rides along in `task test` (cargo test --workspace).
+    cmds:
+      - "{{.CARGO}} test -p crabcc-cli replay_fixture_enforces_allowlist"
 
   fuzz-check:
     desc: Compile-check the cargo-fuzz target (full run requires nightly + cargo-fuzz)

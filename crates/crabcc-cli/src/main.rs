@@ -34,22 +34,31 @@ mod auto_index;
 mod backup;
 mod cli_config;
 mod compress_cmd;
+mod crawl_cmd;
+mod csv;
 mod debug_network;
 mod doctor;
+mod edit;
+mod enrich_cmd;
 mod fetch_cmd;
 mod go;
+mod init_cmd;
 mod install;
 mod install_integrations;
 mod media;
 mod memory;
 mod model_info;
 mod morph;
+mod netlog;
 mod rag;
 mod read;
+mod research_cmd;
 mod rewrite_log;
 mod root_resolver;
+mod run_cmd;
 mod shell_context;
 mod shell_rewrite;
+mod squeeze;
 mod status;
 #[cfg(feature = "telemetry")]
 mod telemetry;
@@ -276,6 +285,11 @@ enum SetupOp {
         /// Print planned operations without touching disk.
         #[arg(long)]
         dry_run: bool,
+        /// Install into `<DIR>/.claude` (and OS-local state under
+        /// `<DIR>/.crabcc`) instead of the ambient home. Provisions a
+        /// separate coding-agent profile; outranks `$CLAUDE_CONFIG_DIR`.
+        #[arg(long, value_name = "DIR")]
+        target_home: Option<PathBuf>,
     },
     /// Check GitHub for a newer release; optionally clean local sidecars.
     Upgrade {
@@ -484,6 +498,125 @@ enum Cmd {
         #[arg(long)]
         remember: bool,
     },
+    /// Crawl from a seed URL: follow links, clean each page to markdown,
+    /// and (with --remember) stream every page into memory under
+    /// wing=`crawl`, room=host. Built on the crawl engine — bounded by
+    /// `--max-pages`/`--depth` with per-host politeness.
+    Crawl {
+        /// Seed URL to start the crawl from.
+        url: String,
+        /// Hops to follow from the seed (0 = fetch the seed only).
+        #[arg(long, default_value_t = 1)]
+        depth: usize,
+        /// Hard cap on the number of pages fetched.
+        #[arg(long = "max-pages", default_value_t = 20)]
+        max_pages: usize,
+        /// Follow off-host links too (default: stay on the seed's host).
+        #[arg(long = "all-hosts")]
+        all_hosts: bool,
+        /// Max concurrent in-flight fetches across the crawl.
+        #[arg(long, default_value_t = 4)]
+        concurrency: usize,
+        /// Stream each successful page into memory (wing=crawl, room=host).
+        /// Search later via `crabcc memory search <query> --wing crawl`.
+        #[arg(long)]
+        remember: bool,
+        /// Output format: `json` (default) or `text`.
+        #[arg(long, default_value = "json")]
+        format: String,
+        /// Route fetches through a rotating pool of free public proxies of
+        /// this protocol (`http`|`https`|`socks4`|`socks5`), self-healing
+        /// as dead ones are found. Off by default. Free proxies are flaky
+        /// and can MITM — every fetched page is already treated as
+        /// untrusted; never crawl authenticated targets through them.
+        #[arg(long, value_name = "PROTOCOL")]
+        proxify: Option<String>,
+        /// Resume from a persistent on-disk frontier at this path (created
+        /// if absent) so an interrupted crawl picks up where it left off.
+        /// Default is an ephemeral in-memory frontier.
+        #[arg(long, value_name = "PATH")]
+        state: Option<std::path::PathBuf>,
+    },
+    /// Token-bounded documentation context from memory (crawler-ingested
+    /// docs). Returns the most-relevant cached concept plus one
+    /// semi-relevant one, trimmed to `--max-tokens`, for prompt
+    /// context-gathering. The assembled context is cached on disk.
+    Enrich {
+        /// What to pull docs for (a concept / library / topic).
+        query: String,
+        /// Soft token budget for the returned context (~4 chars/token).
+        #[arg(long = "max-tokens", default_value_t = 2000)]
+        max_tokens: usize,
+    },
+    /// Drive the deep-research handoff from `crabcc init`'s research plan:
+    /// emit a research brief (`brief`), store findings into the `research`
+    /// memory wing (`ingest`), and track which topics are done (`status`).
+    /// Closes the loop init opens — plan in, findings to a known wing,
+    /// `crabcc enrich` out.
+    Research {
+        #[command(subcommand)]
+        cmd: research_cmd::ResearchCmd,
+    },
+    /// Token-cheap CSV summaries via qsv (an explicit alternative to `cat`ting
+    /// a large CSV into context). Summaries, not the raw rows.
+    Csv {
+        #[command(subcommand)]
+        op: CsvCmd,
+    },
+    /// Collapse streaming/progress noise from stdin (carriage-return redraws,
+    /// repeated lines), keeping errors/warnings. A cheap filter for build /
+    /// install / test / log output: `noisy-cmd 2>&1 | crabcc squeeze`.
+    Squeeze {
+        /// Keep first/last N/2 lines and elide the middle (errors still
+        /// surfaced). 0 = no window, only the lossless reductions.
+        #[arg(long, default_value_t = 0)]
+        max_lines: usize,
+    },
+    /// Run a command, capture its output, and squeeze the noise
+    /// (build/install/test/log). A long/blocking command (`tail -f`, a server,
+    /// a slow build) DETACHES to the background instead of being killed: you
+    /// get an instant squeezed snapshot + a `run <id>` handle, and the command
+    /// keeps running. Follow/manage with `--follow <id>` / `--list` / `--kill`.
+    Run {
+        /// Squeeze head/tail window (passed through to `squeeze`).
+        #[arg(long, default_value_t = 0)]
+        max_lines: usize,
+        /// Detach to the background after this many seconds with no output
+        /// (0 = off). The command is NOT killed; it keeps running.
+        #[arg(long, default_value_t = 0)]
+        idle: u64,
+        /// Detach to the background after this many seconds total (0 = off).
+        #[arg(long, default_value_t = 0)]
+        timeout: u64,
+        /// Cap captured output bytes (drains the rest; default 8 MiB).
+        #[arg(long, default_value_t = 8 * 1024 * 1024)]
+        max_bytes: usize,
+        /// Start detached immediately: return a run handle without waiting.
+        #[arg(long)]
+        bg: bool,
+        /// Show a squeezed snapshot of a background run's output + status.
+        #[arg(long, value_name = "ID")]
+        follow: Option<String>,
+        /// Kill a background run by id.
+        #[arg(long, value_name = "ID")]
+        kill: Option<String>,
+        /// List background runs.
+        #[arg(long)]
+        list: bool,
+        /// The command to run (everything after `--`).
+        #[arg(last = true)]
+        cmd: Vec<String>,
+    },
+    /// Onboard onto a fresh codebase: detect the stack from dependency
+    /// manifests, crawl each dependency's docs into memory in the
+    /// background, and write a research plan + codebase overview +
+    /// SessionStart-hook snippet under `.crabcc/onboard/`.
+    Init {
+        /// SessionStart-hook mode: emit onboarding context for the first few
+        /// prompts then go silent. Does NOT run onboarding (no crawl/lock).
+        #[arg(long)]
+        inject: bool,
+    },
     /// Start the localhost call-graph viewer (issue #64). Binds to 127.0.0.1
     /// by default — pass `--bind 0.0.0.0` only on a trusted LAN; the server
     /// is unauthenticated and exposes architecture.
@@ -529,6 +662,48 @@ enum Cmd {
         #[arg(long, default_value_t = 2.5)]
         threshold: f64,
     },
+    /// AST-targeted edit: rewrite one symbol's exact span via the index, so
+    /// the agent sends just the symbol (FILE#SYMBOL), not the whole file.
+    Edit {
+        /// `FILE#SYMBOL` (e.g. `crates/crabcc-core/src/store.rs#Store::open`).
+        target: String,
+        /// New symbol body / lazy edit. Read from stdin when omitted.
+        #[arg(long)]
+        update: Option<String>,
+        /// Splice the update verbatim as the new symbol body (deterministic).
+        #[arg(long, conflicts_with = "lazy")]
+        replace: bool,
+        /// Merge a lazy edit into the symbol via Morph Fast Apply
+        /// (requires `MORPH_API_KEY`).
+        #[arg(long)]
+        lazy: bool,
+        /// Splice the result into the file in place (default: preview only).
+        #[arg(long)]
+        write: bool,
+    },
+    /// Graph-derived change impact + targeted test selection. Resolves the
+    /// changed symbols (working tree by default, a `--since REV` range, or
+    /// explicit `--symbol`), walks the call graph upward to the tests that
+    /// transitively exercise them, and emits a ready-to-run test command.
+    Affected {
+        /// Resolve the change from a git range `<REV>...HEAD` instead of the
+        /// working tree (e.g. `--since origin/main`, `--since HEAD~3`).
+        #[arg(long)]
+        since: Option<String>,
+        /// Explicit changed symbol name(s); skips git entirely. Repeatable.
+        #[arg(long = "symbol")]
+        symbol: Vec<String>,
+        /// Max upward-walk depth from each changed symbol.
+        #[arg(long, default_value_t = crabcc_core::affected::DEFAULT_DEPTH)]
+        depth: usize,
+        /// Run the selected tests (via the `run` capture/squeeze path)
+        /// instead of only printing them.
+        #[arg(long)]
+        run: bool,
+        /// Override the command `--run` executes (implies `--run`).
+        #[arg(long)]
+        cmd: Option<String>,
+    },
     /// Audit Claude session logs for token waste.
     Audit {
         #[command(subcommand)]
@@ -569,9 +744,9 @@ enum BackupOp {
         timestamp: u64,
     },
     /// Long-running loop. Snapshots every `interval` seconds against
-    /// each repo listed in `~/.crabcc/agent/repos.list`. Wired to the
-    /// `com.crabcc.backup-loop` LaunchAgent (default 15 min). Stay
-    /// foreground; managed lifecycle lives in launchd.
+    /// each repo listed in `~/.crabcc/agent/repos.list`. Runs every 15 min
+    /// by default. Stay foreground; schedule it externally (cron / launchd /
+    /// systemd) for a managed lifecycle.
     Loop {
         #[arg(long, default_value_t = 900u64)]
         interval: u64,
@@ -589,6 +764,20 @@ enum LoopOp {
         #[arg(long, default_value_t = crabcc_memory::loop_detect::DEFAULT_THRESHOLD)]
         threshold: i64,
     },
+}
+
+#[derive(Subcommand)]
+enum CsvCmd {
+    /// Per-column stats (`qsv stats`): type, min/max, mean, etc.
+    Stats { file: PathBuf },
+    /// `n` random rows (`qsv sample`).
+    Sample {
+        file: PathBuf,
+        #[arg(long, default_value_t = 10)]
+        n: usize,
+    },
+    /// Row count (`qsv count`).
+    Count { file: PathBuf },
 }
 
 #[derive(Subcommand)]
@@ -636,10 +825,7 @@ enum MorphOp {
         /// Fraction of text to retain (0.05–1.0).
         #[arg(long, default_value_t = 0.5)]
         ratio: f64,
-        /// Skip the network round-trip for inputs smaller than this. This
-        /// is the standalone-CLI default; the rewrite chain always passes
-        /// an explicit value from `.crabcc-cli.conf` (`morph_min_bytes`,
-        /// default 8000), so the two don't need to match.
+        /// Skip the network round-trip for inputs smaller than this.
         #[arg(long, default_value_t = 2000)]
         min_bytes: usize,
     },
@@ -1028,6 +1214,7 @@ fn main() -> Result<()> {
                 with_ollama_stack,
                 print_stack_instructions,
                 dry_run,
+                target_home,
             } => {
                 return install::run(install::InstallOptions {
                     yes: *yes,
@@ -1035,6 +1222,7 @@ fn main() -> Result<()> {
                     with_ollama_stack: *with_ollama_stack,
                     print_stack_instructions: *print_stack_instructions,
                     dry_run: *dry_run,
+                    target_home: target_home.clone(),
                 });
             }
             SetupOp::Upgrade {
@@ -1154,6 +1342,90 @@ fn main() -> Result<()> {
         return fetch_cmd::run(&root, prompt, *no_chrome, format, *remember);
     }
 
+    // `crawl` is the multi-page sibling of `fetch`; also pure I/O, handled
+    // before the symbol Store is opened.
+    if let Some(Cmd::Crawl {
+        url,
+        depth,
+        max_pages,
+        all_hosts,
+        concurrency,
+        remember,
+        format,
+        proxify,
+        state,
+    }) = cli.cmd.as_ref()
+    {
+        return crawl_cmd::run(
+            &root,
+            url,
+            *depth,
+            *max_pages,
+            *all_hosts,
+            *concurrency,
+            *remember,
+            format,
+            proxify.as_deref(),
+            state.as_deref(),
+        );
+    }
+
+    // `enrich` reads only the memory Palace (like `memory`), so it's handled
+    // before the symbol Store is opened.
+    if let Some(Cmd::Enrich { query, max_tokens }) = cli.cmd.as_ref() {
+        return enrich_cmd::run(&root, query, *max_tokens);
+    }
+
+    // `csv` only shells out to qsv; no symbol Store needed.
+    if let Some(Cmd::Csv { op }) = cli.cmd.as_ref() {
+        return match op {
+            CsvCmd::Stats { file } => csv::run(csv::CsvOp::Stats, file, 0),
+            CsvCmd::Sample { file, n } => csv::run(csv::CsvOp::Sample, file, *n),
+            CsvCmd::Count { file } => csv::run(csv::CsvOp::Count, file, 0),
+        };
+    }
+
+    // `squeeze` is a pure stdin->stdout filter; no symbol Store needed.
+    if let Some(Cmd::Squeeze { max_lines }) = cli.cmd.as_ref() {
+        return squeeze::run(*max_lines);
+    }
+
+    // `run` spawns a child + captures/squeezes its output; no symbol Store.
+    if let Some(Cmd::Run {
+        max_lines,
+        idle,
+        timeout,
+        max_bytes,
+        bg,
+        follow,
+        kill,
+        list,
+        cmd,
+    }) = cli.cmd.as_ref()
+    {
+        return run_cmd::run(
+            cmd,
+            *max_lines,
+            *idle,
+            *timeout,
+            *max_bytes,
+            *bg,
+            follow.as_deref(),
+            kill.as_deref(),
+            *list,
+        );
+    }
+
+    // `init` reads dependency manifests + writes onboarding artifacts +
+    // spawns background crawls; no symbol Store needed.
+    if let Some(Cmd::Init { inject }) = cli.cmd.as_ref() {
+        return if *inject {
+            init_cmd::run_inject(&root)
+        } else {
+            init_cmd::run(&root)
+        };
+    }
+
     // `serve` boots crabcc-viz; doesn't need the symbol Store opened
     // here (the viz server lazy-opens its own). Gated behind the `viz`
     // feature so the default install doesn't pull in the dashboard.
@@ -1264,6 +1536,12 @@ fn main() -> Result<()> {
         return memory::run(&root, sub);
     }
 
+    // `research` reads only the memory Palace + the onboard plan file (like
+    // `memory` / `enrich`); no symbol Store needed.
+    if let Some(Cmd::Research { cmd }) = cli.cmd {
+        return research_cmd::run(&root, cmd);
+    }
+
     // shell group — record is observation-only; rewrite reads the index
     // (read-only) to gate symbol upgrades.
     if let Some(Cmd::Shell { op }) = &cli.cmd {
@@ -1279,7 +1557,6 @@ fn main() -> Result<()> {
         .parent()
         .with_context(|| format!("db path {} has no parent directory", db.display()))?;
     std::fs::create_dir_all(db_parent)?;
-    let fts_dir = resolved.fts_dir();
     let store = {
         let s = Store::open_with_compress(&db, cli.compress)?;
         if s.needs_reindex {
@@ -1291,9 +1568,6 @@ fn main() -> Result<()> {
             let fresh = Store::open_with_compress(&db, cli.compress)?;
             crabcc_core::index::full_index(&root, &fresh)?;
             fresh.mark_schema_v4_built()?;
-            if let Ok(fts) = crabcc_core::fts::Fts::open(&fts_dir) {
-                let _ = fts.rebuild(&fresh);
-            }
             fresh
         } else {
             s
@@ -1320,9 +1594,6 @@ fn main() -> Result<()> {
             IndexOp::Build => {
                 let stats = crabcc_core::index::full_index(&root, &store)?;
                 store.mark_schema_v4_built()?;
-                if let Ok(fts) = crabcc_core::fts::Fts::open(&fts_dir) {
-                    let _ = fts.rebuild(&store);
-                }
                 println!("{}", sonic_rs::to_string(&stats)?);
                 if std::env::var_os("CRABCC_BACKUP_DISABLE").is_none() {
                     backup::auto_snapshot_after_index(&root);
@@ -1341,8 +1612,10 @@ fn main() -> Result<()> {
                 }
             }
             IndexOp::FtsRebuild => {
-                let fts = crabcc_core::fts::Fts::open(&fts_dir)?;
-                let n = fts.rebuild(&store)?;
+                // Retained for backward compatibility. Fuzzy/prefix now query
+                // the live SQLite index directly, so there is no sidecar to
+                // rebuild — this just reports the searchable symbol count.
+                let n = crabcc_core::fts::Fts::from_store(&store)?.len();
                 println!("{{\"indexed\":{n}}}");
             }
             IndexOp::Watch { debounce } => {
@@ -1470,7 +1743,7 @@ fn main() -> Result<()> {
                 println!("{{\"status\":\"todo\",\"op\":\"grep\",\"pattern\":\"{pattern}\"}}");
             }
             LookupOp::Fuzzy { query, limit } => {
-                let fts = crabcc_core::fts::Fts::open(&fts_dir)?;
+                let fts = crabcc_core::fts::Fts::from_store(&store)?;
                 let hits = fts.fuzzy(&query, limit)?;
                 let body = sonic_rs::to_string(&hits)?;
                 crabcc_core::track::record(
@@ -1484,7 +1757,7 @@ fn main() -> Result<()> {
                 println!("{body}");
             }
             LookupOp::Prefix { query, limit } => {
-                let fts = crabcc_core::fts::Fts::open(&fts_dir)?;
+                let fts = crabcc_core::fts::Fts::from_store(&store)?;
                 let hits = fts.prefix(&query, limit)?;
                 let body = sonic_rs::to_string(&hits)?;
                 crabcc_core::track::record(
@@ -1608,6 +1881,61 @@ fn main() -> Result<()> {
                 threshold,
             )?;
         }
+        Cmd::Edit {
+            target,
+            update,
+            replace,
+            lazy,
+            write,
+        } => {
+            edit::run(&root, &store, &target, update, replace, lazy, write)?;
+        }
+        Cmd::Affected {
+            since,
+            symbol,
+            depth,
+            run,
+            cmd,
+        } => {
+            use crabcc_core::affected::{affected, ChangeInput};
+            let input = if !symbol.is_empty() {
+                ChangeInput::Symbols(symbol)
+            } else if let Some(rev) = since {
+                ChangeInput::Since(rev)
+            } else {
+                ChangeInput::WorkingTree
+            };
+            let result = affected(&store, &root, input, depth)?;
+            let body = sonic_rs::to_string(&result)?;
+            crabcc_core::track::record(
+                "affected",
+                "change",
+                result.tests.len(),
+                &repo_label(&root),
+                body.len(),
+            );
+            println!("{body}");
+            // --run (or --cmd) executes the selected tests through the
+            // capture/squeeze run path. --cmd overrides the detected command.
+            if run || cmd.is_some() {
+                match cmd.or(result.command) {
+                    Some(command) => {
+                        // The command is shell-quoted (go's `-run '^(a|b)$'`,
+                        // pytest's `-k "a or b"`, jest's `-t "a|b"`). run_cmd
+                        // execs argv directly with no shell, so route through
+                        // `sh -c` to honor the quoting; word-splitting it here
+                        // would pass literal quotes and run zero tests.
+                        let argv = ["sh".to_string(), "-c".to_string(), command];
+                        run_cmd::run(&argv, 0, 0, 0, 8 * 1024 * 1024, false, None, None, false)?;
+                    }
+                    None => {
+                        eprintln!(
+                            "affected: nothing to run (no runner detected or no tests selected)"
+                        );
+                    }
+                }
+            }
+        }
         Cmd::Rag { op } => match op {
             RagOp::Build { rebuild } => rag::run_build(&root, &store, rebuild)?,
             RagOp::Query { query, limit } => rag::run_query(&root, &query, limit)?,
@@ -1617,6 +1945,13 @@ fn main() -> Result<()> {
         Cmd::Info { .. } => unreachable!("info handled before store init"),
         Cmd::Go => unreachable!("go handled before store init"),
         Cmd::Fetch { .. } => unreachable!("fetch handled before store init"),
+        Cmd::Crawl { .. } => unreachable!("crawl handled before store init"),
+        Cmd::Enrich { .. } => unreachable!("enrich handled before store init"),
+        Cmd::Research { .. } => unreachable!("research handled before store init"),
+        Cmd::Csv { .. } => unreachable!("csv handled before store init"),
+        Cmd::Squeeze { .. } => unreachable!("squeeze handled before store init"),
+        Cmd::Run { .. } => unreachable!("run handled before store init"),
+        Cmd::Init { .. } => unreachable!("init handled before store init"),
         Cmd::Serve { .. } => unreachable!("serve handled before store init"),
         Cmd::Agent { .. } => unreachable!("agent handled before store init"),
         Cmd::Stack { .. } => unreachable!("stack handled before store init"),
@@ -1791,7 +2126,7 @@ fn run_model_info(op: &ModelInfoOp) -> Result<()> {
                     (n.starts_with(".model.") && n.ends_with(".info")).then_some(n)
                 })
                 .collect();
-            rows.sort();
+            rows.sort_unstable();
             if *json {
                 let dir_s = dir.display().to_string();
                 let arr: Vec<String> = rows.iter().map(|n| format!("\"{n}\"")).collect();
@@ -1916,7 +2251,8 @@ fn run_workspace(cli: Cli) -> Result<()> {
             let query = query.clone();
             let limit = *limit;
             let by_repo = workspace::map_each(&repos, |r| {
-                let fts = crabcc_core::fts::Fts::open(&r.fts_dir())?;
+                let store = Store::open_with_compress(&r.db(), cli.compress)?;
+                let fts = crabcc_core::fts::Fts::from_store(&store)?;
                 let hits = fts.fuzzy(&query, limit)?;
                 Ok((hits.len(), hits))
             });
@@ -1931,7 +2267,8 @@ fn run_workspace(cli: Cli) -> Result<()> {
             let query = query.clone();
             let limit = *limit;
             let by_repo = workspace::map_each(&repos, |r| {
-                let fts = crabcc_core::fts::Fts::open(&r.fts_dir())?;
+                let store = Store::open_with_compress(&r.db(), cli.compress)?;
+                let fts = crabcc_core::fts::Fts::from_store(&store)?;
                 let hits = fts.prefix(&query, limit)?;
                 Ok((hits.len(), hits))
             });
@@ -1950,9 +2287,27 @@ fn run_shell(root: &Path, db: &Path, op: &ShellOp) -> Result<()> {
     match op {
         ShellOp::Rewrite {
             command,
-            cwd: _,
+            cwd,
             session_id,
-        } => shell_rewrite::run(root, db, command, session_id.as_deref()),
+        } => {
+            // Use the hook-supplied cwd to resolve root/db so rewrites
+            // consult the correct index when the tool call runs from a
+            // different directory (e.g. a subdirectory or a different repo).
+            let (eff_root, eff_db);
+            let (rw_root, rw_db, rw_cwd) = if let Some(hook_cwd) = &cwd {
+                let resolved = root_resolver::resolve(Some(hook_cwd.as_path()))?;
+                eff_root = resolved.source_dir.clone();
+                eff_db = resolved.db();
+                (
+                    eff_root.as_path(),
+                    eff_db.as_path(),
+                    Some(hook_cwd.as_path()),
+                )
+            } else {
+                (root, db, None)
+            };
+            shell_rewrite::run(rw_root, rw_db, command, session_id.as_deref(), rw_cwd)
+        }
         ShellOp::RewriteMeasure => shell_rewrite::run_measure(),
         ShellOp::Context { session_id } => shell_context::run(root, db, session_id.as_deref()),
         ShellOp::Status { oneline } => shell_rewrite::run_status(root, *oneline),
@@ -2085,6 +2440,7 @@ fn run_serve(root: &Path, port: u16, bind: &str, no_open: bool, init: bool) -> R
         root: root.to_path_buf(),
         no_open,
         init,
+        open_path: None,
     })
 }
 
@@ -2117,7 +2473,7 @@ fn list_files(
         })
         .map(|(p, _)| p)
         .collect();
-    out.sort();
+    out.sort_unstable();
     if limit > 0 && out.len() > limit {
         out.truncate(limit);
     }
@@ -2152,7 +2508,15 @@ fn needs_auto_index(c: &Option<Cmd>) -> bool {
         // Implicit default = `index` — no auto-index needed (we're about
         // to index anyway).
         None => false,
-        Some(cmd) => matches!(cmd, Cmd::Lookup { .. } | Cmd::Graph { .. }),
+        Some(cmd) => matches!(
+            cmd,
+            Cmd::Lookup { .. }
+                | Cmd::Graph { .. }
+                | Cmd::Affected { .. }
+                | Cmd::Rag {
+                    op: RagOp::Build { .. }
+                }
+        ),
     }
 }
 
@@ -2213,8 +2577,17 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::Doctor { .. } => "doctor",
         Cmd::Go => "go",
         Cmd::Fetch { .. } => "fetch",
+        Cmd::Crawl { .. } => "crawl",
+        Cmd::Enrich { .. } => "enrich",
+        Cmd::Research { .. } => "research",
+        Cmd::Csv { .. } => "csv",
+        Cmd::Squeeze { .. } => "squeeze",
+        Cmd::Run { .. } => "run",
+        Cmd::Init { .. } => "init",
         Cmd::Serve { .. } => "serve",
         Cmd::Read { .. } => "read",
+        Cmd::Edit { .. } => "edit",
+        Cmd::Affected { .. } => "affected",
     }
 }
 

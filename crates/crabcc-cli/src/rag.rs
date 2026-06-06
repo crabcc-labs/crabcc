@@ -26,11 +26,10 @@ use std::path::Path;
 /// `proj`/`session`/note drawers so queries can filter to code only.
 const WING: &str = "code";
 
-/// Soft cap on a chunk's length in chars (not bytes). A giant generated
-/// `impl` dilutes the vector and bloats FTS; the symbol index already
-/// covers "where is it" for those. Char-based since it's a relevance knob,
-/// not a storage limit.
-const MAX_CHUNK_CHARS: usize = 6_000;
+/// Don't embed a symbol whose source span exceeds this (bytes). A giant
+/// generated `impl` dilutes the vector and bloats FTS; the symbol index
+/// already covers "where is it" for those.
+const MAX_CHUNK_BYTES: usize = 6_000;
 
 /// Build the chunk body for one symbol: a header line (so lexical search
 /// matches the name/kind/path) + the signature + the source span.
@@ -49,7 +48,7 @@ fn chunk_body(sym: &crabcc_core::types::Symbol, source: &str) -> Option<String> 
     let header = format!("{}:{} [{:?}]", sym.file, sym.name, sym.kind);
     let sig = sym.signature.as_deref().unwrap_or("");
     let body = format!("{header}\n{sig}\n{span}");
-    Some(body.chars().take(MAX_CHUNK_CHARS).collect())
+    Some(body.chars().take(MAX_CHUNK_BYTES).collect())
 }
 
 /// `code:<file>#<name>@<line>` — round-trips back to file/name/line for
