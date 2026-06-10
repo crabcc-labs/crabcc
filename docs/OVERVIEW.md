@@ -179,7 +179,7 @@ flowchart LR
   style GB fill:#80ffdb,stroke:#40916c
 ```
 
-Languages today: TypeScript, TSX, JavaScript, Ruby, Rust, Go, Python (+ more via grammar crates in `Cargo.toml`).
+Languages today: TypeScript, TSX, JavaScript, Ruby, Rust, Go, Python, Swift, Bash, Java, C, Zig, plus data formats Markdown / YAML / CSV (+ more via grammar crates in `Cargo.toml`).
 
 ---
 

@@ -8,6 +8,18 @@ All notable changes to crabcc are documented here. Format follows
 
 ### Added
 
+- **C, Zig, Markdown, YAML, and CSV support in the indexer.** C (`.c`/`.h`)
+  and Zig (`.zig`) are full code-path extractors: symbols (functions,
+  structs/enums/unions, typedefs, `#define` macros; Zig containers declared
+  via `const Foo = struct {…}`, file-scope consts/vars), call edges
+  (including C function-pointer member calls and Zig field calls like
+  `std.debug.print`), and visibility (C `static` → `priv`; Zig `pub`).
+  Markdown (`.md`), YAML (`.yml`/`.yaml`), and CSV (`.csv`) are data-format
+  extractors in `crabcc_core::extract::data`: ATX/setext headings
+  (H1→class, H2→type, H3+→function), top-level keys plus one nesting
+  level, and header-row columns respectively — symbols only, no edges.
+  `crabcc lookup sym/outline/fuzzy` and the MCP tools now answer over
+  docs, CI workflows, and data files too.
 - **`crabcc affected` — graph-derived change impact + targeted test
   selection.** Closes the agent loop's *verify* step. Resolves the changed
   symbols (working tree by default, a `--since REV` git range, or explicit

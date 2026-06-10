@@ -235,7 +235,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let crabcc = dir.path().join(".crabcc");
         std::fs::create_dir_all(&crabcc).unwrap();
-        let f = dir.path().join("README.md");
+        let f = dir.path().join("notes.txt");
         std::fs::write(&f, "x").unwrap();
         // For a file that exists with an unsupported extension, no trigger.
         assert!(!should_trigger(&f, &crabcc.canonicalize().unwrap()));

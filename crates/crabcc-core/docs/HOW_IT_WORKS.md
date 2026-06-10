@@ -428,14 +428,18 @@ crates.io, compatible with our `tree-sitter = "0.26"` workspace pin):
 
 If the grammar isn't compatible with `tree-sitter = "0.26"` (older ABI
 or a `links = "tree-sitter"` conflict): host the extractor in a
-*consumer* crate (like `ucracc-lsp` does for YAML / Markdown), feed
-results back into the same `Store::upsert_file + replace_symbols +
-replace_edges` API.
+*consumer* crate, feed results back into the same `Store::upsert_file +
+replace_symbols + replace_edges` API.
 
 The Swift + Bash additions in v0.2.0 are the reference implementation
-for the "code, fits crabcc-core's mission" path. YAML + Markdown in
-`ucracc-lsp` are the reference for the "data, doesn't fit the mission"
-path.
+for the "code, fits crabcc-core's mission" path. For *data-shaped*
+formats whose names don't fit the generic `symbol_kind_for` /
+`node_name` dispatch (Markdown headings, YAML keys, CSV header
+columns), the extractors live in `src/extract/data.rs` — symbols only,
+never edges. C and Zig are the newest code-path additions; Zig's
+`const Foo = struct {…}` containers needed a `walk()` special case
+(like Rust's `impl_item`) because the name is a bare identifier child,
+not a `name` field.
 
 ### Add a new symbol kind
 
