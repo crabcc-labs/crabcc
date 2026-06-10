@@ -398,7 +398,7 @@ mod tests {
             &root.join("user.rb"),
             "class User\n  def name; @name; end\nend\n",
         );
-        write(&root.join("README.md"), "ignored");
+        write(&root.join("notes.txt"), "ignored");
 
         let store = Store::open(&root.join("idx.db")).unwrap();
         let stats = build_index(root, &store).unwrap();
@@ -411,7 +411,7 @@ mod tests {
         );
         assert!(
             stats.skipped_unsupported >= 1,
-            "README.md + idx.db should skip"
+            "notes.txt + idx.db should skip"
         );
 
         let hello = store.find_by_name("hello").unwrap();
@@ -461,7 +461,8 @@ mod tests {
             &root.join("d.go"),
             "package x\nfunc Serve() int { return 0 }\n",
         );
-        write(&root.join("README.md"), "# docs only, unsupported\n"); // skipped_unsupported
+        write(&root.join("notes.txt"), "docs only, unsupported\n"); // skipped_unsupported
+        write(&root.join("README.md"), "# Docs\n\n## Usage\n"); // markdown is indexed since the C/Zig/data-format batch
         write(
             &root.join("big.rs"),
             &"// pad\n".repeat(MAX_FILE_BYTES / 7 + 100),
@@ -471,13 +472,13 @@ mod tests {
         let store = Store::open(&root.join("idx.db")).unwrap();
         let stats = full_index(root, &store).unwrap();
 
-        assert_eq!(stats.files_indexed, 4, "stats: {stats:?}");
+        assert_eq!(stats.files_indexed, 5, "stats: {stats:?}");
         assert_eq!(stats.skipped_too_large, 1, "stats: {stats:?}");
         assert!(stats.skipped_unsupported >= 1, "stats: {stats:?}");
         assert_eq!(stats.skipped_unreadable, 1, "non-utf8 file: {stats:?}");
 
-        // Cross-language symbols all landed.
-        for name in ["Widget", "Service", "handler", "Serve"] {
+        // Cross-language symbols all landed (incl. the markdown heading).
+        for name in ["Widget", "Service", "handler", "Serve", "Usage"] {
             assert_eq!(
                 store.find_by_name(name).unwrap().len(),
                 1,

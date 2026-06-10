@@ -34,7 +34,7 @@ members = [
 ]
 
 [workspace.package]
-version = "6.2.0"
+version = "6.3.0"
 edition = "2021"
 rust-version = "1.86"
 license = "MIT"
@@ -71,6 +71,10 @@ tree-sitter-python = "0.25"
 tree-sitter-swift = "0.7"
 tree-sitter-bash = "0.25"
 tree-sitter-java = "0.23"
+tree-sitter-c = "0.24"
+tree-sitter-zig = "1.1"
+tree-sitter-md = "0.5"
+tree-sitter-yaml = "0.7"
 ast-grep-core = "0.43"
 ast-grep-language = "0.43"
 sha2 = "0.11"

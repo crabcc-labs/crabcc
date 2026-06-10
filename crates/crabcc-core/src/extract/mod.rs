@@ -8,6 +8,7 @@ use std::cell::RefCell;
 use std::path::Path;
 use tree_sitter::{Node, Parser};
 
+mod data;
 pub mod resolve_python;
 pub mod resolve_rust;
 pub mod resolve_ts;
@@ -37,6 +38,12 @@ fn intern_lang(lang: &str) -> Option<&'static str> {
         "swift" => "swift",
         "bash" => "bash",
         "java" => "java",
+        "c" => "c",
+        "zig" => "zig",
+        // Data formats: markdown/yaml parse through the same pool; their
+        // walkers live in `data.rs`. CSV has no grammar and never gets here.
+        "markdown" => "markdown",
+        "yaml" => "yaml",
         _ => return None,
     })
 }
@@ -84,11 +91,21 @@ pub fn detect_lang(path: &Path) -> Option<&'static str> {
         "swift" => "swift",
         "sh" | "bash" | "zsh" => "bash",
         "java" => "java",
+        // `.h` headers default to C. C++ isn't supported yet; the C grammar
+        // still extracts the C-shaped subset of most headers.
+        "c" | "h" => "c",
+        "zig" => "zig",
+        "md" | "markdown" => "markdown",
+        "yaml" | "yml" => "yaml",
+        "csv" => "csv",
         _ => return None,
     })
 }
 
 pub fn extract_file(file: &str, src: &str, lang: &str) -> Result<Vec<Symbol>> {
+    if data::is_data_lang(lang) {
+        return data::extract(file, src, lang);
+    }
     with_parser(lang, |parser| {
         let tree = parser
             .parse(src, None)
@@ -131,6 +148,11 @@ pub fn extract_file_with_edges_with_resolver(
     store: &Store,
     resolver: &dyn Resolver,
 ) -> Result<(Vec<Symbol>, Vec<Edge>)> {
+    if data::is_data_lang(lang) {
+        let symbols = data::extract(file, src, lang)?;
+        persist_data_symbols(store, file, &symbols);
+        return Ok((symbols, Vec::new()));
+    }
     with_parser(lang, |parser| {
         let tree = parser
             .parse(src, None)
@@ -187,6 +209,11 @@ pub fn extract_file_with_edges(
     src: &str,
     lang: &str,
 ) -> Result<(Vec<Symbol>, Vec<Edge>)> {
+    // Data formats produce symbols only — there is nothing call-shaped in
+    // markdown/yaml/csv, so the edge vec is always empty for them.
+    if data::is_data_lang(lang) {
+        return Ok((data::extract(file, src, lang)?, Vec::new()));
+    }
     // Note: This wrapper cannot write to Store (no Store parameter), so we
     // fall back to the original behavior of returning symbols/edges without
     // writing to Store. For Store-backed extraction, call
@@ -224,6 +251,12 @@ pub fn extract_from_root_with_resolver(
     store: &Store,
     resolver: &dyn Resolver,
 ) -> (Vec<Symbol>, Vec<Edge>) {
+    if data::is_data_lang(lang) {
+        let mut symbols = Vec::new();
+        data::extract_from_node(root, src, file, lang, &mut symbols);
+        persist_data_symbols(store, file, &symbols);
+        return (symbols, Vec::new());
+    }
     let _scratch = Bump::with_capacity(SCRATCH_ARENA_BYTES);
 
     // Pass1: collect definitions, write to store
@@ -271,6 +304,11 @@ pub fn extract_from_root(
     file: &str,
     lang: &str,
 ) -> (Vec<Symbol>, Vec<Edge>) {
+    if data::is_data_lang(lang) {
+        let mut symbols = Vec::new();
+        data::extract_from_node(root, src, file, lang, &mut symbols);
+        return (symbols, Vec::new());
+    }
     // Fall back to original behavior without Store/resolver
     let _scratch = Bump::with_capacity(SCRATCH_ARENA_BYTES);
     let mut symbols = Vec::new();
@@ -295,6 +333,11 @@ fn ts_language(lang: &str) -> Result<tree_sitter::Language> {
         "swift" => tree_sitter_swift::LANGUAGE.into(),
         "bash" => tree_sitter_bash::LANGUAGE.into(),
         "java" => tree_sitter_java::LANGUAGE.into(),
+        "c" => tree_sitter_c::LANGUAGE.into(),
+        "zig" => tree_sitter_zig::LANGUAGE.into(),
+        // Block grammar only — heading extraction doesn't need the inline one.
+        "markdown" => tree_sitter_md::LANGUAGE.into(),
+        "yaml" => tree_sitter_yaml::LANGUAGE.into(),
         _ => return Err(anyhow!("unsupported lang: {lang}")),
     })
 }
@@ -330,6 +373,36 @@ fn walk(
             }
         }
         return;
+    }
+
+    // Zig declares types as `const Foo = struct { … }` — a variable_declaration
+    // wrapping a container node, with the name as a bare identifier child (no
+    // `name` field). Emit the container under its const name and descend into
+    // the container body so methods get `parent = Foo`. Plain file-scope
+    // consts/vars surface as Const/Var; locals inside functions are skipped
+    // (they'd flood the index, same rationale as Bash variable_assignment).
+    if lang == "zig" && node.kind() == "variable_declaration" {
+        if let Some((name, kind, body)) = zig_var_decl(&node, src) {
+            let line_start = (node.start_position().row + 1) as u32;
+            let line_end = (node.end_position().row + 1) as u32;
+            out.push(Symbol {
+                name: name.clone(),
+                kind,
+                signature: signature_for(&node, src, lang),
+                parent: parent.map(String::from),
+                file: file.to_string(),
+                line_start,
+                line_end,
+                visibility: visibility_for(lang, &node, src),
+            });
+            if let Some(body) = body {
+                let mut cursor = body.walk();
+                for child in body.children(&mut cursor) {
+                    walk(child, src, file, lang, Some(&name), out);
+                }
+            }
+            return;
+        }
     }
 
     if let Some(kind) = symbol_kind_for(lang, node.kind()) {
@@ -491,6 +564,62 @@ fn walk_with_store(
             }
         }
         return;
+    }
+
+    // Mirror of walk()'s Zig container handling — see the comment there.
+    if lang == "zig" && node.kind() == "variable_declaration" {
+        if let Some((name, kind, body)) = zig_var_decl(&node, src) {
+            let line_start = (node.start_position().row + 1) as u32;
+            let line_end = (node.end_position().row + 1) as u32;
+            let signature = signature_for(&node, src, lang);
+            let visibility = visibility_for(lang, &node, src);
+            let file_id = store.get_file_id(file).ok().flatten().unwrap_or_default();
+            let rowid = store
+                .insert_symbol(
+                    file_id,
+                    &name,
+                    None,
+                    kind,
+                    parent_id.map(|s| s.0),
+                    line_start as i64,
+                    line_end as i64,
+                    signature.as_deref(),
+                    visibility.as_deref(),
+                )
+                .unwrap_or(-1);
+            if rowid >= 0 {
+                let sym_id = SymbolId(rowid);
+                local_defs.insert(name.clone(), sym_id);
+                node_to_src_id.insert((node.start_byte(), node.end_byte()), sym_id);
+                out.push(Symbol {
+                    name: name.clone(),
+                    kind,
+                    signature,
+                    parent: None,
+                    file: file.to_string(),
+                    line_start,
+                    line_end,
+                    visibility: visibility_for(lang, &node, src),
+                });
+                if let Some(body) = body {
+                    let mut cursor = body.walk();
+                    for child in body.children(&mut cursor) {
+                        walk_with_store(
+                            child,
+                            src,
+                            file,
+                            lang,
+                            Some(sym_id),
+                            store,
+                            out,
+                            local_defs,
+                            node_to_src_id,
+                        );
+                    }
+                }
+            }
+            return;
+        }
     }
 
     if let Some(kind) = symbol_kind_for(lang, node.kind()) {
@@ -676,6 +805,27 @@ fn walk_edges_with_resolver(
     }
 }
 
+/// Write data-format symbols (markdown/yaml/csv) to the store on the
+/// resolver-backed entry points, mirroring what `walk_with_store` does for
+/// code. Textual parents (a YAML key's enclosing key) have no row id, so
+/// `parent_id` stays NULL — the `parent` string on the wire type carries it.
+fn persist_data_symbols(store: &Store, file: &str, symbols: &[Symbol]) {
+    let file_id = store.get_file_id(file).ok().flatten().unwrap_or_default();
+    for s in symbols {
+        let _ = store.insert_symbol(
+            file_id,
+            &s.name,
+            None,
+            s.kind,
+            None,
+            s.line_start as i64,
+            s.line_end as i64,
+            s.signature.as_deref(),
+            s.visibility.as_deref(),
+        );
+    }
+}
+
 /// `Foo<T>` -> `Foo`. The impl-target's tree-sitter node text includes generic
 /// params; we strip them so `parent` is the bare type name an agent can grep for.
 fn strip_generics(s: &str) -> &str {
@@ -714,10 +864,80 @@ fn node_name<'a>(node: &Node, src: &'a [u8]) -> Option<&'a str> {
     match node.kind() {
         "init_declaration" => return Some("init"),
         "deinit_declaration" => return Some("deinit"),
+        // C struct/enum/union specifiers appear at use sites too
+        // (`struct Bare b;`) — those carry a `name` but no `body`. Only the
+        // definition (body present) becomes a symbol; the use-site is noise.
+        "struct_specifier" | "enum_specifier" | "union_specifier" => {
+            node.child_by_field_name("body")?;
+        }
         _ => {}
     }
-    node.child_by_field_name("name")
-        .and_then(|n| n.utf8_text(src).ok())
+    if let Some(name) = node.child_by_field_name("name") {
+        return name.utf8_text(src).ok();
+    }
+    // C definitions hide the name inside a declarator chain instead of a
+    // `name` field: function_definition -> (pointer_declarator ->)
+    // function_declarator -> identifier, and type_definition (`typedef`)
+    // -> (pointer_declarator ->) type_identifier. Python/Bash
+    // function_definition has a `name` field, so they never reach here.
+    match node.kind() {
+        "function_definition" | "type_definition" => c_declarator_name(node, src),
+        _ => None,
+    }
+}
+
+/// Unwrap a C declarator chain to the declared identifier. Each wrapper
+/// (`pointer_declarator`, `function_declarator`, `array_declarator`, …)
+/// nests the next layer in its own `declarator` field.
+fn c_declarator_name<'a>(node: &Node, src: &'a [u8]) -> Option<&'a str> {
+    let mut decl = node.child_by_field_name("declarator")?;
+    loop {
+        match decl.kind() {
+            "identifier" | "type_identifier" => return decl.utf8_text(src).ok(),
+            _ => decl = decl.child_by_field_name("declarator")?,
+        }
+    }
+}
+
+/// Zig `variable_declaration` decoder. Returns `(name, kind, container_body)`:
+/// `const Foo = struct {…}` -> (Foo, Struct, Some(struct node)); a plain
+/// file-scope `const MAX = 100;` / `var counter = 0;` -> Const/Var with no
+/// body. Locals inside functions return None — they'd flood the index.
+fn zig_var_decl<'t>(node: &Node<'t>, src: &[u8]) -> Option<(String, SymbolKind, Option<Node<'t>>)> {
+    let mut name: Option<String> = None;
+    let mut container: Option<(SymbolKind, Node<'t>)> = None;
+    let mut is_const = false;
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        match child.kind() {
+            "identifier" if name.is_none() => {
+                name = child.utf8_text(src).ok().map(String::from);
+            }
+            "const" => is_const = true,
+            "struct_declaration" => container = Some((SymbolKind::Struct, child)),
+            "enum_declaration" => container = Some((SymbolKind::Enum, child)),
+            // Zig unions are struct-shaped value types; collapse for v1.
+            "union_declaration" => container = Some((SymbolKind::Struct, child)),
+            "opaque_declaration" => container = Some((SymbolKind::Type, child)),
+            _ => {}
+        }
+    }
+    let name = name.filter(|n| n != "_")?;
+    match container {
+        Some((kind, body)) => Some((name, kind, Some(body))),
+        None => {
+            if node.parent().map(|p| p.kind()) == Some("source_file") {
+                let kind = if is_const {
+                    SymbolKind::Const
+                } else {
+                    SymbolKind::Var
+                };
+                Some((name, kind, None))
+            } else {
+                None
+            }
+        }
+    }
 }
 
 /// Walk emitting one edge per call expression. Tracks the immediate enclosing
@@ -797,6 +1017,8 @@ fn is_callable(lang: &str, kind: &str) -> bool {
         // sits inside a class/interface/enum body, and `constructor_declaration`
         // is the canonical class constructor.
         "java" => matches!(kind, "method_declaration" | "constructor_declaration"),
+        "c" => matches!(kind, "function_definition"),
+        "zig" => matches!(kind, "function_declaration"),
         _ => false,
     }
 }
@@ -918,6 +1140,36 @@ fn call_target(node: &Node, src: &[u8], lang: &str) -> Option<(String, u32)> {
         ("java", "method_invocation") => {
             let name = node.child_by_field_name("name")?;
             Some((name.utf8_text(src).ok()?.to_string(), line))
+        }
+        // C: `function` field is an identifier for `foo(x)`, or a
+        // field_expression for function-pointer members (`ops->run(x)`,
+        // `obj.cb()`) — take the trailing field name, same unresolved name
+        // space as every other selector-style call here.
+        ("c", "call_expression") => {
+            let func = node.child_by_field_name("function")?;
+            match func.kind() {
+                "identifier" => Some((func.utf8_text(src).ok()?.to_string(), line)),
+                "field_expression" => func
+                    .child_by_field_name("field")
+                    .and_then(|f| f.utf8_text(src).ok())
+                    .map(|s| (s.to_string(), line)),
+                _ => None,
+            }
+        }
+        // Zig: `foo(x)` has an identifier `function`; `std.debug.print(…)`
+        // is a field_expression whose `member` is the called name. Builtin
+        // calls (`@import`) are a separate builtin_function node — skipped
+        // on purpose; they're compiler intrinsics, not graph edges.
+        ("zig", "call_expression") => {
+            let func = node.child_by_field_name("function")?;
+            match func.kind() {
+                "identifier" => Some((func.utf8_text(src).ok()?.to_string(), line)),
+                "field_expression" => func
+                    .child_by_field_name("member")
+                    .and_then(|m| m.utf8_text(src).ok())
+                    .map(|s| (s.to_string(), line)),
+                _ => None,
+            }
         }
         ("java", "object_creation_expression") => {
             let ty = node.child_by_field_name("type")?;
@@ -1085,6 +1337,21 @@ fn symbol_kind_for(lang: &str, kind: &str) -> Option<SymbolKind> {
             "method_declaration" | "constructor_declaration" => Some(SymbolKind::Method),
             _ => None,
         },
+        ("c", k) => match k {
+            "function_definition" => Some(SymbolKind::Function),
+            // Specifiers double as use sites (`struct Foo x;`) — node_name
+            // gates on the `body` field so only definitions emit.
+            "struct_specifier" => Some(SymbolKind::Struct),
+            "union_specifier" => Some(SymbolKind::Struct),
+            "enum_specifier" => Some(SymbolKind::Enum),
+            "type_definition" => Some(SymbolKind::Type),
+            "preproc_def" | "preproc_function_def" => Some(SymbolKind::Macro),
+            _ => None,
+        },
+        // Zig: only fns route through the generic table. Containers
+        // (`const Foo = struct {…}`) are handled by the variable_declaration
+        // special case in walk()/walk_with_store — they have no `name` field.
+        ("zig", "function_declaration") => Some(SymbolKind::Function),
         _ => None,
     }
 }
@@ -1244,6 +1511,33 @@ fn visibility_for(lang: &str, node: &Node, src: &[u8]) -> Option<String> {
             // No modifiers child at all → package-private (the default).
             Some("pkg".into())
         }
+        "c" => {
+            // `static` at file scope means internal linkage — the closest C
+            // gets to private. Everything else (extern or unmarked) is
+            // linkable from other translation units; leave None rather than
+            // claiming "pub" for declarations we can't see the linkage of.
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "storage_class_specifier"
+                    && child.utf8_text(src).ok() == Some("static")
+                {
+                    return Some("priv".into());
+                }
+            }
+            None
+        }
+        "zig" => {
+            // `pub` is a bare keyword child on fn/const declarations.
+            // Absence means module-private by Zig's rules.
+            let mut cursor = node.walk();
+            for child in node.children(&mut cursor) {
+                if child.kind() == "pub" {
+                    return Some("pub".into());
+                }
+            }
+            let _ = src;
+            Some("priv".into())
+        }
         _ => None,
     }
 }
@@ -1269,8 +1563,16 @@ mod tests {
         assert_eq!(detect_lang(&PathBuf::from("a.py")), Some("python"));
         assert_eq!(detect_lang(&PathBuf::from("a.pyi")), Some("python"));
         assert_eq!(detect_lang(&PathBuf::from("a.java")), Some("java"));
+        assert_eq!(detect_lang(&PathBuf::from("a.c")), Some("c"));
+        assert_eq!(detect_lang(&PathBuf::from("a.h")), Some("c"));
+        assert_eq!(detect_lang(&PathBuf::from("a.zig")), Some("zig"));
+        assert_eq!(detect_lang(&PathBuf::from("a.md")), Some("markdown"));
+        assert_eq!(detect_lang(&PathBuf::from("a.markdown")), Some("markdown"));
+        assert_eq!(detect_lang(&PathBuf::from("a.yml")), Some("yaml"));
+        assert_eq!(detect_lang(&PathBuf::from("a.yaml")), Some("yaml"));
+        assert_eq!(detect_lang(&PathBuf::from("a.csv")), Some("csv"));
         assert_eq!(detect_lang(&PathBuf::from("Rakefile")), None);
-        assert_eq!(detect_lang(&PathBuf::from("a.md")), None);
+        assert_eq!(detect_lang(&PathBuf::from("a.txt")), None);
     }
 
     // ---- TypeScript / JavaScript symbols ----
@@ -1960,6 +2262,200 @@ mod tests {
             let n = dst_names(&es);
             assert!(n.contains(&"Foo"), "edges: {es:?}");
             assert!(n.contains(&"Bar"), "edges: {es:?}");
+        }
+    }
+
+    // ---- C symbols + edges ----
+
+    #[test]
+    fn c_symbols_and_edges() {
+        // fn name digs through the declarator chain; static -> priv linkage.
+        {
+            let src = "static int helper(int a) { return a; }\nint *get_ptr(void) { return 0; }\n";
+            let syms = extract_file("a.c", src, "c").unwrap();
+            let helper = syms.iter().find(|s| s.name == "helper").unwrap();
+            assert!(matches!(helper.kind, SymbolKind::Function));
+            assert_eq!(helper.visibility.as_deref(), Some("priv"));
+            // pointer return type wraps the function_declarator one level deeper.
+            let get_ptr = syms.iter().find(|s| s.name == "get_ptr").unwrap();
+            assert!(matches!(get_ptr.kind, SymbolKind::Function));
+            assert!(get_ptr.visibility.is_none());
+        }
+        // struct/enum/union definitions emit; bare use sites must not.
+        {
+            let src = "struct Point { int x; };\nenum Color { RED, GREEN };\nunion U { int i; float f; };\nvoid f(void) { struct Point p; (void)p; }\n";
+            let syms = extract_file("a.c", src, "c").unwrap();
+            let point: Vec<_> = syms.iter().filter(|s| s.name == "Point").collect();
+            assert_eq!(point.len(), 1, "use site must not emit: {syms:?}");
+            assert!(matches!(point[0].kind, SymbolKind::Struct));
+            assert!(matches!(
+                syms.iter().find(|s| s.name == "Color").unwrap().kind,
+                SymbolKind::Enum
+            ));
+            assert!(matches!(
+                syms.iter().find(|s| s.name == "U").unwrap().kind,
+                SymbolKind::Struct
+            ));
+        }
+        // typedef + #define; `typedef struct Pair {…} Pair;` emits both the
+        // struct definition and the typedef alias.
+        {
+            let src = "#define MAX 100\n#define SQ(x) ((x)*(x))\ntypedef int MyInt;\ntypedef struct Pair { int a; } Pair;\n";
+            let syms = extract_file("a.h", src, "c").unwrap();
+            assert!(matches!(
+                syms.iter().find(|s| s.name == "MAX").unwrap().kind,
+                SymbolKind::Macro
+            ));
+            assert!(matches!(
+                syms.iter().find(|s| s.name == "SQ").unwrap().kind,
+                SymbolKind::Macro
+            ));
+            assert!(matches!(
+                syms.iter().find(|s| s.name == "MyInt").unwrap().kind,
+                SymbolKind::Type
+            ));
+            let pair_kinds: Vec<_> = syms
+                .iter()
+                .filter(|s| s.name == "Pair")
+                .map(|s| s.kind)
+                .collect();
+            assert!(pair_kinds.contains(&SymbolKind::Struct), "{syms:?}");
+            assert!(pair_kinds.contains(&SymbolKind::Type), "{syms:?}");
+        }
+        // call edges attribute to the enclosing fn; function-pointer member
+        // calls (`ops->run()`) keep the trailing field name.
+        {
+            let src =
+                "void low(void) {}\nvoid high(struct Ops *ops) {\n  low();\n  ops->run(1);\n}\n";
+            let es = edges("a.c", src, "c");
+            let low = es.iter().find(|e| e.dst_name == "low").unwrap();
+            assert_eq!(low.src_symbol.as_deref(), Some("high"));
+            assert!(dst_names(&es).contains(&"run"), "edges: {es:?}");
+        }
+    }
+
+    // ---- Zig symbols + edges ----
+
+    #[test]
+    fn zig_symbols_and_edges() {
+        let src = "const std = @import(\"std\");\n\
+                   pub const MAX: u32 = 100;\n\
+                   var counter: u32 = 0;\n\
+                   pub const Point = struct {\n    x: i32,\n    pub fn norm(self: Point) i32 { return self.x; }\n};\n\
+                   const Color = enum { red, green };\n\
+                   fn helper(a: i32) i32 { return a; }\n\
+                   pub fn main() void {\n    const local = helper(1);\n    _ = local;\n    std.debug.print(\"hi\", .{});\n}\n";
+        let (syms, es) = extract_file_with_edges("a.zig", src, "zig").unwrap();
+        let by = |needle: &str| {
+            syms.iter()
+                .find(|s| s.name == needle)
+                .unwrap_or_else(|| panic!("missing {needle}: {:?}", names(&syms)))
+                .clone()
+        };
+        // const-wrapped containers get the container kind, not Const.
+        let point = by("Point");
+        assert!(matches!(point.kind, SymbolKind::Struct), "{point:?}");
+        assert_eq!(point.visibility.as_deref(), Some("pub"));
+        assert!(matches!(by("Color").kind, SymbolKind::Enum));
+        // method inside the struct carries the container as parent.
+        let norm = by("norm");
+        assert_eq!(norm.parent.as_deref(), Some("Point"));
+        assert!(matches!(norm.kind, SymbolKind::Function));
+        // file-scope const/var; `pub` vs unmarked visibility.
+        assert!(matches!(by("MAX").kind, SymbolKind::Const));
+        assert_eq!(by("MAX").visibility.as_deref(), Some("pub"));
+        assert!(matches!(by("counter").kind, SymbolKind::Var));
+        assert_eq!(by("counter").visibility.as_deref(), Some("priv"));
+        assert!(matches!(by("std").kind, SymbolKind::Const));
+        // fns.
+        assert!(matches!(by("helper").kind, SymbolKind::Function));
+        assert_eq!(by("main").visibility.as_deref(), Some("pub"));
+        // locals inside fn bodies do not flood the index.
+        assert!(syms.iter().all(|s| s.name != "local"), "{:?}", names(&syms));
+        // edges: bare call + field call, both attributed to main.
+        let helper_call = es
+            .iter()
+            .find(|e| e.dst_name == "helper" && e.src_symbol.as_deref() == Some("main"))
+            .unwrap_or_else(|| panic!("missing helper edge: {es:?}"));
+        assert_eq!(helper_call.kind, "call");
+        assert!(
+            es.iter()
+                .any(|e| e.dst_name == "print" && e.src_symbol.as_deref() == Some("main")),
+            "edges: {es:?}"
+        );
+        // @import is a builtin, not a call edge.
+        assert!(es.iter().all(|e| e.dst_name != "import"), "edges: {es:?}");
+    }
+
+    // ---- Data formats: Markdown / YAML / CSV ----
+
+    #[test]
+    fn markdown_heading_symbols() {
+        let src = "# Title\n\nIntro text.\n\n## Section\n\n### Sub\n\nSetext\n======\n";
+        let (syms, es) = extract_file_with_edges("README.md", src, "markdown").unwrap();
+        assert!(es.is_empty(), "markdown must not emit edges: {es:?}");
+        let by = |needle: &str| {
+            syms.iter()
+                .find(|s| s.name == needle)
+                .unwrap_or_else(|| panic!("missing {needle}: {:?}", names(&syms)))
+                .clone()
+        };
+        assert!(matches!(by("Title").kind, SymbolKind::Class));
+        assert_eq!(by("Title").line_start, 1);
+        assert!(matches!(by("Section").kind, SymbolKind::Type));
+        assert!(matches!(by("Sub").kind, SymbolKind::Function));
+        // setext H1 (`====` underline) maps like an ATX H1.
+        assert!(matches!(by("Setext").kind, SymbolKind::Class));
+    }
+
+    #[test]
+    fn yaml_keys_two_levels_deep() {
+        let src =
+            "name: ci\non:\n  push:\n    branches: [main]\njobs:\n  build:\n    runs-on: ubuntu\n";
+        let syms = extract_file("ci.yml", src, "yaml").unwrap();
+        let n = names(&syms);
+        assert!(n.contains(&"name"), "names: {n:?}");
+        assert!(n.contains(&"jobs"), "names: {n:?}");
+        let build = syms.iter().find(|s| s.name == "build").unwrap();
+        assert_eq!(build.parent.as_deref(), Some("jobs"));
+        assert!(matches!(build.kind, SymbolKind::Var));
+        // depth cap: level-3 keys are nav noise, not symbols.
+        assert!(!n.contains(&"runs-on"), "names: {n:?}");
+        assert!(!n.contains(&"branches"), "names: {n:?}");
+    }
+
+    #[test]
+    fn csv_header_columns() {
+        // Quoted field keeps its embedded comma; rows below the header are
+        // data, not symbols.
+        let src = "id,name,\"full, title\",amount\n1,a,b,2\n";
+        let syms = extract_file("data.csv", src, "csv").unwrap();
+        let n = names(&syms);
+        assert_eq!(n, vec!["id", "name", "full, title", "amount"], "{syms:?}");
+        assert!(syms.iter().all(|s| matches!(s.kind, SymbolKind::Var)));
+        assert!(syms.iter().all(|s| s.line_start == 1));
+        // Leading blank lines shift the header line.
+        let syms = extract_file("data.csv", "\n\nid,name\n", "csv").unwrap();
+        assert_eq!(syms[0].line_start, 3);
+        // Header-less (empty) files yield nothing.
+        assert!(extract_file("data.csv", "", "csv").unwrap().is_empty());
+        assert!(extract_file("data.csv", "\n  \n", "csv")
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn new_langs_empty_source_yields_no_symbols() {
+        for (lang, ext) in [
+            ("c", "c"),
+            ("zig", "zig"),
+            ("markdown", "md"),
+            ("yaml", "yml"),
+            ("csv", "csv"),
+        ] {
+            let file = format!("empty.{ext}");
+            let s = extract_file(&file, "", lang).unwrap();
+            assert!(s.is_empty(), "expected no symbols for empty {lang}: {s:?}");
         }
     }
 }

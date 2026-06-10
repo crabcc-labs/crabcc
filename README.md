@@ -200,8 +200,9 @@ actually wants: `sym`, `refs`, `callers`, `outline`. Plus token-shaping flags
 (`--count`, `--files-only`, `--limit`) that collapse 16k-token result sets to ~3
 tokens when the question only needs a number or a deduped file list.
 
-Languages today: TypeScript, TSX, JavaScript, Ruby, Rust, Go, Python. Adding a language
-is a tree-sitter grammar plus an extractor.
+Languages today: TypeScript, TSX, JavaScript, Ruby, Rust, Go, Python, Swift, Bash,
+Java, C, Zig — plus data formats (Markdown headings, YAML keys, CSV header columns
+as navigable symbols). Adding a language is a tree-sitter grammar plus an extractor.
 
 <p align="center">
   <img src="./assets/demo.gif" alt="crabcc CLI demo against a 13k-file Rails monorepo" width="100%"/>
