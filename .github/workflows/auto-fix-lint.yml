@@ -24,6 +24,13 @@
 name: Auto-fix lint
 
 on:
+  # Proactive: run on every PR push so `cargo fmt --all` + `clippy --fix` land
+  # EARLY as one [auto-fix] commit, instead of only reacting after CI goes red.
+  # Now that fmt/clippy are advisory on PRs (ci.yml), the workflow_run-on-failure
+  # trigger rarely fires for them -- so this PR trigger is what keeps the tree
+  # tidy. The `[auto-fix]` HEAD loop-guard (triage job) stops fix->push->fix.
+  pull_request:
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
     inputs:
       pr:
@@ -54,6 +61,7 @@ jobs:
     #   - skip runs that weren't triggered by a PR (pushes to main, etc.)
     if: >-
       github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'pull_request' ||
       (github.event_name == 'workflow_run' &&
        github.event.workflow_run.conclusion == 'failure' &&
        github.event.workflow_run.event == 'pull_request')
@@ -70,6 +78,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EVT: ${{ github.event_name }}
           DISPATCH_PR: ${{ github.event.inputs.pr }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           RUN_ID: ${{ github.event.workflow_run.id }}
           WR_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
@@ -94,6 +103,8 @@ jobs:
               echo "no open PR for $WR_HEAD_SHA; skip"
               echo "should_fix=false" >> "$GITHUB_OUTPUT"; exit 0
             fi
+          elif [ "$EVT" = "pull_request" ]; then
+            PR="$PR_NUMBER"
           else
             PR="$DISPATCH_PR"
           fi

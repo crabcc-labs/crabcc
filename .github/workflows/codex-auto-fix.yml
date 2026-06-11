@@ -36,8 +36,11 @@
 name: Codex auto-fix (Aperture)
 
 on:
-  schedule:
-    - cron: '*/5 * * * *'
+  # No scheduled scan-all sweep: the */5 cron re-ran Codex on EVERY open PR
+  # every 5 minutes, flooding PRs with [codex-fix] commits + summary comments
+  # (and hammering the 2 self-hosted runners). Codex is now on-demand only --
+  # mention @codex / @codex-fix on a PR, or workflow_dispatch. Routine review
+  # is /code-review (run it in-session before opening the PR).
   workflow_dispatch:
     inputs:
       pr:
