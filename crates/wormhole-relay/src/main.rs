@@ -32,6 +32,10 @@ const CHAN_BUF: usize = 64;
 
 // ---- SessionStore trait ----
 
+/// Result of a replay request: an optional `(from, to)` gap notice plus the
+/// `(seq, payload)` frames to resend.
+type ReplayResult = (Option<(u64, u64)>, Vec<(u64, Vec<u8>)>);
+
 /// Abstracts the relay's mutable state so tests and alternative backends can
 /// plug in without modifying handler logic. Callers hold a `Mutex<S>` lock.
 trait SessionStore: Send + 'static {
@@ -59,11 +63,7 @@ trait SessionStore: Send + 'static {
 
     /// Return `(gap, frames)` for a node_id from `from_seq`, or `None` if the
     /// node is unknown. Returned data is owned (avoids borrow-across-await).
-    fn replay(
-        &self,
-        node_id: [u8; 32],
-        from_seq: u64,
-    ) -> Option<(Option<(u64, u64)>, Vec<(u64, Vec<u8>)>)>;
+    fn replay(&self, node_id: [u8; 32], from_seq: u64) -> Option<ReplayResult>;
 
     /// Evict nonces older than NONCE_TTL (called by background task).
     fn evict_nonces(&mut self);
@@ -149,11 +149,7 @@ impl SessionStore for RelayState {
         self.relay_token.as_deref()
     }
 
-    fn replay(
-        &self,
-        node_id: [u8; 32],
-        from_seq: u64,
-    ) -> Option<(Option<(u64, u64)>, Vec<(u64, Vec<u8>)>)> {
+    fn replay(&self, node_id: [u8; 32], from_seq: u64) -> Option<ReplayResult> {
         let sess = self.sessions.get(&node_id)?;
         let gap = sess.log.gap().filter(|g| from_seq <= g.1);
         let frames = sess
