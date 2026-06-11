@@ -117,6 +117,28 @@ tasks:
       - task: build
       - task: test
 
+  review:
+    desc: "Pre-push self-review — run the tests your branch actually touches + cue /code-review"
+    summary: |
+      Fast local gate to run BEFORE you push / open a PR:
+        1. crabcc affected --since origin/main --run — runs only the tests that
+           transitively cover your branch's changes (dogfoods crabcc; on a warm
+           target/ this is far faster than `cargo test --workspace`, and it catches
+           cross-crate impact the PR's per-crate CI scoping would miss).
+        2. Reminds you to run `/code-review` in your Claude session (bugs + reuse/
+           simplify cleanups; `--fix` to apply) so the PR arrives self-reviewed.
+
+      Needs the symbol index (run `task go` or `crabcc index` once). This front-loads
+      the obvious failures; CI still gates on the scoped PR jobs + push-to-main.
+    cmds:
+      - git fetch -q origin main 2>/dev/null || true
+      - cmd: '{{.CRABCC}} affected --since origin/main --run'
+        ignore_error: true
+      - |
+        echo ""
+        echo "  ✓ affected tests run. Before pushing, in your Claude session:  /code-review"
+        echo "    (reviews the diff for bugs + reuse/simplify cleanups; add --fix to apply)"
+
   mastodon-setup:
     desc: One-shot Mastodon token setup. Pass TOKEN=... or paste interactively.
     summary: |
