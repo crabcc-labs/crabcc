@@ -104,3 +104,10 @@ required-features = ["bench"]
 name = "compress_simd"
 harness = false
 required-features = ["bench", "compress"]
+
+# SQLite DB-layer load tests — bulk insert, edge creation, cold/warm lookups,
+# full scans, callers-of resolution, and PRAGMA sensitivity at 1k/10k/50k scales.
+[[bench]]
+name = "db_load"
+harness = false
+required-features = ["bench"]

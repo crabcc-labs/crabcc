@@ -107,6 +107,37 @@ All notable changes to crabcc are documented here. Format follows
   exact when matches are sparse. Adds a `fuzzy/dense` bench + a profiling
   example. (No API or behavior change for sparse queries — distances identical.)
 
+- **SQLite PRAGMA tuning across both stores.** `page_size=16384` (new DBs) for
+  fewer B-tree levels; `wal_autocheckpoint=10000` (~40 MB vs default 4 MB) to
+  reduce checkpoint churn during bulk indexing; memory-store `cache_size`
+  aligned to 64 MB (was stuck at 16 MB). Both stores now share identical
+  durability/performance characteristics.
+
+- **Schema index pruning.** Removed redundant `idx_symbols_file` (already
+  covered by `idx_symbols_file_line` prefix); `idx_symbols_qual` made partial
+  (`WHERE qualified IS NOT NULL`) to skip NULL entries; `idx_drawers_wing`
+  extended to `(wing_id, created_at)` for single-seek `forget --before` queries.
+
+- **`prepare_cached` hardening.** 17 static SQL queries across 6 files converted
+  from `prepare()` to `prepare_cached()`, amortizing SQL parse cost on repeated
+  calls. Covers BFS graph traversal (`why.rs`), reminder polling, FTS5/vec0
+  backfill, and cold-start paths (`agent_runs_db`, `compress_cmd`, `mastodon`,
+  `godfather`).
+
+- **Eliminated `Box<dyn ToSql>` heap allocations in batch queries.** `affected`,
+  `blast_radius`, and `importers` now pass `params_from_iter(ids.iter().copied())`
+  directly instead of building intermediate `Vec<Box<dyn ToSql>>` — saves one
+  allocation per bound parameter on every batch hydrate/resolve call.
+
+- **HashMap double-lookup fixes.** `read.rs` session-conn cache and
+  `query/mod.rs` symbol cache both switched from `contains_key`+`insert`+`get`
+  to `entry().or_insert_with()`, reducing three hash probes to one on cache miss.
+
+- **DB-layer load bench.** New `benches/db_load.rs` with 7 Criterion groups:
+  bulk insert (1k/10k/50k), edge creation, cold/warm lookup, full scan,
+  callers-of resolution, and PRAGMA sensitivity (stock defaults vs tuned).
+  Run with `cargo bench -p crabcc-core --features bench --bench db_load`.
+
 ## [6.1.0] — 2026-06-04
 
 ### Added

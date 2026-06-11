@@ -97,8 +97,7 @@ pub async fn run_session(
 
     // Noise IK handshake — happens once per relay connection.
     let mut bufs = NoiseBufs::new();
-    let mut transport =
-        noise_handshake(&mut rx, &mut sink, keys, op_static_pub, &mut bufs).await?;
+    let mut transport = noise_handshake(&mut rx, &mut sink, keys, op_static_pub, &mut bufs).await?;
     info!("noise handshake complete");
 
     let op_id: [u8; 32] = transport
@@ -123,14 +122,14 @@ pub async fn run_session(
         };
 
         // Noise decrypt — reuse recv buf, skip bounds check (snow upholds len ≤ buf.len())
-        let plain_len =
-            match transport.read_message(&outer.noise_payload, bufs.recv.as_mut_slice()) {
-                Ok(n) => n,
-                Err(e) => {
-                    warn!("noise decrypt: {e}");
-                    continue;
-                }
-            };
+        let plain_len = match transport.read_message(&outer.noise_payload, bufs.recv.as_mut_slice())
+        {
+            Ok(n) => n,
+            Err(e) => {
+                warn!("noise decrypt: {e}");
+                continue;
+            }
+        };
         debug_assert!(plain_len <= NOISE_BUF);
         // SAFETY: snow guarantees plain_len <= bufs.recv.len()
         let plain = unsafe { bufs.recv.get_unchecked(..plain_len) };
@@ -157,11 +156,11 @@ pub async fn run_session(
                         node_id: keys.node_id,
                         op_id,
                         connected_at: unix_now(),
-                        route: Route::Relay { relay_addr: String::new() },
+                        route: Route::Relay {
+                            relay_addr: String::new(),
+                        },
                     };
-                    if let Err(e) =
-                        persist_session_record(&rec, &wormhole_dir.join("sessions"))
-                    {
+                    if let Err(e) = persist_session_record(&rec, &wormhole_dir.join("sessions")) {
                         warn!("persist session record: {e}");
                     }
                 }
@@ -248,10 +247,8 @@ async fn noise_handshake(
     op_static_pub: Option<[u8; 32]>,
     bufs: &mut NoiseBufs,
 ) -> Result<snow::TransportState> {
-    let params: snow::params::NoiseParams =
-        NOISE_PARAMS.parse().context("parse noise params")?;
-    let mut builder =
-        snow::Builder::new(params).local_private_key(&keys.static_secret);
+    let params: snow::params::NoiseParams = NOISE_PARAMS.parse().context("parse noise params")?;
+    let mut builder = snow::Builder::new(params).local_private_key(&keys.static_secret);
     if let Some(ref op_pub) = op_static_pub {
         builder = builder.remote_public_key(op_pub.as_ref());
     }
@@ -271,7 +268,11 @@ async fn noise_handshake(
     let msg2_payload = unsafe { bufs.send.get_unchecked(..msg2_len) }.to_vec();
     send_raw(
         sink,
-        &OuterFrame { node_id: keys.node_id, channel: 0, noise_payload: msg2_payload },
+        &OuterFrame {
+            node_id: keys.node_id,
+            channel: 0,
+            noise_payload: msg2_payload,
+        },
     )
     .await?;
 
@@ -329,7 +330,11 @@ async fn send_envelope(
     let noise_payload = unsafe { bufs.send.get_unchecked(..cipher_len) }.to_vec();
     send_raw(
         sink,
-        &OuterFrame { node_id: *node_id, channel: 0, noise_payload },
+        &OuterFrame {
+            node_id: *node_id,
+            channel: 0,
+            noise_payload,
+        },
     )
     .await
 }
@@ -340,7 +345,10 @@ fn save_seq(wormhole_dir: &Path, session: u128, seq: &SeqState) -> Result<()> {
     let hex8 = format!("{:08x}", (session & 0xffff_ffff) as u32);
     let path = wormhole_dir.join(format!("{hex8}.seq"));
     let inbound_next = seq.watermark().map(|w| w + 1).unwrap_or(0);
-    let wm = SeqWatermark { inbound_next, outbound_next: 0 };
+    let wm = SeqWatermark {
+        inbound_next,
+        outbound_next: 0,
+    };
     let bytes = postcard::to_allocvec(&wm).context("encode seq watermark")?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();

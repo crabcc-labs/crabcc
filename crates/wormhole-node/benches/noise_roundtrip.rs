@@ -52,10 +52,16 @@ impl Transport {
 
     #[inline(always)]
     fn roundtrip(&mut self, payload: &[u8]) -> usize {
-        let enc_len = self.tx.write_message(payload, self.send.as_mut_slice()).unwrap();
+        let enc_len = self
+            .tx
+            .write_message(payload, self.send.as_mut_slice())
+            .unwrap();
         // SAFETY: snow guarantees enc_len <= BUF
         let cipher = unsafe { self.send.get_unchecked(..enc_len) };
-        let dec_len = self.rx.read_message(cipher, self.recv.as_mut_slice()).unwrap();
+        let dec_len = self
+            .rx
+            .read_message(cipher, self.recv.as_mut_slice())
+            .unwrap();
         dec_len
     }
 }

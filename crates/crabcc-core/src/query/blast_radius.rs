@@ -127,11 +127,7 @@ fn hydrate_symbols(store: &Store, ids: Vec<i64>) -> Result<Vec<Symbol>> {
         placeholders.join(",")
     );
     let mut stmt = conn.prepare(&sql)?;
-    let params: Vec<Box<dyn rusqlite::ToSql>> = ids
-        .into_iter()
-        .map(|i| Box::new(i) as Box<dyn rusqlite::ToSql>)
-        .collect();
-    let rows = stmt.query_map(params_from_iter(params.iter().map(|b| b.as_ref())), |row| {
+    let rows = stmt.query_map(params_from_iter(ids.iter().copied()), |row| {
         Ok(Symbol {
             name: row.get(0)?,
             kind: kind_from_str(&row.get::<_, String>(1)?),

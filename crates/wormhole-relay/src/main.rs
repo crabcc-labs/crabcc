@@ -251,10 +251,7 @@ async fn health_handler() -> impl IntoResponse {
 
 // ---- WebSocket handler ----
 
-async fn ws_handler<S>(
-    ws: WebSocketUpgrade,
-    State(state): State<Arc<Mutex<S>>>,
-) -> Response
+async fn ws_handler<S>(ws: WebSocketUpgrade, State(state): State<Arc<Mutex<S>>>) -> Response
 where
     S: SessionStore + 'static,
 {
@@ -306,10 +303,11 @@ async fn handle_ws<S: SessionStore>(socket: WebSocket, state: Arc<Mutex<S>>) {
         };
 
         // Clone peer sender before dropping lock so try_send runs outside it.
-        let peer_tx = state
-            .lock()
-            .await
-            .route_frame(session.node_id(), session.role(), frame.noise_payload.clone());
+        let peer_tx = state.lock().await.route_frame(
+            session.node_id(),
+            session.role(),
+            frame.noise_payload.clone(),
+        );
 
         if let Some(tx) = peer_tx {
             let _ = tx.try_send(Message::Binary(bytes));
@@ -389,7 +387,10 @@ async fn replay_handler<S: SessionStore>(
         let notice_env = Envelope {
             session: 0,
             seq: 0,
-            kind: Kind::GapNotice { from: gap_from, to: gap_to },
+            kind: Kind::GapNotice {
+                from: gap_from,
+                to: gap_to,
+            },
             body: vec![],
         };
         if let Ok(env_bytes) = notice_env.encode() {

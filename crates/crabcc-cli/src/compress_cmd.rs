@@ -122,7 +122,7 @@ fn train_codec(db: &Path) -> Result<Codec> {
     let mut total_path = 0usize;
     {
         let mut stmt = conn
-            .prepare("SELECT path FROM files ORDER BY RANDOM()")
+            .prepare_cached("SELECT path FROM files ORDER BY RANDOM()")
             .context("prepare path sampler")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         for r in rows {
@@ -142,7 +142,7 @@ fn train_codec(db: &Path) -> Result<Codec> {
     let mut total_name = 0usize;
     {
         let mut stmt = conn
-            .prepare("SELECT name FROM symbols ORDER BY RANDOM()")
+            .prepare_cached("SELECT name FROM symbols ORDER BY RANDOM()")
             .context("prepare name sampler")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         for r in rows {

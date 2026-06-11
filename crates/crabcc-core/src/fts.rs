@@ -92,7 +92,10 @@ impl Fts {
             .iter()
             .map(|r| r.name_lower.as_bytes().first().copied().unwrap_or(0))
             .collect();
-        Ok(Self { rows, name_first_bytes })
+        Ok(Self {
+            rows,
+            name_first_bytes,
+        })
     }
 
     /// Build directly from full in-memory symbols, bypassing SQLite. Benches
@@ -108,7 +111,10 @@ impl Fts {
             .iter()
             .map(|r| r.name_lower.as_bytes().first().copied().unwrap_or(0))
             .collect();
-        Self { rows, name_first_bytes }
+        Self {
+            rows,
+            name_first_bytes,
+        }
     }
 
     /// Number of searchable symbols.

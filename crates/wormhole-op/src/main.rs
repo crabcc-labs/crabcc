@@ -66,7 +66,12 @@ async fn main() -> Result<()> {
                 .context("read response body")?;
             print!("{body}");
         }
-        Cmd::Replay { relay, node_id, from, token } => {
+        Cmd::Replay {
+            relay,
+            node_id,
+            from,
+            token,
+        } => {
             let url = format!("{relay}/wormhole/v1/replay/{node_id}?from={from}");
             let client = reqwest::Client::new();
             let mut req = client.get(&url);

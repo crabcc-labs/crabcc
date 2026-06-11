@@ -36,9 +36,16 @@ fn main() -> Result<()> {
 
         // Print the console event to stderr (visible in devshell terminal)
         let level = msg.get("level").and_then(|v| v.as_str()).unwrap_or("log");
-        let args = msg.get("args").and_then(|v| v.as_array()).map(|a| {
-            a.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(" ")
-        }).unwrap_or_default();
+        let args = msg
+            .get("args")
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .map(|v| v.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .unwrap_or_default();
         let url = msg.get("url").and_then(|v| v.as_str()).unwrap_or("?");
         eprintln!("[browser:{level}] {args}  <{url}>");
 

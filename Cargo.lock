@@ -682,9 +682,9 @@ dependencies = [
 
 [[package]]
 name = "block-buffer"
-version = "0.12.0"
+version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdd35008169921d80bc60d3d0ab416eecb028c4cd653352907921d95084790be"
+checksum = "d2f6c7dbe95a6ed67ad9f18e57daf93a2f034c524b99fd2b76d18fdfeb6660aa"
 dependencies = [
  "hybrid-array",
 ]
@@ -1194,7 +1194,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-cli"
-version = "6.5.0"
+version = "6.5.1"
 dependencies = [
  "ahash",
  "anyhow",
@@ -1231,7 +1231,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-compact"
-version = "6.5.0"
+version = "6.5.1"
 dependencies = [
  "ahash",
  "anyhow",
@@ -1251,7 +1251,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-compact-serve"
-version = "6.5.0"
+version = "6.5.1"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
@@ -1268,7 +1268,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-core"
-version = "6.5.0"
+version = "6.5.1"
 dependencies = [
  "ahash",
  "anyhow",
@@ -1313,7 +1313,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-devshell-host"
-version = "6.5.0"
+version = "6.5.1"
 dependencies = [
  "anyhow",
  "serde",
@@ -1322,7 +1322,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-fetch"
-version = "6.5.0"
+version = "6.5.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1343,7 +1343,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-godfather"
-version = "6.5.0"
+version = "6.5.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1363,7 +1363,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-mcp"
-version = "6.5.0"
+version = "6.5.1"
 dependencies = [
  "ahash",
  "anyhow",
@@ -1389,7 +1389,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-memory"
-version = "6.5.0"
+version = "6.5.1"
 dependencies = [
  "ahash",
  "anyhow",
@@ -1408,7 +1408,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-memory-bench"
-version = "6.5.0"
+version = "6.5.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1420,7 +1420,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-viz"
-version = "6.5.0"
+version = "6.5.1"
 dependencies = [
  "anyhow",
  "crabcc-core",
@@ -1829,7 +1829,7 @@ version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f1dd6dbb5841937940781866fa1281a1ff7bd3bf827091440879f9994983d5c2"
 dependencies = [
- "block-buffer 0.12.0",
+ "block-buffer 0.12.1",
  "const-oid 0.10.2",
  "crypto-common 0.2.2",
  "ctutils",
@@ -5781,7 +5781,7 @@ dependencies = [
 
 [[package]]
 name = "sshq"
-version = "6.5.0"
+version = "6.5.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -7241,7 +7241,7 @@ dependencies = [
 
 [[package]]
 name = "vaked-lambda"
-version = "6.5.0"
+version = "6.5.1"
 
 [[package]]
 name = "valuable"
@@ -7978,7 +7978,7 @@ dependencies = [
 
 [[package]]
 name = "wormhole-bpf"
-version = "6.5.0"
+version = "6.5.1"
 dependencies = [
  "anyhow",
  "aya",
@@ -7992,11 +7992,11 @@ dependencies = [
 
 [[package]]
 name = "wormhole-bpf-common"
-version = "6.5.0"
+version = "6.5.1"
 
 [[package]]
 name = "wormhole-node"
-version = "6.5.0"
+version = "6.5.1"
 dependencies = [
  "anyhow",
  "blake3",
@@ -8021,7 +8021,7 @@ dependencies = [
 
 [[package]]
 name = "wormhole-op"
-version = "6.5.0"
+version = "6.5.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -8031,7 +8031,7 @@ dependencies = [
 
 [[package]]
 name = "wormhole-proto"
-version = "6.5.0"
+version = "6.5.1"
 dependencies = [
  "postcard",
  "serde",
@@ -8040,7 +8040,7 @@ dependencies = [
 
 [[package]]
 name = "wormhole-relay"
-version = "6.5.0"
+version = "6.5.1"
 dependencies = [
  "anyhow",
  "axum 0.8.9",

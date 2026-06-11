@@ -20,10 +20,18 @@ use session::{expand_tilde, run_session};
 #[derive(Parser)]
 #[command(name = "wormhole-node")]
 struct Cli {
-    #[arg(long, env = "WORMHOLE_RELAY_URL", default_value = "ws://127.0.0.1:4443/wormhole/v1")]
+    #[arg(
+        long,
+        env = "WORMHOLE_RELAY_URL",
+        default_value = "ws://127.0.0.1:4443/wormhole/v1"
+    )]
     relay_url: String,
 
-    #[arg(long, env = "WORMHOLE_KEYS_FILE", default_value = "~/.crabcc/wormhole/node-keys.bin")]
+    #[arg(
+        long,
+        env = "WORMHOLE_KEYS_FILE",
+        default_value = "~/.crabcc/wormhole/node-keys.bin"
+    )]
     keys_file: String,
 
     /// Hex-encoded operator static pub key (optional; enables IK pre-shared pub)
@@ -38,16 +46,16 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let keys_path = expand_tilde(&cli.keys_file);
-    let wormhole_dir = keys_path.parent().unwrap_or(std::path::Path::new(".")).to_path_buf();
+    let wormhole_dir = keys_path
+        .parent()
+        .unwrap_or(std::path::Path::new("."))
+        .to_path_buf();
 
     let keys = NodeKeys::load_or_generate(&keys_path)?;
     info!(node_id = encode_hex(&keys.node_id), "node keys loaded");
 
-    let op_static_pub: Option<[u8; 32]> = cli
-        .op_static_pub
-        .as_deref()
-        .map(decode_hex32)
-        .transpose()?;
+    let op_static_pub: Option<[u8; 32]> =
+        cli.op_static_pub.as_deref().map(decode_hex32).transpose()?;
 
     let mut backoff = Duration::from_secs(1);
     loop {
@@ -57,7 +65,10 @@ async fn main() -> Result<()> {
                 backoff = Duration::from_secs(1);
             }
             Err(e) => {
-                error!("session error: {e:#}; reconnecting in {}s", backoff.as_secs());
+                error!(
+                    "session error: {e:#}; reconnecting in {}s",
+                    backoff.as_secs()
+                );
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(Duration::from_secs(60));
             }

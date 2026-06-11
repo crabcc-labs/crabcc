@@ -379,11 +379,11 @@ fn with_session_conn<R>(
     let mut map = map
         .lock()
         .map_err(|_| anyhow!("poisoned session-conn mutex"))?;
-    if !map.contains_key(db) {
-        let conn = Connection::open(db).with_context(|| format!("open {}", db.display()))?;
-        map.insert(db.to_path_buf(), conn);
-    }
-    let conn = map.get(db).expect("connection just inserted");
+    let conn = map.entry(db.to_path_buf()).or_insert_with(|| {
+        Connection::open(db)
+            .with_context(|| format!("open {}", db.display()))
+            .expect("open session conn")
+    });
     f(conn).map_err(Into::into)
 }
 

@@ -202,14 +202,7 @@ fn hydrate(store: &Store, ids: Vec<i64>) -> Result<Vec<(i64, Symbol)>> {
         placeholders.join(",")
     );
     let mut stmt = conn.prepare(&sql)?;
-    let params: Vec<Box<dyn rusqlite::ToSql>> = ids
-        .into_iter()
-        .map(|i| Box::new(i) as Box<dyn rusqlite::ToSql>)
-        .collect();
-    let rows = stmt.query_map(
-        params_from_iter(params.iter().map(|b| b.as_ref())),
-        row_to_id_symbol,
-    )?;
+    let rows = stmt.query_map(params_from_iter(ids.iter().copied()), row_to_id_symbol)?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 

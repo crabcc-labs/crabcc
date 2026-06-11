@@ -82,6 +82,17 @@ impl Store {
         // hot indexes (issue #112) — measured ~30% bulk-write speedup
         // and faster cold reads vs the prior 16 MB cap.
         conn.pragma_update(None, "cache_size", -64_000_i64).ok();
+        // 16 KB page size (up from 4 KB default). Larger pages mean fewer
+        // B-tree levels for our index height and better OS cache alignment.
+        // Only takes effect on brand-new databases (SQLite ignores this
+        // pragma once any table exists). Existing indexes keep their current
+        // page size until a VACUUM rewrites the file.
+        conn.pragma_update(None, "page_size", 16_384_i64).ok();
+        // Don't auto-checkpoint until the WAL reaches ~40 MB (default 4 MB).
+        // During bulk indexing, the WAL grows quickly; deferring checkpoints
+        // avoids the write seesaw of frequent WAL → main DB flushes.
+        conn.pragma_update(None, "wal_autocheckpoint", 10_000_i64)
+            .ok();
         conn.busy_timeout(std::time::Duration::from_millis(2_000))?;
         conn.execute_batch(SCHEMA).context("apply schema")?;
 

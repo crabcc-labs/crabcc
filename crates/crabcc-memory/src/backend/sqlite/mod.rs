@@ -68,7 +68,12 @@ impl SqliteBackend {
         conn.pragma_update(None, "mmap_size", 30_000_000_000_i64)
             .ok();
         conn.pragma_update(None, "temp_store", "MEMORY").ok();
-        conn.pragma_update(None, "cache_size", -16_000_i64).ok();
+        // Align cache with the symbol store (64 MB, up from 16 MB).
+        // issue #112 measured ~30% bulk-write speedup at 64 MB.
+        conn.pragma_update(None, "cache_size", -64_000_i64).ok();
+        conn.pragma_update(None, "page_size", 16_384_i64).ok();
+        conn.pragma_update(None, "wal_autocheckpoint", 10_000_i64)
+            .ok();
         conn.busy_timeout(std::time::Duration::from_millis(2_000))?;
         conn.execute_batch(SCHEMA).context("apply memory schema")?;
 
@@ -190,7 +195,7 @@ impl SqliteBackend {
                     None
                 }
             };
-            let mut select = conn.prepare("SELECT id, body, body_enc FROM drawers")?;
+            let mut select = conn.prepare_cached("SELECT id, body, body_enc FROM drawers")?;
             let rows = select
                 .query_map([], |r| {
                     let id: i64 = r.get(0)?;
@@ -218,11 +223,10 @@ impl SqliteBackend {
             // Drop the prepared statement before issuing inserts to release
             // the connection's borrow.
             drop(select);
+            let mut ins =
+                conn.prepare_cached("INSERT INTO drawers_fts(rowid, body) VALUES (?1, ?2)")?;
             for (id, body) in rows {
-                conn.execute(
-                    "INSERT INTO drawers_fts(rowid, body) VALUES (?1, ?2)",
-                    params![id, body],
-                )?;
+                ins.execute(params![id, body])?;
             }
         }
 
@@ -316,7 +320,7 @@ impl SqliteBackend {
                 // back to an f32 blob before it lands in drawers_vec.
                 let rows: Vec<(i64, Vec<u8>)> = {
                     let mut stmt = conn
-                        .prepare(
+                        .prepare_cached(
                             "SELECT drawer_id, bytes, quant FROM drawer_embeddings WHERE dim = 384",
                         )
                         .context("prepare drawers_vec backfill")?;
@@ -353,11 +357,13 @@ impl SqliteBackend {
                      );",
                 )
                 .context("recreate drawers_vec for resync")?;
-                for (id, bytes) in &rows {
-                    tx.execute(
+                {
+                    let mut ins = tx.prepare_cached(
                         "INSERT INTO drawers_vec(drawer_id, embedding) VALUES (?1, ?2)",
-                        params![id, bytes],
                     )?;
+                    for (id, bytes) in &rows {
+                        ins.execute(params![id, bytes])?;
+                    }
                 }
                 tx.execute(
                     "INSERT OR REPLACE INTO drawers_vec_state(key, value) \
@@ -997,7 +1003,7 @@ impl Backend for SqliteBackend {
         // Single atomic UPDATE...RETURNING: concurrent pollers serialize on
         // SQLite's write lock, so each due reminder is claimed by exactly one
         // caller (SQLite >= 3.35, shipped since 2021-03-12).
-        let mut stmt = conn.prepare(
+        let mut stmt = conn.prepare_cached(
             "UPDATE reminders SET delivered = 1 \
              WHERE due_at <= ?1 AND delivered = 0 \
              RETURNING id, due_at, message, created_at",
@@ -1018,14 +1024,17 @@ impl Backend for SqliteBackend {
 
     fn remind_list(&self, include_delivered: bool) -> Result<Vec<Reminder>> {
         let conn = self.conn.lock().map_err(|_| anyhow!("poisoned mutex"))?;
-        let sql = if include_delivered {
-            "SELECT id, due_at, message, created_at, delivered \
-             FROM reminders ORDER BY due_at ASC"
+        let mut stmt = if include_delivered {
+            conn.prepare_cached(
+                "SELECT id, due_at, message, created_at, delivered \
+                 FROM reminders ORDER BY due_at ASC",
+            )?
         } else {
-            "SELECT id, due_at, message, created_at, delivered \
-             FROM reminders WHERE delivered = 0 ORDER BY due_at ASC"
+            conn.prepare_cached(
+                "SELECT id, due_at, message, created_at, delivered \
+                 FROM reminders WHERE delivered = 0 ORDER BY due_at ASC",
+            )?
         };
-        let mut stmt = conn.prepare(sql)?;
         let rows = stmt.query_map([], |r| {
             Ok(Reminder {
                 id: r.get(0)?,

@@ -28,9 +28,7 @@ const TEMPLATES: &[&str] = &[
 
 fn build_corpus(n: usize) -> (Codec, Vec<Vec<u8>>) {
     let samples: Vec<Vec<u8>> = (0..n)
-        .map(|i| {
-            format!("{} // {i}", TEMPLATES[i % TEMPLATES.len()]).into_bytes()
-        })
+        .map(|i| format!("{} // {i}", TEMPLATES[i % TEMPLATES.len()]).into_bytes())
         .collect();
     let refs: Vec<&[u8]> = samples.iter().map(|v| v.as_slice()).collect();
     let codec = Codec::train(&refs).unwrap();

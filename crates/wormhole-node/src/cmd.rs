@@ -7,10 +7,17 @@ const EXEC_TIMEOUT: Duration = Duration::from_secs(30);
 pub enum NodeCmd {
     /// Blocking execution — caller controls argv; no implicit shell injection.
     /// For shell features use program="sh" args=["-c", "..."] explicitly.
-    Exec { program: String, args: Vec<String> },
+    Exec {
+        program: String,
+        args: Vec<String>,
+    },
     /// Fire-and-forget spawn: process is detached, stdout+stderr appended to
     /// `log_path`. Returns the OS pid immediately; no exit-code tracking.
-    Spawn { program: String, args: Vec<String>, log_path: String },
+    Spawn {
+        program: String,
+        args: Vec<String>,
+        log_path: String,
+    },
     GetNodeId,
     Ping,
 }
@@ -38,9 +45,11 @@ pub async fn dispatch(cmd: NodeCmd, node_id: &[u8; 32]) -> NodeEvent {
         NodeCmd::Ping => NodeEvent::Pong,
         NodeCmd::GetNodeId => NodeEvent::NodeId { node_id: *node_id },
         NodeCmd::Exec { program, args } => exec_async(&program, &args).await,
-        NodeCmd::Spawn { program, args, log_path } => {
-            spawn_async(&program, &args, &log_path).await
-        }
+        NodeCmd::Spawn {
+            program,
+            args,
+            log_path,
+        } => spawn_async(&program, &args, &log_path).await,
     }
 }
 
@@ -53,7 +62,9 @@ async fn exec_async(program: &str, args: &[String]) -> NodeEvent {
             stderr: out.stderr,
         })),
         Ok(Err(e)) => NodeEvent::Error { msg: e.to_string() },
-        Err(_) => NodeEvent::Error { msg: "exec timed out (30s)".into() },
+        Err(_) => NodeEvent::Error {
+            msg: "exec timed out (30s)".into(),
+        },
     }
 }
 
@@ -64,11 +75,19 @@ async fn spawn_async(program: &str, args: &[String], log_path: &str) -> NodeEven
         .open(log_path)
     {
         Ok(f) => f,
-        Err(e) => return NodeEvent::Error { msg: format!("open log {log_path}: {e}") },
+        Err(e) => {
+            return NodeEvent::Error {
+                msg: format!("open log {log_path}: {e}"),
+            }
+        }
     };
     let stderr_file = match log_file.try_clone() {
         Ok(f) => f,
-        Err(e) => return NodeEvent::Error { msg: format!("clone log fd: {e}") },
+        Err(e) => {
+            return NodeEvent::Error {
+                msg: format!("clone log fd: {e}"),
+            }
+        }
     };
     match tokio::process::Command::new(program)
         .args(args)
@@ -82,6 +101,8 @@ async fn spawn_async(program: &str, args: &[String], log_path: &str) -> NodeEven
             drop(child); // tokio does NOT kill on drop by default — process detaches
             NodeEvent::SpawnedPid { pid }
         }
-        Err(e) => NodeEvent::Error { msg: format!("spawn {program}: {e}") },
+        Err(e) => NodeEvent::Error {
+            msg: format!("spawn {program}: {e}"),
+        },
     }
 }

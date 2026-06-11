@@ -61,10 +61,10 @@ pub fn why(store: &Store, src: i64, dst: i64, max_depth: usize) -> Result<Option
     let mut frontier_fwd: VecDeque<i64> = VecDeque::from([src]);
     let mut frontier_rev: VecDeque<i64> = VecDeque::from([dst]);
 
-    let mut fwd_stmt =
-        conn.prepare("SELECT dst_symbol_id, kind, line FROM edges WHERE src_symbol_id = ?1")?;
-    let mut rev_stmt =
-        conn.prepare("SELECT src_symbol_id, kind, line FROM edges WHERE dst_symbol_id = ?1")?;
+    let mut fwd_stmt = conn
+        .prepare_cached("SELECT dst_symbol_id, kind, line FROM edges WHERE src_symbol_id = ?1")?;
+    let mut rev_stmt = conn
+        .prepare_cached("SELECT src_symbol_id, kind, line FROM edges WHERE dst_symbol_id = ?1")?;
 
     // Alternate one BFS level on each side until they meet or budget runs out.
     let mut hops_done: usize = 0;
@@ -211,7 +211,7 @@ fn hydrate_symbols(store: &Store, ids: Vec<i64>) -> Result<Vec<Symbol>> {
     // Build the SELECT once with id-keyed lookup; we preserve `ids` ordering
     // by querying each id in turn (the chains are bounded by max_depth so
     // this is at most ~20 queries even on pathological inputs).
-    let mut stmt = conn.prepare(
+    let mut stmt = conn.prepare_cached(
         "SELECT s.name, s.kind, s.signature, f.path, s.line_start, s.line_end, s.visibility, s.signature_enc \
          FROM symbols s JOIN files f ON s.file_id = f.id \
          WHERE s.id = ?1",

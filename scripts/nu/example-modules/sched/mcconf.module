@@ -1,0 +1,5 @@
+# -*- mode:toml; -*-
+[module.sched]
+    provides = ["sched"]
+    requires = ["base"]
+    srcfiles = ["sched.cc"]

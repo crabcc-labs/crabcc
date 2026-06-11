@@ -268,7 +268,11 @@ fn handle(request: Request, root: &Path) -> Result<()> {
                 if provided == Some(tok.as_str()) {
                     respond_html(request, BUNDLED_EYE)
                 } else {
-                    respond_status(request, 401, "invite token required: add ?token=<CRABCC_EYE_TOKEN>")
+                    respond_status(
+                        request,
+                        401,
+                        "invite token required: add ?token=<CRABCC_EYE_TOKEN>",
+                    )
                 }
             }
         },
@@ -2886,7 +2890,10 @@ fn wormhole_sessions() -> Vec<WormholeSessionOut> {
         };
         out.push(WormholeSessionOut {
             session_hex: format!("{:032x}", rec.session),
-            node_id_hex: rec.node_id[..8].iter().map(|b| format!("{b:02x}")).collect(),
+            node_id_hex: rec.node_id[..8]
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect(),
             connected_at: rec.connected_at,
             route,
         });
