@@ -717,7 +717,7 @@ fn emit_static_is_build_order_no_barriers() {
     let g = coord_reduce(module_dag_to_coord(example_modules()), &TargetProfile::static_composition());
     let out = emit_coord(&g, &TargetProfile::static_composition());
     assert!(out.contains("0 runtime barriers"));
-    assert!(!out.contains("barrier"));
+    assert!(!out.contains("(barrier)")); // no per-edge barrier tags in a static build order
     assert!(out.contains("base")); // build order names units
 }
 
