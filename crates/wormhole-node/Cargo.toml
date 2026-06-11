@@ -1,8 +1,3 @@
-# wormhole-node — daemon side, integrates Godfather session registry (Wave 2 Task 5).
-#
-# Planned deps (add when implementing):
-#   wormhole-proto, snow, tokio-tungstenite, crabcc-godfather, spake2
-
 [package]
 name = "wormhole-node"
 version.workspace = true
@@ -10,5 +5,41 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[[bin]]
+name = "wormhole-node"
+path = "src/main.rs"
+
+[[bench]]
+name = "noise_roundtrip"
+harness = false
+
 [dependencies]
 anyhow = { workspace = true }
+wormhole-proto = { workspace = true }
+blake3 = { workspace = true }
+rand = { workspace = true }
+snow = { workspace = true }
+spake2 = { workspace = true }
+ed25519-dalek = { workspace = true }
+tokio = { workspace = true, features = ["process"] }
+tokio-tungstenite = { workspace = true }
+getrandom = { workspace = true }
+serde = { workspace = true }
+postcard = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+futures-util = { workspace = true }
+# Default: mimalloc for ~10-30% faster small-alloc throughput.
+# Build with --features hardened-alloc to swap in hardened_malloc (guard pages,
+# randomized free-list, UAF detection) for security-critical deployments.
+mimalloc = { version = "0.1", default-features = false, optional = true }
+
+[features]
+default = ["mimalloc-alloc"]
+mimalloc-alloc = ["dep:mimalloc"]
+# cargo build --features hardened-alloc (requires hardened_malloc system lib)
+hardened-alloc = []
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }

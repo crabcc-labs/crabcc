@@ -985,13 +985,7 @@ fn handle_verify(args: &Value) -> Result<String> {
         .get(&format!("{base}/api/v2/instance"))
         .call()
         .ok()
-        .and_then(|r| {
-            if r.status().is_success() {
-                Some(r)
-            } else {
-                None
-            }
-        })
+        .filter(|r| r.status().is_success())
         .and_then(|r| r.into_body().read_json().ok())
         .unwrap_or(Value::Null);
 

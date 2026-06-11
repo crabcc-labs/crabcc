@@ -54,7 +54,6 @@ use crabcc_core::store::Store;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use serde_json::{json, Value};
-use sonic_rs;
 use std::io::{BufRead, BufReader, Write};
 use std::net::SocketAddr;
 use std::path::Path;

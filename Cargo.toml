@@ -58,13 +58,18 @@ postcard = { version = "1", features = ["alloc"] }
 blake3 = "1"
 axum = { version = "0.8", features = ["ws"] }
 rand = { version = "0.9", features = ["os_rng"] }
+snow = "0.9"
+spake2 = "0.4"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+tokio-tungstenite = "0.24"
+getrandom = "0.2"
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 
 anyhow = "1"
 ahash = "0.8"
 rayon = "1"
 atty = "0.2"
-clap = { version = "4", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
 markdown = { version = "1", default-features = false }
 rusqlite = { version = "0.39", features = ["bundled"] }
 sqlite-vec = "0.1"

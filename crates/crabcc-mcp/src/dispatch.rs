@@ -139,7 +139,7 @@ fn dispatch_tool_inner(
     // default (non-dev) call that names a meta tool returns a normal
     // "unknown tool" error, matching what `tools/list` advertised.
     if dev {
-        if let Some(meta) = dispatch_meta(tool, &args)? {
+        if let Some(meta) = dispatch_meta(tool, args)? {
             return Ok(meta);
         }
     } else if matches!(tool, "_openapi" | "_health") {
@@ -168,14 +168,14 @@ fn dispatch_tool_inner(
     // needed. Route them before the Store open so we don't pay SQLite
     // startup on a social-only call.
     if tool.starts_with("mastodon.") {
-        return mastodon::dispatch(tool, &args);
+        return mastodon::dispatch(tool, args);
     }
 
     // Memory tools open .crabcc/memory.db directly via Palace; no symbol
     // Store needed. Route them first so we don't pay Store::open on a
     // memory-only call.
     if tool.starts_with("memory.") {
-        return memory::dispatch(tool, &args, root);
+        return memory::dispatch(tool, args, root);
     }
 
     if cache.is_none() {
@@ -190,22 +190,22 @@ fn dispatch_tool_inner(
 
     let result = match tool {
         "sym" => {
-            let name = arg_str(&args, "name")?;
-            let since_files = since_filter(&args, root)?;
+            let name = arg_str(args, "name")?;
+            let since_files = since_filter(args, root)?;
             let r = match since_files.as_ref() {
                 Some(set) => query::find_symbol_in_files(store, name, set)?,
                 None => query::find_symbol(store, name)?,
             };
-            memory::auto_capture(root, "sym", name, r.len(), &args);
+            memory::auto_capture(root, "sym", name, r.len(), args);
             Ok(serde_json::to_string(&r)?)
         }
         "refs" => {
-            let name = arg_str(&args, "name")?;
-            let mode = parse_mode(&args);
-            let since_files = since_filter(&args, root)?;
+            let name = arg_str(args, "name")?;
+            let mode = parse_mode(args);
+            let since_files = since_filter(args, root)?;
             let r = query::query_refs(store, root, name, mode, since_files.as_ref())?;
-            memory::auto_capture(root, "refs", name, r.count(), &args);
-            if want_stream(&args) {
+            memory::auto_capture(root, "refs", name, r.count(), args);
+            if want_stream(args) {
                 return hits_to_ndjson(&r);
             }
             let body = serde_json::to_string(&r)?;
@@ -215,12 +215,12 @@ fn dispatch_tool_inner(
             ))
         }
         "callers" => {
-            let name = arg_str(&args, "name")?;
-            let mode = parse_mode(&args);
-            let since_files = since_filter(&args, root)?;
+            let name = arg_str(args, "name")?;
+            let mode = parse_mode(args);
+            let since_files = since_filter(args, root)?;
             let r = query::query_callers(store, root, name, mode, since_files.as_ref())?;
-            memory::auto_capture(root, "callers", name, r.count(), &args);
-            if want_stream(&args) {
+            memory::auto_capture(root, "callers", name, r.count(), args);
+            if want_stream(args) {
                 return hits_to_ndjson(&r);
             }
             let body = serde_json::to_string(&r)?;
@@ -230,11 +230,11 @@ fn dispatch_tool_inner(
             ))
         }
         "outline" => {
-            let r = outline::outline(store, arg_str(&args, "file")?)?;
+            let r = outline::outline(store, arg_str(args, "file")?)?;
             Ok(serde_json::to_string(&r)?)
         }
         "test_context" => {
-            let name = arg_str(&args, "name")?;
+            let name = arg_str(args, "name")?;
             let file_arg = args.get("file").and_then(|v| v.as_str());
             let max_callers = args
                 .get("max_callers")
@@ -293,7 +293,7 @@ fn dispatch_tool_inner(
                 "refs":          refs,
                 "blast_radius":  blast,
             });
-            memory::auto_capture(root, "test_context", name, 1, &args);
+            memory::auto_capture(root, "test_context", name, 1, args);
             Ok(serde_json::to_string(&envelope)?)
         }
         "affected" => {
@@ -320,7 +320,7 @@ fn dispatch_tool_inner(
                 ChangeInput::WorkingTree
             };
             let result = affected(store, root, input, depth)?;
-            memory::auto_capture(root, "affected", "change", result.tests.len(), &args);
+            memory::auto_capture(root, "affected", "change", result.tests.len(), args);
             Ok(serde_json::to_string(&result)?)
         }
         "write_file" => {
@@ -353,7 +353,7 @@ fn dispatch_tool_inner(
                 .flatten()
                 .map(|h| h.file)
                 .collect();
-            memory::auto_capture(root, "write_file", path, 1, &args);
+            memory::auto_capture(root, "write_file", path, 1, args);
             ntfy::on_write(path, content.len());
             let env = serde_json::json!({
                 "wrote": { "path": path, "bytes": content.len() },
@@ -367,7 +367,7 @@ fn dispatch_tool_inner(
             Ok(serde_json::to_string(&env)?)
         }
         "read" => {
-            let path = std::path::PathBuf::from(arg_str(&args, "path")?);
+            let path = std::path::PathBuf::from(arg_str(args, "path")?);
             let mode_raw = args.get("mode").and_then(|v| v.as_str()).unwrap_or("auto");
             let mode = crabcc_memory::read::ReadMode::parse(mode_raw)?;
             let session_id = args
@@ -438,21 +438,21 @@ fn dispatch_tool_inner(
             }
         }
         "fuzzy" => {
-            let q = arg_str(&args, "query")?;
+            let q = arg_str(args, "query")?;
             let fts = Fts::from_store(store)?;
             let r = fts.fuzzy(q, 20)?;
-            memory::auto_capture(root, "fuzzy", q, r.len(), &args);
+            memory::auto_capture(root, "fuzzy", q, r.len(), args);
             Ok(serde_json::to_string(&r)?)
         }
         "prefix" => {
-            let q = arg_str(&args, "query")?;
+            let q = arg_str(args, "query")?;
             let fts = Fts::from_store(store)?;
             let r = fts.prefix(q, 20)?;
-            memory::auto_capture(root, "prefix", q, r.len(), &args);
+            memory::auto_capture(root, "prefix", q, r.len(), args);
             Ok(serde_json::to_string(&r)?)
         }
         "graph" => {
-            let name = arg_str(&args, "name")?.to_string();
+            let name = arg_str(args, "name")?.to_string();
             let dir = args
                 .get("dir")
                 .and_then(|v| v.as_str())
@@ -476,7 +476,7 @@ fn dispatch_tool_inner(
             Ok(serde_json::to_string(&g.orphans())?)
         }
         "graph.blast_radius" => {
-            let symbol = arg_str(&args, "symbol")?.to_string();
+            let symbol = arg_str(args, "symbol")?.to_string();
             let depth = args
                 .get("depth")
                 .and_then(|v| v.as_u64())
@@ -493,8 +493,8 @@ fn dispatch_tool_inner(
             Ok(serde_json::to_string(&hits)?)
         }
         "graph.why" => {
-            let src = arg_str(&args, "src")?.to_string();
-            let dst = arg_str(&args, "dst")?.to_string();
+            let src = arg_str(args, "src")?.to_string();
+            let dst = arg_str(args, "dst")?.to_string();
             let max_depth = args
                 .get("max_depth")
                 .and_then(|v| v.as_u64())
@@ -520,7 +520,7 @@ fn dispatch_tool_inner(
             Ok(serde_json::to_string(&hits)?)
         }
         "graph.importers" => {
-            let path = arg_str(&args, "path")?.to_string();
+            let path = arg_str(args, "path")?.to_string();
             let depth = args
                 .get("depth")
                 .and_then(|v| v.as_u64())
