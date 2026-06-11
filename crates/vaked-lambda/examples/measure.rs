@@ -24,6 +24,7 @@ fn count_nodes(t: &Term) -> usize {
         }
         Term::Abs { body, .. } => count_nodes(body),
         Term::App { func, arg } => count_nodes(func) + count_nodes(arg),
+        Term::Seq(a, b) | Term::Par(a, b) | Term::Dep(a, b) => count_nodes(a) + count_nodes(b),
     }
 }
 

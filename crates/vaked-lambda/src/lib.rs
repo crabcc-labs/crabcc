@@ -61,6 +61,12 @@ pub enum Term {
     Abs { param: String, body: Box<Term> },
     /// Function application.
     App { func: Box<Term>, arg: Box<Term> },
+    /// Coordination: `b` runs after `a` (b awaits a's timepoint). Value-inert.
+    Seq(Box<Term>, Box<Term>),
+    /// Coordination: `a` and `b` are independent (no mutual timepoint edge).
+    Par(Box<Term>, Box<Term>),
+    /// Coordination: the first term awaits the second's timepoint.
+    Dep(Box<Term>, Box<Term>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -120,6 +126,9 @@ fn beta(term: Term) -> Term {
             branches: branches.into_iter().map(|(p, t)| (p, beta(t))).collect(),
             default: Box::new(beta(*default)),
         },
+        Term::Seq(a, b) => Term::Seq(Box::new(beta(*a)), Box::new(beta(*b))),
+        Term::Par(a, b) => Term::Par(Box::new(beta(*a)), Box::new(beta(*b))),
+        Term::Dep(a, b) => Term::Dep(Box::new(beta(*a)), Box::new(beta(*b))),
         other => other,
     }
 }
@@ -170,6 +179,18 @@ impl Reduce for ConstFold {
                 func: Box::new(self.reduce(*func, env)),
                 arg: Box::new(self.reduce(*arg, env)),
             },
+            Term::Seq(a, b) => Term::Seq(
+                Box::new(self.reduce(*a, env)),
+                Box::new(self.reduce(*b, env)),
+            ),
+            Term::Par(a, b) => Term::Par(
+                Box::new(self.reduce(*a, env)),
+                Box::new(self.reduce(*b, env)),
+            ),
+            Term::Dep(a, b) => Term::Dep(
+                Box::new(self.reduce(*a, env)),
+                Box::new(self.reduce(*b, env)),
+            ),
             other => other,
         }
     }
@@ -199,6 +220,18 @@ fn substitute(body: Term, param: &str, arg: &Term) -> Term {
                 .collect(),
             default: Box::new(substitute(*default, param, arg)),
         },
+        Term::Seq(a, b) => Term::Seq(
+            Box::new(substitute(*a, param, arg)),
+            Box::new(substitute(*b, param, arg)),
+        ),
+        Term::Par(a, b) => Term::Par(
+            Box::new(substitute(*a, param, arg)),
+            Box::new(substitute(*b, param, arg)),
+        ),
+        Term::Dep(a, b) => Term::Dep(
+            Box::new(substitute(*a, param, arg)),
+            Box::new(substitute(*b, param, arg)),
+        ),
         other => other,
     }
 }
@@ -292,6 +325,9 @@ pub fn emit_mirage(term: &Term) -> String {
         }
         Term::Abs { param, body } => format!("(fun {param} -> {})", emit_mirage(body)),
         Term::App { func, arg } => format!("({} {})", emit_mirage(func), emit_mirage(arg)),
+        Term::Seq(..) | Term::Par(..) | Term::Dep(..) => {
+            unreachable!("coordination nodes must be lowered via term_to_coord before emit_mirage")
+        }
     }
 }
 
@@ -337,6 +373,7 @@ pub fn is_closed(term: &Term) -> bool {
         }
         Term::Abs { body, .. } => is_closed(body),
         Term::App { func, arg } => is_closed(func) && is_closed(arg),
+        Term::Seq(a, b) | Term::Par(a, b) | Term::Dep(a, b) => is_closed(a) && is_closed(b),
     }
 }
 
@@ -474,6 +511,9 @@ fn emit_mythos_expr(term: &Term) -> String {
         // App should be β-reduced away before emit; emit the func body as a
         // best effort rather than fabricating call syntax.
         Term::App { func, .. } => emit_mythos_expr(func),
+        Term::Seq(..) | Term::Par(..) | Term::Dep(..) => {
+            unreachable!("coordination nodes must be lowered via term_to_coord before emit")
+        }
     }
 }
 
@@ -484,6 +524,9 @@ fn match_branch_return(term: &Term) -> String {
         Term::EnvVar { name, default } => {
             format!("cfg.get_or(\"{name}\", {})", env_default_lit(default))
         }
+        Term::Seq(..) | Term::Par(..) | Term::Dep(..) => {
+            unreachable!("coordination nodes must be lowered via term_to_coord before emit")
+        }
         other => closed_lit(other),
     }
 }
@@ -493,6 +536,9 @@ fn match_branch_return(term: &Term) -> String {
 fn env_default_lit(default: &Term) -> String {
     match default {
         Term::Lit(s) => format!("\"{s}\""),
+        Term::Seq(..) | Term::Par(..) | Term::Dep(..) => {
+            unreachable!("coordination nodes must be lowered via term_to_coord before emit")
+        }
         // Defaults are literals in the shapes Discover produces; anything else
         // is rendered as its literal projection rather than inventing syntax.
         other => format!("\"{}\"", closed_lit(other)),
@@ -508,6 +554,7 @@ fn closed_lit(term: &Term) -> String {
         Term::Abs { body, .. } => closed_lit(body),
         Term::App { func, .. } => closed_lit(func),
         Term::EnvVar { default, .. } => closed_lit(default),
+        Term::Seq(a, _) | Term::Par(a, _) | Term::Dep(a, _) => closed_lit(a),
     }
 }
 
@@ -564,6 +611,22 @@ mod tests {
 
     fn passes() -> Vec<Box<dyn Reduce>> {
         vec![Box::new(BetaReduce), Box::new(ConstFold)]
+    }
+
+    #[test]
+    fn coordination_variants_are_value_inert() {
+        // Seq/Par/Dep carry sub-terms but do not fold at the value level;
+        // they recurse and pass through. is_closed depends only on sub-terms.
+        let seq = Term::Seq(
+            Box::new(Term::Lit("a".into())),
+            Box::new(Term::Lit("b".into())),
+        );
+        assert!(is_closed(&seq)); // both sub-terms closed
+        let open = Term::Par(
+            Box::new(Term::Lit("a".into())),
+            Box::new(vis_from_env_lambda("unlisted")), // contains EnvVar -> open
+        );
+        assert!(!is_closed(&open));
     }
 
     #[test]
