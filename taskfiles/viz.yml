@@ -142,18 +142,24 @@ tasks:
         vars:
           COMPRESS: "1"
           OUT: "{{.OUT}}"
-      - test -f .crabcc/index.db || crabcc index >/dev/null
-      - crabcc refresh >/dev/null 2>&1 || true
-      - crabcc graph build >/dev/null 2>&1 || true
       - cmd: |
+          if ! crabcc lookup files >/dev/null 2>&1; then
+            crabcc index >/dev/null
+          else
+            crabcc refresh >/dev/null 2>&1 || true
+          fi
+      - cmd: |
+          GRAPH_PATH=$(crabcc graph build 2>&1 | jq -r '.path // empty')
           {
             cat "{{.OUT}}"
             printf '\n<crabcc-index format="jsonl-per-symbol">\n'
-            crabcc files | jq -r '.[]' | while read -r f; do
-              crabcc outline "$f" 2>/dev/null | jq -c '.[]?'
+            crabcc lookup files | jq -r '.[]' | while read -r f; do
+              crabcc lookup outline "$f" 2>/dev/null | jq -c '.[]?'
             done
             printf '</crabcc-index>\n<crabcc-graph format="jsonl-per-edge">\n'
-            jq -c '.callers | to_entries[] | .key as $callee | .value[] | {caller: ., callee: $callee}' .crabcc/graph.json
+            if [ -n "$GRAPH_PATH" ] && [ -f "$GRAPH_PATH" ]; then
+              jq -c '.callers | to_entries[] | .key as $callee | .value[] | {caller: ., callee: $callee}' "$GRAPH_PATH"
+            fi
             printf '</crabcc-graph>\n'
           } > "{{.OUT}}.tmp" && mv "{{.OUT}}.tmp" "{{.OUT}}"
       - cmd: |
