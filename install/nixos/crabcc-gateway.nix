@@ -214,7 +214,99 @@ in {
         accessLog = {};
       };
 
-      # dynamicConfigOptions added in Task 5
+      dynamicConfigOptions = {
+        http = {
+          middlewares = {
+            # ── Auth: forward every request to oauth2-proxy for auth check ──
+            "forward-auth" = {
+              forwardAuth = {
+                address = "http://127.0.0.1:${toString cfg.oauthProxyPort}";
+                trustForwardHeader = true;
+                authResponseHeaders = [
+                  "X-Auth-Request-User"
+                  "X-Auth-Request-Email"
+                ];
+              };
+            };
+
+            # ── Security headers ────────────────────────────────────────────
+            "security-headers" = {
+              headers = {
+                stsSeconds = 31536000;
+                stsIncludeSubdomains = true;
+                contentTypeNosniff = true;
+                frameDeny = true;
+                referrerPolicy = "strict-origin-when-cross-origin";
+              };
+            };
+
+            # ── Rate limiting: 100 req/10s per source IP, burst 20 ─────────
+            "rate-limit" = {
+              rateLimit = {
+                average = 100;
+                burst = 20;
+                period = "10s";
+              };
+            };
+
+            # ── HTTP → HTTPS redirect ───────────────────────────────────────
+            "https-redirect" = {
+              redirectScheme = {
+                scheme = "https";
+                permanent = true;
+              };
+            };
+          };
+
+          routers = {
+            # Redirect plain HTTP to HTTPS
+            "http-redirect" = {
+              rule = "Host(`${cfg.domain}`)";
+              entryPoints = [ "web" ];
+              middlewares = [ "https-redirect" ];
+              service = "noop@internal";
+            };
+
+            # Main MCP router on HTTPS — auth + security headers + rate limit
+            "crabcc-mcp" = {
+              rule = "Host(`${cfg.domain}`)";
+              entryPoints = [ "websecure" ];
+              middlewares = [ "forward-auth" "security-headers" "rate-limit" ];
+              service = "crabcc-mcp";
+              tls = {
+                certResolver = "letsencrypt";
+              };
+            };
+          };
+
+          services = {
+            "crabcc-mcp" = {
+              loadBalancer = {
+                servers = [
+                  { url = "http://127.0.0.1:${toString cfg.httpPort}"; }
+                ];
+              };
+            };
+          };
+        };
+
+        # TLS: minimum TLS 1.2, strong cipher suites only
+        tls = {
+          options = {
+            "default" = {
+              minVersion = "VersionTLS12";
+              cipherSuites = [
+                "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256"
+                "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"
+                "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256"
+                "TLS_AES_128_GCM_SHA256"
+                "TLS_AES_256_GCM_SHA384"
+                "TLS_CHACHA20_POLY1305_SHA256"
+              ];
+            };
+          };
+        };
+      };
     };
 
     # firewall wired in subsequent tasks
