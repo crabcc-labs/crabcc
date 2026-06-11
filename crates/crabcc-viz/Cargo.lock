@@ -305,7 +305,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-core"
-version = "6.3.0"
+version = "6.5.0"
 dependencies = [
  "ahash",
  "anyhow",
@@ -342,7 +342,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-fetch"
-version = "6.3.0"
+version = "6.5.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -357,7 +357,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-memory"
-version = "6.3.0"
+version = "6.5.0"
 dependencies = [
  "ahash",
  "anyhow",
@@ -374,7 +374,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-viz"
-version = "6.1.0"
+version = "6.5.0"
 dependencies = [
  "anyhow",
  "crabcc-core",
@@ -3508,7 +3508,7 @@ dependencies = [
 
 [[package]]
 name = "wormhole-proto"
-version = "6.3.0"
+version = "6.5.0"
 dependencies = [
  "postcard",
  "serde",
