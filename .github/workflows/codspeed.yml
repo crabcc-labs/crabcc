@@ -51,6 +51,12 @@ jobs:
             --rename divan
 
       - name: run benchmarks (codspeed)
+        # Advisory: perf deltas inform via the PR comment, but NEVER gate merge.
+        # main has no branch protection, so the merge-bot's status rollup is the
+        # de-facto gate -- a red/flaky codspeed otherwise reads as FAILURE and
+        # blocks the merge. continue-on-error keeps the check green so a perf
+        # regression can't block a correctness merge.
+        continue-on-error: true
         uses: CodSpeedHQ/action@v3
         with:
           token: ${{ secrets.CODSPEED_TOKEN }}

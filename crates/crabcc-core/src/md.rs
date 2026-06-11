@@ -22,6 +22,13 @@
 use anyhow::{Context, Result};
 use markdown::mdast::Node;
 use markdown::{to_mdast, ParseOptions};
+use std::sync::Mutex;
+
+/// Serialises access to the global panic hook so that `parse` can temporarily
+/// install a silent hook without racing against a concurrent caller (e.g.
+/// libfuzzer_sys, which installs an abort-on-panic hook that defeats
+/// `catch_unwind`).
+static MARKDOWN_PARSE_LOCK: Mutex<()> = Mutex::new(());
 
 /// Parse a markdown string into an mdast `Node` tree using GFM rules
 /// (CommonMark + tables + strikethrough + task-list + autolinks).
@@ -37,20 +44,38 @@ use markdown::{to_mdast, ParseOptions};
 pub fn parse(input: &str) -> Result<Node> {
     // markdown 1.0.0's `to_mdast` panics (index OOB in its setext-heading AST
     // builder) on inputs like `a\n=\n=\na\n=` instead of returning Err.
-    // `catch_unwind` restores this function's `Result` contract — and
-    // `sanitize_drawer_body`'s no-panic fallback — for unwinding builds (tests
-    // and any consumer not compiled `panic="abort"`).
+    // Real fix is upstream in markdown-rs; shipped builds don't enable the
+    // `markdown` feature, so they're unaffected by this workaround.
     //
-    // CAVEAT: crabcc's release profile sets `panic = "abort"`, where
-    // `catch_unwind` is a no-op — a release build that also enables the
-    // (default-off) `markdown` feature can still abort here. Shipped builds
-    // don't enable `markdown`, so they're unaffected; the real fix is upstream
-    // in markdown-rs. See the `parse_and_sanitize_survive_adversarial_input`
-    // regression test (runs under the unwinding test profile).
+    // Two layers of defence are needed to make `catch_unwind` reliable:
+    //
+    // 1. **Panic hook swap.** libfuzzer_sys (and any harness compiled with
+    //    `panic = "abort"`) installs a global panic hook that calls
+    //    `process::abort()` synchronously — before the unwind begins —
+    //    defeating `catch_unwind`. We replace the hook with a no-op for the
+    //    duration of the call so the panic unwinds normally.
+    //
+    // 2. **Mutex.** `std::panic::take_hook` / `set_hook` are not atomic.
+    //    The Mutex ensures a concurrent caller can't observe an inconsistent
+    //    hook state.  Markdown parsing is not a hot path, so the contention
+    //    cost is acceptable.
+    //
+    // Note: this still doesn't protect a release build compiled with
+    // `panic = "abort"` AND without libfuzzer_sys — in that profile the
+    // panic itself calls abort() before any hook or unwind mechanism runs.
+    // Cargo rejects `[profile.release.package.markdown] panic = "unwind"`, so
+    // there is no per-package escape hatch.  The `markdown` feature is
+    // default-off in release, so shipped binaries are unaffected.
+    let _guard = MARKDOWN_PARSE_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let old_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
     let parsed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         to_mdast(input, &ParseOptions::gfm())
-    }))
-    .map_err(|_| anyhow::anyhow!("markdown parser panicked"))?;
+    }));
+    std::panic::set_hook(old_hook);
+    let parsed = parsed.map_err(|_| anyhow::anyhow!("markdown parser panicked"))?;
     parsed
         .map_err(|e| anyhow::anyhow!("markdown parse: {e}"))
         .context("md::parse")
@@ -208,17 +233,40 @@ mod tests {
 
     #[test]
     fn parse_and_sanitize_survive_adversarial_input() {
-        // Regression (fuzz `md_parse_sanitize`): this 21-byte input panicked
-        // markdown 1.0.0's `to_mdast` (index OOB in its AST builder). After
-        // containment, both `parse` (returns Ok/Err) and `sanitize_drawer_body`
-        // (falls back) must return without panicking.
-        let raw: &[u8] = &[
-            0x2a, 0x3a, 0x2a, 0x2a, 0x3a, 0x2a, 0x8d, 0x0a, 0x3d, 0x0a, 0x3d, 0x0a, 0x8d, 0x8d,
-            0x0a, 0x3d, 0x0a, 0x3d, 0x0a, 0x8d, 0x09,
+        // Regression (fuzz `md_parse_sanitize`): these inputs panicked
+        // markdown 1.0.0's `to_mdast` (index OOB / non-parent node in its
+        // setext-heading AST builder). After containment both `parse`
+        // (returns Ok/Err) and `sanitize_drawer_body` (falls back) must
+        // return without panicking.
+        let cases: &[&[u8]] = &[
+            // Original minimised input (*:**:* \n=\n=\n…)
+            &[
+                0x2a, 0x3a, 0x2a, 0x2a, 0x3a, 0x2a, 0x8d, 0x0a, 0x3d, 0x0a, 0x3d, 0x0a, 0x8d, 0x8d,
+                0x0a, 0x3d, 0x0a, 0x3d, 0x0a, 0x8d, 0x09,
+            ],
+            // --\r-----\r…-m\n (setext h2 variant)
+            &[
+                0x2d, 0x2d, 0x0d, 0x2d, 0x2d, 0x2d, 0x2d, 0x2d, 0x0d, 0x2d, 0x2d, 0x2d, 0x2d, 0x2d,
+                0x2d, 0x2d, 0x0d, 0x2d, 0x6d, 0x0a, 0xe0, 0x2d, 0x5b, 0x2d, 0x2d, 0x6d, 0x0d, 0x2d,
+                0x2d,
+            ],
+            // *+{\n{\n=\n=\n'=\n=\n' (setext h1 with leading bracket content)
+            &[
+                0x2a, 0x2b, 0x7b, 0x0a, 0x7b, 0x0a, 0x3d, 0x0a, 0x3d, 0x0a, 0x27, 0x3d, 0x0a, 0x3d,
+                0x0a, 0x27,
+            ],
+            // Mixed setext + ATX with control bytes
+            &[
+                0x77, 0x26, 0x2a, 0x3a, 0x0a, 0x0a, 0x2d, 0x3a, 0x0a, 0x2d, 0x0a, 0x3d, 0x0d, 0x2a,
+                0x87, 0x16, 0x00, 0x0a, 0x5a, 0x5a, 0x5a, 0x5a, 0x4a, 0x5a, 0x78, 0x0a, 0x3c, 0x5a,
+                0x5a, 0x5a, 0x5a, 0x5a, 0x32, 0x5a, 0x5a, 0x2d, 0x0a, 0x3d, 0x0d,
+            ],
         ];
-        let s = String::from_utf8_lossy(raw);
-        let _ = parse(&s);
-        let _ = sanitize_drawer_body(&s);
+        for raw in cases {
+            let s = String::from_utf8_lossy(raw);
+            let _ = parse(&s);
+            let _ = sanitize_drawer_body(&s);
+        }
     }
 
     // ---- CommonMark spec compliance — small representative set ---------

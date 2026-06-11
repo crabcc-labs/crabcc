@@ -206,7 +206,10 @@ fn cross_origin_request_returns_403() {
         ],
         r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
     );
-    assert_eq!(status, 403, "cross-origin expected 403, got {status}: {body}");
+    assert_eq!(
+        status, 403,
+        "cross-origin expected 403, got {status}: {body}"
+    );
     assert!(body.contains("forbidden origin"), "body: {body}");
 }
 

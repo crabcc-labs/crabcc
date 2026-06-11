@@ -26,7 +26,11 @@ fn synth_symbols(n: usize) -> Vec<Symbol> {
     (0..n)
         .map(|i| Symbol {
             name: format!("sym_{i:05}"),
-            kind: if i % 2 == 0 { SymbolKind::Function } else { SymbolKind::Method },
+            kind: if i % 2 == 0 {
+                SymbolKind::Function
+            } else {
+                SymbolKind::Method
+            },
             signature: Some(format!("fn sym_{i:05}() -> u32")),
             parent: (i % 3 != 0).then(|| format!("Mod{}", i % 17)),
             file: format!("src/module_{}.rs", i % 20),
@@ -45,7 +49,10 @@ fn make_store() -> (Store, TempDir) {
     // Group by the 20 synthetic files
     let mut by_file: std::collections::HashMap<usize, Vec<Symbol>> = Default::default();
     for s in syms {
-        let bucket: usize = s.file.rsplit('_').next()
+        let bucket: usize = s
+            .file
+            .rsplit('_')
+            .next()
             .and_then(|t| t.trim_end_matches(".rs").parse().ok())
             .unwrap_or(0);
         by_file.entry(bucket).or_default().push(s);
@@ -83,7 +90,9 @@ fn replace_symbols(bencher: Bencher, count: usize) {
     let syms = synth_symbols(count);
     let dir = TempDir::new().unwrap();
     let store = Store::open(&dir.path().join("i.db")).unwrap();
-    let fid = store.upsert_file("src/f.rs", "00000000", 0, "rust").unwrap();
+    let fid = store
+        .upsert_file("src/f.rs", "00000000", 0, "rust")
+        .unwrap();
     bencher.bench_local(|| {
         black_box(store.replace_symbols(fid, black_box(&syms)).unwrap());
     });

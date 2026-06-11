@@ -179,7 +179,19 @@ impl Codec {
 /// verifies. The escape code (`fsst::ESCAPE_CODE`, 255) consumes the following
 /// byte as a raw literal, so that byte is skipped rather than range-checked; a
 /// trailing escape is a truncated stream and is rejected.
+///
+/// On x86_64 with AVX2 the happy path (no escape bytes) processes 32 bytes per
+/// cycle. Falls back to scalar if AVX2 is absent or escape bytes appear.
 fn codes_in_range(encoded: &[u8], n_symbols: usize) -> bool {
+    #[cfg(target_arch = "x86_64")]
+    if std::is_x86_feature_detected!("avx2") {
+        // SAFETY: feature check above confirms AVX2 is available on this CPU.
+        return unsafe { codes_in_range_avx2(encoded, n_symbols) };
+    }
+    codes_in_range_scalar(encoded, n_symbols)
+}
+
+fn codes_in_range_scalar(encoded: &[u8], n_symbols: usize) -> bool {
     let mut i = 0;
     while i < encoded.len() {
         if encoded[i] == fsst::ESCAPE_CODE {
@@ -195,6 +207,58 @@ fn codes_in_range(encoded: &[u8], n_symbols: usize) -> bool {
         }
     }
     true
+}
+
+/// AVX2-accelerated fast path: processes 32 bytes per iteration.
+///
+/// Strategy for each 32-byte chunk:
+///   1. If any byte equals ESCAPE_CODE (255) → bail to scalar (escape sequences
+///      need sequential context the SIMD lane model can't provide).
+///   2. Otherwise, `subs_epu8(v, threshold)` is 0 for all v_i ≤ threshold. A
+///      nonzero result means some code ≥ n_symbols → stream is corrupt.
+///
+/// `threshold = n_symbols - 1` so the valid range [0, n_symbols) becomes the
+/// unsigned "≤ threshold" check, which saturating-sub expresses without signed
+/// overflow. The tail (len % 32) falls through to scalar.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn codes_in_range_avx2(encoded: &[u8], n_symbols: usize) -> bool {
+    use std::arch::x86_64::*;
+
+    if n_symbols == 0 {
+        return encoded.is_empty();
+    }
+    if n_symbols > 255 {
+        return codes_in_range_scalar(encoded, n_symbols);
+    }
+
+    let threshold = (n_symbols - 1) as u8;
+    let vthresh = _mm256_set1_epi8(threshold as i8);
+    let vescape = _mm256_set1_epi8(fsst::ESCAPE_CODE as i8);
+    let vzero = _mm256_setzero_si256();
+
+    let chunks = encoded.chunks_exact(32);
+    let remainder = chunks.remainder();
+
+    for chunk in chunks {
+        // SAFETY: chunks_exact(32) guarantees chunk.len() == 32.
+        let v = _mm256_loadu_si256(chunk.as_ptr() as *const __m256i);
+
+        // Any escape byte? → sequential escape handling needed; scalar knows how.
+        if _mm256_movemask_epi8(_mm256_cmpeq_epi8(v, vescape)) != 0 {
+            return codes_in_range_scalar(encoded, n_symbols);
+        }
+
+        // subs_epu8(v, threshold) == 0 iff v_i ≤ threshold for all i.
+        // cmpeq result has 0xFF per lane that's zero (in-range); movemask packs
+        // that to a u32 where all-ones (-1) means every lane is in range.
+        let oob = _mm256_subs_epu8(v, vthresh);
+        if _mm256_movemask_epi8(_mm256_cmpeq_epi8(oob, vzero)) != -1i32 {
+            return false;
+        }
+    }
+
+    codes_in_range_scalar(remainder, n_symbols)
 }
 
 #[cfg(all(test, feature = "compress"))]

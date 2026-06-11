@@ -83,11 +83,7 @@ pub fn importers(store: &Store, target_path: &str, max_depth: usize) -> Result<V
             list = placeholders.join(",")
         );
         let mut stmt = conn.prepare(&sql)?;
-        let bound: Vec<Box<dyn rusqlite::ToSql>> = dst_ids
-            .iter()
-            .map(|i| Box::new(*i) as Box<dyn rusqlite::ToSql>)
-            .collect();
-        let rows = stmt.query_map(params_from_iter(bound.iter().map(|b| b.as_ref())), |row| {
+        let rows = stmt.query_map(params_from_iter(dst_ids.iter().copied()), |row| {
             Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)? as usize))
         })?;
         let mut next_frontier: HashSet<i64> = HashSet::default();
@@ -122,14 +118,9 @@ pub fn importers(store: &Store, target_path: &str, max_depth: usize) -> Result<V
                 placeholders.join(",")
             );
             let mut stmt = conn.prepare(&sql)?;
-            let bound: Vec<Box<dyn rusqlite::ToSql>> = ids
-                .iter()
-                .map(|i| Box::new(*i) as Box<dyn rusqlite::ToSql>)
-                .collect();
-            let rows = stmt
-                .query_map(params_from_iter(bound.iter().map(|b| b.as_ref())), |row| {
-                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
-                })?;
+            let rows = stmt.query_map(params_from_iter(ids.iter().copied()), |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?;
             for r in rows {
                 let (id, path) = r?;
                 if let Some((depth, edge_count)) = result.get(&id).copied() {

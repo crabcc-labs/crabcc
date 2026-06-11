@@ -34,8 +34,9 @@ impl NodeKeys {
     }
 
     fn generate() -> Result<Self> {
-        let params: snow::params::NoiseParams =
-            "Noise_IK_25519_ChaChaPoly_BLAKE2s".parse().context("parse noise params")?;
+        let params: snow::params::NoiseParams = "Noise_IK_25519_ChaChaPoly_BLAKE2s"
+            .parse()
+            .context("parse noise params")?;
         let builder = snow::Builder::new(params);
         let kp = builder.generate_keypair().context("generate keypair")?;
 
@@ -70,6 +71,11 @@ impl NodeKeys {
 
     fn from_parts(static_secret: [u8; 32], static_pub: [u8; 32], ed_secret: [u8; 32]) -> Self {
         let node_id: [u8; 32] = blake3::hash(&static_pub).into();
-        Self { static_secret, static_pub, ed_secret, node_id }
+        Self {
+            static_secret,
+            static_pub,
+            ed_secret,
+            node_id,
+        }
     }
 }

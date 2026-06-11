@@ -343,7 +343,7 @@ impl Godfather {
     pub fn metadata(&self, key: &str) -> Result<Option<String>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT value FROM _crab_metadata WHERE key = ?1")?;
+            .prepare_cached("SELECT value FROM _crab_metadata WHERE key = ?1")?;
         let mut rows = stmt.query(rusqlite::params![key])?;
         Ok(rows.next()?.map(|r| r.get::<_, String>(0)).transpose()?)
     }

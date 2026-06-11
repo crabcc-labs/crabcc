@@ -297,7 +297,7 @@ pub fn gather_stats() -> Value {
             .query_row("SELECT COUNT(*) FROM mastodon_cache", [], |r| r.get(0))
             .unwrap_or(0);
         let history: Vec<Value> = db
-            .prepare("SELECT tool, status, elapsed_ms, payload_size, created_at FROM mastodon_history ORDER BY id DESC LIMIT 20")
+            .prepare_cached("SELECT tool, status, elapsed_ms, payload_size, created_at FROM mastodon_history ORDER BY id DESC LIMIT 20")
             .ok()
             .map(|mut s| {
                 s.query_map([], |row| {

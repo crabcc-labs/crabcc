@@ -152,13 +152,9 @@ fn build_summary(store: &Store, hits: &[(String, u32)], limit: Option<usize>) ->
     let mut symbol_cache: AHashMap<String, Vec<Symbol>> = AHashMap::new();
     let mut tally: AHashMap<(String, String), (SymbolKind, usize)> = AHashMap::new();
     for (file, line) in hits {
-        let symbols = match symbol_cache.get(file) {
-            Some(v) => v,
-            None => {
-                let v = store.symbols_in_file(file).unwrap_or_default();
-                symbol_cache.entry(file.clone()).or_insert(v)
-            }
-        };
+        let symbols = symbol_cache
+            .entry(file.clone())
+            .or_insert_with(|| store.symbols_in_file(file).unwrap_or_default());
         if let Some(sym) = enclosing_symbol(symbols, *line) {
             let entry = tally
                 .entry((sym.name.clone(), file.clone()))

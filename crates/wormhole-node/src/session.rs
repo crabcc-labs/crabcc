@@ -11,6 +11,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
@@ -22,6 +24,23 @@ use crate::cmd::{dispatch, NodeCmd, NodeEvent};
 use crate::keys::NodeKeys;
 
 const NOISE_PARAMS: &str = "Noise_IK_25519_ChaChaPoly_BLAKE2s";
+
+/// Monotonic session-ID generator. One `getrandom` call seeds the counter at
+/// startup; every subsequent connection is a single atomic fetch_add — no
+/// syscall, no lock. Session IDs aren't secret (they go into persisted
+/// SessionRecords), so trading full randomness for per-connection performance
+/// is the right call.
+pub(crate) fn next_session_id(node_id: &[u8; 32]) -> u128 {
+    static CTR: OnceLock<AtomicU64> = OnceLock::new();
+    let ctr = CTR.get_or_init(|| {
+        let mut seed = [0u8; 8];
+        getrandom::getrandom(&mut seed).ok();
+        AtomicU64::new(u64::from_le_bytes(seed))
+    });
+    let seq = ctr.fetch_add(1, Ordering::Relaxed);
+    let hi = u64::from_le_bytes(node_id[..8].try_into().expect("node_id is 32 bytes"));
+    ((hi as u128) << 64) | (seq as u128)
+}
 // ChaChaPoly adds 16-byte tag; postcard envelope is at most MAX_BODY_BYTES + overhead.
 const NOISE_BUF: usize = 65536 + 128;
 
@@ -34,6 +53,12 @@ type WsStream =
 struct SeqWatermark {
     inbound_next: u64,
     outbound_next: u64,
+}
+
+/// Stable per-session identity applied to every outbound envelope.
+struct EnvelopeHeader {
+    node_id: [u8; 32],
+    session: u128,
 }
 
 /// Per-session pre-allocated noise I/O scratch space.
@@ -71,15 +96,14 @@ pub async fn run_session(
     getrandom::getrandom(&mut auth[..16]).context("getrandom nonce")?;
     auth[16..48].copy_from_slice(&keys.node_id);
     auth[48] = 0; // role = node
-    sink.send(Message::Binary(auth.to_vec().into()))
+    sink.send(Message::Binary(auth.to_vec()))
         .await
         .context("send auth")?;
     info!(node_id = hex(&keys.node_id), "sent auth");
 
     // Noise IK handshake — happens once per relay connection.
     let mut bufs = NoiseBufs::new();
-    let mut transport =
-        noise_handshake(&mut rx, &mut sink, keys, op_static_pub, &mut bufs).await?;
+    let mut transport = noise_handshake(&mut rx, &mut sink, keys, op_static_pub, &mut bufs).await?;
     info!("noise handshake complete");
 
     let op_id: [u8; 32] = transport
@@ -88,10 +112,10 @@ pub async fn run_session(
         .ok_or_else(|| anyhow!("no remote static after handshake"))?;
     info!(op_id = hex(&op_id), "operator identity");
 
-    let session_id: u128 = {
-        let mut b = [0u8; 16];
-        getrandom::getrandom(&mut b).context("getrandom session_id")?;
-        u128::from_le_bytes(b)
+    let session_id = next_session_id(&keys.node_id);
+    let header = EnvelopeHeader {
+        node_id: keys.node_id,
+        session: session_id,
     };
 
     let mut seq = SeqState::new();
@@ -108,14 +132,14 @@ pub async fn run_session(
         };
 
         // Noise decrypt — reuse recv buf, skip bounds check (snow upholds len ≤ buf.len())
-        let plain_len =
-            match transport.read_message(&outer.noise_payload, bufs.recv.as_mut_slice()) {
-                Ok(n) => n,
-                Err(e) => {
-                    warn!("noise decrypt: {e}");
-                    continue;
-                }
-            };
+        let plain_len = match transport.read_message(&outer.noise_payload, bufs.recv.as_mut_slice())
+        {
+            Ok(n) => n,
+            Err(e) => {
+                warn!("noise decrypt: {e}");
+                continue;
+            }
+        };
         debug_assert!(plain_len <= NOISE_BUF);
         // SAFETY: snow guarantees plain_len <= bufs.recv.len()
         let plain = unsafe { bufs.recv.get_unchecked(..plain_len) };
@@ -142,11 +166,11 @@ pub async fn run_session(
                         node_id: keys.node_id,
                         op_id,
                         connected_at: unix_now(),
-                        route: Route::Relay { relay_addr: String::new() },
+                        route: Route::Relay {
+                            relay_addr: String::new(),
+                        },
                     };
-                    if let Err(e) =
-                        persist_session_record(&rec, &wormhole_dir.join("sessions"))
-                    {
+                    if let Err(e) = persist_session_record(&rec, &wormhole_dir.join("sessions")) {
                         warn!("persist session record: {e}");
                     }
                 }
@@ -154,8 +178,7 @@ pub async fn run_session(
                     &mut sink,
                     &mut transport,
                     &mut bufs,
-                    &keys.node_id,
-                    session_id,
+                    &header,
                     &mut seq,
                     Kind::Hello,
                     &[],
@@ -174,8 +197,7 @@ pub async fn run_session(
                     &mut sink,
                     &mut transport,
                     &mut bufs,
-                    &keys.node_id,
-                    session_id,
+                    &header,
                     &mut seq,
                     Kind::Event,
                     &body,
@@ -189,8 +211,7 @@ pub async fn run_session(
                     &mut sink,
                     &mut transport,
                     &mut bufs,
-                    &keys.node_id,
-                    session_id,
+                    &header,
                     &mut seq,
                     Kind::Pong,
                     &[],
@@ -208,8 +229,7 @@ pub async fn run_session(
                     &mut sink,
                     &mut transport,
                     &mut bufs,
-                    &keys.node_id,
-                    session_id,
+                    &header,
                     &mut seq,
                     Kind::TokenAck { expires_at: 0 },
                     &[],
@@ -233,10 +253,8 @@ async fn noise_handshake(
     op_static_pub: Option<[u8; 32]>,
     bufs: &mut NoiseBufs,
 ) -> Result<snow::TransportState> {
-    let params: snow::params::NoiseParams =
-        NOISE_PARAMS.parse().context("parse noise params")?;
-    let mut builder =
-        snow::Builder::new(params).local_private_key(&keys.static_secret);
+    let params: snow::params::NoiseParams = NOISE_PARAMS.parse().context("parse noise params")?;
+    let mut builder = snow::Builder::new(params).local_private_key(&keys.static_secret);
     if let Some(ref op_pub) = op_static_pub {
         builder = builder.remote_public_key(op_pub.as_ref());
     }
@@ -256,7 +274,11 @@ async fn noise_handshake(
     let msg2_payload = unsafe { bufs.send.get_unchecked(..msg2_len) }.to_vec();
     send_raw(
         sink,
-        &OuterFrame { node_id: keys.node_id, channel: 0, noise_payload: msg2_payload },
+        &OuterFrame {
+            node_id: keys.node_id,
+            channel: 0,
+            noise_payload: msg2_payload,
+        },
     )
     .await?;
 
@@ -283,7 +305,7 @@ async fn recv_frame(rx: &mut WsRx) -> Result<OuterFrame> {
 #[inline(always)]
 async fn send_raw(sink: &mut WsSink, frame: &OuterFrame) -> Result<()> {
     let bytes = frame.encode().context("encode outer frame")?;
-    sink.send(Message::Binary(bytes.into()))
+    sink.send(Message::Binary(bytes))
         .await
         .context("send frame")
 }
@@ -293,14 +315,13 @@ async fn send_envelope(
     sink: &mut WsSink,
     transport: &mut snow::TransportState,
     bufs: &mut NoiseBufs,
-    node_id: &[u8; 32],
-    session: u128,
+    header: &EnvelopeHeader,
     seq: &mut SeqState,
     kind: Kind,
     body: &[u8],
 ) -> Result<()> {
     let env = Envelope {
-        session,
+        session: header.session,
         seq: seq.next_send(),
         kind,
         body: body.to_vec(),
@@ -314,7 +335,11 @@ async fn send_envelope(
     let noise_payload = unsafe { bufs.send.get_unchecked(..cipher_len) }.to_vec();
     send_raw(
         sink,
-        &OuterFrame { node_id: *node_id, channel: 0, noise_payload },
+        &OuterFrame {
+            node_id: header.node_id,
+            channel: 0,
+            noise_payload,
+        },
     )
     .await
 }
@@ -325,7 +350,10 @@ fn save_seq(wormhole_dir: &Path, session: u128, seq: &SeqState) -> Result<()> {
     let hex8 = format!("{:08x}", (session & 0xffff_ffff) as u32);
     let path = wormhole_dir.join(format!("{hex8}.seq"));
     let inbound_next = seq.watermark().map(|w| w + 1).unwrap_or(0);
-    let wm = SeqWatermark { inbound_next, outbound_next: 0 };
+    let wm = SeqWatermark {
+        inbound_next,
+        outbound_next: 0,
+    };
     let bytes = postcard::to_allocvec(&wm).context("encode seq watermark")?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).ok();

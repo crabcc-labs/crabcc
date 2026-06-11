@@ -36,11 +36,14 @@ impl Transport {
             .unwrap();
 
         let mut buf = vec![0u8; BUF];
+        // Separate read buffer so the handshake message (input) and the
+        // decrypted payload (output) don't alias the same allocation.
+        let mut rbuf = vec![0u8; BUF];
         // IK: initiator writes msg1, responder reads + writes msg2, initiator reads
         let n = init.write_message(&[], &mut buf).unwrap();
-        resp.read_message(&buf[..n].to_vec(), &mut buf).unwrap();
+        resp.read_message(&buf[..n], &mut rbuf).unwrap();
         let n = resp.write_message(&[], &mut buf).unwrap();
-        init.read_message(&buf[..n].to_vec(), &mut buf).unwrap();
+        init.read_message(&buf[..n], &mut rbuf).unwrap();
 
         Self {
             tx: init.into_transport_mode().unwrap(),
@@ -52,10 +55,16 @@ impl Transport {
 
     #[inline(always)]
     fn roundtrip(&mut self, payload: &[u8]) -> usize {
-        let enc_len = self.tx.write_message(payload, self.send.as_mut_slice()).unwrap();
+        let enc_len = self
+            .tx
+            .write_message(payload, self.send.as_mut_slice())
+            .unwrap();
         // SAFETY: snow guarantees enc_len <= BUF
         let cipher = unsafe { self.send.get_unchecked(..enc_len) };
-        let dec_len = self.rx.read_message(cipher, self.recv.as_mut_slice()).unwrap();
+        let dec_len = self
+            .rx
+            .read_message(cipher, self.recv.as_mut_slice())
+            .unwrap();
         dec_len
     }
 }

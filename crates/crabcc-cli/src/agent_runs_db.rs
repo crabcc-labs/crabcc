@@ -260,7 +260,8 @@ pub fn mark_finished(conn: &Connection, id: &str, exit_code: i32) -> Result<()> 
 /// no-op (we don't ship there yet).
 #[cfg(unix)]
 pub fn reap_stale(conn: &Connection) -> Result<usize> {
-    let mut stmt = conn.prepare("SELECT id, pid FROM agent_runs WHERE status = 'running'")?;
+    let mut stmt =
+        conn.prepare_cached("SELECT id, pid FROM agent_runs WHERE status = 'running'")?;
     let rows = stmt
         .query_map([], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?))

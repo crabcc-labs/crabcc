@@ -2,8 +2,9 @@
 // append-only blob log + offset replay, caps + GapNotice.
 // See docs/WORMHOLE.md §11.
 //
-// Relay blindness invariant: this file never calls decrypt, snow::, or
-// touches Envelope internals. Only OuterFrame is deserialized.
+// Wave 2: SessionStore trait + generic handlers, WsSession<Phase> typestate
+// (Unauthenticated → Registered). Relay blindness invariant preserved: this
+// file never calls decrypt, snow::, or touches Envelope internals.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -12,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
@@ -29,7 +30,46 @@ const REPLAY_CAP: usize = 8 * 1024 * 1024; // 8 MB per node_id blob log
 const NONCE_TTL: Duration = Duration::from_secs(30);
 const CHAN_BUF: usize = 64;
 
-// ---- state ----
+// ---- SessionStore trait ----
+
+/// Result of a replay request: an optional `(from, to)` gap notice plus the
+/// `(seq, payload)` frames to resend.
+type ReplayResult = (Option<(u64, u64)>, Vec<(u64, Vec<u8>)>);
+
+/// Abstracts the relay's mutable state so tests and alternative backends can
+/// plug in without modifying handler logic. Callers hold a `Mutex<S>` lock.
+trait SessionStore: Send + 'static {
+    /// Evict stale nonces, then check `nonce` for replay. Returns `true` if
+    /// the nonce was fresh and has been recorded; `false` = replay attack.
+    fn check_and_insert_nonce(&mut self, nonce: [u8; 16]) -> bool;
+
+    /// Register the mpsc sender for (node_id, role=0 node / role=1 operator).
+    fn register_sender(&mut self, node_id: [u8; 32], role: u8, tx: Sender<Message>);
+
+    /// Log `payload` for role=0 (node→relay frames only) and return the peer
+    /// sender. Returns `None` when the peer channel is not connected.
+    fn route_frame(
+        &mut self,
+        node_id: [u8; 32],
+        role: u8,
+        payload: Vec<u8>,
+    ) -> Option<Sender<Message>>;
+
+    /// Remove the sender for (node_id, role) on disconnect.
+    fn deregister_sender(&mut self, node_id: [u8; 32], role: u8);
+
+    /// Bearer token for replay endpoint auth; `None` = no auth required.
+    fn relay_token(&self) -> Option<&str>;
+
+    /// Return `(gap, frames)` for a node_id from `from_seq`, or `None` if the
+    /// node is unknown. Returned data is owned (avoids borrow-across-await).
+    fn replay(&self, node_id: [u8; 32], from_seq: u64) -> Option<ReplayResult>;
+
+    /// Evict nonces older than NONCE_TTL (called by background task).
+    fn evict_nonces(&mut self);
+}
+
+// ---- concrete state ----
 
 #[derive(Default)]
 struct RelayState {
@@ -42,7 +82,7 @@ struct SessionState {
     node_tx: Option<Sender<Message>>,
     op_tx: Option<Sender<Message>>,
     log: ReplayLog,
-    node_seq: u64, // incremented for each node->relay frame pushed to log
+    node_seq: u64,
 }
 
 impl Default for SessionState {
@@ -56,14 +96,145 @@ impl Default for SessionState {
     }
 }
 
-type SharedState = Arc<Mutex<RelayState>>;
+impl SessionStore for RelayState {
+    fn check_and_insert_nonce(&mut self, nonce: [u8; 16]) -> bool {
+        self.evict_nonces();
+        if self.nonces.contains_key(&nonce) {
+            return false;
+        }
+        self.nonces.insert(nonce, Instant::now());
+        true
+    }
+
+    fn register_sender(&mut self, node_id: [u8; 32], role: u8, tx: Sender<Message>) {
+        let sess = self.sessions.entry(node_id).or_default();
+        match role {
+            0 => sess.node_tx = Some(tx),
+            1 => sess.op_tx = Some(tx),
+            _ => unreachable!(),
+        }
+    }
+
+    fn route_frame(
+        &mut self,
+        node_id: [u8; 32],
+        role: u8,
+        payload: Vec<u8>,
+    ) -> Option<Sender<Message>> {
+        let sess = self.sessions.entry(node_id).or_default();
+        match role {
+            0 => {
+                // node → relay: log the payload, then forward to operator.
+                let seq = sess.node_seq;
+                sess.node_seq += 1;
+                sess.log.push(seq, payload);
+                sess.op_tx.clone()
+            }
+            1 => sess.node_tx.clone(), // operator → relay: forward to node.
+            _ => unreachable!(),
+        }
+    }
+
+    fn deregister_sender(&mut self, node_id: [u8; 32], role: u8) {
+        if let Some(sess) = self.sessions.get_mut(&node_id) {
+            match role {
+                0 => sess.node_tx = None,
+                1 => sess.op_tx = None,
+                _ => {}
+            }
+        }
+    }
+
+    fn relay_token(&self) -> Option<&str> {
+        self.relay_token.as_deref()
+    }
+
+    fn replay(&self, node_id: [u8; 32], from_seq: u64) -> Option<ReplayResult> {
+        let sess = self.sessions.get(&node_id)?;
+        let gap = sess.log.gap().filter(|g| from_seq <= g.1);
+        let frames = sess
+            .log
+            .replay_from(from_seq)
+            .map(|(seq, payload)| (*seq, payload.clone()))
+            .collect();
+        Some((gap, frames))
+    }
+
+    fn evict_nonces(&mut self) {
+        self.nonces.retain(|_, t| t.elapsed() < NONCE_TTL);
+    }
+}
+
+// ---- typestate: WS handshake phases ----
+
+struct Unauthenticated;
+
+struct Registered {
+    node_id: [u8; 32],
+    role: u8,
+}
+
+/// Zero-cost typestate wrapper for the per-connection WS handshake lifecycle.
+/// `Phase` carries phase-specific data; the type parameter prevents using
+/// `node_id`/`role` before nonce verification succeeds.
+struct WsSession<Phase>(Phase);
+
+impl WsSession<Unauthenticated> {
+    fn new() -> Self {
+        WsSession(Unauthenticated)
+    }
+
+    /// Parse `raw` handshake bytes, verify the nonce, register the outbound
+    /// sender, and advance to `Registered`. Returns `None` on any failure.
+    async fn authenticate<S: SessionStore>(
+        self,
+        raw: &[u8],
+        state: &Arc<Mutex<S>>,
+        tx: Sender<Message>,
+    ) -> Option<WsSession<Registered>> {
+        if raw.len() < 49 {
+            warn!("handshake too short ({}B)", raw.len());
+            return None;
+        }
+        let mut nonce = [0u8; 16];
+        nonce.copy_from_slice(&raw[..16]);
+        let mut node_id = [0u8; 32];
+        node_id.copy_from_slice(&raw[16..48]);
+        let role = raw[48]; // 0 = node, 1 = operator
+        if role > 1 {
+            warn!("unknown role byte {role}");
+            return None;
+        }
+
+        let mut st = state.lock().await;
+        if !st.check_and_insert_nonce(nonce) {
+            warn!("replay nonce rejected");
+            return None;
+        }
+        st.register_sender(node_id, role, tx);
+
+        Some(WsSession(Registered { node_id, role }))
+    }
+}
+
+impl WsSession<Registered> {
+    fn node_id(&self) -> [u8; 32] {
+        self.0.node_id
+    }
+    fn role(&self) -> u8 {
+        self.0.role
+    }
+}
 
 // ---- router ----
 
-fn build_router(state: SharedState) -> Router {
+fn build_router<S>(state: Arc<Mutex<S>>) -> Router
+where
+    S: SessionStore + 'static,
+{
     Router::new()
-        .route("/wormhole/v1", get(ws_handler))
-        .route("/wormhole/v1/replay/:node_id", get(replay_handler))
+        .route("/wormhole/v1", get(ws_handler::<S>))
+        .route("/wormhole/v1/replay/:node_id", get(replay_handler::<S>))
         .route("/wormhole/v1/health", get(health_handler))
         .with_state(state)
 }
@@ -74,65 +245,33 @@ async fn health_handler() -> impl IntoResponse {
     r#"{"status":"ok"}"#
 }
 
-// ---- nonce helpers ----
-
-fn evict_old_nonces(nonces: &mut HashMap<[u8; 16], Instant>) {
-    nonces.retain(|_, seen_at| seen_at.elapsed() < NONCE_TTL);
-}
-
 // ---- WebSocket handler ----
 
-async fn ws_handler(ws: WebSocketUpgrade, State(state): State<SharedState>) -> Response {
-    ws.on_upgrade(move |socket| handle_ws(socket, state))
+async fn ws_handler<S>(ws: WebSocketUpgrade, State(state): State<Arc<Mutex<S>>>) -> Response
+where
+    S: SessionStore + 'static,
+{
+    ws.on_upgrade(move |socket| handle_ws::<S>(socket, state))
 }
 
-async fn handle_ws(socket: WebSocket, state: SharedState) {
+async fn handle_ws<S: SessionStore>(socket: WebSocket, state: Arc<Mutex<S>>) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
     // First message: [16-byte nonce] ++ [32-byte node_id] ++ [1-byte role]
-    let handshake = match ws_rx.next().await {
+    let handshake_bytes = match ws_rx.next().await {
         Some(Ok(Message::Binary(b))) => b,
         _ => return,
     };
 
-    if handshake.len() < 49 {
-        warn!("handshake too short ({}B)", handshake.len());
-        return;
-    }
-
-    let mut nonce = [0u8; 16];
-    nonce.copy_from_slice(&handshake[..16]);
-    let mut node_id = [0u8; 32];
-    node_id.copy_from_slice(&handshake[16..48]);
-    let role = handshake[48]; // 0 = node, 1 = operator
-
-    if role > 1 {
-        warn!("unknown role byte {role}");
-        return;
-    }
-
-    // Nonce check
-    {
-        let mut st = state.lock().await;
-        evict_old_nonces(&mut st.nonces);
-        if st.nonces.contains_key(&nonce) {
-            warn!("replay nonce rejected");
-            return;
-        }
-        st.nonces.insert(nonce, Instant::now());
-    }
-
-    // Register sender channel for this role
     let (tx, mut rx) = mpsc::channel::<Message>(CHAN_BUF);
+
+    let session = match WsSession::new()
+        .authenticate(&handshake_bytes, &state, tx)
+        .await
     {
-        let mut st = state.lock().await;
-        let sess = st.sessions.entry(node_id).or_default();
-        match role {
-            0 => sess.node_tx = Some(tx),
-            1 => sess.op_tx = Some(tx),
-            _ => unreachable!(),
-        }
-    }
+        Some(s) => s,
+        None => return,
+    };
 
     // Outbound pump: drains the mpsc rx into the WS sink.
     let send_task = tokio::spawn(async move {
@@ -145,14 +284,9 @@ async fn handle_ws(socket: WebSocket, state: SharedState) {
 
     // Receive loop: parse OuterFrame and route to peer.
     loop {
-        let msg = match ws_rx.next().await {
-            Some(Ok(m)) => m,
-            _ => break,
-        };
-
-        let bytes = match msg {
-            Message::Binary(b) => b,
-            Message::Close(_) => break,
+        let bytes = match ws_rx.next().await {
+            Some(Ok(Message::Binary(b))) => b,
+            Some(Ok(Message::Close(_))) | None => break,
             _ => continue,
         };
 
@@ -164,38 +298,23 @@ async fn handle_ws(socket: WebSocket, state: SharedState) {
             }
         };
 
-        // Clone the peer sender before dropping the lock so try_send runs outside it.
-        let peer_tx: Option<Sender<Message>> = {
-            let mut st = state.lock().await;
-            let sess = st.sessions.entry(node_id).or_default();
-            match role {
-                0 => {
-                    // node -> relay: log the payload, then forward to operator
-                    let seq = sess.node_seq;
-                    sess.node_seq += 1;
-                    sess.log.push(seq, frame.noise_payload.clone());
-                    sess.op_tx.clone()
-                }
-                1 => sess.node_tx.clone(), // operator -> relay: forward to node
-                _ => unreachable!(),
-            }
-        };
+        // Clone peer sender before dropping lock so try_send runs outside it.
+        let peer_tx = state.lock().await.route_frame(
+            session.node_id(),
+            session.role(),
+            frame.noise_payload.clone(),
+        );
+
         if let Some(tx) = peer_tx {
             let _ = tx.try_send(Message::Binary(bytes));
         }
     }
 
     // Disconnect: clear this role's sender so peer stops receiving.
-    {
-        let mut st = state.lock().await;
-        if let Some(sess) = st.sessions.get_mut(&node_id) {
-            match role {
-                0 => sess.node_tx = None,
-                1 => sess.op_tx = None,
-                _ => {}
-            }
-        }
-    }
+    state
+        .lock()
+        .await
+        .deregister_sender(session.node_id(), session.role());
 
     send_task.abort();
 }
@@ -226,71 +345,67 @@ fn encode_hex(b: &[u8]) -> String {
     b.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-async fn replay_handler(
+async fn replay_handler<S: SessionStore>(
     headers: HeaderMap,
     Path(node_id_hex): Path<String>,
     Query(params): Query<ReplayQuery>,
-    State(state): State<SharedState>,
+    State(state): State<Arc<Mutex<S>>>,
 ) -> impl IntoResponse {
     let Some(node_id) = decode_hex_exact::<32>(&node_id_hex) else {
-        return (
-            axum::http::StatusCode::BAD_REQUEST,
-            "invalid node_id\n".to_string(),
-        );
+        return (StatusCode::BAD_REQUEST, "invalid node_id\n".to_string());
     };
 
     let from_seq = params.from.unwrap_or(0);
 
-    let st = state.lock().await;
-
-    if let Some(tok) = &st.relay_token {
-        let provided = headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        if provided != format!("Bearer {tok}") {
-            return (
-                axum::http::StatusCode::UNAUTHORIZED,
-                "unauthorized\n".to_string(),
-            );
+    // Auth check + data fetch under one lock acquisition.
+    let result = {
+        let st = state.lock().await;
+        if let Some(tok) = st.relay_token() {
+            let provided = headers
+                .get("authorization")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            if provided != format!("Bearer {tok}") {
+                return (StatusCode::UNAUTHORIZED, "unauthorized\n".to_string());
+            }
         }
-    }
-    let Some(sess) = st.sessions.get(&node_id) else {
-        return (
-            axum::http::StatusCode::NOT_FOUND,
-            "unknown node\n".to_string(),
-        );
+        st.replay(node_id, from_seq)
+    };
+
+    let Some((gap, frames)) = result else {
+        return (StatusCode::NOT_FOUND, "unknown node\n".to_string());
     };
 
     let mut lines: Vec<String> = Vec::new();
 
     // Prepend a GapNotice frame when the log has a gap overlapping the request.
-    if let Some(g) = sess.log.gap() {
-        if from_seq <= g.1 {
-            let notice_env = Envelope {
-                session: 0,
-                seq: 0,
-                kind: Kind::GapNotice { from: g.0, to: g.1 },
-                body: vec![],
+    if let Some((gap_from, gap_to)) = gap {
+        let notice_env = Envelope {
+            session: 0,
+            seq: 0,
+            kind: Kind::GapNotice {
+                from: gap_from,
+                to: gap_to,
+            },
+            body: vec![],
+        };
+        if let Ok(env_bytes) = notice_env.encode() {
+            let notice_frame = OuterFrame {
+                node_id,
+                channel: 0,
+                noise_payload: env_bytes,
             };
-            if let Ok(env_bytes) = notice_env.encode() {
-                let notice_frame = OuterFrame {
-                    node_id,
-                    channel: 0,
-                    noise_payload: env_bytes,
-                };
-                if let Ok(encoded) = notice_frame.encode() {
-                    lines.push(encode_hex(&encoded));
-                }
+            if let Ok(encoded) = notice_frame.encode() {
+                lines.push(encode_hex(&encoded));
             }
         }
     }
 
-    for (_seq, payload) in sess.log.replay_from(from_seq) {
+    for (_seq, payload) in &frames {
         lines.push(encode_hex(payload));
     }
 
-    (axum::http::StatusCode::OK, lines.join("\n"))
+    (StatusCode::OK, lines.join("\n"))
 }
 
 // ---- main ----
@@ -303,7 +418,7 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|s| s.parse().ok())
         .unwrap_or(4443);
     let relay_token = std::env::var("RELAY_TOKEN").ok();
-    let state: SharedState = Arc::new(Mutex::new(RelayState {
+    let state: Arc<Mutex<RelayState>> = Arc::new(Mutex::new(RelayState {
         relay_token,
         ..Default::default()
     }));
@@ -316,11 +431,7 @@ async fn main() -> anyhow::Result<()> {
             let mut interval = tokio::time::interval(NONCE_TTL);
             loop {
                 interval.tick().await;
-                state
-                    .lock()
-                    .await
-                    .nonces
-                    .retain(|_, t| t.elapsed() < NONCE_TTL);
+                state.lock().await.evict_nonces();
             }
         }
     });

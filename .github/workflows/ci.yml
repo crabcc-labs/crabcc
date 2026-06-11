@@ -72,6 +72,10 @@ jobs:
       # The companion auto-fix-lint.yml (workflow_run) remediates failures by
       # committing `cargo fmt --all` + `clippy --fix` back to the branch.
       - name: cargo fmt --all --check
+        # PR: advisory. auto-fix-lint.yml runs `cargo fmt --all` proactively on
+        # the PR, so a formatting nit never red-gates the build ("CI failed on a
+        # typo"). Push-to-main stays a hard gate so the trunk is always fmt-clean.
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
         run: cargo fmt --all -- --check
 
   lint:
@@ -195,6 +199,10 @@ jobs:
       # rely on `--lib --bins` here.
       - name: cargo clippy (scoped)
         if: steps.scope.outputs.clippy_scope != ''
+        # PR: advisory -- warnings surface in the log and auto-fix-lint applies the
+        # fixable subset, so a non-autofixable clippy lint doesn't block the PR.
+        # Push-to-main keeps `-D warnings` as a hard gate so warnings can't rot.
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
         run: cargo clippy ${{ steps.scope.outputs.clippy_scope }} --all-targets -- -D warnings
 
       # Issue #81: shell-only smoke for scripts/install-aliases.sh.

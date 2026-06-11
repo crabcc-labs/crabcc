@@ -6,6 +6,9 @@ exclude = [
     # otherwise auto-discovers nested Cargo.toml files when a path-dep
     # references them. See https://github.com/rust-lang/cargo/issues/9853.
     "crates/crabcc-viz",
+    # wormhole-bpf/bpf: compiles to bpfel-unknown-none; must not join the host
+    # workspace build (no_std, aya-bpf, separate toolchain).
+    "crates/wormhole-bpf/bpf",
     # editors/zed/crabcc: the Zed extension compiles to wasm32-wasip1 via
     # zed_extension_api; it must not join the host workspace build. Built by
     # Zed itself (zed: install dev extension) or `cargo build --target
@@ -29,6 +32,17 @@ members = [
     "crates/wormhole-relay",
     "crates/wormhole-node",
     "crates/wormhole-op",
+    # wormhole-bpf: XDP fast-path rate-limiter for the wormhole relay.
+    # The eBPF program itself lives in crates/wormhole-bpf/bpf/ and is
+    # deliberately excluded (BPF target, no_std, separate toolchain).
+    "crates/wormhole-bpf-common",
+    "crates/wormhole-bpf",
+    # vaked-lambda: lambda IR + reduction passes for compiled Amber functions;
+    # bridge to MirageOS unikernel dispatch (reduces pure env-dispatch functions
+    # to constants at compile time, emits OCaml residuals for the unikernel).
+    "crates/vaked-lambda",
+    # native messaging host: bridges browser extension console to Nix devshell
+    "extensions/crabcc-devshell/native-host",
     # crates/crabcc-viz: excluded from workspace — v4 CallGraph moved from
     # `BTreeMap<String, …>` to `BTreeMap<i64, …>` and the viz HTML/HTMX
     # renderer + GraphHit field-shape still expect the v3 name-keyed
@@ -39,7 +53,7 @@ members = [
 ]
 
 [workspace.package]
-version = "6.5.0"
+version = "6.5.1"
 edition = "2021"
 rust-version = "1.86"
 license = "MIT"
