@@ -24,6 +24,11 @@ members = [
     "crates/crabcc-memory-bench",
     "crates/sshq",
     "crates/ucracc-lsp",
+    # wormhole: operator control channel (see docs/WORMHOLE.md)
+    "crates/wormhole-proto",
+    "crates/wormhole-relay",
+    "crates/wormhole-node",
+    "crates/wormhole-op",
     # crates/crabcc-viz: excluded from workspace — v4 CallGraph moved from
     # `BTreeMap<String, …>` to `BTreeMap<i64, …>` and the viz HTML/HTMX
     # renderer + GraphHit field-shape still expect the v3 name-keyed
@@ -47,6 +52,13 @@ crabcc-fetch = { path = "crates/crabcc-fetch" }
 crabcc-mcp = { path = "crates/crabcc-mcp" }
 crabcc-memory = { path = "crates/crabcc-memory" }
 crabcc-viz = { path = "crates/crabcc-viz" }
+wormhole-proto = { path = "crates/wormhole-proto" }
+
+postcard = { version = "1", features = ["alloc"] }
+blake3 = "1"
+axum = { version = "0.8", features = ["ws"] }
+rand = { version = "0.9", features = ["os_rng"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 
 anyhow = "1"
 ahash = "0.8"
@@ -192,3 +204,11 @@ inherits = "release"
 inherits      = "release"
 debug         = "line-tables-only"
 strip         = false
+
+# Size-optimized build. Shrinks the code section (~10 MB) by trading some
+# inlining for smaller codegen; the 40 MB tree-sitter parse tables in
+# __TEXT,__const are data, not code, so they are unaffected.
+# Use: cargo build --profile release-compact
+[profile.release-compact]
+inherits      = "release"
+opt-level     = "s"

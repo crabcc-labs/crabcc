@@ -592,6 +592,21 @@ paths:
               schema:
                 $ref: "#/components/schemas/DeadcodeResponse"
 
+  /api/wormhole/sessions:
+    get:
+      tags: [agents]
+      summary: Active wormhole transport sessions.
+      operationId: getWormholeSessions
+      responses:
+        "200":
+          description: List of active wormhole sessions (may be empty).
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WormholeSession"
+
 components:
 
   parameters:
@@ -1149,3 +1164,12 @@ components:
           items: { $ref: "#/components/schemas/DeadSymbol" }
         head_sha: { type: string }
         computed_at: { type: integer }
+
+    WormholeSession:
+      type: object
+      required: [session_hex, node_id_hex, connected_at, route]
+      properties:
+        session_hex: { type: string }
+        node_id_hex: { type: string }
+        connected_at: { type: integer }
+        route: { type: string }

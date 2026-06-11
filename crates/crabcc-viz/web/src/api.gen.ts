@@ -442,6 +442,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/memory/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Cross-repo aggregate substring search over crabcc-memory drawers.
+         * @description Powers the /memory browser. Walks $CRABCC_HOME/repos/*\/memory.db and matches body/source_id, newest first. Pass repo=<key> to scope to one repo.
+         */
+        get: operations["getMemorySearch"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/events": {
         parameters: {
             query?: never;
@@ -553,6 +573,23 @@ export interface paths {
         };
         /** Functions with zero callers in the symbol index. */
         get: operations["getAnalyticsDeadcode"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/wormhole/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Active wormhole transport sessions. */
+        get: operations["getWormholeSessions"];
         put?: never;
         post?: never;
         delete?: never;
@@ -887,6 +924,12 @@ export interface components {
             dead_code: components["schemas"]["DeadSymbol"][];
             head_sha: string;
             computed_at: number;
+        };
+        WormholeSession: {
+            session_hex: string;
+            node_id_hex: string;
+            connected_at: number;
+            route: string;
         };
     };
     responses: never;
@@ -1453,6 +1496,34 @@ export interface operations {
             };
         };
     };
+    getMemorySearch: {
+        parameters: {
+            query?: {
+                q?: string;
+                limit?: number;
+                repo?: string;
+                /** @description Ranking mode. Empty query always lists newest-first. */
+                mode?: "hybrid" | "lexical" | "vector";
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Aggregate ranked hits (free-form for now; tracked opaquely until the memory dashboard panel stabilises). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
     getEvents: {
         parameters: {
             query?: never;
@@ -1600,6 +1671,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DeadcodeResponse"];
+                };
+            };
+        };
+    };
+    getWormholeSessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description List of active wormhole sessions (may be empty). */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WormholeSession"][];
                 };
             };
         };

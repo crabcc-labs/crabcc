@@ -58,6 +58,8 @@ const BUNDLED_LIVE: &str = include_str!("../web/dist/live.html");
 /// self-contained (no React build step) so `crabcc memory ui` can open a
 /// working page on any checkout without running `bun run build`.
 const BUNDLED_MEMORY: &str = include_str!("../assets/memory.html");
+/// Agent monitor dashboard at `/eye`. Invite-token gated via `CRABCC_EYE_TOKEN`.
+const BUNDLED_EYE: &str = include_str!("../assets/eye.html");
 
 /// OpenAPI 3.1 source-of-truth for the `/live` HTTP API (issue #170 phase 0).
 ///
@@ -177,6 +179,15 @@ pub fn serve_with_listener(listener: TcpListener, root: &Path) -> Result<()> {
     Ok(())
 }
 
+fn eye_token() -> Option<String> {
+    if let Ok(v) = std::env::var("CRABCC_EYE_TOKEN") {
+        if !v.is_empty() {
+            return Some(v);
+        }
+    }
+    None
+}
+
 fn handle(request: Request, root: &Path) -> Result<()> {
     let method = request.method().clone();
     let url = request.url().to_string();
@@ -247,6 +258,19 @@ fn handle(request: Request, root: &Path) -> Result<()> {
         "/graph" => respond_html(request, BUNDLED_INDEX),
         // Cross-repo memory browser — the front-door for `crabcc memory ui`.
         "/memory" => respond_html(request, BUNDLED_MEMORY),
+        // Agent monitor dashboard — invite-token gated. Invisible (404) when
+        // CRABCC_EYE_TOKEN is unset; 401 when set but caller didn't supply it.
+        "/eye" => match eye_token() {
+            None => respond_status(request, 404, "not found"),
+            Some(tok) => {
+                let provided = query.split('&').find_map(|kv| kv.strip_prefix("token="));
+                if provided == Some(tok.as_str()) {
+                    respond_html(request, BUNDLED_EYE)
+                } else {
+                    respond_status(request, 401, "invite token required: add ?token=<CRABCC_EYE_TOKEN>")
+                }
+            }
+        },
         "/api/events" => sse_events(request, root.to_path_buf()),
         "/api/health" => respond_json(request, &serde_json::json!({ "status": "ok" })),
         // #172 — surface the hand-maintained OpenAPI spec so the
@@ -390,6 +414,7 @@ fn handle(request: Request, root: &Path) -> Result<()> {
                 }),
             )
         }
+        "/api/wormhole/sessions" => respond_json(request, &wormhole_sessions()),
         _ => {
             // Path-parameter forge routes: /api/forge/prs/{number}[/impact]
             if let Some(rest) = path.strip_prefix("/api/forge/prs/") {
@@ -2812,6 +2837,51 @@ fn strip_urls(text: &str) -> String {
     out
 }
 
+// ── /api/wormhole/sessions ──────────────────────────────────────────────
+// Reads SessionRecord files from /tmp/wormhole-*.session (written by
+// wormhole-node on each successful connection) and returns JSON so the
+// agent-detail panel can show active wormhole sessions.
+
+#[derive(Serialize)]
+struct WormholeSessionOut {
+    session_hex: String,
+    node_id_hex: String,
+    connected_at: u64,
+    route: String,
+}
+
+fn wormhole_sessions() -> Vec<WormholeSessionOut> {
+    use wormhole_proto::{Route, SessionRecord};
+    let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir("/tmp") else {
+        return out;
+    };
+    for entry in rd.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("wormhole-") || !name.ends_with(".session") {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(entry.path()) else {
+            continue;
+        };
+        let Ok(rec) = SessionRecord::decode(&bytes) else {
+            continue;
+        };
+        let route = match &rec.route {
+            Route::Relay { relay_addr } => relay_addr.clone(),
+            Route::Direct { peer_addr } => format!("direct:{peer_addr}"),
+        };
+        out.push(WormholeSessionOut {
+            session_hex: format!("{:032x}", rec.session),
+            node_id_hex: rec.node_id[..8].iter().map(|b| format!("{b:02x}")).collect(),
+            connected_at: rec.connected_at,
+            route,
+        });
+    }
+    out
+}
+
 #[cfg(test)]
 mod agent_meta_tests {
     //! Tests for the meta.json fallbacks added so the dashboard never
@@ -3050,6 +3120,8 @@ mod tests {
         // Git analytics
         "/api/analytics/hotspots",
         "/api/analytics/deadcode",
+        // Wormhole session status
+        "/api/wormhole/sessions",
     ];
 
     /// Extract every YAML key under `paths:` whose value starts with

@@ -1,0 +1,14 @@
+# wormhole-op — operator lib, compiles native + wasm32-unknown-unknown (Wave 3 Tasks 7-8).
+#
+# Planned deps (add when implementing):
+#   wormhole-proto, snow (+ wasm build), spake2, biscuit-auth, tokio-tungstenite
+
+[package]
+name = "wormhole-op"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
