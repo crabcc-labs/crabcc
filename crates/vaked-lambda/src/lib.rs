@@ -37,6 +37,8 @@
 
 use std::collections::HashMap;
 
+pub mod coord;
+
 // ---- IR ----
 
 pub type Env = HashMap<String, String>;
