@@ -176,10 +176,13 @@ fn dispatch_tool_inner(
 
     if cache.is_none() {
         let db = root.join(".crabcc").join("index.db");
-        std::fs::create_dir_all(db.parent().unwrap())?;
+        let parent = db
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("invalid index path: {}", db.display()))?;
+        std::fs::create_dir_all(parent)?;
         *cache = Some(Store::open(&db)?);
     }
-    let store: &Store = cache.as_ref().unwrap();
+    let store = cache.as_ref().expect("cache must be Some after open");
 
     let result = match tool {
         "sym" => {

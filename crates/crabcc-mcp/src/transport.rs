@@ -310,7 +310,8 @@ pub fn serve_http(addr: SocketAddr, root: &Path, dev: bool, token: Option<String
                 } else {
                     html.as_bytes().to_vec()
                 };
-                let is_compressed = want_gzip && payload.len() >= 128;
+                let payload_len = payload.len();
+                let is_compressed = want_gzip && payload_len < html.len();
                 let mut resp = add_common_headers(
                     Response::from_data(payload)
                         .with_status_code(200)
@@ -325,13 +326,15 @@ pub fn serve_http(addr: SocketAddr, root: &Path, dev: bool, token: Option<String
             (&Method::Get, "/stats") => {
                 let body = crate::mastodon::gather_stats();
                 let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
+                let raw_len = body_bytes.len();
                 let want_gzip = accepts_gzip(&req);
                 let payload = if want_gzip {
                     compress_gzip(&body_bytes)
                 } else {
                     body_bytes
                 };
-                let is_compressed = want_gzip && payload.len() >= 128;
+                let payload_len = payload.len();
+                let is_compressed = want_gzip && payload_len < raw_len;
                 let mut resp = add_common_headers(
                     Response::from_data(payload)
                         .with_status_code(200)
@@ -353,13 +356,15 @@ pub fn serve_http(addr: SocketAddr, root: &Path, dev: bool, token: Option<String
                     "version": env!("CARGO_PKG_VERSION"),
                 });
                 let body_bytes = serde_json::to_vec(&body).unwrap_or_default();
+                let raw_len = body_bytes.len();
                 let want_gzip = accepts_gzip(&req);
                 let payload = if want_gzip {
                     compress_gzip(&body_bytes)
                 } else {
                     body_bytes
                 };
-                let is_compressed = want_gzip && payload.len() >= 128;
+                let payload_len = payload.len();
+                let is_compressed = want_gzip && payload_len < raw_len;
                 let mut resp = add_common_headers(
                     Response::from_data(payload)
                         .with_status_code(200)
