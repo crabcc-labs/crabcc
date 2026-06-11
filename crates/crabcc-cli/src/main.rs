@@ -54,6 +54,7 @@ mod rag;
 mod read;
 mod research_cmd;
 mod rewrite_log;
+mod gateway;
 mod root_resolver;
 mod run_cmd;
 mod shell_context;
@@ -634,6 +635,15 @@ enum Cmd {
         /// Skip the index/graph/memory bootstrap at startup.
         #[arg(long)]
         no_init: bool,
+    },
+
+    /// MCP gateway — aggregate multiple upstream MCP servers behind one stdio
+    /// endpoint. Tools are namespaced as `<server>.<tool>`.
+    /// Config: `~/.crabcc/gateway.toml` (or `--config <path>`).
+    Gateway {
+        /// Path to gateway TOML config.
+        #[arg(long, value_name = "PATH")]
+        config: Option<PathBuf>,
     },
 
     /// Outline-stub-aware file read. Caches per
@@ -1448,6 +1458,12 @@ fn main() -> Result<()> {
         );
     }
 
+    // gateway — runs without a local Store; needs no index
+    if let Some(Cmd::Gateway { config }) = cli.cmd.as_ref() {
+        let config_path = config.clone().unwrap_or_else(gateway::GatewayConfig::default_path);
+        return gateway::serve(&config_path);
+    }
+
     // agent group
     if let Some(Cmd::Agent { op }) = cli.cmd.as_ref() {
         match op {
@@ -1953,6 +1969,7 @@ fn main() -> Result<()> {
         Cmd::Run { .. } => unreachable!("run handled before store init"),
         Cmd::Init { .. } => unreachable!("init handled before store init"),
         Cmd::Serve { .. } => unreachable!("serve handled before store init"),
+        Cmd::Gateway { .. } => unreachable!("gateway handled before store init"),
         Cmd::Agent { .. } => unreachable!("agent handled before store init"),
         Cmd::Stack { .. } => unreachable!("stack handled before store init"),
         Cmd::Backup { .. } => unreachable!("backup handled before store init"),
@@ -2585,6 +2602,7 @@ fn cmd_name_for_log(c: &Cmd) -> &'static str {
         Cmd::Run { .. } => "run",
         Cmd::Init { .. } => "init",
         Cmd::Serve { .. } => "serve",
+        Cmd::Gateway { .. } => "gateway",
         Cmd::Read { .. } => "read",
         Cmd::Edit { .. } => "edit",
         Cmd::Affected { .. } => "affected",
