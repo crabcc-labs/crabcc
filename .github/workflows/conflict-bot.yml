@@ -180,7 +180,7 @@ jobs:
             fi
           fi
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         if: steps.meta.outputs.skip != 'true' && steps.clean.outputs.result == 'conflict'
         with:
           node-version: '20'
