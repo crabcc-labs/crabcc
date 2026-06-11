@@ -152,6 +152,48 @@ model_list:
       stream_timeout: 60
       max_parallel_requests: 4
 
+  # ── OpenRouter — cheap open-weight models (OpenAI-compatible). Routed
+  # through openrouter.ai when OPENROUTER_API_KEY is set, giving us a
+  # low-cost lane for bulk/batch work without standing up local Ollama.
+  # Slugs verified against the live OpenRouter /api/v1/models catalog;
+  # bump them when newer/cheaper variants ship. No-op when the key is
+  # unset — LiteLLM only errors if a request actually routes to one.
+  - model_name: deepseek-v4-flash
+    litellm_params:
+      model: openrouter/deepseek/deepseek-v4-flash
+      api_key: os.environ/OPENROUTER_API_KEY
+      api_base: https://openrouter.ai/api/v1
+      timeout: 600
+      stream_timeout: 60
+      max_parallel_requests: 4
+
+  - model_name: qwen3.5-flash
+    litellm_params:
+      model: openrouter/qwen/qwen3.5-flash-02-23
+      api_key: os.environ/OPENROUTER_API_KEY
+      api_base: https://openrouter.ai/api/v1
+      timeout: 600
+      stream_timeout: 60
+      max_parallel_requests: 4
+
+  - model_name: minimax-m2
+    litellm_params:
+      model: openrouter/minimax/minimax-m2
+      api_key: os.environ/OPENROUTER_API_KEY
+      api_base: https://openrouter.ai/api/v1
+      timeout: 600
+      stream_timeout: 60
+      max_parallel_requests: 4
+
+  - model_name: mimo-v2-flash
+    litellm_params:
+      model: openrouter/xiaomi/mimo-v2-flash
+      api_key: os.environ/OPENROUTER_API_KEY
+      api_base: https://openrouter.ai/api/v1
+      timeout: 600
+      stream_timeout: 60
+      max_parallel_requests: 4
+
 # Fallback chains — fire on rate-limit / timeout / overload errors.
 # Sonnet → Haiku keeps agents productive when the primary model is
 # saturated; Opus → Sonnet is a degrade-rather-than-fail story for
@@ -217,8 +259,13 @@ litellm_settings:
     compression_trigger: 10000
     compression_target: 7000
 
-  success_callback: ["langfuse"]   # no-op when LANGFUSE_* env unset
-  failure_callback: []
+  # Langfuse observability — LiteLLM's native callback streams request,
+  # cost, and latency traces (success + failure) to Langfuse Cloud or a
+  # self-hosted instance. No-op when LANGFUSE_PUBLIC_KEY / _SECRET_KEY /
+  # _HOST are unset. (Self-hosting Langfuse is a separate follow-up — no
+  # langfuse service is added to docker-compose here.)
+  success_callback: ["langfuse"]
+  failure_callback: ["langfuse"]
   redact_user_api_key_info: true
 
   default_litellm_params:
