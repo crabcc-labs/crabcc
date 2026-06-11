@@ -17,7 +17,7 @@ use vaked_lambda::{
 fn write_module(dir: &Path, m: &MythosModule) {
     fs::create_dir_all(dir).expect("create module dir");
     fs::write(dir.join(format!("{}.hpp", m.name)), &m.header).expect("write hpp");
-    fs::write(dir.join(format!("{}.cpp", m.name)), &m.source).expect("write cpp");
+    fs::write(dir.join(format!("{}.cc", m.name)), &m.source).expect("write cc");
     fs::write(dir.join("mcconf.module"), &m.mcconf).expect("write mcconf.module");
 }
 
