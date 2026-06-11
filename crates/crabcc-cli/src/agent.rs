@@ -46,6 +46,29 @@ const DEFAULT_MODEL: &str = "claude-opus-4-7";
 /// lookup + code edits). Override with `--model ollama/<other>`.
 const DEFAULT_OLLAMA_MODEL: &str = "ollama/qwen2.5-coder";
 
+/// Default model for [`Backend::DeepSeekRemote`]. Routes through LiteLLM
+/// → Ollama-hosted DeepSeek-Code-Whale (usewhale/deepseek-code-whale).
+/// Requires `DEEPSEEK_API_KEY` in LiteLLM's env. Override with `--model`.
+const DEFAULT_DEEPSEEK_MODEL: &str = "deepseek-code-whale";
+
+/// Tailscale MagicDNS hostname pattern for wormhole relay auto-discovery.
+/// Replace `{tailnet}` with the tailnet name (e.g. `tail1234.ts.net`).
+/// Used by bg-compute to check relay connectivity without a static IP.
+const MAGICDNS_RELAY_HOST_PATTERN: &str = "wormhole-relay.{tailnet}";
+
+/// Default wormhole relay WebSocket port. Matches `WORMHOLE_PORT` default
+/// in wormhole-relay/src/main.rs.
+const WORMHOLE_DEFAULT_PORT: u16 = 4443;
+
+/// LiteLLM context compression trigger (tokens). When a prompt exceeds this
+/// threshold, the proxy compresses it before sending to the upstream provider.
+/// Mirrors `compression_interception_params.compression_trigger` in litellm.config.yaml.
+const CONTEXT_APERTURE_TRIGGER: usize = 10_000;
+
+/// LiteLLM context compression target (tokens). The proxy compresses the
+/// prompt down to this size. Mirrors `compression_interception_params.compression_target`.
+const CONTEXT_APERTURE_TARGET: usize = 7_000;
+
 /// Where Claude Code looks for skills. `crabcc install-claude` symlinks
 /// `skill/crabcc/SKILL.md` into the directory below; if that file is
 /// missing we warn the user (without aborting — agent will still run,
@@ -60,6 +83,10 @@ const SKILL_RELATIVE_PATH: &str = ".claude/skills/crabcc/SKILL.md";
 pub enum Backend {
     Claude,
     Ollama,
+    /// Routes through LiteLLM → api.deepseek.com. Skips the local Docker
+    /// Compose stack check (no `ensure_up()`). Requires `DEEPSEEK_API_KEY`
+    /// in LiteLLM's environment and LiteLLM accessible at `OLLAMA_BASE_URL`.
+    DeepSeekRemote,
 }
 
 impl Backend {
@@ -67,6 +94,7 @@ impl Backend {
         match self {
             Backend::Claude => "claude",
             Backend::Ollama => "ollama",
+            Backend::DeepSeekRemote => "deepseek",
         }
     }
     pub fn from_str(s: &str) -> Result<Self> {
@@ -81,8 +109,9 @@ impl Backend {
                 Ok(Backend::Claude)
             }
             "ollama" => Ok(Backend::Ollama),
+            "deepseek" => Ok(Backend::DeepSeekRemote),
             other => Err(anyhow!(
-                "unknown agent backend `{other}`; supported: ollama (default), claude (beta)"
+                "unknown agent backend `{other}`; supported: ollama (default), claude (beta), deepseek"
             )),
         }
     }
@@ -304,6 +333,7 @@ impl AgentRuntime for SubprocessRuntime {
         let model = req.model.as_deref().unwrap_or(match req.backend {
             Backend::Claude => DEFAULT_MODEL,
             Backend::Ollama => DEFAULT_OLLAMA_MODEL,
+            Backend::DeepSeekRemote => DEFAULT_DEEPSEEK_MODEL,
         });
         cmd.arg("--model").arg(model);
         cmd.arg("--no-chrome");
@@ -323,7 +353,7 @@ impl AgentRuntime for SubprocessRuntime {
         // so the spawned subprocess can route LLM calls through the
         // bundled stack instead of Anthropic. Default backend stays
         // Claude; no env-var change for existing flows.
-        if req.backend == Backend::Ollama {
+        if req.backend == Backend::Ollama || req.backend == Backend::DeepSeekRemote {
             auth_vars.extend(["OLLAMA_BASE_URL", "OLLAMA_API_KEY"]);
         }
         for var in auth_vars {
@@ -517,6 +547,7 @@ fn print_dry_run(
     let model_resolved = req.model.as_deref().unwrap_or(match req.backend {
         Backend::Claude => DEFAULT_MODEL,
         Backend::Ollama => DEFAULT_OLLAMA_MODEL,
+        Backend::DeepSeekRemote => DEFAULT_DEEPSEEK_MODEL,
     });
     let model_origin = if req.model.is_some() {
         "explicit"
@@ -625,10 +656,12 @@ pub fn run(req: AgentRequest<'_>) -> Result<()> {
     let provider = match req.backend {
         Backend::Claude => "claude",
         Backend::Ollama => "ollama",
+        Backend::DeepSeekRemote => "deepseek",
     };
     let resolved_model = req.model.as_deref().unwrap_or(match req.backend {
         Backend::Claude => DEFAULT_MODEL,
         Backend::Ollama => DEFAULT_OLLAMA_MODEL,
+        Backend::DeepSeekRemote => DEFAULT_DEEPSEEK_MODEL,
     });
     // For provider "ollama" the resolved_model often comes prefixed
     // (e.g. `ollama/qwen2.5-coder`). The .info file is keyed on the

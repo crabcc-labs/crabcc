@@ -1,0 +1,149 @@
+#!/usr/bin/env amber
+// bg-compute.ab — parallel benchmark runner with Mastodon result posting
+//
+// Fans out all benches concurrently, waits at a barrier, then posts a
+// combined pass/fail summary to social.crabcc.app (public timeline).
+//
+// Run detached: bash scripts/amber/bg-compute.sh &
+// Or blocking:  bash scripts/amber/bg-compute.sh
+//
+// Env:
+//   MASTODON_ACCESS_TOKEN  — write:statuses bearer token
+//   MASTODON_VISIBILITY    — public (default here) | unlisted | private
+//   WORMHOLE_RELAY_URL     — set for Wave 3 remote dispatch notice
+
+import * from "std/text"
+
+// ---- enums ----
+
+enum Vis {
+    Public
+    Unlisted
+    Private
+    Direct
+}
+
+enum Outcome {
+    Pass
+    Fail
+}
+
+// ---- visibility helpers ----
+
+fun vis_from_env(): Vis {
+    let raw: Text = unsafe $echo "${MASTODON_VISIBILITY:-public}"$
+    if raw == "unlisted" { return Vis::Unlisted }
+    if raw == "private"  { return Vis::Private  }
+    if raw == "direct"   { return Vis::Direct   }
+    return Vis::Public
+}
+
+fun vis_label(v: Vis): Text {
+    if v == Vis::Unlisted { return "unlisted" }
+    if v == Vis::Private  { return "private"  }
+    if v == Vis::Direct   { return "direct"   }
+    return "public"
+}
+
+// ---- outcome helpers ----
+
+fun outcome_icon(o: Outcome): Text {
+    if o == Outcome::Pass { return "✓" }
+    return "✗"
+}
+
+fun read_outcome(name: Text): Outcome {
+    let exit_file = ".dev-tasks/bench-{name}.log.exit"
+    let code: Text = unsafe $cat "{exit_file}" 2>/dev/null || echo "1"$
+    if code == "0" { return Outcome::Pass }
+    return Outcome::Fail
+}
+
+// ---- notification ----
+
+fun toot(msg: Text): Bool {
+    let token: Text = unsafe $echo "${MASTODON_ACCESS_TOKEN:-}"$
+    if token == "" { return false }
+    let vis = vis_label(vis_from_env())
+    $curl -sf -X POST "https://social.crabcc.app/api/v1/statuses" \
+        -H "Authorization: Bearer {token}" \
+        -F "status={msg}" \
+        -F "visibility={vis}" \
+        -o /dev/null$ failed {
+        echo_error("toot: curl failed")
+        return false
+    }
+    return true
+}
+
+// ---- job management ----
+
+fun log_pid(job: Text, p: Num): Null {
+    trust $printf '{"job":"%s","pid":%d}\n' "{job}" {p} >> .dev-tasks/bg-jobs.jsonl$
+}
+
+// Launch `cargo bench {args}` in background; exit code written to {name}.log.exit
+// so read_outcome() can check it after await() returns.
+fun launch(name: Text, args: Text): Int {
+    let log = ".dev-tasks/bench-{name}.log"
+    unsafe $( cargo bench {args} > "{log}" 2>&1; echo $? > "{log}.exit" ) &$
+    let p = pid()
+    log_pid(name, p)
+    echo "bg-compute: {name} pid={p}"
+    return p
+}
+
+// ---- bench definitions ----
+
+// Names and cargo args kept parallel so a for-loop can zip them.
+const NAMES = [
+    "workspace",
+    "alloc",
+    "simd"
+]
+
+const ARGS = [
+    "--workspace",
+    "-p wormhole-node --bench alloc_profile",
+    "-p crabcc-core --features bench --bench compress_simd"
+]
+
+// ---- main ----
+
+main {
+    trust $mkdir -p .dev-tasks$
+
+    let relay: Text = unsafe $echo "${WORMHOLE_RELAY_URL:-}"$
+    if relay != "" {
+        echo "bg-compute: relay={relay} — Wave 3 NodeCmd::Spawn pending; running locally"
+    }
+
+    // Fan-out: start all benches concurrently.
+    let pids = [] as [Int]
+    loop i in 0..len(NAMES) {
+        pids += [launch(NAMES[i], ARGS[i])]
+    }
+
+    echo "bg-compute: waiting for {len(pids)} jobs..."
+
+    // Barrier: block until every background job finishes.
+    trust await(pids)
+
+    // Collect outcomes.
+    let parts = [] as [Text]
+    loop i in 0..len(NAMES) {
+        let o    = read_outcome(NAMES[i])
+        let icon = outcome_icon(o)
+        parts += ["{icon} {NAMES[i]}"]
+    }
+
+    let summary = "crabcc benches: " + parts[0] + " | " + parts[1] + " | " + parts[2]
+    echo summary
+
+    // Post to public timeline.
+    if toot(summary) {
+        echo "bg-compute: posted to social.crabcc.app"
+    } else {
+        echo "bg-compute: MASTODON_ACCESS_TOKEN not set — skipped"
+    }
+}

@@ -215,6 +215,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d92bec98840b8f03a5ff5413de5293bfcd8bf96467cf5452609f939ec6f5de16"
 
 [[package]]
+name = "assert_matches"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b34d609dfbaf33d6889b2b7106d3ca345eacad44200913df5ba02bfd31d2ba9"
+
+[[package]]
 name = "ast-grep-core"
 version = "0.43.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -522,6 +528,61 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
+]
+
+[[package]]
+name = "aya"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d18bc4e506fbb85ab7392ed993a7db4d1a452c71b75a246af4a80ab8c9d2dd50"
+dependencies = [
+ "assert_matches",
+ "aya-obj",
+ "bitflags 2.13.0",
+ "bytes",
+ "libc",
+ "log",
+ "object",
+ "once_cell",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
+name = "aya-log"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b600d806c1d07d3b81ab5f4a2a95fd80f479a0d3f1d68f29064d660865f85f02"
+dependencies = [
+ "aya",
+ "aya-log-common",
+ "bytes",
+ "log",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
+name = "aya-log-common"
+version = "0.1.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "befef9fe882e63164a2ba0161874e954648a72b0e1c4b361f532d590638c4eec"
+dependencies = [
+ "num_enum",
+]
+
+[[package]]
+name = "aya-obj"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c51b96c5a8ed8705b40d655273bc4212cbbf38d4e3be2788f36306f154523ec7"
+dependencies = [
+ "bytes",
+ "core-error",
+ "hashbrown 0.15.5",
+ "log",
+ "object",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -1079,6 +1140,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "core-error"
+version = "0.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "efcdb2972eb64230b4c50646d8498ff73f5128d196a90c7236eec4cbe8619b8f"
+dependencies = [
+ "version_check",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1239,6 +1309,15 @@ dependencies = [
  "tree-sitter-typescript",
  "tree-sitter-yaml",
  "tree-sitter-zig",
+]
+
+[[package]]
+name = "crabcc-devshell-host"
+version = "6.5.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1916,6 +1995,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "env_filter"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32e90c2accc4b07a8456ea0debdc2e7587bdd890680d71173a15d4ae604f6eef"
+dependencies = [
+ "log",
+ "regex",
+]
+
+[[package]]
+name = "env_logger"
+version = "0.11.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0621c04f2196ac3f488dd583365b9c09be011a4ab8b9f37248ffcc8f6198b56a"
+dependencies = [
+ "anstream",
+ "anstyle",
+ "env_filter",
+ "jiff",
+ "log",
+]
+
+[[package]]
 name = "equator"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2394,6 +2496,8 @@ version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9229cfe53dfd69f0609a49f65461bd93001ea1ef889cd5529dd176593f5338a1"
 dependencies = [
+ "allocator-api2",
+ "equivalent",
  "foldhash 0.1.5",
 ]
 
@@ -3051,6 +3155,30 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "jiff"
+version = "0.2.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4603d3033e49e2b0e31229fcab20a5d40089c607d975cd9c80551dc69eed9102"
+dependencies = [
+ "jiff-static",
+ "log",
+ "portable-atomic",
+ "portable-atomic-util",
+ "serde_core",
+]
+
+[[package]]
+name = "jiff-static"
+version = "0.2.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "782d32378dddf207193ac91cefb848ad41abb58195c95168e1291227a0832b47"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "jni"
@@ -3738,6 +3866,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "num_enum"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d0bca838442ec211fa11de3a8b0e0e8f3a4522575b5c4c06ed722e005036f26"
+dependencies = [
+ "num_enum_derive",
+ "rustversion",
+]
+
+[[package]]
+name = "num_enum_derive"
+version = "0.7.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "680998035259dcfcafe653688bf2aa6d3e2dc05e98be6ab46afb089dc84f1df8"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "objc2"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3778,6 +3927,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7216bd11cbda54ccabcab84d523dc93b858ec75ecfb3a7d89513fa22464da396"
 dependencies = [
  "objc2-core-foundation",
+]
+
+[[package]]
+name = "object"
+version = "0.36.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62948e14d923ea95ea2c7c86c71013138b66525b86bdc08d2dcc262bdb497b87"
+dependencies = [
+ "crc32fast",
+ "hashbrown 0.15.5",
+ "indexmap 2.14.0",
+ "memchr",
 ]
 
 [[package]]
@@ -7079,6 +7240,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "vaked-lambda"
+version = "6.5.0"
+
+[[package]]
 name = "valuable"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7812,6 +7977,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "wormhole-bpf"
+version = "6.5.0"
+dependencies = [
+ "anyhow",
+ "aya",
+ "aya-log",
+ "clap",
+ "env_logger",
+ "log",
+ "tokio",
+ "wormhole-bpf-common",
+]
+
+[[package]]
+name = "wormhole-bpf-common"
+version = "6.5.0"
+
+[[package]]
 name = "wormhole-node"
 version = "6.5.0"
 dependencies = [
@@ -7841,6 +8024,9 @@ name = "wormhole-op"
 version = "6.5.0"
 dependencies = [
  "anyhow",
+ "clap",
+ "reqwest 0.13.1",
+ "tokio",
 ]
 
 [[package]]

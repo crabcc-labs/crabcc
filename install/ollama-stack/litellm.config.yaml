@@ -124,6 +124,34 @@ model_list:
       rpm: 25
       tpm: 50000
 
+  # DeepSeek — routes to api.deepseek.com when DEEPSEEK_API_KEY is set.
+  # Used by `crabcc agent --backend deepseek` (Backend::DeepSeekRemote) to
+  # skip the local Docker Compose stack while still routing through LiteLLM
+  # for central cost tracking, caching, and fallbacks.
+  # OVH c2-15 local Ollama: set OLLAMA_BASE_URL to the remote endpoint and
+  # use ollama/deepseek-r1:14b or ollama/deepseek-coder-v2:16b model names.
+  # Primary coding model: usewhale/DeepSeek-Code-Whale (Ollama-served).
+  # Pull first: ollama pull usewhale/deepseek-code-whale
+  # github.com/usewhale/DeepSeek-Code-Whale
+  - model_name: deepseek-code-whale
+    litellm_params:
+      model: ollama_chat/usewhale/deepseek-code-whale
+      api_base: os.environ/OLLAMA_API_BASE
+      api_key: os.environ/OLLAMA_API_KEY
+      timeout: 600
+      stream_timeout: 60
+      max_parallel_requests: 4
+
+  # Fallback: DeepSeek API (api.deepseek.com) when Ollama stack is unavailable.
+  # Requires DEEPSEEK_API_KEY.
+  - model_name: deepseek-chat
+    litellm_params:
+      model: deepseek/deepseek-chat
+      api_key: os.environ/DEEPSEEK_API_KEY
+      timeout: 600
+      stream_timeout: 60
+      max_parallel_requests: 4
+
 # Fallback chains — fire on rate-limit / timeout / overload errors.
 # Sonnet → Haiku keeps agents productive when the primary model is
 # saturated; Opus → Sonnet is a degrade-rather-than-fail story for

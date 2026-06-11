@@ -89,3 +89,32 @@ fn handshake_alloc(bencher: Bencher) {
         black_box(Transport::new());
     });
 }
+
+// Baseline: getrandom syscall path (16 bytes, one syscall per call).
+#[divan::bench]
+fn session_id_getrandom(bencher: Bencher) {
+    bencher.bench_local(|| {
+        let mut b = [0u8; 16];
+        getrandom::getrandom(black_box(&mut b)).unwrap();
+        black_box(u128::from_le_bytes(b))
+    });
+}
+
+// Optimized: atomic fetch_add (seeded once at startup, no syscall per call).
+#[divan::bench]
+fn session_id_atomic(bencher: Bencher) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::OnceLock;
+    static CTR: OnceLock<AtomicU64> = OnceLock::new();
+    let ctr = CTR.get_or_init(|| {
+        let mut seed = [0u8; 8];
+        getrandom::getrandom(&mut seed).ok();
+        AtomicU64::new(u64::from_le_bytes(seed))
+    });
+    let fake_node_id = [0xABu8; 32];
+    bencher.bench_local(|| {
+        let seq = ctr.fetch_add(1, Ordering::Relaxed);
+        let hi = u64::from_le_bytes(black_box(&fake_node_id[..8]).try_into().unwrap());
+        black_box(((hi as u128) << 64) | (seq as u128))
+    });
+}

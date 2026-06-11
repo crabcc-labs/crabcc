@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "crabcc devshell",
+  "version": "0.1.0",
+  "description": "Attach browser console to a Nix devshell or wormhole node",
+  "permissions": ["nativeMessaging", "storage", "activeTab"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [{
+    "matches": ["<all_urls>"],
+    "js": ["content.js"],
+    "run_at": "document_start",
+    "all_frames": true
+  }],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "crabcc devshell"
+  },
+  "native_messaging_hosts": {
+    "com.crabcc.devshell": true
+  }
+}

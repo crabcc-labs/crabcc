@@ -11,6 +11,8 @@ use anyhow::{anyhow, bail, Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
@@ -22,6 +24,23 @@ use crate::cmd::{dispatch, NodeCmd, NodeEvent};
 use crate::keys::NodeKeys;
 
 const NOISE_PARAMS: &str = "Noise_IK_25519_ChaChaPoly_BLAKE2s";
+
+/// Monotonic session-ID generator. One `getrandom` call seeds the counter at
+/// startup; every subsequent connection is a single atomic fetch_add — no
+/// syscall, no lock. Session IDs aren't secret (they go into persisted
+/// SessionRecords), so trading full randomness for per-connection performance
+/// is the right call.
+pub(crate) fn next_session_id(node_id: &[u8; 32]) -> u128 {
+    static CTR: OnceLock<AtomicU64> = OnceLock::new();
+    let ctr = CTR.get_or_init(|| {
+        let mut seed = [0u8; 8];
+        getrandom::getrandom(&mut seed).ok();
+        AtomicU64::new(u64::from_le_bytes(seed))
+    });
+    let seq = ctr.fetch_add(1, Ordering::Relaxed);
+    let hi = u64::from_le_bytes(node_id[..8].try_into().expect("node_id is 32 bytes"));
+    ((hi as u128) << 64) | (seq as u128)
+}
 // ChaChaPoly adds 16-byte tag; postcard envelope is at most MAX_BODY_BYTES + overhead.
 const NOISE_BUF: usize = 65536 + 128;
 
@@ -88,11 +107,7 @@ pub async fn run_session(
         .ok_or_else(|| anyhow!("no remote static after handshake"))?;
     info!(op_id = hex(&op_id), "operator identity");
 
-    let session_id: u128 = {
-        let mut b = [0u8; 16];
-        getrandom::getrandom(&mut b).context("getrandom session_id")?;
-        u128::from_le_bytes(b)
-    };
+    let session_id = next_session_id(&keys.node_id);
 
     let mut seq = SeqState::new();
     let mut _token: Option<Vec<u8>> = None; // stored; verified in Wave 4 (biscuit-auth)

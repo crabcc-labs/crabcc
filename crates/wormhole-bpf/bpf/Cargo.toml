@@ -1,0 +1,12 @@
+[package]
+name = "wormhole-bpf-ebpf"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aya-bpf = { version = "0.1", features = ["macros"] }
+wormhole-bpf-common = { path = "../../wormhole-bpf-common" }
+
+[profile.release]
+panic = "abort"
+opt-level = 3

@@ -97,3 +97,10 @@ required-features = ["bench"]
 name = "alloc_ops"
 harness = false
 required-features = ["bench"]
+
+# FSST codec throughput: measures Codec::decompress including the codes_in_range
+# safety scan. On x86_64 with AVX2 the scan runs at 32 bytes/cycle instead of 1.
+[[bench]]
+name = "compress_simd"
+harness = false
+required-features = ["bench", "compress"]
