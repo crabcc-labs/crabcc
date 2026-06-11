@@ -153,6 +153,7 @@ in {
 
       # Running behind Traefik — trust X-Forwarded-* headers
       reverseProxy = true;
+      trustedProxyIP = [ "127.0.0.1/32" "::1/128" ];
 
       # Forward auth user identity headers to crabcc
       setXauthrequest = true;
