@@ -30,9 +30,8 @@ CREATE TABLE IF NOT EXISTS symbols (
 );
 
 CREATE INDEX IF NOT EXISTS idx_symbols_name      ON symbols(name);
-CREATE INDEX IF NOT EXISTS idx_symbols_file      ON symbols(file_id);
 CREATE INDEX IF NOT EXISTS idx_symbols_kind      ON symbols(kind);
-CREATE INDEX IF NOT EXISTS idx_symbols_qual      ON symbols(qualified);
+CREATE INDEX IF NOT EXISTS idx_symbols_qual      ON symbols(qualified) WHERE qualified IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_symbols_file_line ON symbols(file_id, line_start);
 CREATE INDEX IF NOT EXISTS idx_symbols_name_kind ON symbols(name, kind);
 CREATE INDEX IF NOT EXISTS idx_files_lang        ON files(lang);

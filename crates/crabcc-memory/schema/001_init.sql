@@ -1,4 +1,5 @@
 PRAGMA journal_mode = WAL;
+PRAGMA synchronous  = NORMAL;
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS wings (
@@ -91,7 +92,7 @@ CREATE TABLE IF NOT EXISTS kg_triples (
     source_drawer_id INTEGER REFERENCES drawers(id) ON DELETE SET NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_drawers_wing      ON drawers(wing_id);
+CREATE INDEX IF NOT EXISTS idx_drawers_wing      ON drawers(wing_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_drawers_room      ON drawers(room_id);
 CREATE INDEX IF NOT EXISTS idx_drawers_sha       ON drawers(sha256);
 CREATE INDEX IF NOT EXISTS idx_drawers_session   ON drawers(session_id);
