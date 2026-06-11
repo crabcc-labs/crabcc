@@ -4,7 +4,7 @@
 # Deterministic lane (always): replays a representative shell-command mix
 # for each agent profile (claude_code / nullclaw / zeroclaw) twice —
 # vanilla (raw grep/cat/find) and through the full crabcc flow (the exact
-# `crabcc shell rewrite` pipeline: engine rewrite -> RTK -> Morph, plus the
+# `crabcc shell rewrite` pipeline: engine rewrite -> RTK, plus the
 # cat->read and media paths) — and reports tokens (bytes/4) per profile.
 # Runs against a clean `git archive` tree so `target/` noise can't skew it
 # (matches docs/PERF-648 methodology); fully reproducible, no network.
@@ -23,7 +23,6 @@
 # Env:
 #   REPO     repo to bench (default: git toplevel of cwd)
 #   CRABCC   crabcc binary (default: target/release/crabcc, else target/debug, else PATH)
-#   MORPH_API_KEY  if set, the flow's Morph stage engages (else passthrough)
 set -euo pipefail
 
 REPO="${REPO:-$(git rev-parse --show-toplevel)}"
@@ -87,10 +86,7 @@ profile_row() {
 echo "# crabcc flow token matrix"
 echo
 echo "Clean tree: \`git archive HEAD\` of \`$(basename "$REPO")\`. crabcc: \`$CRABCC\`."
-# Morph engages iff a key is set AND it is not explicitly disabled
-# (mirrors shell_rewrite::morph_enabled).
-if [ -n "${MORPH_API_KEY:-}" ] && [ -z "${CRABCC_NO_MORPH:-}" ]; then morph_state=ON; else morph_state=off; fi
-echo "Morph stage: $morph_state | tokens = bytes/4."
+echo "tokens = bytes/4."
 echo
 echo "| profile      | vanilla   | flow      | reduct  |"
 echo "|--------------|-----------|-----------|---------|"
