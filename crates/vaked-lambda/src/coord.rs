@@ -217,6 +217,46 @@ fn transitive_reduce(mut graph: CoordGraph) -> CoordGraph {
     graph
 }
 
+/// How a surviving await edge is realized at runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitKind {
+    /// Provider has exactly one consumer -> point-to-point.
+    PointToPoint,
+    /// Provider has multiple consumers -> a barrier.
+    Barrier,
+}
+
+/// Classify each surviving (consumer, provider) edge after reduction.
+pub fn classify_waits(graph: &CoordGraph) -> Vec<(u32, u32, WaitKind)> {
+    let mut consumers: HashMap<u32, u32> = HashMap::new(); // provider -> consumer count
+    for u in &graph.units {
+        for &t in &u.awaits {
+            *consumers.entry(t).or_insert(0) += 1;
+        }
+    }
+    let mut out = Vec::new();
+    for u in &graph.units {
+        for &t in &u.awaits {
+            let kind = if consumers.get(&t).copied().unwrap_or(0) > 1 {
+                WaitKind::Barrier
+            } else {
+                WaitKind::PointToPoint
+            };
+            out.push((u.id, t, kind));
+        }
+    }
+    out
+}
+
+/// The full pass: build-time fold, then transitive reduction. Returns the
+/// residual graph with minimized `awaits`. (Step 3 "dead-coordination" is
+/// subsumed: an await to a build-folded provider is already removed, and a unit
+/// with empty residual awaits is coordination-closed. Downgrade is reported by
+/// `classify_waits` and consumed by `emit_coord`.)
+pub fn coord_reduce(graph: CoordGraph, profile: &TargetProfile) -> CoordGraph {
+    transitive_reduce(fold_build_time(graph, profile))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,6 +314,18 @@ mod tests {
         assert_eq!(g.units[2].awaits, vec![0]); // sched -> base
         assert_eq!(g.units[3].awaits, vec![1]); // net -> mem
         assert_eq!(g.units[4].awaits, vec![1, 2, 3]); // kernel -> mem, sched, net
+    }
+
+    #[test]
+    fn downgrade_marks_shared_provider_as_barrier() {
+        // base (id 0) has two consumers (mem, sched) under a runtime profile -> Barrier.
+        // net (id 3) has one consumer (kernel) -> PointToPoint.
+        let g = coord_reduce(module_dag_to_coord(example_modules()), &TargetProfile::runtime());
+        let waits = classify_waits(&g);
+        assert!(waits.iter().any(|&(_, p, k)| p == 0 && k == WaitKind::Barrier));
+        assert!(waits
+            .iter()
+            .any(|&(_, p, k)| p == 3 && k == WaitKind::PointToPoint));
     }
 
     #[test]
