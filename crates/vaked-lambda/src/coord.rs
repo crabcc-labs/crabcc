@@ -176,6 +176,47 @@ fn fold_build_time(mut graph: CoordGraph, profile: &TargetProfile) -> CoordGraph
     graph
 }
 
+/// Build adjacency: unit id -> its direct awaits (after any folding).
+fn adjacency(graph: &CoordGraph) -> HashMap<u32, Vec<u32>> {
+    graph.units.iter().map(|u| (u.id, u.awaits.clone())).collect()
+}
+
+/// Is `target` reachable from `start` following awaits edges (excluding the
+/// direct start->target edge itself)? Used to detect redundant awaits.
+fn reachable_excluding_direct(adj: &HashMap<u32, Vec<u32>>, start: u32, target: u32) -> bool {
+    let mut stack: Vec<u32> = adj
+        .get(&start)
+        .into_iter()
+        .flatten()
+        .copied()
+        .filter(|&t| t != target) // ignore the direct edge we are testing
+        .collect();
+    let mut seen: HashSet<u32> = HashSet::new();
+    while let Some(n) = stack.pop() {
+        if n == target {
+            return true;
+        }
+        if !seen.insert(n) {
+            continue;
+        }
+        if let Some(next) = adj.get(&n) {
+            stack.extend(next.iter().copied());
+        }
+    }
+    false
+}
+
+/// Step 2: drop an await on `t` from unit `u` if `t` is already reachable from
+/// `u` through another await (transitive reduction).
+fn transitive_reduce(mut graph: CoordGraph) -> CoordGraph {
+    let adj = adjacency(&graph);
+    for u in &mut graph.units {
+        let id = u.id;
+        u.awaits.retain(|&t| !reachable_excluding_direct(&adj, id, t));
+    }
+    graph
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,6 +274,20 @@ mod tests {
         assert_eq!(g.units[2].awaits, vec![0]); // sched -> base
         assert_eq!(g.units[3].awaits, vec![1]); // net -> mem
         assert_eq!(g.units[4].awaits, vec![1, 2, 3]); // kernel -> mem, sched, net
+    }
+
+    #[test]
+    fn transitive_reduction_drops_redundant_await() {
+        // kernel awaits {mem, sched, net}; net awaits mem -> kernel->mem is redundant.
+        let g = module_dag_to_coord(example_modules());
+        let reduced = transitive_reduce(g);
+        // kernel = id 4; mem = 1 should be pruned (reachable via net=3), leaving {2,3}.
+        let kernel = reduced.units.iter().find(|u| u.id == 4).unwrap();
+        assert_eq!(
+            kernel.awaits,
+            vec![2, 3],
+            "kernel->mem elided (mem reachable via net)"
+        );
     }
 
     #[test]
