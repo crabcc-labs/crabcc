@@ -130,6 +130,52 @@ pub fn term_to_coord(term: &Term, kind: UnitKind) -> CoordGraph {
     CoordGraph { units }
 }
 
+/// Which units' timepoints resolve at build/compose time (and so need no
+/// runtime coordination). A target picks the predicate.
+pub struct TargetProfile {
+    pub resolves_at_build: fn(&Unit) -> bool,
+}
+
+impl TargetProfile {
+    /// Static-composition target (e.g. MyThOS mcconf): everything resolves at build.
+    pub fn static_composition() -> Self {
+        Self {
+            resolves_at_build: |_| true,
+        }
+    }
+    /// Runtime/fleet target: nothing resolves at build.
+    pub fn runtime() -> Self {
+        Self {
+            resolves_at_build: |_| false,
+        }
+    }
+    /// Boot target: only Static/Boot kinds resolve at build.
+    pub fn boot() -> Self {
+        Self {
+            resolves_at_build: |u| matches!(u.kind, UnitKind::Static | UnitKind::Boot),
+        }
+    }
+}
+
+/// Set of ids whose timepoints resolve at build time under `profile`.
+fn build_resolved(graph: &CoordGraph, profile: &TargetProfile) -> HashSet<u32> {
+    graph
+        .units
+        .iter()
+        .filter(|u| (profile.resolves_at_build)(u))
+        .map(|u| u.id)
+        .collect()
+}
+
+/// Step 1: remove build-time-resolved providers from every unit's awaits.
+fn fold_build_time(mut graph: CoordGraph, profile: &TargetProfile) -> CoordGraph {
+    let resolved = build_resolved(&graph, profile);
+    for u in &mut graph.units {
+        u.awaits.retain(|t| !resolved.contains(t));
+    }
+    graph
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,6 +233,16 @@ mod tests {
         assert_eq!(g.units[2].awaits, vec![0]); // sched -> base
         assert_eq!(g.units[3].awaits, vec![1]); // net -> mem
         assert_eq!(g.units[4].awaits, vec![1, 2, 3]); // kernel -> mem, sched, net
+    }
+
+    #[test]
+    fn static_profile_folds_all_awaits() {
+        let g = module_dag_to_coord(example_modules());
+        let folded = fold_build_time(g, &TargetProfile::static_composition());
+        assert!(
+            folded.units.iter().all(|u| u.awaits.is_empty()),
+            "static composition resolves every timepoint at build -> zero residual awaits"
+        );
     }
 
     #[test]
