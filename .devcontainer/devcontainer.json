@@ -40,7 +40,18 @@
   "remoteEnv": {
     "RUST_BACKTRACE": "1",
     "CARGO_TERM_COLOR": "always",
-    "CRABCC_AUTO_MEMORY": "1"
+    "CRABCC_AUTO_MEMORY": "1",
+    "RUSTC_WRAPPER": "sccache",
+    "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER": "clang",
+    "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS": "-C link-arg=-fuse-ld=mold"
+  },
+  "secrets": {
+    "MASTODON_TOKEN": {
+      "description": "Mastodon access token for social.crabcc.app (task mastodon-setup to create)"
+    },
+    "ANTHROPIC_API_KEY": {
+      "description": "Anthropic API key — required only for Claude Code and pr-agent"
+    }
   },
   "mounts": [
     "source=${localWorkspaceFolderBasename}-cargo-cache,target=/usr/local/cargo/registry,type=volume",
@@ -49,10 +60,11 @@
   "onCreateCommand": ".devcontainer/on-create.sh",
   "postCreateCommand": ".devcontainer/post-create.sh",
   "postStartCommand": "cargo --version && task --version || true",
-  "forwardPorts": [7878, 8080],
+  "forwardPorts": [7878, 8080, 9999],
   "portsAttributes": {
     "7878": { "label": "crabcc-viz live dashboard", "onAutoForward": "notify" },
-    "8080": { "label": "litellm proxy" }
+    "8080": { "label": "litellm proxy" },
+    "9999": { "label": "crabcc MCP HTTP server (crabcc serve --http)", "onAutoForward": "silent" }
   },
   "hostRequirements": {
     "cpus": 4,
