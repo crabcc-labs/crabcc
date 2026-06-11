@@ -98,6 +98,42 @@ in {
   };
 
   config = mkIf cfg.enable {
-    # Services wired in subsequent tasks
+    # ── System user (fixed UID so repoRoot/.crabcc stays writable) ──────────
+    users.users.crabcc-mcp = {
+      isSystemUser = true;
+      group = "crabcc-mcp";
+      description = "crabcc MCP gateway service user";
+    };
+    users.groups.crabcc-mcp = {};
+
+    # ── crabcc HTTP MCP server ───────────────────────────────────────────────
+    systemd.services.crabcc-mcp = {
+      description = "crabcc MCP HTTP server";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "network.target" ];
+
+      serviceConfig = {
+        User = "crabcc-mcp";
+        Group = "crabcc-mcp";
+        ExecStart = "${cfg.package}/bin/crabcc --mcp-http 127.0.0.1:${toString cfg.httpPort} --root ${cfg.repoRoot}";
+        EnvironmentFile = cfg.mcpTokenFile;
+
+        # Hardening
+        NoNewPrivileges = true;
+        PrivateTmp = true;
+        ProtectSystem = "strict";
+        ProtectHome = true;
+        CapabilityBoundingSet = "";
+        SystemCallFilter = [ "@system-service" ];
+        RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" ];
+        # BindPaths (rw) so crabcc can write .crabcc/index.db inside repoRoot
+        BindPaths = [ (toString cfg.repoRoot) ];
+
+        Restart = "on-failure";
+        RestartSec = "5s";
+      };
+    };
+
+    # oauth2-proxy, traefik, and firewall wired in subsequent tasks
   };
 }
