@@ -131,3 +131,12 @@ service-account*.json
 # kubectl config (contains cluster credentials)
 .kube/
 **/.kube/config
+
+# ── Local agent / tooling state ──────────────────────────────────────
+.claude-flow/
+.deepseek/
+.versions
+
+# ── Python compact-server artifacts ──────────────────────────────────
+compact-server/.venv/
+compact-server/compact_server.egg-info/
