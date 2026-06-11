@@ -21,7 +21,9 @@ use crate::backend::{cosine, Backend, LexicalQuery};
 use crate::types::*;
 use anyhow::{anyhow, Context, Result};
 use crabcc_core::hash::sha256_hex;
-use encoding::{blob_to_vec, fts_match_string, now_secs, vec_to_blob};
+#[cfg(feature = "memory-vec")]
+use encoding::vec_to_blob;
+use encoding::{decode_embedding, encode_embedding, fts_match_string, now_secs};
 #[cfg(feature = "memory-vec")]
 use ensure::register_sqlite_vec_once;
 use ensure::{ensure_room, ensure_wing};
@@ -119,6 +121,25 @@ impl SqliteBackend {
         if !has_emb_at {
             conn.execute(
                 "ALTER TABLE drawer_embeddings ADD COLUMN embedded_at INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+
+        // int8 embedding quantization — `drawer_embeddings.quant` flags how
+        // `bytes` is encoded (0 = raw f32, 1 = symmetric int8 via crate::quant).
+        // Old rows predate the column and are all raw f32, which the DEFAULT 0
+        // captures correctly.
+        let has_quant: bool = conn
+            .query_row(
+                "SELECT 1 FROM pragma_table_info('drawer_embeddings') WHERE name = 'quant'",
+                [],
+                |_| Ok(true),
+            )
+            .optional()?
+            .unwrap_or_default();
+        if !has_quant {
+            conn.execute(
+                "ALTER TABLE drawer_embeddings ADD COLUMN quant INTEGER NOT NULL DEFAULT 0",
                 [],
             )?;
         }
@@ -290,12 +311,27 @@ impl SqliteBackend {
                 // when feature-off writes mutated drawer_embeddings without
                 // updating drawers_vec, including the rowid-reuse edge case
                 // where count+sum fingerprints collide.
+                // vec0 stores f32 only, so a quant=1 (int8) row — written by a
+                // build without the memory-vec feature — must be dequantized
+                // back to an f32 blob before it lands in drawers_vec.
                 let rows: Vec<(i64, Vec<u8>)> = {
                     let mut stmt = conn
-                        .prepare("SELECT drawer_id, bytes FROM drawer_embeddings WHERE dim = 384")
+                        .prepare(
+                            "SELECT drawer_id, bytes, quant FROM drawer_embeddings WHERE dim = 384",
+                        )
                         .context("prepare drawers_vec backfill")?;
                     let collected = stmt
-                        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))?
+                        .query_map([], |r| {
+                            let id = r.get::<_, i64>(0)?;
+                            let bytes = r.get::<_, Vec<u8>>(1)?;
+                            let quant = r.get::<_, i64>(2)?;
+                            let f32_blob = if quant == 1 {
+                                vec_to_blob(&crate::quant::dequantize_i8(&bytes))
+                            } else {
+                                bytes
+                            };
+                            Ok((id, f32_blob))
+                        })?
                         .collect::<rusqlite::Result<Vec<_>>>()
                         .context("collect drawers_vec backfill rows")?;
                     collected
@@ -438,7 +474,7 @@ impl SqliteBackend {
         let scored: Vec<(f32, i64, String, String, Option<String>)> = {
             let conn = self.conn.lock().map_err(|_| anyhow!("poisoned mutex"))?;
             let mut sql = String::from(
-                "SELECT d.id, d.source_id, w.name AS wing, r.name AS room, e.bytes
+                "SELECT d.id, d.source_id, w.name AS wing, r.name AS room, e.bytes, e.quant
                  FROM drawers d
                  JOIN wings w ON w.id = d.wing_id
                  LEFT JOIN rooms r ON r.id = d.room_id
@@ -463,7 +499,8 @@ impl SqliteBackend {
                 let wing: String = row.get(2)?;
                 let room: Option<String> = row.get(3)?;
                 let bytes: Vec<u8> = row.get(4)?;
-                Ok((id, source, wing, room, bytes))
+                let quant: i64 = row.get(5)?;
+                Ok((id, source, wing, room, bytes, quant))
             })?;
 
             // `scored` capacity hint: `q.limit.max(64)` skips early Vec doublings
@@ -471,8 +508,8 @@ impl SqliteBackend {
             let mut scored: Vec<(f32, i64, String, String, Option<String>)> =
                 Vec::with_capacity(q.limit.max(64));
             for row in rows {
-                let (id, source, wing, room, bytes) = row?;
-                let emb = blob_to_vec(&bytes);
+                let (id, source, wing, room, bytes, quant) = row?;
+                let emb = decode_embedding(&bytes, quant);
                 let score = cosine(&q.embedding, &emb);
                 scored.push((score, id, source, wing, room));
             }
@@ -616,9 +653,10 @@ impl Backend for SqliteBackend {
                 )?;
             }
             let id = tx.last_insert_rowid();
+            let (emb_blob, emb_quant) = encode_embedding(&d.embedding);
             tx.execute(
-                "INSERT INTO drawer_embeddings(drawer_id, dim, bytes) VALUES (?1, ?2, ?3)",
-                params![id, d.embedding.len() as i64, vec_to_blob(&d.embedding)],
+                "INSERT INTO drawer_embeddings(drawer_id, dim, bytes, quant) VALUES (?1, ?2, ?3, ?4)",
+                params![id, d.embedding.len() as i64, emb_blob, emb_quant],
             )?;
             // Mirror 384-dim embeddings into the sqlite-vec ANN index.
             #[cfg(feature = "memory-vec")]
@@ -1090,6 +1128,50 @@ mod tests {
         assert_eq!(r.hits.len(), 2);
         assert_eq!(r.hits[0].body, "fox jumps");
         assert!(r.hits[0].score > 0.99);
+    }
+
+    // Without the sqlite-vec mirror, embeddings are stored as int8. Verify
+    // the row is actually quantized (quant=1, 4 + dim bytes) and that a KNN
+    // query still ranks the matching drawer first through the dequant path.
+    #[cfg(not(feature = "memory-vec"))]
+    #[test]
+    fn quantized_storage_round_trips() {
+        let dir = tempdir().unwrap();
+        let b = SqliteBackend::open(&dir.path().join("memory.db")).unwrap();
+        let e = HashEmbedder::new();
+        b.add(&[
+            ins(&e, "1", "fox jumps", "default"),
+            ins(&e, "2", "cat sleeps", "default"),
+        ])
+        .unwrap();
+
+        // On-disk encoding is int8: quant=1 and 4-byte scale + one byte/dim.
+        {
+            let conn = b.conn.lock().unwrap();
+            let (quant, len): (i64, i64) = conn
+                .query_row(
+                    "SELECT quant, length(bytes) FROM drawer_embeddings LIMIT 1",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(quant, 1, "no-vec build must store int8");
+            assert_eq!(len, 4 + 384, "int8 blob is scale + dim bytes");
+        }
+
+        let q = Query {
+            embedding: e.embed_one("fox jumps").unwrap(),
+            limit: 5,
+            wing: None,
+            room: None,
+        };
+        let r = b.query(&q).unwrap();
+        assert_eq!(r.hits[0].body, "fox jumps");
+        assert!(
+            r.hits[0].score > 0.99,
+            "dequantized cosine should stay near 1.0, got {}",
+            r.hits[0].score
+        );
     }
 
     #[test]

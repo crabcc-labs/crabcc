@@ -76,6 +76,7 @@ pub mod embed;
 pub mod loop_detect;
 pub mod mine;
 pub mod palace;
+pub mod quant;
 pub mod read;
 pub mod shell;
 #[cfg(test)]

@@ -57,7 +57,13 @@ CREATE TABLE IF NOT EXISTS drawer_embeddings (
     embedding_model  TEXT    NOT NULL DEFAULT 'hash-m0',
     -- Unix epoch when the embedding was computed. 0 = unknown (rows
     -- migrated from a pre-2.5.3 db where this column did not exist).
-    embedded_at      INTEGER NOT NULL DEFAULT 0
+    embedded_at      INTEGER NOT NULL DEFAULT 0,
+    -- Encoding of `bytes`: 0 = raw f32 LE (4 × dim bytes), 1 = symmetric
+    -- int8 (`[scale: f32 LE][i8; dim]`, 4 + dim bytes) via crate::quant.
+    -- Quantized rows are only written by builds without the `memory-vec`
+    -- feature; the sqlite-vec f32 mirror is never fed int8 bytes. Read
+    -- paths dequantize on the fly regardless of build.
+    quant            INTEGER NOT NULL DEFAULT 0
 );
 
 -- FTS5 contentless index over drawer bodies (M1). Keyed on drawers.id via

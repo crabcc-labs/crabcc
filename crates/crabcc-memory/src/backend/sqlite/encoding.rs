@@ -47,6 +47,9 @@ pub(super) fn fts_match_string(input: &str) -> String {
     terms.join(" OR ")
 }
 
+// Only the sqlite-vec mirror (memory-vec) encodes f32 → blob directly; the
+// default write path goes through `encode_embedding`.
+#[cfg(feature = "memory-vec")]
 pub(super) fn vec_to_blob(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|x| x.to_le_bytes()).collect()
 }
@@ -55,4 +58,33 @@ pub(super) fn blob_to_vec(b: &[u8]) -> Vec<f32> {
     b.chunks_exact(4)
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect()
+}
+
+/// Decode a `drawer_embeddings` row into an f32 vector, honoring `quant`:
+/// 0 = raw f32 LE, 1 = symmetric int8 (`crate::quant`). Centralized so the
+/// brute-force scan and the sqlite-vec backfill share identical semantics —
+/// the same role `body_from_row` plays for `body_enc`.
+pub(super) fn decode_embedding(bytes: &[u8], quant: i64) -> Vec<f32> {
+    if quant == 1 {
+        crate::quant::dequantize_i8(bytes)
+    } else {
+        blob_to_vec(bytes)
+    }
+}
+
+/// Encode an embedding for storage in `drawer_embeddings(bytes, quant)`.
+///
+/// Returns `(int8 blob, 1)` on builds without the `memory-vec` feature and
+/// `(f32 blob, 0)` otherwise. The gate is deliberate: with `memory-vec` on,
+/// `bytes` is mirrored verbatim into the sqlite-vec `FLOAT[384]` table, which
+/// would misread int8 bytes — so quantized rows are only ever produced by the
+/// brute-force-only build, where they cut embedding storage ~3.96x.
+#[cfg(not(feature = "memory-vec"))]
+pub(super) fn encode_embedding(v: &[f32]) -> (Vec<u8>, i64) {
+    (crate::quant::quantize_i8(v), 1)
+}
+
+#[cfg(feature = "memory-vec")]
+pub(super) fn encode_embedding(v: &[f32]) -> (Vec<u8>, i64) {
+    (vec_to_blob(v), 0)
 }
