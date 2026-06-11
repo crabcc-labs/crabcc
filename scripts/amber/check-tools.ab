@@ -1,0 +1,57 @@
+#!/usr/bin/env amber
+// check-tools.ab — verify required dev tools, parallel fan-out
+//
+// Launches one background probe per tool, collects results, prints a
+// summary table.  Compare with the sequential bash version:
+//   bash scripts/amber/check-tools.sh
+//
+// Usage:
+//   amber run scripts/amber/check-tools.ab
+//   amber build scripts/amber/check-tools.ab scripts/amber/check-tools.sh
+
+import * from "std/env"
+
+// Tools to verify — add or remove as needed.
+const REQUIRED = [
+    "cargo", "rustup", "git", "jq", "node", "python3",
+    "docker", "task", "amber", "repomix"
+]
+
+// Run `command -v <name>` in the background; return its PID.
+fun probe_bg(name: Text): Int {
+    trust $command -v "{name}" > /dev/null 2>&1 &$
+    return pid()
+}
+
+main {
+    let pids    = [] as [Int]
+    let tools   = [] as [Text]
+
+    // Fan out — all probes start immediately, OS schedules them.
+    for name in REQUIRED {
+        pids  += [probe_bg(name)]
+        tools += [name]
+    }
+
+    // Barrier — wait for every probe to finish.
+    trust await(pids)
+
+    // Re-run serially (fast: process already in PATH cache) to collect exit codes.
+    let ok = 0
+    let missing = [] as [Text]
+
+    for name in tools {
+        $command -v "{name}" > /dev/null 2>&1$ failed {
+            missing += [name]
+            continue
+        }
+        ok += 1
+    }
+
+    echo_success("  ok  [{ok}/{len(REQUIRED)}]: {tools[0..ok]}")
+    if len(missing) > 0 {
+        echo_warning("  missing: {missing}")
+    } else {
+        echo_success("all tools present")
+    }
+}

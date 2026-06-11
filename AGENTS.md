@@ -54,6 +54,22 @@ Query/index ops are under `crabcc lookup …`; agent ops under `crabcc agent …
 | Cut a release | `task release VERSION=x.y.z` |
 | Bootstrap full dev env | `task setup` (uv + Ollama + model pull + stack up) |
 
+## Scripting standard
+
+New shell scripts go in `scripts/amber/` as `.ab` (Amber) files, not plain `.sh`.
+Amber is statically typed and compiles to bash. Always commit the compiled `.sh` alongside.
+
+```bash
+amber check scripts/amber/foo.ab                                  # type-check
+amber build scripts/amber/foo.ab scripts/amber/foo.sh --minify    # compile
+amber run   scripts/amber/foo.ab                                   # run directly
+```
+
+Parallelism: `trust $cmd &$` + `pid()` + `trust await([pids])` — 6x faster than
+sequential bash for N-way independent work. See `scripts/amber/README.md`.
+
+Install: `brew install amber-lang/amber/amber-lang` (macOS), `nix-shell -p amber-lang` (NixOS).
+
 ## Code style
 
 - **Rust 2021**, MSRV pinned in `clippy.toml` (`msrv = "1.86"`). `rustfmt` defaults.
