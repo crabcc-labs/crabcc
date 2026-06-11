@@ -131,6 +131,9 @@ in {
 
         Restart = "on-failure";
         RestartSec = "5s";
+        MemoryDenyWriteExecute = true;
+        PrivateDevices = true;
+        PrivateIPC = true;
       };
     };
 
@@ -309,6 +312,7 @@ in {
       };
     };
 
-    # firewall wired in subsequent tasks
+    # ── Firewall: only expose 80 (redirect) and 443 (MCP HTTPS) ────────────
+    networking.firewall.allowedTCPPorts = [ 80 443 ];
   };
 }
