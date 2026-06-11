@@ -1,4 +1,8 @@
-//! Symmetric per-vector int8 quantization for embedding blobs.
+//! int8 and 1-bit (binary) quantization for embedding blobs.
+//!
+//! Two codecs live here: symmetric per-vector int8 (~3.96x, the no-vec
+//! default) and 1-bit sign quantization (32x, opt-in for edge devices,
+//! scored by Hamming distance — see the binary section below).
 //!
 //! Embeddings are L2-normalized f32 vectors (MiniLM-L6-v2 / `HashEmbedder`),
 //! so every component sits in `[-1, 1]`. Storing them as raw f32 costs
@@ -55,6 +59,63 @@ pub fn dequantize_i8(blob: &[u8]) -> Vec<f32> {
         .iter()
         .map(|&b| (b as i8) as f32 * scale)
         .collect()
+}
+
+// ─── 1-bit (binary) quantization ────────────────────────────────────────
+//
+// The extreme edge case: keep only the sign of each component, one bit per
+// dim, packed `ceil(dim/8)` bytes — 48 B at dim 384, a 32x reduction vs f32.
+// Magnitude is discarded, so this is a coarse approximation: similarity is
+// measured by Hamming distance (popcount of the XOR), which for sign-bit
+// vectors tracks cosine as `cos ≈ 1 − 2·hamming/dim`. Recall is lower than
+// int8 — intended for memory-bound edge devices, opt-in via the
+// `CRABCC_EMBED_QUANT=binary` env var, never the default.
+
+/// Pack the sign bits of `v` into `ceil(dim/8)` bytes. Bit `i` (LSB-first
+/// within each byte) is 1 when `v[i] >= 0.0`. Unused high bits of the final
+/// byte stay 0, so two blobs of the same dim agree on padding and it never
+/// affects a Hamming comparison.
+pub fn quantize_binary(v: &[f32]) -> Vec<u8> {
+    let mut out = vec![0u8; v.len().div_ceil(8)];
+    for (i, &x) in v.iter().enumerate() {
+        if x >= 0.0 {
+            out[i / 8] |= 1 << (i % 8);
+        }
+    }
+    out
+}
+
+/// Reconstruct an L2-normalized ±1 vector from a `quantize_binary` blob.
+/// Lossy (magnitude is gone); used only to feed a quant=2 row into the
+/// f32-only sqlite-vec mirror when a quantized db is opened by a vec build.
+pub fn dequantize_binary(blob: &[u8], dim: usize) -> Vec<f32> {
+    let norm = if dim > 0 {
+        1.0 / (dim as f32).sqrt()
+    } else {
+        0.0
+    };
+    (0..dim)
+        .map(|i| {
+            let bit = (blob[i / 8] >> (i % 8)) & 1;
+            if bit == 1 {
+                norm
+            } else {
+                -norm
+            }
+        })
+        .collect()
+}
+
+/// Cosine-equivalent similarity of two `quantize_binary` blobs over `dim`
+/// bits: `1 − 2·hamming/dim`, in `[-1, 1]` (higher = better, matching the
+/// cosine convention used by the brute-force ranker). Padding bits are 0 in
+/// both blobs so they contribute no Hamming distance.
+pub fn hamming_score(a: &[u8], b: &[u8], dim: usize) -> f32 {
+    if dim == 0 || a.len() != b.len() {
+        return 0.0;
+    }
+    let hamming: u32 = a.iter().zip(b).map(|(x, y)| (x ^ y).count_ones()).sum();
+    1.0 - 2.0 * (hamming as f32) / (dim as f32)
 }
 
 #[cfg(test)]
@@ -147,6 +208,60 @@ mod tests {
             let v = unit_vec(0x55, dim);
             let back = dequantize_i8(&quantize_i8(&v));
             assert_eq!(back.len(), dim);
+        }
+    }
+
+    // ─── binary (1-bit) quantization ──────────────────────────────────
+
+    #[test]
+    fn binary_blob_is_ceil_dim_over_8_bytes() {
+        assert_eq!(quantize_binary(&unit_vec(0x1, 384)).len(), 48); // 32x vs 1536
+        assert_eq!(quantize_binary(&unit_vec(0x1, 385)).len(), 49); // rounds up
+        assert_eq!(quantize_binary(&unit_vec(0x1, 1)).len(), 1);
+    }
+
+    #[test]
+    fn hamming_score_self_is_one() {
+        let bits = quantize_binary(&unit_vec(0xfeed, 384));
+        assert!((hamming_score(&bits, &bits, 384) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn hamming_score_inverse_is_minus_one() {
+        // A vector and its negation flip every sign bit → max Hamming → -1.
+        let v = unit_vec(0xabc, 384);
+        let neg: Vec<f32> = v.iter().map(|x| -x).collect();
+        let s = hamming_score(&quantize_binary(&v), &quantize_binary(&neg), 384);
+        // -0.0 stays positive in our `>= 0.0` test, so a handful of exact-zero
+        // components may not flip; allow a tiny margin.
+        assert!(s < -0.99, "expected ~-1.0 for negated vector, got {s}");
+    }
+
+    #[test]
+    fn hamming_score_ranks_self_above_unrelated() {
+        // The ranking property the brute-force path relies on: a vector's own
+        // bits score higher than an unrelated vector's bits.
+        let q = unit_vec(0x111, 384);
+        let other = unit_vec(0x222, 384);
+        let q_bits = quantize_binary(&q);
+        let self_score = hamming_score(&q_bits, &q_bits, 384);
+        let other_score = hamming_score(&q_bits, &quantize_binary(&other), 384);
+        assert!(
+            self_score > other_score,
+            "self {self_score} should outrank unrelated {other_score}"
+        );
+    }
+
+    #[test]
+    fn dequantize_binary_is_unit_norm_signs() {
+        let v = unit_vec(0x9, 384);
+        let back = dequantize_binary(&quantize_binary(&v), 384);
+        assert_eq!(back.len(), 384);
+        let n: f32 = back.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!((n - 1.0).abs() < 1e-4, "expected unit norm, got {n}");
+        // Signs must match the original components.
+        for (o, b) in v.iter().zip(&back) {
+            assert_eq!(*o >= 0.0, *b >= 0.0, "sign mismatch");
         }
     }
 }

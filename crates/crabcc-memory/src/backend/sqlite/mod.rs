@@ -325,10 +325,10 @@ impl SqliteBackend {
                             let id = r.get::<_, i64>(0)?;
                             let bytes = r.get::<_, Vec<u8>>(1)?;
                             let quant = r.get::<_, i64>(2)?;
-                            let f32_blob = if quant == 1 {
-                                vec_to_blob(&crate::quant::dequantize_i8(&bytes))
-                            } else {
-                                bytes
+                            let f32_blob = match quant {
+                                1 => vec_to_blob(&crate::quant::dequantize_i8(&bytes)),
+                                2 => vec_to_blob(&crate::quant::dequantize_binary(&bytes, 384)),
+                                _ => bytes,
                             };
                             Ok((id, f32_blob))
                         })?
@@ -507,10 +507,18 @@ impl SqliteBackend {
             // in the common case without over-allocating on small queries.
             let mut scored: Vec<(f32, i64, String, String, Option<String>)> =
                 Vec::with_capacity(q.limit.max(64));
+            // Sign-bit projection of the query, reused for every quant=2
+            // (binary) row. Cheap to compute once; unused if no such rows.
+            let q_bin = crate::quant::quantize_binary(&q.embedding);
             for row in rows {
                 let (id, source, wing, room, bytes, quant) = row?;
-                let emb = decode_embedding(&bytes, quant);
-                let score = cosine(&q.embedding, &emb);
+                // quant=2 rows store sign bits only, scored by Hamming
+                // (cosine-equivalent); quant=0/1 dequantize to f32 cosine.
+                let score = if quant == 2 {
+                    crate::quant::hamming_score(&q_bin, &bytes, q.embedding.len())
+                } else {
+                    cosine(&q.embedding, &decode_embedding(&bytes, quant))
+                };
                 scored.push((score, id, source, wing, room));
             }
             scored.sort_unstable_by(|a, b| {
@@ -1170,6 +1178,59 @@ mod tests {
         assert!(
             r.hits[0].score > 0.99,
             "dequantized cosine should stay near 1.0, got {}",
+            r.hits[0].score
+        );
+    }
+
+    // 1-bit binary rows (quant=2, the CRABCC_EMBED_QUANT=binary edge mode)
+    // store 48 bytes/vec and are scored by Hamming. Rewrite rows directly
+    // rather than racing the process-wide env var across parallel tests.
+    #[cfg(not(feature = "memory-vec"))]
+    #[test]
+    fn binary_quant_hamming_retrieval() {
+        let dir = tempdir().unwrap();
+        let b = SqliteBackend::open(&dir.path().join("memory.db")).unwrap();
+        let e = HashEmbedder::new();
+        let ids = b
+            .add(&[
+                ins(&e, "1", "fox jumps", "default"),
+                ins(&e, "2", "cat sleeps", "default"),
+            ])
+            .unwrap();
+        {
+            let conn = b.conn.lock().unwrap();
+            for (body, id) in [("fox jumps", ids[0]), ("cat sleeps", ids[1])] {
+                let bits = crate::quant::quantize_binary(&e.embed_one(body).unwrap());
+                conn.execute(
+                    "UPDATE drawer_embeddings SET bytes = ?1, quant = 2 WHERE drawer_id = ?2",
+                    params![bits, id],
+                )
+                .unwrap();
+            }
+            let len: i64 = conn
+                .query_row(
+                    "SELECT length(bytes) FROM drawer_embeddings WHERE drawer_id = ?1",
+                    [ids[0]],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(len, 48, "binary blob is ceil(384/8) = 48 bytes");
+        }
+
+        let q = Query {
+            embedding: e.embed_one("fox jumps").unwrap(),
+            limit: 5,
+            wing: None,
+            room: None,
+        };
+        let r = b.query(&q).unwrap();
+        assert_eq!(
+            r.hits[0].body, "fox jumps",
+            "Hamming path must rank the exact match first"
+        );
+        assert!(
+            r.hits[0].score > 0.99,
+            "self Hamming score should be ~1.0, got {}",
             r.hits[0].score
         );
     }

@@ -74,14 +74,20 @@ pub(super) fn decode_embedding(bytes: &[u8], quant: i64) -> Vec<f32> {
 
 /// Encode an embedding for storage in `drawer_embeddings(bytes, quant)`.
 ///
-/// Returns `(int8 blob, 1)` on builds without the `memory-vec` feature and
-/// `(f32 blob, 0)` otherwise. The gate is deliberate: with `memory-vec` on,
-/// `bytes` is mirrored verbatim into the sqlite-vec `FLOAT[384]` table, which
-/// would misread int8 bytes — so quantized rows are only ever produced by the
-/// brute-force-only build, where they cut embedding storage ~3.96x.
+/// Returns `(f32 blob, 0)` on `memory-vec` builds. Without `memory-vec`, the
+/// brute-force-only build quantizes: int8 (`quant=1`, ~3.96x) by default, or
+/// 1-bit binary (`quant=2`, 32x) when `CRABCC_EMBED_QUANT=binary` is set —
+/// the memory-bound edge option, which trades recall for footprint. The gate
+/// is deliberate: with `memory-vec` on, `bytes` is mirrored verbatim into the
+/// sqlite-vec `FLOAT[384]` table, which would misread quantized bytes, so
+/// quantized rows are only ever produced by the brute-force-only build.
 #[cfg(not(feature = "memory-vec"))]
 pub(super) fn encode_embedding(v: &[f32]) -> (Vec<u8>, i64) {
-    (crate::quant::quantize_i8(v), 1)
+    if std::env::var("CRABCC_EMBED_QUANT").as_deref() == Ok("binary") {
+        (crate::quant::quantize_binary(v), 2)
+    } else {
+        (crate::quant::quantize_i8(v), 1)
+    }
 }
 
 #[cfg(feature = "memory-vec")]
