@@ -1,4 +1,0 @@
-# Loaded once before each `bun test` run. Registers happy-dom so React
-# components can be tested against a real DOM. See test/setup.ts.
-[test]
-preload = ["./test/setup.ts"]
