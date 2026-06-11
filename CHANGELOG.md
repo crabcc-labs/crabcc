@@ -8,6 +8,50 @@ All notable changes to crabcc are documented here. Format follows
 
 ### Added
 
+- **Mastodon social tools for AI agents.** `crabcc-mcp` now exposes three
+  Mastodon tools — `mastodon.post`, `mastodon.read`, `mastodon.verify` — so
+  agents can post statuses, read timelines, and verify credentials. Tokens are
+  resolved from the environment only (never through tool args): three-tier
+  lookup (`MASTODON_TOKEN_<BOT>`, `<BOT>_TOKEN`, `MASTODON_TOKEN`). Per-token
+  rate limiting (5 posts per 48h), SQLite-backed response cache with TTL, and
+  idempotency-key support for at-most-once delivery. SSRF-protected URL
+  validation (https-only, no userinfo/fragment/query), OAuth2 token format
+  validation, and hashtag encoding. 136 tests including 27 security probes.
+  (`mastodon.rs`, 1,486 lines)
+- **HTTP transport with SSE, content negotiation, and gzip compression.**
+  `crabcc serve --http <addr>` now exposes the full MCP JSON-RPC surface over
+  HTTP with three endpoints: `POST /mcp` (JSON-RPC), `GET /sse` (Server-Sent
+  Events negotiation), and `GET /` (admin dashboard). Content negotiation
+  supports `application/json` and `application/msgpack` (MessagePack, 30-50%
+  smaller payloads) via standard `Content-Type` / `Accept` headers. SSE
+  responses include monotonic event IDs for `Last-Event-Id` resumption. gzip
+  compression with a 128-byte threshold. Bearer auth support for the MCP
+  endpoint. Security headers on every response (`X-Content-Type-Options`,
+  `Referrer-Policy`, `Server`). (`transport.rs`, 712 lines)
+- **Admin dashboard** (`GET /`). Embedded single-page HTML dashboard
+  (`dashboard.html`) served by the HTTP transport. Displays server uptime,
+  cache stats, per-token rate-limit gauges, and a live request-history table
+  (polling `/stats` every 5s). Dark terminal theme matching the crabcc
+  dashboard (`#0e0e10` page, `#161618` cards, `#ff8c42` accent, JetBrains
+  Mono). Localhost-only — no external binding.
+- **NixOS gateway module.** New `install/nixos/crabcc-gateway.nix` module
+  skeleton plus Traefik static/dynamic config (ACME + entrypoints, middlewares,
+  router, TLS), oauth2-proxy GitHub ForwardAuth, crabcc-mcp systemd unit with
+  hardening, firewall rules, and sandbox tightening. End-to-end from TLS
+  termination through auth to the MCP server.
+- **Forgejo crabcc theme.** Drop-in custom CSS (`install/forgejo/crabcc-theme.css`,
+  607 lines) applying the crabcc design system to git.crabcc.app (Forgejo).
+  Interactive deploy task: `task forgejo-theme` (ssh, local, docker, or NixOS).
+  Two themes: `crabcc-dark` (default — `#0e0e10` / `#ff8c42`) and `crabcc`
+  (light). Covers nav, buttons, cards, code blocks, diffs, forms, labels,
+  scrollbars, and selection.
+- **Post-review hardening.** SHA-256 replaces djb2 for cache/rate-limit keys
+  (eliminates hash-collision risk between tokens). Mutex poison recovery on all
+  seven production lock sites — a panic in one request handler no longer kills
+  the server. SSE error JSON injection fixed (malformed JSON on error messages
+  containing quotes). gzip `Content-Encoding` header now only set when
+  compression actually shrinks the payload. OpenAPI spec drift closed:
+  `openapi.yaml` now lists all 3 Mastodon tools plus the `RateLimit` schema.
 - **C, Zig, Markdown, YAML, and CSV support in the indexer.** C (`.c`/`.h`)
   and Zig (`.zig`) are full code-path extractors: symbols (functions,
   structs/enums/unions, typedefs, `#define` macros; Zig containers declared

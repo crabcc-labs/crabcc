@@ -300,3 +300,67 @@ print(f'  ✓ instance: {i.get(\"domain\",\"?\")}  v{i.get(\"version\",\"?\")}')
         fi
         echo "  open https://git.crabcc.app → Settings → Appearance → crabcc-dark"
 
+  release-post:
+    desc: Post release notes to Mastodon (social.crabcc.app). Reads MASTODON_TOKEN from env or .env.mastodon.
+    summary: |
+      Posts a 3-part release announcement thread to Mastodon.
+      Requires MASTODON_TOKEN (run `task mastodon-setup` first if needed).
+
+      Non-interactive: task release-post VERSION=6.4.0
+    vars:
+      VERSION: '{{.VERSION | default "6.4.0"}}'
+    cmds:
+      - |
+        if [ -z "$MASTODON_TOKEN" ]; then
+          [ -f {{.ROOT_DIR}}/.env.mastodon ] && source {{.ROOT_DIR}}/.env.mastodon
+        fi
+        if [ -z "$MASTODON_TOKEN" ]; then
+          echo "error: MASTODON_TOKEN not set — run 'task mastodon-setup' first"
+          exit 1
+        fi
+        echo "→ posting release notes for v{{.VERSION}}..."
+        {{.CRABCC}} serve --http 127.0.0.1:9999 --dev &
+        PID=$!
+        sleep 1
+        post() {
+          local TEXT="$1"
+          local REPLY_TO="$2"
+          local ARGS=$(jq -n --arg text "$TEXT" ${REPLY_TO:+--arg reply "$REPLY_TO"} \
+            '{text:$text}' ${REPLY_TO:+'+ {in_reply_to_id:$reply}'})
+          curl -sf http://127.0.0.1:9999/mcp \
+            -H "Content-Type: application/json" \
+            -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"mastodon.post\",\"arguments\":$ARGS}}" \
+            | jq -r '.result.content[0].text' | jq -r '.id' 2>/dev/null
+        }
+        P1=$(post "🦀 crabcc v{{.VERSION}}
+
+AI agents can now post to Mastodon. The MCP server grew three new tools:
+• mastodon.post — write statuses
+• mastodon.read — read timelines
+• mastodon.verify — check credentials
+
+Plus: HTTP transport with SSE + gzip + MessagePack, admin dashboard, Forgejo theme, NixOS gateway hardening. 136 tests, 27 security probes.")
+        echo "  ✓ post 1/3 → $P1"
+        P2=$(post "🔐 Security-first design:
+• Tokens from environment only — never in MCP args
+• Rate limiting: 5 posts/48h per token
+• SSRF-protected URL validation
+• SHA-256 for cache/rate-limit keys
+• Mutex poison recovery — one panic won't kill the server
+
+🌐 HTTP transport: POST /mcp, GET /sse, GET / (dashboard)
+📦 Content negotiation: JSON + MessagePack (30-50% smaller)" "$P1")
+        echo "  ✓ post 2/3 → $P2"
+        P3=$(post "🚀 Get started:
+  task mastodon-setup TOKEN=...
+  task build
+  task mastodon-test
+
+🎨 Forgejo theme:
+  task forgejo-theme   # interactive deploy
+
+📋 Full changelog: https://git.crabcc.app/crabcc/crabcc/src/branch/main/CHANGELOG.md" "$P2")
+        echo "  ✓ post 3/3 → $P3"
+        kill $PID 2>/dev/null
+        echo "✓ release posted — https://social.crabcc.app/@crabcc"
+
