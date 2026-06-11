@@ -7,6 +7,7 @@
 
 use crate::mastodon;
 use crate::memory;
+use crate::ntfy;
 use crate::schema::{arg_str, tools_def_for};
 use crate::{
     dev_mode_from_env, error_response, hits_to_ndjson, list_indexed_files, load_or_build_graph,
@@ -16,6 +17,9 @@ use anyhow::Result;
 use crabcc_core::{fts::Fts, index, outline, query, store::Store};
 use serde_json::{json, Value};
 use std::path::Path;
+use std::sync::LazyLock;
+
+static EMPTY_ARGS: LazyLock<Value> = LazyLock::new(|| json!({}));
 
 pub fn handle(req: &Value, root: &Path) -> Value {
     handle_with(req, root, dev_mode_from_env())
@@ -109,7 +113,7 @@ fn dispatch_tool_with(
         .get("name")
         .and_then(|s| s.as_str())
         .ok_or_else(|| anyhow::anyhow!("missing tool name"))?;
-    let args = p.get("arguments").cloned().unwrap_or(json!({}));
+    let args = p.get("arguments").unwrap_or(&*EMPTY_ARGS);
     tracing::debug!(target: "crabcc_mcp", tool, "dispatch: enter");
     let result = dispatch_tool_inner(tool, args, root, dev, store);
     let elapsed_ms = started.elapsed().as_millis() as u64;
@@ -124,7 +128,7 @@ fn dispatch_tool_with(
 
 fn dispatch_tool_inner(
     tool: &str,
-    args: Value,
+    args: &Value,
     root: &Path,
     dev: bool,
     cache: &mut Option<Store>,
@@ -156,7 +160,7 @@ fn dispatch_tool_inner(
         if inner_tool == "ctx" {
             anyhow::bail!("ctx: cannot dispatch ctx -> ctx");
         }
-        let inner_args = args.get("args").cloned().unwrap_or_else(|| json!({}));
+        let inner_args = args.get("args").unwrap_or(&*EMPTY_ARGS);
         return dispatch_tool_inner(inner_tool, inner_args, root, dev, cache);
     }
 
@@ -350,6 +354,7 @@ fn dispatch_tool_inner(
                 .map(|h| h.file)
                 .collect();
             memory::auto_capture(root, "write_file", path, 1, &args);
+            ntfy::on_write(path, content.len());
             let env = serde_json::json!({
                 "wrote": { "path": path, "bytes": content.len() },
                 "validation": {
@@ -392,6 +397,8 @@ fn dispatch_tool_inner(
         "index" => {
             let started = std::time::Instant::now();
             let r = index::full_index(root, store)?;
+            let elapsed_ms = started.elapsed().as_millis() as u64;
+            ntfy::on_index(r.symbols, elapsed_ms);
             // Logs flag: when truthy, return an envelope with stats +
             // elapsed_ms + (empty here — in-process logs aren't piped).
             // Mirrors the shape of /api/reindex from crabcc-viz so the
@@ -403,7 +410,7 @@ fn dispatch_tool_inner(
             {
                 let env = serde_json::json!({
                     "stats": r,
-                    "elapsed_ms": started.elapsed().as_millis() as u64,
+                    "elapsed_ms": elapsed_ms,
                     "logs": Vec::<String>::new(),
                 });
                 return Ok(env.to_string());
@@ -415,11 +422,18 @@ fn dispatch_tool_inner(
                 .get("delta")
                 .and_then(|v| v.as_bool())
                 .unwrap_or_default();
+            let started = std::time::Instant::now();
             if want_delta {
                 let d = index::refresh_delta(root, store)?;
+                let elapsed_ms = started.elapsed().as_millis() as u64;
+                let updated = d.added.len() + d.modified.len();
+                ntfy::on_refresh(updated, elapsed_ms);
                 Ok(serde_json::to_string(&d)?)
             } else {
                 let r = index::refresh(root, store)?;
+                let elapsed_ms = started.elapsed().as_millis() as u64;
+                let updated = r.new + r.reindexed;
+                ntfy::on_refresh(updated, elapsed_ms);
                 Ok(serde_json::to_string(&r)?)
             }
         }

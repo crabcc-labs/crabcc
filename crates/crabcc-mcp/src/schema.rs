@@ -12,6 +12,10 @@
 use crate::{dev_mode_from_env, mastodon, memory};
 use anyhow::Result;
 use serde_json::{json, Value};
+use std::sync::OnceLock;
+
+static TOOLS_RELEASE: OnceLock<Vec<Value>> = OnceLock::new();
+static TOOLS_DEV: OnceLock<Vec<Value>> = OnceLock::new();
 
 /// Default tool surface — equivalent to `tools_def_for(dev_mode_from_env())`.
 /// Existing callers (notably the OpenAPI drift test) keep working unchanged.
@@ -19,7 +23,8 @@ pub fn tools_def() -> Vec<Value> {
     tools_def_for(dev_mode_from_env())
 }
 
-/// Tool surface gated on the dev flag.
+/// Tool surface gated on the dev flag. The result is built once and cached
+/// for the process lifetime — tool schemas are compile-time constants.
 ///
 /// **Default (dev=false)** — agent-facing surface. Drops the meta
 /// tools (`_openapi`, `_health`) which are diagnostic-only and
@@ -29,13 +34,18 @@ pub fn tools_def() -> Vec<Value> {
 /// Use when generating SDK bindings, when tooling needs the OpenAPI
 /// dump, or when a CI matrix wants to drift-check the full schema.
 pub fn tools_def_for(dev: bool) -> Vec<Value> {
-    let mut all = tools_def_symbol();
-    all.extend(mastodon::tools_def());
-    all.extend(memory::tools_def());
-    if dev {
-        all.extend(tools_def_meta());
-    }
-    all
+    let cache = if dev { &TOOLS_DEV } else { &TOOLS_RELEASE };
+    cache
+        .get_or_init(|| {
+            let mut all = tools_def_symbol();
+            all.extend(mastodon::tools_def());
+            all.extend(memory::tools_def());
+            if dev {
+                all.extend(tools_def_meta());
+            }
+            all
+        })
+        .clone()
 }
 
 /// Meta tools — describe the server itself rather than the underlying

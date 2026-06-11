@@ -55,6 +55,7 @@ use flate2::write::GzEncoder;
 use flate2::Compression;
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
+use sonic_rs;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -184,6 +185,15 @@ fn serialize_body(value: &Value, fmt: Format) -> Result<Vec<u8>, String> {
 
 // ── stdio transport ─────────────────────────────────────────────────
 
+/// Serialize a JSON value to a writer.
+/// Uses sonic-rs SIMD path (to_vec) with serde_json fallback, matching `deserialize_body`.
+#[inline]
+fn write_json<W: Write>(writer: &mut W, value: &Value) -> anyhow::Result<()> {
+    let bytes = sonic_rs::to_vec(value)
+        .or_else(|_| serde_json::to_vec(value))?;
+    writer.write_all(&bytes).map_err(Into::into)
+}
+
 /// Serve the MCP stdio transport. Callers pass the dev-mode flag
 /// explicitly; resolve it from the env via [`crate::dev_mode_from_env`]
 /// if you want the legacy `MCP_DEV=1` behaviour.
@@ -244,14 +254,15 @@ where
         if buf.iter().all(|b| b.is_ascii_whitespace()) {
             continue;
         }
-        // serde_json::from_slice tolerates leading whitespace per RFC
-        // 7159, so the bytes-only frame check above is the only
-        // pre-parse work needed.
-        let req: Value = match serde_json::from_slice(&buf) {
+        // sonic-rs SIMD fast path (SSE4.2/AVX2) with serde_json fallback,
+        // matching the HTTP transport's deserialize_body pattern.
+        let req: Value = match sonic_rs::from_slice::<Value>(&buf)
+            .or_else(|_| serde_json::from_slice::<Value>(&buf))
+        {
             Ok(v) => v,
             Err(e) => {
                 let resp = error_response(None, -32700, &format!("parse error: {e}"));
-                serde_json::to_writer(&mut writer, &resp)?;
+                write_json(&mut writer, &resp)?;
                 writer.write_all(b"\n")?;
                 writer.flush()?;
                 continue;
@@ -263,7 +274,7 @@ where
         if resp.is_null() {
             continue;
         }
-        serde_json::to_writer(&mut writer, &resp)?;
+        write_json(&mut writer, &resp)?;
         writer.write_all(b"\n")?;
         writer.flush()?;
     }

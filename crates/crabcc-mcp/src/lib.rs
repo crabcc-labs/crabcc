@@ -18,6 +18,7 @@ use std::path::Path;
 mod dispatch;
 pub mod mastodon;
 pub mod memory;
+pub(crate) mod ntfy;
 mod schema;
 pub(crate) mod transport;
 
