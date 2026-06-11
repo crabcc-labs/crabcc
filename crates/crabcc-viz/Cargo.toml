@@ -3,7 +3,7 @@ name = "crabcc-viz"
 # Standalone — excluded from the workspace (see root Cargo.toml comment) so
 # `version.workspace = true` would fail to find its workspace.package source.
 # Catches up to v4 (symbol-id-keyed CallGraph) in v4.0.1; tracked in #551.
-version      = "6.4.1"
+version      = "6.5.0"
 edition      = "2021"
 rust-version = "1.86"
 license      = "MIT"
