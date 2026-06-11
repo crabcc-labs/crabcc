@@ -94,7 +94,7 @@
         # ── wormhole packages (crane + fenix nightly) ──────────────────────────
         # Use the latest nightly — matches `channel = "nightly"` in rust-toolchain.toml.
         # For a reproducible pin, replace with fenix.packages.${system}.fromToolchainFile.
-        nightlyToolchain = fenix.packages.${system}.complete.latest.toolchain;
+        nightlyToolchain = fenix.packages.${system}.complete.toolchain;
         craneLib = (crane.mkLib pkgs).overrideToolchain nightlyToolchain;
 
         wormholeSrc = craneLib.cleanCargoSource ./.;
