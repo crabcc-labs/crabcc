@@ -1,3 +1,9 @@
+# Empty [workspace] makes this crate its own workspace root: standalone, never
+# joining the crabcc workspace. Required because git worktrees nest this crate
+# under the main checkout's tree, where the outer root's `exclude` does not
+# cover the worktree path and would otherwise pull it into that workspace.
+[workspace]
+
 [package]
 name = "swe-team"
 version = "0.1.0"
