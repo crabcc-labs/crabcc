@@ -13,6 +13,7 @@ import { Icon } from "../icons";
 import type { AgentSummary } from "./types";
 import { uptimeLabel } from "./store";
 import { useAgentLog } from "./useAgentLog";
+import { useWormholeSessions } from "./useWormholeSessions";
 
 interface Props {
   agent: AgentSummary;
@@ -30,6 +31,7 @@ export const AgentDetail = memo(function AgentDetail({
   onClose,
 }: Props) {
   const { body, loading } = useAgentLog(agent.id, true);
+  const wormholeSessions = useWormholeSessions();
 
   const startedHuman =
     agent.started_ts !== undefined
@@ -80,6 +82,18 @@ export const AgentDetail = memo(function AgentDetail({
           </>
         ) : null}
       </dl>
+      {wormholeSessions.length > 0 ? (
+        <div className="agents-detail-wormhole">
+          <div className="agents-detail-loglabel">wormhole sessions</div>
+          {wormholeSessions.map((s) => (
+            <div key={s.session_hex} className="wormhole-session-row">
+              <span className="wormhole-node">node:{s.node_id_hex}</span>
+              <span className="wormhole-route">{s.route}</span>
+              <span className="wormhole-ts">{new Date(s.connected_at * 1000).toLocaleTimeString()}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
       {agent.prompt_preview ? (
         <div className="agents-detail-prompt">{agent.prompt_preview}</div>
       ) : null}

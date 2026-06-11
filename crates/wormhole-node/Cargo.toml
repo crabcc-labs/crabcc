@@ -1,0 +1,14 @@
+# wormhole-node — daemon side, integrates Godfather session registry (Wave 2 Task 5).
+#
+# Planned deps (add when implementing):
+#   wormhole-proto, snow, tokio-tungstenite, crabcc-godfather, spake2
+
+[package]
+name = "wormhole-node"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }

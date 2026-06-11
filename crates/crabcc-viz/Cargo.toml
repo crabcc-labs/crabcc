@@ -14,8 +14,9 @@ repository   = "https://github.com/peterlodri-sec/crabcc"
 # so `workspace = true` inheritance can't be used here. Versions track
 # the workspace's [workspace.dependencies] table; keep in sync until viz
 # catches up to the v4 graph API in v4.0.1 and rejoins the workspace.
-crabcc-core   = { path = "../crabcc-core" }
-crabcc-memory = { path = "../crabcc-memory" }
+crabcc-core     = { path = "../crabcc-core" }
+crabcc-memory   = { path = "../crabcc-memory" }
+wormhole-proto  = { path = "../wormhole-proto" }
 # `crabcc-fetch` brings the async URL fetcher + html→md cleaner the
 # `/api/memory/ingest` endpoint pipes drawers through.
 crabcc-fetch  = { path = "../crabcc-fetch" }
