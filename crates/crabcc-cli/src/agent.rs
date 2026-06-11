@@ -51,24 +51,6 @@ const DEFAULT_OLLAMA_MODEL: &str = "ollama/qwen2.5-coder";
 /// Requires `DEEPSEEK_API_KEY` in LiteLLM's env. Override with `--model`.
 const DEFAULT_DEEPSEEK_MODEL: &str = "deepseek-code-whale";
 
-/// Tailscale MagicDNS hostname pattern for wormhole relay auto-discovery.
-/// Replace `{tailnet}` with the tailnet name (e.g. `tail1234.ts.net`).
-/// Used by bg-compute to check relay connectivity without a static IP.
-const MAGICDNS_RELAY_HOST_PATTERN: &str = "wormhole-relay.{tailnet}";
-
-/// Default wormhole relay WebSocket port. Matches `WORMHOLE_PORT` default
-/// in wormhole-relay/src/main.rs.
-const WORMHOLE_DEFAULT_PORT: u16 = 4443;
-
-/// LiteLLM context compression trigger (tokens). When a prompt exceeds this
-/// threshold, the proxy compresses it before sending to the upstream provider.
-/// Mirrors `compression_interception_params.compression_trigger` in litellm.config.yaml.
-const CONTEXT_APERTURE_TRIGGER: usize = 10_000;
-
-/// LiteLLM context compression target (tokens). The proxy compresses the
-/// prompt down to this size. Mirrors `compression_interception_params.compression_target`.
-const CONTEXT_APERTURE_TARGET: usize = 7_000;
-
 /// Where Claude Code looks for skills. `crabcc install-claude` symlinks
 /// `skill/crabcc/SKILL.md` into the directory below; if that file is
 /// missing we warn the user (without aborting — agent will still run,
