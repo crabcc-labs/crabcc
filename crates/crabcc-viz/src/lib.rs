@@ -51,6 +51,11 @@ const BUNDLED_INDEX: &str = include_str!("../assets/index.html");
 /// self-contained (no React build step) so `crabcc memory ui` can open a
 /// working page on any checkout without running `bun run build`.
 const BUNDLED_MEMORY: &str = include_str!("../assets/memory.html");
+/// Private preview of the agent-monitor dashboard at `/eye`. Token-gated via
+/// `CRABCC_EYE_TOKEN` — invisible (404) unless the env var is set, so it's
+/// reachable only by whoever holds the token (the operator + tools they share
+/// it with). The public dashboard lives in the standalone crabcc.app-eye.
+const BUNDLED_EYE: &str = include_str!("../assets/eye.html");
 
 /// OpenAPI 3.1 source-of-truth for the `/live` HTTP API (issue #170 phase 0).
 ///
@@ -170,6 +175,17 @@ pub fn serve_with_listener(listener: TcpListener, root: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The invite token for the `/eye` private preview. `None` (route invisible)
+/// unless `CRABCC_EYE_TOKEN` is set to a non-empty value.
+fn eye_token() -> Option<String> {
+    if let Ok(v) = std::env::var("CRABCC_EYE_TOKEN") {
+        if !v.is_empty() {
+            return Some(v);
+        }
+    }
+    None
+}
+
 fn handle(request: Request, root: &Path) -> Result<()> {
     let method = request.method().clone();
     let url = request.url().to_string();
@@ -236,13 +252,26 @@ fn handle(request: Request, root: &Path) -> Result<()> {
         // deployment (crabcc.app-eye). `crabcc serve` is now API-only;
         // redirect human visitors to the real dashboard. The
         // interactive call-graph viewer lives at `/graph`; `/live`
-        // stays as a back-compat alias so old bookmarks redirect too.
-        // `/eye` (the old in-tree agent monitor) also redirects now — the
-        // dashboard lives in the standalone crabcc.app-eye, not bundled here.
-        "/" | "/index.html" | "/live" | "/eye" => redirect_to_app_eye(request),
+        // stays as a back-compat alias so old bookmarks redirect too. The
+        // public dashboard now lives in the standalone crabcc.app-eye.
+        "/" | "/index.html" | "/live" => redirect_to_app_eye(request),
         "/graph" => respond_html(request, BUNDLED_INDEX),
         // Cross-repo memory browser — the front-door for `crabcc memory ui`.
         "/memory" => respond_html(request, BUNDLED_MEMORY),
+        // Private preview of the agent monitor — invite-token gated. Invisible
+        // (404) when CRABCC_EYE_TOKEN is unset; 401 when set but caller didn't
+        // supply ?token=. Reachable only by whoever holds the token.
+        "/eye" => match eye_token() {
+            None => respond_status(request, 404, "not found"),
+            Some(tok) => {
+                let provided = query.split('&').find_map(|kv| kv.strip_prefix("token="));
+                if provided == Some(tok.as_str()) {
+                    respond_html(request, BUNDLED_EYE)
+                } else {
+                    respond_status(request, 401, "invite token required: add ?token=<CRABCC_EYE_TOKEN>")
+                }
+            }
+        },
         "/api/events" => sse_events(request, root.to_path_buf()),
         "/api/health" => respond_json(request, &serde_json::json!({ "status": "ok" })),
         // #172 — surface the hand-maintained OpenAPI spec so the
