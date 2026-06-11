@@ -13,6 +13,8 @@ crabcc setup install-integrations --target claude --yes
 |--------|----------------|
 | `claude` | Delegates to `crabcc install-claude` (skill, commands, hooks printout) |
 | `pi` | Symlinks SKILL.md into `~/.pi/agent/skills/crabcc/`; prints settings fragment |
+| `nullclaw` | Crabcc core + MCP + Taskfile skills, MCP server config |
+| `omp` | Full "oh-my-pi" stack: crabcc + MCP + Taskfile + stop-slop + rust-logging-audit + caveman, auto-memory on |
 | `os` | systemd user unit + launchd plist templates under `~/.crabcc/integrations/os/` |
 | `kernel` | Bleeding-edge kernel config fragment + build instructions |
 

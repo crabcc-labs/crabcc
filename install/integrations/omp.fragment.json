@@ -1,0 +1,8 @@
+{
+  "skills": ["crabcc", "crabcc-mcp", "crabcc-taskfile", "stop-slop", "rust-logging-audit", "caveman"],
+  "mcp": "crabcc",
+  "env": {
+    "CRABCC_AUTO_MEMORY": "1",
+    "CRABCC_MCP_DEV": "0"
+  }
+}
