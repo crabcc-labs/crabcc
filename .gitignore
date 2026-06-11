@@ -72,6 +72,7 @@ __pycache__/
 # go in `*.env.example` next to whatever consumes them.
 .env
 **/.env
+.env.mastodon
 # Claude Code per-project agent state in `.claude/` is local-only, EXCEPT the
 # committed project settings.json (shared plugin/marketplace config). List
 # contents (`*`) + negate the one tracked file; a bare `.claude/` would block
@@ -89,3 +90,44 @@ crates/crabcc-viz/web/dist/metafile.json
 # act (nektos/act) local secrets file — copy from .secrets.example and fill in.
 # Never commit real tokens.
 .secrets
+
+# ── SSH keys & credentials (never commit private keys) ───────────────
+# Private keys (any algorithm, any name containing "id_")
+id_*
+!id_*.pub
+!*.pub
+# PEM-encoded private keys
+*.pem
+# OpenSSH certificates
+*-cert.pub
+# GPG private keys
+*.gpg
+!*.gpg.pub
+secring.gpg
+pubring.gpg
+# OpenBao / Vault tokens
+bao-agent-token
+*vault-token*
+*.vault
+# Cloud / service-account credentials
+service-account*.json
+*credentials*.json
+!*credentials*.example.json
+# TLS certificates (private keys)
+*.key
+!*.key.pub
+# PGP / age identity files
+*.age
+!*.age.pub
+
+# ── CI / deployment artifacts ────────────────────────────────────────
+# Terraform state (may contain secrets)
+*.tfstate
+*.tfstate.*
+.terraform/
+# Ansible vault files
+*.vault.yml
+*.vault.yaml
+# kubectl config (contains cluster credentials)
+.kube/
+**/.kube/config

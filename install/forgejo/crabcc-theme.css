@@ -1,0 +1,608 @@
+/* ============================================================
+   crabcc theme for Forgejo
+   ============================================================
+
+   Applies the crabcc design system (crabcc.app/about) onto
+   git.crabcc.app. Drop this file into the Forgejo custom/
+   directory and set THEME=crabcc in app.ini.
+
+   Design system: _ds/crabcc-design-system/
+   Reference:    https://crabcc.app/about
+   ============================================================ */
+
+/* ---- Design tokens (mirrored from colors.css) ------------------- */
+
+:root,
+[data-theme="crabcc"],
+[data-theme="crabcc-dark"] {
+  /* Brand palette — warm terracotta "crab" */
+  --crab-50:  #fff7f1;
+  --crab-100: #fbe5da;
+  --crab-200: #f5cdbb;
+  --crab-300: #e88a6a;
+  --crab-400: #e2703f;
+  --crab-500: #d35400;
+  --crab-600: #c25c3f;
+  --crab-700: #a84a30;
+  --crab-800: #7d3520;
+  --crab-900: #5a2415;
+  --crab-hot:  #ff8c42;
+  --crab-glow: #ffb380;
+
+  /* Neutral palette */
+  --neutral-0:   #ffffff;
+  --neutral-50:  #fafafa;
+  --neutral-100: #f3f3f2;
+  --neutral-200: #e3e3e3;
+  --neutral-300: #cfcfcd;
+  --neutral-400: #a8a8a6;
+  --neutral-500: #6a6a6a;
+  --neutral-600: #4a4a4a;
+  --neutral-700: #2a2a2c;
+  --neutral-800: #161618;
+  --neutral-900: #0e0e10;
+
+  /* Semantic hues */
+  --green-500: #27ae60;
+  --green-400: #2ecc71;
+  --amber-500: #f5a623;
+  --amber-400: #f6b94a;
+  --red-500:   #c0392b;
+  --red-400:   #e74c3c;
+  --blue-500:  #2c6fb0;
+
+  /* Typography */
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", "SFMono-Regular",
+               Menlo, Consolas, "Liberation Mono", monospace;
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system,
+               BlinkMacSystemFont, "Segoe UI", sans-serif;
+
+  /* Spacing — 4px base grid */
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  12px;
+  --space-4:  16px;
+  --space-6:  24px;
+  --space-8:  32px;
+
+  /* Radii */
+  --radius-sm: 3px;
+  --radius-md: 4px;
+  --radius-lg: 6px;
+  --radius-pill: 999px;
+
+  /* Shadows — restrained, cool-neutral */
+  --shadow-sm: 0 1px 2px rgba(20, 14, 10, 0.06);
+  --shadow-md: 0 2px 8px rgba(20, 14, 10, 0.10);
+  --shadow-lg: 0 8px 24px rgba(20, 14, 10, 0.12);
+
+  /* Borders */
+  --border-hair: 1px;
+  --border-thick: 2px;
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --dur-fast: 140ms;
+  --dur-medium: 240ms;
+}
+
+/* ============================================================
+   DARK theme (default for crabcc — terminal heritage)
+   ============================================================ */
+
+[data-theme="crabcc-dark"] {
+  --surface-page:    var(--neutral-900);
+  --surface-card:    var(--neutral-800);
+  --surface-sunken:  #1c1c1f;
+  --surface-hover:   #2a1f10;
+  --surface-inverse: #000000;
+
+  --text-strong:  #f2f2f2;
+  --text-body:    #e8e8e8;
+  --text-muted:   #8a8a8a;
+  --text-faint:   #6a6a6c;
+  --text-accent:  var(--crab-hot);
+  --text-on-accent: #1a1208;
+
+  --border-subtle: var(--neutral-700);
+  --border-strong: #3a3a3c;
+  --border-accent: var(--crab-hot);
+
+  --accent:        var(--crab-hot);
+  --accent-hover:  var(--crab-glow);
+  --accent-press:  #e2703f;
+  --accent-wash:   #2a1f10;
+
+  --ok:     var(--green-400);
+  --ok-wash:#0f2a1c;
+  --warn:   var(--amber-400);
+  --warn-wash:#2e2510;
+  --danger: var(--red-400);
+  --danger-wash:#2e1512;
+  --info:   #5b9bd5;
+
+  --shadow-xs: 0 1px 1px rgba(0, 0, 0, 0.4);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.55);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6);
+
+  color-scheme: dark;
+}
+
+/* ============================================================
+   LIGHT theme (alt)
+   ============================================================ */
+
+[data-theme="crabcc"] {
+  --surface-page:    var(--neutral-50);
+  --surface-card:    var(--neutral-0);
+  --surface-sunken:  var(--neutral-100);
+  --surface-hover:   var(--crab-50);
+  --surface-inverse: var(--neutral-900);
+
+  --text-strong:  #1a1a1a;
+  --text-body:    #2a2a2c;
+  --text-muted:   var(--neutral-500);
+  --text-faint:   var(--neutral-400);
+  --text-accent:  var(--crab-500);
+  --text-on-accent: #ffffff;
+
+  --border-subtle: var(--neutral-200);
+  --border-strong: var(--neutral-300);
+  --border-accent: var(--crab-500);
+
+  --accent:        var(--crab-500);
+  --accent-hover:  var(--crab-600);
+  --accent-press:  var(--crab-700);
+  --accent-wash:   var(--crab-50);
+
+  --ok:     var(--green-500);
+  --ok-wash:#e7f6ee;
+  --warn:   var(--amber-500);
+  --warn-wash:#fcf2dd;
+  --danger: var(--red-500);
+  --danger-wash:#fbe7e4;
+  --info:   var(--blue-500);
+
+  color-scheme: light;
+}
+
+
+/* ============================================================
+   GLOBAL RESETS
+   ============================================================ */
+
+body {
+  background: var(--surface-page) !important;
+  color: var(--text-body) !important;
+  font-family: var(--font-sans) !important;
+  font-size: 13px !important;
+  line-height: 1.5 !important;
+  -webkit-font-smoothing: antialiased !important;
+}
+
+/* ---- Monospace for code, pre, and UI chrome -------------------- */
+
+code, kbd, pre, samp,
+.ui.label > .detail,
+.repository .file-content,
+.diff-file-box .code-diff,
+.blob-wrapper .blob-content,
+.file-revisions-btn .ui.basic.label {
+  font-family: var(--font-mono) !important;
+}
+
+pre, code {
+  background: var(--surface-sunken) !important;
+  border: var(--border-hair) solid var(--border-subtle) !important;
+  border-radius: var(--radius-sm) !important;
+  color: var(--text-body) !important;
+}
+
+
+/* ============================================================
+   TYPOGRAPHY
+   ============================================================ */
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-mono) !important;
+  color: var(--text-strong) !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.01em !important;
+}
+
+a {
+  color: var(--text-accent) !important;
+}
+a:hover {
+  color: var(--accent-hover) !important;
+}
+
+
+/* ============================================================
+   TOP NAVIGATION BAR
+   ============================================================ */
+
+.ui.menu,
+.ui.secondary.menu,
+.ui.top.menu,
+#navbar {
+  background: var(--surface-card) !important;
+  border-color: var(--border-subtle) !important;
+  border-radius: 0 !important;
+  font-family: var(--font-mono) !important;
+  font-size: 12px !important;
+}
+
+.ui.menu .item,
+.ui.secondary.menu .item {
+  color: var(--text-muted) !important;
+  font-family: var(--font-mono) !important;
+  font-size: 12px !important;
+}
+
+.ui.menu .item:hover,
+.ui.secondary.menu .item:hover {
+  background: var(--surface-hover) !important;
+  color: var(--text-strong) !important;
+}
+
+.ui.menu .active.item,
+.ui.secondary.menu .active.item {
+  background: transparent !important;
+  color: var(--accent) !important;
+  border-bottom: var(--border-thick) solid var(--accent) !important;
+  font-weight: 700 !important;
+}
+
+
+/* ============================================================
+   BRANDING — logo / wordmark area
+   ============================================================ */
+
+.brand {
+  font-family: var(--font-mono) !important;
+  font-weight: 800 !important;
+  color: var(--accent) !important;
+}
+
+
+/* ============================================================
+   REPOSITORY HEADER
+   ============================================================ */
+
+.repository .repo-title {
+  font-family: var(--font-mono) !important;
+  font-weight: 700 !important;
+  font-size: 20px !important;
+  color: var(--text-strong) !important;
+  letter-spacing: -0.01em !important;
+}
+
+.repo-buttons .ui.button {
+  font-family: var(--font-mono) !important;
+  font-size: 12px !important;
+  border-radius: var(--radius-md) !important;
+}
+
+
+/* ============================================================
+   BUTTONS
+   ============================================================ */
+
+.ui.button {
+  font-family: var(--font-mono) !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  border-radius: var(--radius-md) !important;
+  background: var(--surface-card) !important;
+  color: var(--text-body) !important;
+  border: var(--border-hair) solid var(--border-strong) !important;
+  transition:
+    background-color var(--dur-fast) var(--ease-out),
+    border-color var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out) !important;
+}
+
+.ui.button:hover {
+  background: var(--surface-hover) !important;
+  border-color: var(--border-accent) !important;
+}
+
+.ui.button:active,
+.ui.button:focus {
+  border-color: var(--accent) !important;
+}
+
+.ui.primary.button,
+.ui.green.button,
+.ui.primary.buttons .button {
+  background: var(--accent) !important;
+  color: var(--text-on-accent) !important;
+  border-color: var(--accent) !important;
+}
+
+.ui.primary.button:hover,
+.ui.green.button:hover {
+  background: var(--accent-hover) !important;
+}
+
+/* Danger / delete */
+.ui.red.button,
+.ui.negative.button {
+  background: var(--danger) !important;
+  color: #fff !important;
+  border-color: var(--danger) !important;
+}
+
+
+/* ============================================================
+   CARDS & SEGMENTS
+   ============================================================ */
+
+.ui.card,
+.ui.cards > .card,
+.ui.segment,
+.ui.attached.segment,
+.repository .ui.segment {
+  background: var(--surface-card) !important;
+  border: var(--border-hair) solid var(--border-subtle) !important;
+  border-radius: var(--radius-lg) !important;
+  box-shadow: var(--shadow-sm) !important;
+}
+
+.ui.secondary.segment {
+  background: var(--surface-sunken) !important;
+  border: var(--border-hair) solid var(--border-subtle) !important;
+}
+
+
+/* ============================================================
+   TABS
+   ============================================================ */
+
+.ui.tabular.menu .item {
+  font-family: var(--font-mono) !important;
+  font-size: 12px !important;
+  color: var(--text-muted) !important;
+  border-color: transparent !important;
+}
+
+.ui.tabular.menu .active.item {
+  color: var(--accent) !important;
+  border-color: var(--border-subtle) !important;
+  border-bottom-color: var(--surface-card) !important;
+  background: var(--surface-card) !important;
+  font-weight: 700 !important;
+}
+
+
+/* ============================================================
+   FILE LIST (repo browser)
+   ============================================================ */
+
+.repository.file.list #repo-files-table tbody tr:hover,
+.repository.file.list #repo-files-table tr:hover {
+  background: var(--surface-hover) !important;
+}
+
+.repository.file.list #repo-files-table th {
+  font-family: var(--font-mono) !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.06em !important;
+  color: var(--text-muted) !important;
+  border-color: var(--border-subtle) !important;
+}
+
+.repository.file.list #repo-files-table td {
+  font-family: var(--font-mono) !important;
+  font-size: 13px !important;
+  border-color: var(--border-subtle) !important;
+}
+
+/* File icons */
+.repository.file.list #repo-files-table .svg.octicon-file,
+.repository.file.list #repo-files-table .svg.octicon-file-directory-fill {
+  color: var(--text-muted) !important;
+}
+
+
+/* ============================================================
+   CODE VIEW / DIFF
+   ============================================================ */
+
+.file-view .code-view,
+.repository .diff-file-box .code-diff,
+.blob-wrapper {
+  background: var(--surface-sunken) !important;
+  border-radius: var(--radius-md) !important;
+  font-family: var(--font-mono) !important;
+  font-size: 13px !important;
+}
+
+/* Diff lines */
+.diff-file-box .code-diff-unified tbody tr td.add-code,
+.diff-file-box .code-diff-split tbody tr td.add-code,
+.diff-file-box .code-diff-unified tbody tr.add-comment,
+.repository .diff-file-box .lines-added {
+  background: var(--ok-wash) !important;
+}
+
+.diff-file-box .code-diff-unified tbody tr td.del-code,
+.diff-file-box .code-diff-split tbody tr td.del-code,
+.diff-file-box .code-diff-unified tbody tr.del-comment,
+.repository .diff-file-box .lines-removed {
+  background: var(--danger-wash) !important;
+}
+
+/* Line numbers */
+.lines-num {
+  color: var(--text-faint) !important;
+  font-family: var(--font-mono) !important;
+  font-size: 12px !important;
+}
+
+
+/* ============================================================
+   ISSUES / PR LIST
+   ============================================================ */
+
+.issue.list .item,
+#issue-list .flex-item {
+  border-color: var(--border-subtle) !important;
+}
+
+.issue.list .item:hover,
+#issue-list .flex-item:hover {
+  background: var(--surface-hover) !important;
+}
+
+/* Labels */
+.ui.label {
+  font-family: var(--font-mono) !important;
+  font-size: 11px !important;
+  font-weight: 600 !important;
+  border-radius: var(--radius-sm) !important;
+  letter-spacing: 0.04em !important;
+}
+
+/* Status badges */
+.ui.green.label { background: var(--ok) !important; color: #fff !important; }
+.ui.red.label   { background: var(--danger) !important; color: #fff !important; }
+.ui.orange.label { background: var(--warn) !important; color: #111 !important; }
+.ui.blue.label  { background: var(--info) !important; color: #fff !important; }
+
+
+/* ============================================================
+   FORMS & INPUTS
+   ============================================================ */
+
+.ui.input input,
+.ui.form input,
+.ui.form textarea,
+.ui.dropdown,
+.ui.selection.dropdown {
+  font-family: var(--font-mono) !important;
+  font-size: 13px !important;
+  background: var(--surface-sunken) !important;
+  color: var(--text-body) !important;
+  border: var(--border-hair) solid var(--border-strong) !important;
+  border-radius: var(--radius-md) !important;
+}
+
+.ui.input input:focus,
+.ui.form input:focus,
+.ui.form textarea:focus {
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--accent) 40%, transparent) !important;
+}
+
+/* Dropdown menu */
+.ui.dropdown .menu {
+  background: var(--surface-card) !important;
+  border: var(--border-hair) solid var(--border-subtle) !important;
+  border-radius: var(--radius-lg) !important;
+  box-shadow: var(--shadow-md) !important;
+}
+
+.ui.dropdown .menu > .item {
+  font-family: var(--font-mono) !important;
+  font-size: 13px !important;
+  color: var(--text-body) !important;
+}
+
+.ui.dropdown .menu > .item:hover {
+  background: var(--surface-hover) !important;
+  color: var(--text-strong) !important;
+}
+
+
+/* ============================================================
+   FOOTER
+   ============================================================ */
+
+.ui.footer,
+footer,
+.page-footer {
+  background: var(--surface-card) !important;
+  border-color: var(--border-subtle) !important;
+  color: var(--text-faint) !important;
+  font-family: var(--font-mono) !important;
+  font-size: 11px !important;
+}
+
+
+/* ============================================================
+   SCROLLBARS (Webkit — Chrome / Edge / Safari)
+   ============================================================ */
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--surface-sunken);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: var(--radius-pill);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-faint);
+}
+
+
+/* ============================================================
+   SELECTION
+   ============================================================ */
+
+::selection {
+  background: color-mix(in oklch, var(--accent) 28%, transparent);
+  color: var(--text-strong);
+}
+
+
+/* ============================================================
+   MISC — activity / timeline / profile
+   ============================================================ */
+
+.timeline-item .avatar,
+.ui.avatar.image {
+  border-radius: var(--radius-md) !important;
+}
+
+/* Activity heatmap */
+#user-heatmap .total-contributions {
+  font-family: var(--font-mono) !important;
+  font-size: 11px !important;
+  color: var(--text-muted) !important;
+}
+
+/* Pagination */
+.ui.pagination.menu .item {
+  font-family: var(--font-mono) !important;
+  font-size: 13px !important;
+  border-radius: var(--radius-sm) !important;
+}
+
+.ui.pagination.menu .active.item {
+  background: var(--accent) !important;
+  color: var(--text-on-accent) !important;
+}
+
+
+/* ============================================================
+   REDUCED MOTION
+   ============================================================ */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

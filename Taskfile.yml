@@ -23,6 +23,10 @@
 #   task viz                # localhost call-graph viewer (issue #64)
 #   task bench              # raw-CLI A/B benchmark + visualization
 #   task bench-compress     # FSST off-vs-on gate bench
+#   task bench-mcp-transport  # Mastodon + transport micro-benchmarks (token, SSE, gzip, msgpack)
+#   task bench-mcp-all        # all MCP benchmarks (agent workload + mastodon transport)
+#   task bench-mcp-remote     # run MCP benchmarks on dev-cx53 (AMD EPYC, 16 vCPU) via rsync+ssh
+#   task bench-mcp-remote-fast # quick remote bench (fast iteration)
 #   task release            # cut a tag; CI workflow handles the rest
 #   task check-deps         # audit external dev tools (jq/yq/rg/gh/…)
 #   task doctor             # diagnose crabcc dev install (CLI/MCP/skill/hooks)
@@ -112,4 +116,187 @@ tasks:
     cmds:
       - task: build
       - task: test
+
+  mastodon-setup:
+    desc: One-shot Mastodon token setup. Pass TOKEN=... or paste interactively.
+    summary: |
+      Creates .env.mastodon (gitignored) with MASTODON_TOKEN.
+      Tests the connection via mastodon.verify when crabcc is built.
+
+      Usage:
+        task mastodon-setup TOKEN=a1b2c3...   # non-interactive
+        task mastodon-setup                    # prompts for token
+        task mastodon-setup TOKEN=... BOT=crabcc  # per-bot token (writes MASTODON_TOKEN_CRABCC)
+        task mastodon-setup INSTANCE=https://mastodon.social TOKEN=...
+
+      Where to get a token:
+        Go to <INSTANCE>/settings/applications → New Application
+        Scopes: write:statuses (to post), read:statuses (to read)
+        Copy the "access token" (not client id or secret) — it's ~64 hex chars.
+
+      The token is stored in .env.mastodon (gitignored, stays local).
+      crabcc-mcp reads from the environment at runtime, not from this file.
+      To activate, source the file or copy the line into your env config.
+    vars:
+      INSTANCE: '{{.INSTANCE | default "https://social.crabcc.app"}}'
+      BOT: '{{.BOT | default ""}}'
+      TOKEN: '{{.TOKEN | default ""}}'
+      ENV_FILE: '{{.ROOT_DIR}}/.env.mastodon'
+    cmds:
+      - |
+        TOKEN_VAL="{{.TOKEN}}"
+        if [ -z "$TOKEN_VAL" ]; then
+          echo ""
+          echo "  No TOKEN= passed. Create one at:"
+          echo "    {{.INSTANCE}}/settings/applications"
+          echo "  Scopes needed: write:statuses + read:statuses"
+          echo ""
+          printf "  Paste your access token: "
+          read -r TOKEN_VAL
+        fi
+        if [ -z "$TOKEN_VAL" ]; then
+          echo "error: no token provided — pass TOKEN=... or paste when prompted"
+          exit 1
+        fi
+        KEY="MASTODON_TOKEN"
+        if [ -n "{{.BOT}}" ]; then
+          KEY="MASTODON_TOKEN_{{.BOT | upper}}"
+        fi
+        echo "${KEY}=${TOKEN_VAL}" > {{.ENV_FILE}}
+        echo ""
+        echo "  ✓ wrote ${KEY} to {{.ENV_FILE}}"
+        echo "  To activate:  source {{.ENV_FILE}}"
+        echo "  Or add to your systemd env file / MCP config / shell profile."
+        echo ""
+        echo "  Then run:  task mastodon-test"
+
+  mastodon-test:
+    desc: Verify Mastodon token works (requires crabcc built + MASTODON_TOKEN set).
+    summary: |
+      Calls mastodon.verify through the MCP server to check:
+      - Token is valid (returns account username)
+      - Instance is reachable (returns domain + version)
+      - Rate limits aren't exhausted
+
+      Prerequisites:
+        task mastodon-setup   (or MASTODON_TOKEN in the environment)
+        task build            (crabcc binary must be built)
+    vars:
+      INSTANCE: '{{.INSTANCE | default "https://social.crabcc.app"}}'
+    cmds:
+      - |
+        if [ -z "$MASTODON_TOKEN" ]; then
+          if [ -f {{.ROOT_DIR}}/.env.mastodon ]; then
+            source {{.ROOT_DIR}}/.env.mastodon
+          fi
+        fi
+        if [ -z "$MASTODON_TOKEN" ]; then
+          echo "error: MASTODON_TOKEN not set — run 'task mastodon-setup' first"
+          exit 1
+        fi
+        echo "→ verifying Mastodon token..."
+        {{.CRABCC}} serve --http 127.0.0.1:9999 --dev &
+        SERVER_PID=$!
+        sleep 1
+        RESP=$(curl -sf http://127.0.0.1:9999/mcp \
+          -H "Content-Type: application/json" \
+          -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"mastodon.verify","arguments":{}}}' 2>&1) || true
+        kill $SERVER_PID 2>/dev/null
+        if echo "$RESP" | grep -q '"username"'; then
+          echo "$RESP" | python3 -c "
+import sys,json
+r=json.load(sys.stdin)
+t=r['result']['content'][0]['text']
+d=json.loads(t)
+a=d.get('account',{})
+i=d.get('instance',{})
+print(f'  ✓ authenticated as @{a.get(\"acct\",\"?\")} ({a.get(\"display_name\",\"?\")})')
+print(f'  ✓ instance: {i.get(\"domain\",\"?\")}  v{i.get(\"version\",\"?\")}')
+"
+        else
+          echo "  ✗ verify failed. Raw response:"
+          echo "$RESP"
+          echo ""
+          echo "  Check that:"
+          echo "    - MASTODON_TOKEN is a full access token (~64 chars)"
+          echo "    - The token hasn't been revoked"
+          echo "    - The instance {{.INSTANCE | default \"https://social.crabcc.app\"}} is reachable"
+          exit 1
+        fi
+
+  forgejo-theme:
+    desc: Deploy the crabcc design system to git.crabcc.app (Forgejo).
+    summary: |
+      Interactive menu-driven Forgejo theme deployment. Copies
+      install/forgejo/crabcc-theme.css and configures app.ini.
+
+      Non-interactive: task forgejo-theme HOST=git.crabcc.app MODE=ssh
+      Modes: ssh (rsync), local (cp), docker (copy to volume), nixos (print config)
+    vars:
+      HOST: '{{.HOST | default ""}}'
+      MODE: '{{.MODE | default ""}}'
+      CSS: '{{.ROOT_DIR}}/install/forgejo/crabcc-theme.css'
+    cmds:
+      - |
+        MODE="{{.MODE}}"
+        HOST="{{.HOST}}"
+        if [ -z "$MODE" ]; then
+          echo ""
+          echo "  🦀 crabcc forgejo theme — deploy to git.crabcc.app"
+          echo "  ─────────────────────────────────────────────────"
+          echo "  1) ssh   — rsync to a remote Forgejo host"
+          echo "  2) local — copy into local /var/lib/forgejo/"
+          echo "  3) docker — copy into a running container"
+          echo "  4) nixos — print NixOS config snippet"
+          echo ""
+          printf "  pick [1-4]: "
+          read -r CHOICE
+          case "$CHOICE" in
+            1) MODE=ssh;;
+            2) MODE=local;;
+            3) MODE=docker;;
+            4) MODE=nixos;;
+            *) echo "invalid choice"; exit 1;;
+          esac
+        fi
+        if [ "$MODE" = "ssh" ]; then
+          if [ -z "$HOST" ]; then
+            printf "  host (e.g. root@git.crabcc.app): "
+            read -r HOST
+          fi
+          echo "→ rsync theme to $HOST..."
+          rsync -avz {{.CSS}} "$HOST:/var/lib/forgejo/custom/public/assets/css/crabcc-theme.css"
+          ssh "$HOST" "sed -i '/^THEMES/c\THEMES = crabcc,crabcc-dark' /etc/forgejo/app.ini 2>/dev/null || echo 'THEMES = crabcc,crabcc-dark' >> /etc/forgejo/app.ini"
+          ssh "$HOST" "sed -i '/^DEFAULT_THEME/c\DEFAULT_THEME = crabcc-dark' /etc/forgejo/app.ini 2>/dev/null || echo 'DEFAULT_THEME = crabcc-dark' >> /etc/forgejo/app.ini"
+          ssh "$HOST" "systemctl restart forgejo 2>/dev/null || docker restart forgejo 2>/dev/null || echo '⚠ restart forgejo manually'"
+          echo "✓ deployed to $HOST"
+        elif [ "$MODE" = "local" ]; then
+          sudo cp {{.CSS}} /var/lib/forgejo/custom/public/assets/css/crabcc-theme.css
+          grep -q 'THEMES.*crabcc' /etc/forgejo/app.ini 2>/dev/null || echo 'THEMES = crabcc,crabcc-dark' | sudo tee -a /etc/forgejo/app.ini
+          grep -q 'DEFAULT_THEME.*crabcc' /etc/forgejo/app.ini 2>/dev/null || echo 'DEFAULT_THEME = crabcc-dark' | sudo tee -a /etc/forgejo/app.ini
+          sudo systemctl restart forgejo
+          echo "✓ deployed locally"
+        elif [ "$MODE" = "docker" ]; then
+          CONTAINER="${CONTAINER:-forgejo}"
+          docker cp {{.CSS}} "$CONTAINER:/data/gitea/public/assets/css/crabcc-theme.css"
+          docker exec "$CONTAINER" sh -c "grep -q 'THEMES.*crabcc' /data/gitea/conf/app.ini || echo 'THEMES = crabcc,crabcc-dark' >> /data/gitea/conf/app.ini"
+          docker exec "$CONTAINER" sh -c "grep -q 'DEFAULT_THEME.*crabcc' /data/gitea/conf/app.ini || echo 'DEFAULT_THEME = crabcc-dark' >> /data/gitea/conf/app.ini"
+          docker restart "$CONTAINER"
+          echo "✓ deployed to container $CONTAINER"
+        elif [ "$MODE" = "nixos" ]; then
+          echo ""
+          echo "  Add to your NixOS config:"
+          echo ""
+          echo "  services.forgejo.settings.ui = {"
+          echo "    THEMES = \"crabcc,crabcc-dark\";"
+          echo "    DEFAULT_THEME = \"crabcc-dark\";"
+          echo "  };"
+          echo ""
+          echo "  systemd.tmpfiles.rules = ["
+          echo '    "C /var/lib/forgejo/custom/public/assets/css/crabcc-theme.css 0644 forgejo forgejo - ${./install/forgejo/crabcc-theme.css}"'
+          echo "  ];"
+          echo ""
+          echo "✓ config snippet printed — paste into configuration.nix and rebuild"
+        fi
+        echo "  open https://git.crabcc.app → Settings → Appearance → crabcc-dark"
 
