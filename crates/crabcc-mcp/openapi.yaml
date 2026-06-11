@@ -52,6 +52,8 @@ tags:
     description: Per-repo AI memory layer at `.crabcc/memory.db`.
   - name: server
     description: Server-meta tools (`_openapi`, `_health`). Underscore-prefixed; never collide with repo-scoped tools.
+  - name: mastodon
+    description: Mastodon social tools (post, read, verify via REST API).
 
 paths:
   /tools/sym:
@@ -985,6 +987,136 @@ paths:
             application/json:
               schema: {$ref: "#/components/schemas/MineReport"}
 
+  /tools/mastodon.post:
+    post:
+      tags: [mastodon]
+      operationId: mastodon_post
+      summary: Post a status to Mastodon.
+      description: |
+        Write a status (toot) to a configured Mastodon instance. Tokens are
+        resolved from the environment only (never accepted through tool args).
+        Supports per-bot tokens via `bot` arg. Rate-limited: 5 posts per 48h
+        per token. Idempotency-key ensures at-most-once delivery.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                  description: Status body (plain text, max 500 chars recommended).
+                visibility:
+                  type: string
+                  enum: [public, unlisted, private, direct]
+                  description: Visibility. Default unlisted.
+                language:
+                  type: string
+                  description: ISO 639-1 language code. Default en.
+                spoiler_text:
+                  type: string
+                  description: Content warning / subject line.
+                in_reply_to_id:
+                  type: string
+                  description: Mastodon status id to reply to.
+                idempotency_key:
+                  type: string
+                  description: |
+                    Client-generated key for at-most-once semantics. Auto-generated
+                    from content hash when omitted.
+                bot:
+                  type: string
+                  description: |
+                    Bot name for per-bot token lookup. Resolves MASTODON_TOKEN_<BOT>
+                    or <BOT>_TOKEN from the environment.
+                base_url:
+                  type: string
+                  description: Mastodon instance base URL (https:// only). Default social.crabcc.app.
+      responses:
+        "200":
+          description: Post result with Mastodon status metadata.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: {type: boolean}
+                  id: {type: string}
+                  url: {type: string}
+                  created_at: {type: string}
+                  content: {type: string}
+                  rate_limit: {$ref: "#/components/schemas/RateLimit"}
+
+  /tools/mastodon.read:
+    post:
+      tags: [mastodon]
+      operationId: mastodon_read
+      summary: Read a Mastodon timeline.
+      description: |
+        Fetch posts from a Mastodon timeline (home, public, or hashtag).
+        Results are cached for 5 minutes. Rate-limited: 5 reads per 48h
+        per token.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                timeline:
+                  type: string
+                  enum: [home, public, tag]
+                  description: Timeline to read. Default home.
+                hashtag:
+                  type: string
+                  description: Required when timeline=tag. Alphanumeric + underscore only.
+                limit:
+                  type: integer
+                  description: Max posts to return (1-40, default 20).
+                bot: {type: string}
+                base_url: {type: string}
+      responses:
+        "200":
+          description: Array of Mastodon status objects.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: {type: boolean}
+                  posts:
+                    type: array
+                    items: {type: object}
+                  cached: {type: boolean}
+                  rate_limit: {$ref: "#/components/schemas/RateLimit"}
+
+  /tools/mastodon.verify:
+    post:
+      tags: [mastodon]
+      operationId: mastodon_verify
+      summary: Verify Mastodon credentials and instance reachability.
+      description: |
+        Check that the configured token is valid and the instance is reachable.
+        Returns account info and instance metadata. Not rate-limited.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                bot: {type: string}
+                base_url: {type: string}
+      responses:
+        "200":
+          description: Account + instance verification details.
+          content:
+            application/json:
+              schema:
+                type: object
+
 components:
   schemas:
     CwdRequest:
@@ -1172,3 +1304,14 @@ components:
         inserted:   {type: integer, description: Fresh rows written.}
         deduped:    {type: integer, description: Idempotent (source_id, sha256) hits.}
         skipped:    {type: integer, description: Binary / oversize / unparseable inputs.}
+
+    RateLimit:
+      type: object
+      required: [rules, allowed, attempts_used, attempts_left, resets_in_seconds]
+      properties:
+        rules:            {type: string, description: Human-readable rate-limit rule description.}
+        allowed:          {type: boolean, description: Whether the request was within limits.}
+        attempts_used:    {type: integer, description: Attempts consumed this window.}
+        attempts_left:    {type: integer, description: Remaining attempts this window.}
+        resets_in_seconds:{type: integer, format: int64, description: Seconds until the oldest used slot expires.}
+        docs:             {type: string, description: URL to rate-limit documentation.}

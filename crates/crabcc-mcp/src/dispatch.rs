@@ -5,6 +5,7 @@
 //! tools/call) to either an inline response or to `dispatch_tool_inner`,
 //! which routes to the per-tool handler.
 
+use crate::mastodon;
 use crate::memory;
 use crate::schema::{arg_str, tools_def_for};
 use crate::{
@@ -157,6 +158,13 @@ fn dispatch_tool_inner(
         }
         let inner_args = args.get("args").cloned().unwrap_or_else(|| json!({}));
         return dispatch_tool_inner(inner_tool, inner_args, root, dev, cache);
+    }
+
+    // Mastodon tools talk to a remote instance over HTTP; no local Store
+    // needed. Route them before the Store open so we don't pay SQLite
+    // startup on a social-only call.
+    if tool.starts_with("mastodon.") {
+        return mastodon::dispatch(tool, &args);
     }
 
     // Memory tools open .crabcc/memory.db directly via Palace; no symbol

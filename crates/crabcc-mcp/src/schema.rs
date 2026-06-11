@@ -9,7 +9,7 @@
 //! are `pub(crate)` so `memory.rs` can build its own tool defs against
 //! the same shape.
 
-use crate::{dev_mode_from_env, memory};
+use crate::{dev_mode_from_env, mastodon, memory};
 use anyhow::Result;
 use serde_json::{json, Value};
 
@@ -30,6 +30,7 @@ pub fn tools_def() -> Vec<Value> {
 /// dump, or when a CI matrix wants to drift-check the full schema.
 pub fn tools_def_for(dev: bool) -> Vec<Value> {
     let mut all = tools_def_symbol();
+    all.extend(mastodon::tools_def());
     all.extend(memory::tools_def());
     if dev {
         all.extend(tools_def_meta());

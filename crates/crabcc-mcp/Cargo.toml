@@ -8,6 +8,10 @@ license.workspace = true
 # Gates the criterion bench so CI's `--all-targets` doesn't compile it.
 # Run locally with `cargo bench -p crabcc-mcp --features bench`.
 bench = []
+# OpenTelemetry export via OTLP (gRPC). Adds tracing-opentelemetry +
+# opentelemetry-otlp. Call `crabcc_mcp::init_otel()` once at startup.
+# Zero-cost when disabled — all spans are no-ops without a subscriber.
+otel = ["dep:tracing-opentelemetry", "dep:opentelemetry", "dep:opentelemetry-otlp", "dep:opentelemetry_sdk", "dep:tokio", "dep:tracing-subscriber"]
 
 [dependencies]
 crabcc-core   = { workspace = true }
@@ -19,6 +23,18 @@ tracing       = { workspace = true }
 # HTTP transport (#204 phase 1) — sync, no async runtime, same pattern
 # crabcc-viz uses for the dashboard. Single-user localhost server.
 tiny_http     = { workspace = true }
+ureq          = { workspace = true }
+rmp-serde     = { workspace = true }
+flate2        = { workspace = true }
+rusqlite      = { workspace = true }
+sonic-rs      = { workspace = true }
+# OTel (optional, gated behind `otel` feature)
+tracing-opentelemetry = { version = "0.28", optional = true }
+opentelemetry         = { version = "0.27", optional = true, features = ["trace"] }
+opentelemetry-otlp    = { version = "0.27", optional = true, features = ["tonic"] }
+opentelemetry_sdk     = { version = "0.27", optional = true, features = ["rt-tokio"] }
+tokio                 = { version = "1", optional = true, features = ["rt", "macros"] }
+tracing-subscriber    = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -37,6 +53,11 @@ required-features = ["bench"]
 # Run via `cargo bench -p crabcc-mcp --features bench --bench agent_workload`.
 [[bench]]
 name = "agent_workload"
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "mastodon_transport"
 harness = false
 required-features = ["bench"]
 

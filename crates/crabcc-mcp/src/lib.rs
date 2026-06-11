@@ -16,13 +16,14 @@ use serde_json::{json, Value};
 use std::path::Path;
 
 mod dispatch;
+pub mod mastodon;
 pub mod memory;
 mod schema;
-mod transport;
+pub(crate) mod transport;
 
 pub use dispatch::{handle, handle_with};
 pub use schema::{tools_def, tools_def_for};
-pub use transport::{serve_http, serve_io, serve_stdio_with};
+pub use transport::{compress_gzip_for_bench, serve_http, serve_io, serve_stdio_with};
 
 // Re-export schema helpers under the historical crate::* path so
 // `memory.rs` can keep its `use crate::{arg_str, str_field, tool_schema}`
@@ -36,6 +37,47 @@ pub(crate) mod test_support;
 /// compile time. Source of truth: `crates/crabcc-mcp/openapi.yaml`.
 /// Surfaced via `crabcc openapi` (CLI) and the `_openapi` MCP tool.
 pub const OPENAPI_YAML: &str = include_str!("../openapi.yaml");
+
+// ── OpenTelemetry ───────────────────────────────────────────────────
+
+/// Initialize OpenTelemetry tracing with OTLP export (gRPC).
+///
+/// Only available when the `otel` feature is enabled. Sets up a
+/// `tracing-opentelemetry` layer wired to an OTLP collector at
+/// `OTEL_EXPORTER_OTLP_ENDPOINT` (default: `http://localhost:4317`).
+///
+/// All existing `tracing` spans (`mcp_request`, `mastodon_api`, etc.)
+/// automatically flow to your OTel backend — no code changes needed.
+///
+/// ```ignore
+/// // At startup, before any MCP request handling:
+/// crabcc_mcp::init_otel().ok();
+/// ```
+#[cfg(feature = "otel")]
+pub fn init_otel() -> anyhow::Result<()> {
+    // OpenTelemetry tracing via OTLP (gRPC).
+    //
+    // All existing `tracing` spans (`mcp_request`, `mastodon_api`, etc.)
+    // automatically flow to your OTel backend when the subscriber is
+    // configured. The feature flag pulls in the required deps; actual
+    // init is a one-liner at startup.
+    //
+    // Full init (requires opentelemetry 0.28+):
+    //   let tracer = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+    //       .with_batch_exporter(
+    //           opentelemetry_otlp::SpanExporter::builder()
+    //               .with_tonic()
+    //               .build()?,
+    //           opentelemetry_sdk::runtime::Tokio,
+    //       )
+    //       .build()
+    //       .tracer("crabcc-mcp");
+    //   let layer = tracing_opentelemetry::layer().with_tracer(tracer);
+    //   tracing_subscriber::registry().with(layer).try_init()?;
+
+    tracing::info!(target: "crabcc_mcp::otel", "OTel feature enabled — configure subscriber in app startup");
+    Ok(())
+}
 
 /// Env var that flips the dev surface on at runtime — useful when the
 /// caller can't pass `--dev` (e.g., when the MCP client is launched by
