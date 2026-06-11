@@ -263,6 +263,11 @@ pub fn coord_reduce(graph: CoordGraph, profile: &TargetProfile) -> CoordGraph {
 }
 
 /// Topological order of unit ids (Kahn's algorithm over awaits edges).
+///
+/// Roots drain ascending by id so the build order is dependencies-first; this
+/// assumes units are listed dependency-first (true for `module_dag_to_coord`).
+/// A fully input-order-independent static build order (topo-sort over the
+/// pre-fold edges) is a documented follow-up, not implemented here.
 fn topo_order(graph: &CoordGraph) -> Vec<u32> {
     let mut indeg: HashMap<u32, usize> =
         graph.units.iter().map(|u| (u.id, u.awaits.len())).collect();
@@ -278,27 +283,30 @@ fn topo_order(graph: &CoordGraph) -> Vec<u32> {
         .filter(|(_, &d)| d == 0)
         .map(|(&id, _)| id)
         .collect();
-    ready.sort_unstable();
+    // Descending sort so `pop()` yields the min id (dependencies-first).
+    ready.sort_unstable_by(|a, b| b.cmp(a));
     let mut out = Vec::new();
     while let Some(n) = ready.pop() {
         out.push(n);
         if let Some(cs) = consumers.get(&n) {
             for &c in cs {
-                let d = indeg.get_mut(&c).unwrap();
+                let d = indeg
+                    .get_mut(&c)
+                    .expect("consumer id is always a unit in indeg");
                 *d -= 1;
                 if *d == 0 {
                     ready.push(c);
                 }
             }
         }
-        ready.sort_unstable();
+        ready.sort_unstable_by(|a, b| b.cmp(a));
     }
     out
 }
 
 /// Emit the residual coordination. Static-composition: a build order, no sync
 /// primitives. Otherwise: one wait line per surviving edge (barrier / p2p).
-pub fn emit_coord(graph: &CoordGraph, profile: &TargetProfile) -> String {
+pub fn emit_coord(graph: &CoordGraph) -> String {
     let name = |id: u32| {
         graph
             .units
@@ -332,7 +340,6 @@ pub fn emit_coord(graph: &CoordGraph, profile: &TargetProfile) -> String {
             name(provider)
         ));
     }
-    let _ = profile;
     out
 }
 
@@ -452,15 +459,42 @@ mod tests {
     }
 
     #[test]
+    fn term_to_coord_par_adds_no_edge() {
+        // Par(a, b): independent; neither awaits the other.
+        let t = Term::Par(Box::new(lit("a")), Box::new(lit("b")));
+        let g = term_to_coord(&t, UnitKind::Runtime);
+        assert_eq!(g.units.len(), 2);
+        // post-order ids: a=0, b=1
+        assert_eq!(g.units[0].awaits, vec![] as Vec<Timepoint>); // a
+        assert_eq!(g.units[1].awaits, vec![] as Vec<Timepoint>); // b
+    }
+
+    #[test]
+    fn term_to_coord_dep_makes_a_await_on() {
+        // Dep(a, on): a awaits on's exit timepoint.
+        // Dep lowers `on` before `a`, so post-order ids: on=0, a=1.
+        let t = Term::Dep(Box::new(lit("a")), Box::new(lit("on")));
+        let g = term_to_coord(&t, UnitKind::Runtime);
+        assert_eq!(g.units.len(), 2);
+        assert_eq!(g.units[0].awaits, vec![] as Vec<Timepoint>); // on (id 0)
+        assert_eq!(g.units[1].awaits, vec![0]); // a (id 1) awaits on (id 0)
+    }
+
+    #[test]
     fn emit_static_is_build_order_no_barriers() {
         let g = coord_reduce(
             module_dag_to_coord(example_modules()),
             &TargetProfile::static_composition(),
         );
-        let out = emit_coord(&g, &TargetProfile::static_composition());
+        let out = emit_coord(&g);
         assert!(out.contains("0 runtime barriers"));
         assert!(!out.contains("(barrier)")); // no per-edge barrier tags in a static build order
         assert!(out.contains("base")); // build order names units
+                                       // build order is dependencies-first: base precedes kernel.
+        assert!(
+            out.find("base") < out.find("kernel"),
+            "static build order must list base before kernel, got: {out}"
+        );
     }
 
     #[test]
@@ -469,7 +503,7 @@ mod tests {
             module_dag_to_coord(example_modules()),
             &TargetProfile::runtime(),
         );
-        let out = emit_coord(&g, &TargetProfile::runtime());
+        let out = emit_coord(&g);
         assert!(out.contains("residual coordination"));
         assert!(out.contains("(barrier)")); // base is shared
     }

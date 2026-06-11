@@ -524,9 +524,6 @@ fn match_branch_return(term: &Term) -> String {
         Term::EnvVar { name, default } => {
             format!("cfg.get_or(\"{name}\", {})", env_default_lit(default))
         }
-        Term::Seq(..) | Term::Par(..) | Term::Dep(..) => {
-            unreachable!("coordination nodes must be lowered via term_to_coord before emit")
-        }
         other => closed_lit(other),
     }
 }
@@ -536,9 +533,6 @@ fn match_branch_return(term: &Term) -> String {
 fn env_default_lit(default: &Term) -> String {
     match default {
         Term::Lit(s) => format!("\"{s}\""),
-        Term::Seq(..) | Term::Par(..) | Term::Dep(..) => {
-            unreachable!("coordination nodes must be lowered via term_to_coord before emit")
-        }
         // Defaults are literals in the shapes Discover produces; anything else
         // is rendered as its literal projection rather than inventing syntax.
         other => format!("\"{}\"", closed_lit(other)),
