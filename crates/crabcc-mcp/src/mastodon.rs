@@ -49,7 +49,6 @@
 
 use crate::{arg_str, str_field, tool_schema as tool};
 use anyhow::{anyhow, Result};
-use crabcc_core::hash::sha256_hex;
 use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -97,7 +96,7 @@ struct RateLimitResult {
 /// Check whether the given token is within its rate limit. Prunes
 /// expired entries from the window. Returns the current state.
 fn check_rate_limit(token: &str) -> RateLimitResult {
-    let token_hash = token_hash_u64(token);
+    let token_hash = fnv1a_u64(token);
     let mut limits = rate_limits().lock().unwrap_or_else(|e| e.into_inner());
     let state = limits.entry(token_hash).or_default();
     let now = Instant::now();
@@ -130,7 +129,7 @@ fn check_rate_limit(token: &str) -> RateLimitResult {
 
 /// Record a successful attempt for the given token.
 fn record_attempt(token: &str) {
-    let token_hash = token_hash_u64(token);
+    let token_hash = fnv1a_u64(token);
     let mut limits = rate_limits().lock().unwrap_or_else(|e| e.into_inner());
     let state = limits.entry(token_hash).or_default();
     state.attempts.push(Instant::now());
@@ -245,7 +244,7 @@ fn log_history(
     payload_size: usize,
 ) {
     let db = cache_db().lock().unwrap_or_else(|e| e.into_inner());
-    let token_hash = token_hash_u64(token) as i64;
+    let token_hash = fnv1a_u64(token) as i64;
     let now = now_unix();
     db.execute(
         "INSERT INTO mastodon_history (tool, token_hash, endpoint, status, elapsed_ms, payload_size, created_at) \
@@ -779,7 +778,7 @@ fn handle_post(args: &Value) -> Result<String> {
         .filter(|s| !s.is_empty())
         .map(sanitize_idem_key)
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| format!("mcp:{}", hash_hex16(trimmed)));
+        .unwrap_or_else(|| format!("mcp:{:016x}", fnv1a_u64(trimmed)));
 
     let endpoint = format!("{base}/api/v1/statuses");
     let span =
@@ -870,7 +869,7 @@ fn handle_read(args: &Value) -> Result<String> {
     };
 
     // Cache check: use the full URL as the cache key
-    let ck = cache_key("read", &hash_hex16(&url));
+    let ck = cache_key("read", &format!("{:016x}", fnv1a_u64(&url)));
     if let Some(cached) = cache_get(&ck) {
         let trimmed: Value = serde_json::from_str(&cached).unwrap_or(Value::Null);
         if !trimmed.is_null() {
@@ -1016,21 +1015,17 @@ fn handle_verify(args: &Value) -> Result<String> {
 
 // ── helpers ─────────────────────────────────────────────────────────
 
-/// SHA-256 hash truncated to first 8 bytes as u64, for rate-limit and
-/// history bucketing. Replaces djb2 to eliminate collision risk between
-/// different Mastodon tokens.
+/// FNV-1a 64-bit — deterministic, ~1 cycle/byte. Collision-resistant
+/// for token bucketing and cache-key generation. Deterministic across
+/// runs so SQLite cache keys survive restarts.
 #[inline]
-fn token_hash_u64(token: &str) -> u64 {
-    let hex = sha256_hex(token.as_bytes());
-    u64::from_str_radix(&hex[..16], 16).unwrap_or(0)
-}
-
-/// SHA-256 hex prefix (16 chars, 8 bytes), for cache keys and
-/// idempotency-key fallbacks where human-readable hex is preferred.
-#[inline]
-fn hash_hex16(s: &str) -> String {
-    let hex = sha256_hex(s.as_bytes());
-    hex[..16].to_string()
+fn fnv1a_u64(s: &str) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in s.bytes() {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
 }
 
 // ── bench-accessible wrappers ───────────────────────────────────────
@@ -1056,6 +1051,11 @@ pub fn encode_hashtag_for_bench(tag: &str) -> String {
 #[doc(hidden)]
 pub fn sse_event_with_id_for_bench(event: &str, data: &str, id: u64) -> String {
     crate::transport::sse_event_with_id(event, data, id)
+}
+
+#[doc(hidden)]
+pub fn fnv1a_u64_for_bench(s: &str) -> u64 {
+    fnv1a_u64(s)
 }
 
 // ── security test suite ─────────────────────────────────────────────
