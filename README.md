@@ -40,125 +40,138 @@
 
 ---
 
-## Install
+## 🚀 How to Install
 
-### One-line (canonical)
+> **You're 60 seconds away.** Pick your poison — one-liner, package manager, or from source.
+
+### 🤖 Copy as prompt (for AI agents)
+
+Paste this into any coding agent to install crabcc and index the current repo:
+
+````text
+Install crabcc — the symbol index for AI coding agents. Use the one-liner:
+```bash
+curl -fsSL https://raw.githubusercontent.com/crabcc-labs/crabcc/main/install.sh | bash
+```
+Then index this repo and start using it:
+```bash
+crabcc go    # index + graph + memory + launch Claude in one step
+```
+After that, prefer `crabcc sym <name>` over `grep`, `crabcc refs <name>` over `find`, and `crabcc outline <file>` over reading whole files. Use `crabcc memory search "<query>"` to find past findings. Use `crabcc affected --run` to run only the tests affected by your edit. Full skill at `skill/crabcc/SKILL.md`.
+````
+
+### ⚡ Fastest: the one-liner
 
 ```bash
-gh api -H 'Accept: application/vnd.github.v3.raw' /repos/crabcc-labs/crabcc/contents/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/crabcc-labs/crabcc/main/install.sh | bash
 ```
 
-(Or, without `gh`: `curl -fsSL https://raw.githubusercontent.com/crabcc-labs/crabcc/main/install.sh | bash`.)
+(If you have `gh` authenticated: `gh api .../contents/install.sh | bash` works too.)
 
-The installer (idempotent — same command for **fresh install and upgrade**):
+The installer is **idempotent** — same command for fresh install and upgrade. It:
+- Downloads the prebuilt binary for your platform (seconds), falling back to `cargo install` from source
+- Writes shell completions for zsh / bash / fish
+- Links the Claude Code skill + slash commands into `~/.claude/`
+- Prints a `crabcc go` hint so you know what to do next
 
-- Prompts for `gh auth login` if you aren't authenticated yet (private-repo aware).
-- **Fresh install**: downloads the prebuilt binary for your platform (seconds), falling back to `cargo install --locked` from source if no prebuilt asset exists.
-- **Upgrade**: re-running compares your installed version against the latest release and only reinstalls when newer (`--force` to override, `--check` to dry-run).
-- Writes shell completions for your current shell (zsh / bash / fish).
-- Links the Claude Code skill + slash commands into `~/.claude/` when the
-  `claude` CLI is present.
-- Prints a `crabcc go` hint so the next thing you do is the right thing.
-
-> **Heads-up:** the one-liner builds in a tempdir, so it can only do a
-> minimal Claude integration (skill + slash-command symlinks). For the
-> full surface — [RTK (Token Killer)](https://crates.io/crates/rtk)
-> detection + install, hook templates, MCP registration hint — clone
-> crabcc to a stable location and run `crabcc install-claude` from
-> inside that clone. `scripts/bootstrap.sh` (below) handles all of
-> this automatically. Full script consolidation tracked in
-> [#501](https://github.com/crabcc-labs/crabcc/issues/501).
-
-Knobs (env or `--flag`):
+> 💡 **Heads-up:** the one-liner builds in a tempdir. For the full Claude integration (RTK, hooks, MCP registration), clone the repo and run `crabcc install-claude`. The `bootstrap.sh` script below handles everything automatically.
 
 | flag | env | default | what |
 |---|---|---|---|
-| `--bin-dir=DIR` | `CRABCC_INSTALL_DIR` | `~/.cargo/bin` | install target |
-| `--version=TAG` | — | main HEAD | install a specific release |
+| `--bin-dir=DIR` | `CRABCC_INSTALL_DIR` | `~/.cargo/bin` | where the binary lands |
+| `--version=TAG` | — | latest release | pin a specific version |
 | `--no-completions` | — | off | skip shell completions |
-| `--no-claude` | — | off | skip ~/.claude/ symlinks |
+| `--no-claude` | — | off | skip Claude skill symlinks |
 
-### Fresh machine — `scripts/bootstrap.sh`
+### 📦 Packaging options
 
-For a brand-new dev box, `bootstrap.sh` is the bigger sibling of `install.sh`:
-it preflights `rustup`, clones into `~/workspace/bin/crabcc`, builds,
-ad-hoc-codesigns the binaries (Sequoia provenance fix), wires shell aliases,
-**runs `crabcc install-claude --yes`** (skill + commands + RTK detection),
-and optionally brings up the Docker/Ollama stack.
-Idempotent — same script for fresh install **and** upgrade.
+crabcc is available through multiple channels — pick the one that fits your workflow:
+
+| Method | Command | Best for |
+|---|---|---|
+| **Homebrew** (macOS/Linux) | `brew install crabcc-labs/tap/crabcc` | Managed upgrades, `brew upgrade` |
+| **cargo** (any Rust host) | `cargo install crabcc-cli` | Rust developers, `--features` control |
+| **Nix** (NixOS / nix-darwin) | `nix run github:crabcc-labs/crabcc` or add to `flake.nix` | Reproducible builds, CI matrices |
+| **Docker** | `docker run -v $PWD:/repo ghcr.io/crabcc-labs/crabcc index /repo` | CI pipelines, no local Rust toolchain |
+| **Prebuilt binary** | Download from [GitHub Releases](https://github.com/crabcc-labs/crabcc/releases) | Air-gapped, offline, pinned version |
+| **One-liner curl** | `curl -fsSL https://.../install.sh \| bash` | Quickest path to `crabcc` on PATH |
+
+> 🏗️ **Want to contribute a package?** Homebrew formula at [`contrib/homebrew/`](contrib/homebrew/). Nix flake at [`flake.nix`](flake.nix). Dockerfile at [`Dockerfile`](Dockerfile). PRs welcome for new targets (snap, aur, choco, winget, apk).
+
+### 🔏 Verify with cosign
+
+All release binaries and Docker images are signed with [cosign](https://github.com/sigstore/cosign) (keyless, Sigstore Fulcio). Verify before running:
 
 ```bash
-gh api -H 'Accept: application/vnd.github.v3.raw' /repos/crabcc-labs/crabcc/contents/scripts/bootstrap.sh | bash
+# Verify a downloaded binary
+cosign verify-blob \
+  --certificate-identity https://github.com/crabcc-labs/crabcc/.github/workflows/release.yml@refs/tags/v6.3.0 \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --signature crabcc-v6.3.0-x86_64-apple-darwin.sig \
+  crabcc-v6.3.0-x86_64-apple-darwin
 
-# Defaults:
-#   ✓ Docker Desktop + Ollama stack (LiteLLM proxy on :4000)
-#   ✓ Claude Code skill / commands / RTK detection (via crabcc install-claude)
-#   ✓ Shell aliases (zsh + bash)
-#
-# Opt-outs:
-#   --no-docker       skip Docker + Ollama stack (binary + Claude only)
-#   --no-aliases      skip shell alias install
-#   --cli-only        binaries only — skip Claude / aliases / Docker
-#   --check-only      preflight only; no writes
+# Verify a Docker image
+cosign verify \
+  --certificate-identity https://github.com/crabcc-labs/crabcc/.github/workflows/release.yml@refs/tags/v6.3.0 \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/crabcc-labs/crabcc:v6.3.0
 ```
 
-### From source
+> 📦 Signatures are published alongside each [GitHub Release](https://github.com/crabcc-labs/crabcc/releases) asset (`.sig` files). The public key is embedded in the GitHub Actions OIDC identity — no key management needed. See [`cosign-setup.md`](./docs/COSIGN-SETUP.md) for CI integration.
+
+### 🆕 Fresh machine: `scripts/bootstrap.sh`
+
+For a brand-new dev box, `bootstrap.sh` is the full setup script — preflights `rustup`, clones into `~/workspace/bin/crabcc`, builds, ad-hoc-codesigns (macOS Sequoia), wires shell aliases, runs `crabcc install-claude --yes`, and optionally brings up Docker + Ollama.
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/crabcc-labs/crabcc/main/scripts/bootstrap.sh | bash
+
+# Opt-outs:
+#   --no-docker     skip Docker + Ollama
+#   --no-aliases    skip shell aliases
+#   --cli-only      binaries only — no Claude, no aliases, no Docker
+#   --check-only    preflight only, no writes
+```
+
+### 🏗️ From source
+
+```bash
+git clone https://github.com/crabcc-labs/crabcc
+cd crabcc
 cargo install --path crates/crabcc-cli
 ```
 
-### Agent integrations (Cursor, Claude, Gemini, OpenCode, LangChain, OS, kernel)
+### 🔌 Agent integrations
+
+Wire crabcc into your MCP client — Cursor, Claude, Gemini, OpenCode, LangChain, even kernel-level:
 
 ```bash
 crabcc setup install-integrations --target all --project --yes
-# or: task install-integrations TARGET=cursor,langchain PROJECT=1
 ```
 
-See [`install/integrations.md`](./install/integrations.md) for per-target MCP fragments,
-LangGraph tools, launchd/systemd units, and optional bleeding-edge kernel builds.
+See [`install/integrations.md`](./install/integrations.md) for per-target MCP fragments, LangGraph tools, launchd/systemd units.
 
-### Claude Code integration
+### 🦾 Claude Code integration
 
 ```bash
-crabcc install-claude          # symlinks skill + commands; offers to install RTK
+crabcc install-claude          # symlinks skill + commands; offers RTK install
 ```
 
-The `install-claude` subcommand:
+Then in Claude Code: `/reload-plugins`. The `install-claude` command also prints the MCP registration line and hook templates for `~/.claude/settings.json`. See [`install/hooks-claude.json`](./install/hooks-claude.json).
 
-- Symlinks the skill + slash-commands into `~/.claude/`.
-- Detects [RTK (Token Killer)](https://crates.io/crates/rtk) on PATH and
-  offers to `cargo install rtk` if missing — RTK is a hook-based
-  shell-output token proxy that pairs with the Bash hook below.
-- Prints the `claude mcp add crabcc -- crabcc --mcp` invocation and the hook
-  templates (SessionStart auto-refresh, PreToolUse grep→crabcc hint,
-  PreToolUse Read/Bash session-cache hooks) for you to paste into
-  `~/.claude/settings.json`. It does **not** modify any global Claude
-  config files.
-
-Hook templates: [`install/hooks-claude.json`](./install/hooks-claude.json).
-Pass `--yes` to skip per-symlink prompts, or `--print-hooks` to dump only the
-hook JSON (`crabcc install-claude --print-hooks > hooks.json`).
-
-Then in Claude Code: `/reload-plugins`.
-
-### Index your repo
+### 🏃 Index your first repo
 
 ```bash
 cd <your-repo>
 crabcc index            # one-time, ~5–30s on a 13k-file repo
-crabcc refresh          # incremental, ~250ms no-op (mtime + sha256 keyed)
-crabcc watch            # auto-refresh on file changes (Ctrl-C to exit)
+crabcc refresh          # incremental, ~250ms no-op
+crabcc watch            # auto-refresh on file changes
 
-# Or in one step — index + graph + memory + open a Claude session:
+# One command does it all — index + graph + memory + launch Claude:
 crabcc go
 ```
 
-The symbol index lives at `<repo>/.crabcc/index.db`; add `.crabcc/` to
-`.gitignore`. The AI memory store lives at
-`$CRABCC_HOME/repos/<slug>-<hash6>/memory.db` (default `$CRABCC_HOME =
-~/.crabcc`), so worktrees of the same repo share one memory.db and
-`git clean -fdx` doesn't blow it away.
+The index lives at `<repo>/.crabcc/index.db` (add to `.gitignore`). Memory lives at `~/.crabcc/repos/<slug>/memory.db` — shared across worktrees, survives `git clean`.
 
 ## Ollama agent backend
 

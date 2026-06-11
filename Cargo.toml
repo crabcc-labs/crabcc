@@ -86,10 +86,13 @@ tracing-appender = "0.2"
 libc = "0.2"
 notify-debouncer-mini = "0.7"
 sonic-rs = "0.5"
+rmp-serde = "1"
+flate2 = "1"
 bumpalo = { version = "3", features = ["collections"] }
 moka = { version = "0.12", features = ["sync"] }
 fastembed = "5"
 tiny_http = "0.12"
+ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
 serde_yml = "0.0.13"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time"] }
 # `socks` so `crabcc crawl --proxify socks4|socks5` can actually route

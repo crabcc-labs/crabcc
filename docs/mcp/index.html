@@ -1,0 +1,493 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>crabcc — symbol index for AI coding agents</title>
+<meta name="description" content="crabcc is a Rust CLI + MCP server that indexes a repo's symbols for instant AI agent lookups. 4412× faster than grep. SSE, MessagePack, gzip, Mastodon social posting.">
+<style>
+  :root {
+    --bg:        #0e0e10;
+    --card:      #161618;
+    --border:    #2a2a2e;
+    --text:      #c4c4c8;
+    --dim:       #6b6b72;
+    --accent:    #ff8c42;
+    --accent-dim:#b85a2a;
+    --green:     #4ade80;
+    --red:       #f87171;
+    --amber:     #fbbf24;
+    --blue:      #60a5fa;
+    --purple:    #c084fc;
+    --font:      'JetBrains Mono', 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+  }
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    background:var(--bg);
+    color:var(--text);
+    font-family:var(--font);
+    font-size:13px;
+    line-height:1.7;
+    -webkit-font-smoothing:antialiased;
+  }
+
+  /* ── nav ─────────────────────────── */
+  nav{
+    position:sticky;top:0;z-index:10;
+    background:var(--bg);
+    border-bottom:1px solid var(--border);
+    padding:12px 24px;
+    display:flex;align-items:center;justify-content:space-between;
+    backdrop-filter:blur(12px);
+  }
+  nav .brand{display:flex;align-items:center;gap:8px;font-weight:800;font-size:14px;color:var(--accent);text-decoration:none}
+  nav .brand img{width:24px;height:24px}
+  nav .links{display:flex;gap:16px;font-size:12px}
+  nav .links a{color:var(--dim);text-decoration:none;transition:color .2s}
+  nav .links a:hover{color:var(--accent)}
+
+  /* ── hero ────────────────────────── */
+  .hero{
+    text-align:center;
+    padding:80px 24px 60px;
+    max-width:720px;
+    margin:0 auto;
+  }
+  .hero img{width:120px;height:120px;margin-bottom:24px}
+  .hero h1{font-size:28px;font-weight:800;color:var(--accent);letter-spacing:-0.03em;margin-bottom:8px}
+  .hero .tagline{font-size:14px;color:var(--dim);margin-bottom:24px;line-height:1.6}
+  .hero .stats{
+    display:flex;justify-content:center;gap:32px;margin-bottom:32px;flex-wrap:wrap
+  }
+  .hero .stat{text-align:center}
+  .hero .stat .num{font-size:24px;font-weight:800;color:var(--text)}
+  .hero .stat .label{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:0.06em;margin-top:4px}
+  .hero .cta{display:flex;gap:12px;justify-content:center;flex-wrap:wrap}
+  .btn{
+    display:inline-block;
+    padding:10px 20px;
+    border:1px solid var(--accent);
+    color:var(--accent);
+    text-decoration:none;
+    font-size:12px;
+    font-weight:700;
+    letter-spacing:0.04em;
+    transition:background .2s,color .2s;
+  }
+  .btn:hover{background:var(--accent);color:var(--bg)}
+  .btn.primary{background:var(--accent);color:var(--bg)}
+  .btn.primary:hover{background:var(--accent-dim)}
+
+  /* ── sections ────────────────────── */
+  section{padding:64px 24px;max-width:960px;margin:0 auto}
+  section h2{
+    font-size:16px;font-weight:800;color:var(--accent);
+    text-transform:uppercase;letter-spacing:0.06em;
+    margin-bottom:8px;
+  }
+  section .sub{color:var(--dim);font-size:12px;margin-bottom:32px}
+  .divider{height:1px;background:var(--border);margin:0 auto;max-width:960px}
+
+  /* ── cards ───────────────────────── */
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}
+  .card{
+    background:var(--card);
+    border:1px solid var(--border);
+    padding:20px;
+  }
+  .card h3{font-size:13px;font-weight:800;color:var(--accent);margin-bottom:12px}
+  .card p,.card li{color:var(--dim);font-size:12px;line-height:1.6}
+  .card ul{padding-left:18px}
+  .card li{margin-bottom:4px}
+
+  /* ── feature flags ──────────────── */
+  .feature-row{
+    display:flex;align-items:center;gap:12px;padding:8px 0;
+    border-bottom:1px solid var(--border);
+    font-size:12px;
+  }
+  .feature-row:last-child{border-bottom:none}
+  .feature-row .name{font-weight:700;min-width:160px}
+  .feature-row .val{color:var(--dim)}
+  .feature-row .tag{
+    display:inline-block;padding:1px 8px;border-radius:2px;
+    font-size:10px;font-weight:700;letter-spacing:0.04em;
+  }
+  .tag.green{background:#166534;color:var(--green)}
+  .tag.amber{background:#78350f;color:var(--amber)}
+  .tag.blue{background:#1e3a5f;color:var(--blue)}
+  .tag.purple{background:#3b1f5e;color:var(--purple)}
+
+  /* ── transport table ────────────── */
+  .tbl{
+    width:100%;border-collapse:collapse;font-size:12px;margin-top:16px
+  }
+  .tbl th,.tbl td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--border)}
+  .tbl th{color:var(--dim);font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:0.04em}
+  .tbl td{white-space:nowrap}
+  .tbl code{background:var(--border);padding:1px 6px;border-radius:2px;font-size:11px;color:var(--accent)}
+
+  /* ── code block ─────────────────── */
+  pre{
+    background:var(--card);
+    border:1px solid var(--border);
+    padding:16px;
+    overflow-x:auto;
+    font-size:12px;
+    line-height:1.5;
+    color:var(--text);
+    margin-top:12px;
+  }
+  pre .c{color:var(--dim)}      /* comment */
+  pre .k{color:var(--purple)}   /* keyword */
+  pre .s{color:var(--green)}    /* string */
+  pre .n{color:var(--blue)}     /* name */
+  pre .o{color:var(--accent)}   /* operator */
+
+  /* ── footer ─────────────────────── */
+  footer{
+    padding:32px 24px;
+    border-top:1px solid var(--border);
+    text-align:center;
+    color:var(--dim);
+    font-size:11px;
+    line-height:1.8;
+  }
+  footer a{color:var(--accent);text-decoration:none}
+  footer a:hover{text-decoration:underline}
+
+  /* ── responsive ─────────────────── */
+  @media(max-width:600px){
+    .hero .stats{flex-direction:column;gap:12px}
+    nav .links{display:none}
+    .grid{grid-template-columns:1fr}
+    .feature-row{flex-wrap:wrap}
+    .feature-row .name{min-width:100%}
+  }
+</style>
+</head>
+<body>
+
+<!-- ── nav ──────────────────────────────────────────────────────── -->
+<nav>
+  <a href="#" class="brand">
+    <img src="https://raw.githubusercontent.com/crabcc-labs/crabcc/main/assets/logo.svg" alt="crabcc">
+    crabcc
+  </a>
+  <div class="links">
+    <a href="#what">What</a>
+    <a href="#transport">Transport</a>
+    <a href="#tools">Tools</a>
+    <a href="#perf">Performance</a>
+    <a href="#install">Install</a>
+    <a href="https://github.com/crabcc-labs/crabcc">GitHub</a>
+  </div>
+</nav>
+
+<!-- ── hero ─────────────────────────────────────────────────────── -->
+<section class="hero">
+  <img src="https://raw.githubusercontent.com/crabcc-labs/crabcc/main/assets/logo.svg" alt="crabcc logo">
+  <h1>crabcc</h1>
+  <p class="tagline">
+    Symbol index for AI coding agents.<br>
+    <strong>4412× faster than grep</strong> on monorepos ·
+    <strong>55× faster than ripgrep</strong> on whole-repo lookups ·
+    <strong>85% fewer bytes</strong> sent to the LLM
+  </p>
+  <div class="stats">
+    <div class="stat"><div class="num">4412×</div><div class="label">vs grep</div></div>
+    <div class="stat"><div class="num">55×</div><div class="label">vs ripgrep</div></div>
+    <div class="stat"><div class="num">44+</div><div class="label">MCP Tools</div></div>
+    <div class="stat"><div class="num">-44%</div><div class="label">Avg Latency</div></div>
+    <div class="stat"><div class="num">&lt;50ns</div><div class="label">Validation</div></div>
+  </div>
+  <div class="cta">
+    <a href="#install" class="btn primary">Install in 60s →</a>
+    <a href="https://github.com/crabcc-labs/crabcc" class="btn">GitHub</a>
+    <a href="https://crabcc.app/docs" class="btn">Docs</a>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- ── what ─────────────────────────────────────────────────────── -->
+<section id="what">
+  <h2>What is crabcc-mcp?</h2>
+  <p class="sub">A native MCP server that gives AI agents instant code intelligence — no grep, no find, no reading whole files.</p>
+  <div class="grid">
+    <div class="card">
+      <h3>🔍 Symbol Lookup</h3>
+      <p>Find definitions, references, and callers in milliseconds. Fuzzy matching, prefix search, and outline views replace grep, find, and ls for code questions.</p>
+    </div>
+    <div class="card">
+      <h3>🧠 Persistent Memory</h3>
+      <p>SQLite + FTS5 + vector search. Remember findings, search across sessions, mine project files and Claude Code transcripts. Hybrid BM25 + cosine similarity.</p>
+    </div>
+    <div class="card">
+      <h3>🐘 Mastodon Social</h3>
+      <p>Post reflections, release notes, and daily summaries. Rate-limited, idempotent, with SQLite-backed caching and history. Per-bot token support.</p>
+    </div>
+    <div class="card">
+      <h3>⚡ Performance</h3>
+      <p>256-byte lookup tables, pre-allocated buffers, sonic-rs SIMD JSON, MessagePack binary format, gzip compression. Benchmarked at -44% average latency.</p>
+    </div>
+    <div class="card">
+      <h3>🔒 Security</h3>
+      <p>SSRF-hardened URLs, header injection protection, env-only tokens, 16 MiB body cap, security headers on all responses. 27 security tests.</p>
+    </div>
+    <div class="card">
+      <h3>📊 Observability</h3>
+      <p>OTel tracing spans on every request. Live admin dashboard at GET /. Rate limit tracking, request history, cache statistics. Feature-gated OTLP export.</p>
+    </div>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- ── transport ────────────────────────────────────────────────── -->
+<section id="transport">
+  <h2>Transport Matrix</h2>
+  <p class="sub">Choose the right wire format for your agent's workload.</p>
+  <table class="tbl">
+    <thead>
+      <tr><th>Endpoint</th><th>Method</th><th>Formats</th><th>Framing</th><th>Compression</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><code>/mcp</code></td><td>POST</td>
+        <td>JSON (sonic-rs SIMD) · MessagePack</td>
+        <td>Sync body · SSE</td>
+        <td>gzip (≥128B)</td>
+      </tr>
+      <tr>
+        <td><code>/sse</code></td><td>GET</td>
+        <td>—</td>
+        <td>SSE endpoint + heartbeat</td>
+        <td>gzip</td>
+      </tr>
+      <tr>
+        <td><code>/health</code></td><td>GET</td>
+        <td>JSON</td>
+        <td>Cache-Control: max-age=60</td>
+        <td>gzip</td>
+      </tr>
+      <tr>
+        <td><code>/stats</code></td><td>GET</td>
+        <td>JSON</td>
+        <td>Cache-Control: no-cache</td>
+        <td>gzip</td>
+      </tr>
+      <tr>
+        <td><code>/</code></td><td>GET</td>
+        <td>HTML</td>
+        <td>Admin dashboard</td>
+        <td>gzip</td>
+      </tr>
+    </tbody>
+  </table>
+  <p style="color:var(--dim);font-size:11px;margin-top:16px">
+    All responses carry: <code>Server</code>, <code>X-Content-Type-Options: nosniff</code>, <code>Referrer-Policy: no-referrer</code>, <code>Connection: keep-alive</code>, <code>Vary: Accept, Accept-Encoding, Content-Type</code>.
+    Body size capped at 16 MiB (413 Payload Too Large).
+  </p>
+</section>
+
+<div class="divider"></div>
+
+<!-- ── tools ────────────────────────────────────────────────────── -->
+<section id="tools">
+  <h2>Tool Categories</h2>
+  <p class="sub">44 tools across 7 domains.</p>
+  <div class="grid">
+    <div class="card">
+      <h3>📇 Symbol Index</h3>
+      <ul>
+        <li><code>sym</code> — find definition</li>
+        <li><code>refs</code> — find references</li>
+        <li><code>callers</code> — find callers</li>
+        <li><code>outline</code> — file structure</li>
+        <li><code>fuzzy</code> / <code>prefix</code> — approximate search</li>
+        <li><code>files</code> — list code files</li>
+        <li><code>affected</code> — which tests cover my edit?</li>
+        <li><code>test_context</code> — context to write a test</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>🧠 Memory</h3>
+      <ul>
+        <li><code>memory.remember</code> — store a note</li>
+        <li><code>memory.search</code> — hybrid BM25 + vector search</li>
+        <li><code>memory.get</code> — fetch by id</li>
+        <li><code>memory.list</code> — browse recent</li>
+        <li><code>memory.mine_project</code> — bulk import files</li>
+        <li><code>memory.mine_sessions</code> — import transcripts</li>
+        <li><code>memory.remind_set</code> — schedule reminder</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>🐘 Mastodon</h3>
+      <ul>
+        <li><code>mastodon.post</code> — write a status</li>
+        <li><code>mastodon.read</code> — read timeline</li>
+        <li><code>mastodon.verify</code> — check token</li>
+      </ul>
+      <p style="margin-top:8px">Rate limited: 5/48h per token. Idempotent. SQLite cache + history.</p>
+    </div>
+    <div class="card">
+      <h3>📂 File I/O</h3>
+      <ul>
+        <li><code>read</code> — structured file read with caching</li>
+        <li><code>write_file</code> — write + parse validation + symbol diff + broken caller detection</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>🕸️ Graph</h3>
+      <ul>
+        <li><code>graph</code> — BFS walk of callers/callees</li>
+        <li><code>graph.blast_radius</code> — transitive deps</li>
+        <li><code>graph.why</code> — path between symbols</li>
+        <li><code>graph.hot_symbols</code> — most-called</li>
+        <li><code>graph.orphans</code> — no incoming calls</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>🔧 Index Lifecycle</h3>
+      <ul>
+        <li><code>index</code> — build fresh</li>
+        <li><code>refresh</code> — incremental update (mtime+sha256)</li>
+        <li><code>upgrade</code> — check for newer release</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- ── performance ──────────────────────────────────────────────── -->
+<section id="perf">
+  <h2>Performance</h2>
+  <p class="sub">4 rounds of micro-optimizations. 256-byte lookup tables, manual for loops, pre-allocated buffers, native CPU flags.</p>
+  <table class="tbl">
+    <thead>
+      <tr><th>Function</th><th>Before</th><th>After</th><th>Δ</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>validate_token</code> (64-char OAuth2)</td><td>59.0 ns</td><td>44.3 ns</td><td class="tag green">-25%</td></tr>
+      <tr><td><code>sanitize_idem_key</code> (20-char header key)</td><td>104.6 ns</td><td>38.1 ns</td><td class="tag green">-64%</td></tr>
+      <tr><td><code>encode_hashtag</code> (XSS cleaning)</td><td>68.7 ns</td><td>30.3 ns</td><td class="tag green">-56%</td></tr>
+      <tr><td><code>sse_event_format</code> (100B → SSE framing)</td><td>149.8 ns</td><td>59.3 ns</td><td class="tag green">-60%</td></tr>
+      <tr><td><code>gzip_sse_stream</code> (400B → compressed)</td><td>9.78 µs</td><td>8.27 µs</td><td class="tag green">-15%</td></tr>
+    </tbody>
+  </table>
+  <pre><span class="c"># Run benchmarks locally</span>
+task bench-mcp-transport
+
+<span class="c"># Run on Hetzner CX53 (16 vCPU)</span>
+task bench-mcp-remote</pre>
+</section>
+
+<div class="divider"></div>
+
+<!-- ── features ─────────────────────────────────────────────────── -->
+<section id="features">
+  <h2>Feature Flags</h2>
+  <p class="sub">Composable capabilities. Zero-cost when disabled.</p>
+  <div class="card">
+    <div class="feature-row">
+      <span class="name">Symbol Index</span><span class="val">SQLite + tree-sitter extraction</span>
+      <span class="tag green">default</span>
+    </div>
+    <div class="feature-row">
+      <span class="name">Memory</span><span class="val">FTS5 + vector hybrid search</span>
+      <span class="tag green">default</span>
+    </div>
+    <div class="feature-row">
+      <span class="name">Mastodon</span><span class="val">Post, read, verify — rate-limited, idempotent</span>
+      <span class="tag green">default</span>
+    </div>
+    <div class="feature-row">
+      <span class="name">SSE</span><span class="val">text/event-stream framing, endpoint negotiation</span>
+      <span class="tag green">default</span>
+    </div>
+    <div class="feature-row">
+      <span class="name">MessagePack</span><span class="val">30-50% smaller payloads, faster deserialize</span>
+      <span class="tag blue">opt-in</span>
+    </div>
+    <div class="feature-row">
+      <span class="name">gzip</span><span class="val">Response compression (≥128B), flate2</span>
+      <span class="tag green">default</span>
+    </div>
+    <div class="feature-row">
+      <span class="name">sonic-rs SIMD JSON</span><span class="val">SSE4.2/AVX2 accelerated parsing</span>
+      <span class="tag blue">auto</span>
+    </div>
+    <div class="feature-row">
+      <span class="name">OTel</span><span class="val">OTLP gRPC tracing export</span>
+      <span class="tag purple">feature</span>
+    </div>
+  </div>
+</section>
+
+<div class="divider"></div>
+
+<!-- ── install ──────────────────────────────────────────────────── -->
+<section id="install">
+  <h2>Install</h2>
+  <p class="sub">60 seconds. Pick your method.</p>
+  <div class="grid">
+    <div class="card">
+      <h3>🤖 Copy as prompt (for AI agents)</h3>
+      <p style="margin-bottom:12px">Paste this into any coding agent to install crabcc and index the current repo:</p>
+      <pre>Install crabcc — the symbol index for AI coding agents.
+Use the one-liner:
+  curl -fsSL https://raw.githubusercontent.com/crabcc-labs/crabcc/main/install.sh | bash
+Then index this repo and start using it:
+  crabcc go    # index + graph + memory + launch Claude
+After that, prefer `crabcc sym &lt;name&gt;` over grep,
+`crabcc refs &lt;name&gt;` over find, and `crabcc outline &lt;file&gt;`
+over reading whole files.</pre>
+    </div>
+    <div class="card">
+      <h3>⚡ One-liner</h3>
+      <pre>curl -fsSL https://raw.githubusercontent.com/crabcc-labs/crabcc/main/install.sh | bash</pre>
+    </div>
+    <div class="card">
+      <h3>📦 Homebrew</h3>
+      <pre>brew install crabcc-labs/tap/crabcc</pre>
+    </div>
+    <div class="card">
+      <h3>🦀 Cargo</h3>
+      <pre>cargo install crabcc-cli</pre>
+    </div>
+    <div class="card">
+      <h3>🐳 Docker</h3>
+      <pre>docker pull ghcr.io/crabcc-labs/crabcc:latest</pre>
+    </div>
+    <div class="card">
+      <h3>❄️ Nix</h3>
+      <pre>nix run github:crabcc-labs/crabcc</pre>
+    </div>
+  </div>
+  <p style="color:var(--dim);font-size:11px;margin-top:24px">
+    All releases are signed with <strong>cosign</strong> (keyless, Sigstore Fulcio).
+    Verify: <code>cosign verify-blob --certificate-identity ... --certificate-oidc-issuer ... crabcc</code>.
+    Prebuilt binaries for macOS (arm64 + x64) and Linux (x64 + arm64).
+  </p>
+</section>
+
+<div class="divider"></div>
+
+<!-- ── footer ───────────────────────────────────────────────────── -->
+<footer>
+  <p>🦀 <strong>crabcc</strong> — symbol index for AI coding agents</p>
+  <p>
+    <a href="https://github.com/crabcc-labs/crabcc">GitHub</a> ·
+    <a href="https://crabcc.app/docs">Docs</a> ·
+    <a href="https://crabcc.app/about">About</a> ·
+    <a href="https://social.crabcc.app">Mastodon</a>
+  </p>
+  <p style="margin-top:12px">Built in Rust. No telemetry. Open-source.</p>
+</footer>
+
+</body>
+</html>

@@ -125,18 +125,26 @@ async fn handle_enrich(
 
 // ── Python wrappers (hold GIL; always call from spawn_blocking) ───────────────
 
-fn with_path<T>(py: Python<'_>, path: &str, f: impl FnOnce(Python<'_>) -> PyResult<T>) -> PyResult<T> {
-    py.import_bound("sys")?.getattr("path")?.call_method1("insert", (0, path))?;
+fn with_path<T>(
+    py: Python<'_>,
+    path: &str,
+    f: impl FnOnce(Python<'_>) -> PyResult<T>,
+) -> PyResult<T> {
+    py.import_bound("sys")?
+        .getattr("path")?
+        .call_method1("insert", (0, path))?;
     f(py)
 }
 
 fn py_compact(python_path: &str, text: &str, ratio: f64) -> Result<CompactResp> {
     Python::with_gil(|py| {
         with_path(py, python_path, |py| {
-            let r = py.import_bound("compress")?.call_method1("compact", (text, ratio))?;
+            let r = py
+                .import_bound("compress")?
+                .call_method1("compact", (text, ratio))?;
             Ok(CompactResp {
-                compressed:        r.get_item("compressed")?.extract()?,
-                original_tokens:   r.get_item("original_tokens")?.extract()?,
+                compressed: r.get_item("compressed")?.extract()?,
+                original_tokens: r.get_item("original_tokens")?.extract()?,
                 compressed_tokens: r.get_item("compressed_tokens")?.extract()?,
             })
         })
@@ -177,7 +185,12 @@ mod tests {
     #[tokio::test]
     async fn health_200_ok() {
         let resp = app()
-            .oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);

@@ -170,6 +170,88 @@ tasks:
             --root "{{.ROOT}}" --bin {{.ROOT_DIR}}/target/release/crabcc --profile "$p";
         done
 
+  bench-mcp-transport:
+    desc: |
+      Mastodon + transport micro-benchmarks: token validation, key sanitization,
+      hashtag encoding, SSE event formatting, JSON vs MessagePack serialization,
+      gzip compression, and mastodon dispatch latency (no network). Pure-CPU,
+      criterion-backed, suitable for regression gating in CI.
+    cmds:
+      - '{{.CARGO}} bench -p crabcc-mcp --features bench --bench mastodon_transport'
+
+  bench-mcp-all:
+    desc: |
+      Run all MCP benchmarks (agent workload + mastodon transport) and surface
+      the combined results. Use for pre-release regression gating.
+    cmds:
+      - task: bench-agent-mcp
+      - task: bench-mcp-transport
+
+  bench-mcp-remote:
+    desc: |
+      Run MCP benchmarks on the dev-cx53 Hetzner box (AMD EPYC, 16 vCPU, 32 GB).
+      Copies the source tree via rsync, builds in release mode, runs the full
+      benchmark suite (agent workload + mastodon transport), and pulls results
+      back to bench/results/cx53/. Requires Tailscale + SSH access to dev-cx53.
+    vars:
+      HOST: '{{.HOST | default "dev-cx53"}}'
+      USER: '{{.USER | default "dev"}}'
+      REMOTE_DIR: '{{.REMOTE_DIR | default "/home/dev/crabcc-bench"}}'
+    cmds:
+      # 1. rsync the source tree to cx53 (skip target/, .git/, etc.)
+      - >-
+        rsync -avz --delete
+        --exclude 'target/' --exclude '.git/' --exclude 'result/'
+        --exclude 'compact-server/.venv/' --exclude '.repomix/'
+        --exclude '.claude/' --exclude '.deepseek/'
+        {{.ROOT_DIR}}/
+        {{.USER}}@{{.HOST}}:{{.REMOTE_DIR}}/
+      # 2. Build release + run benchmarks on cx53
+      - >-
+        ssh {{.USER}}@{{.HOST}}
+        'cd {{.REMOTE_DIR}} &&
+         cargo bench -p crabcc-mcp --features bench --bench agent_workload --bench mastodon_transport --
+         --warm-up-time 3 --measurement-time 10 --sample-size 30
+         --output-format bencher |
+         tee bench/results/cx53-bench.txt'
+      # 3. Pull results back
+      - 'mkdir -p bench/results/cx53'
+      - >-
+        rsync -avz
+        {{.USER}}@{{.HOST}}:{{.REMOTE_DIR}}/bench/results/
+        bench/results/cx53/
+      # 4. Surface summary
+      - 'echo "── cx53 bench results ──" && cat bench/results/cx53/cx53-bench.txt'
+
+  bench-mcp-remote-fast:
+    desc: |
+      Quick remote bench (3s warmup, 5s measure, 10 samples) — for fast
+      iteration during development. Same rsync + ssh flow as bench-mcp-remote.
+    vars:
+      HOST: '{{.HOST | default "dev-cx53"}}'
+      USER: '{{.USER | default "dev"}}'
+      REMOTE_DIR: '{{.REMOTE_DIR | default "/home/dev/crabcc-bench"}}'
+    cmds:
+      - >-
+        rsync -avz --delete
+        --exclude 'target/' --exclude '.git/' --exclude 'result/'
+        --exclude 'compact-server/.venv/' --exclude '.repomix/'
+        --exclude '.claude/' --exclude '.deepseek/'
+        {{.ROOT_DIR}}/
+        {{.USER}}@{{.HOST}}:{{.REMOTE_DIR}}/
+      - >-
+        ssh {{.USER}}@{{.HOST}}
+        'cd {{.REMOTE_DIR}} &&
+         cargo bench -p crabcc-mcp --features bench --bench mastodon_transport --
+         --warm-up-time 1 --measurement-time 5 --sample-size 10 |
+         tee bench/results/cx53-quick.txt'
+      - 'mkdir -p bench/results/cx53'
+      - >-
+        rsync -avz
+        {{.USER}}@{{.HOST}}:{{.REMOTE_DIR}}/bench/results/
+        bench/results/cx53/
+      - 'echo "── cx53 quick bench ──" && cat bench/results/cx53/cx53-quick.txt'
+
   # ---------------------------------------------------------------------------
   # Nixery binary optimization matrix (node-optimized + python315t-optimized)
   # ---------------------------------------------------------------------------
