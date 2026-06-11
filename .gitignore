@@ -140,3 +140,6 @@ service-account*.json
 # ── Python compact-server artifacts ──────────────────────────────────
 compact-server/.venv/
 compact-server/compact_server.egg-info/
+
+# Playwright MCP tool output
+.playwright-mcp/

@@ -6,27 +6,12 @@ vars:
   REPOMIX_OUT: .repomix/crabcc.xml
 
 tasks:
-  viz-web-build:
-    desc: |
-      Build the React /live dashboard bundle (phase 1 of #17). Outputs
-      a single self-contained HTML at crates/crabcc-viz/web/dist/live.html
-      which the Rust crate include_str!s at compile time. Re-run after
-      editing crates/crabcc-viz/web/src/.
-    cmds:
-      - 'cd crates/crabcc-viz/web && bun install --silent && bun run build'
-
-  viz-web-test:
-    desc: Run the React frontend's bun:test suite + tsgo typecheck.
-    cmds:
-      - 'cd crates/crabcc-viz/web && bun install --silent && bun run typecheck && bun test src'
-
-  viz-web-dev:
-    desc: |
-      Watch crates/crabcc-viz/web/src/ and rebuild dist/live.html on save.
-      Pair with `task viz` in another terminal to see live reloads after
-      Cmd-R in the browser.
-    cmds:
-      - 'cd crates/crabcc-viz/web && bun install --silent && bun run dev'
+  # NOTE: the React /live dashboard SPA was extracted out of this repo into the
+  # standalone `crabcc.app-eye` app (see crates/crabcc-viz: /live now 302-redirects
+  # to it). The viz-web-build / viz-web-test / viz-web-dev / openapi-codegen-viz
+  # tasks that targeted crates/crabcc-viz/web/ were removed here — build/test the
+  # SPA in the crabcc.app-eye repo instead. crabcc-viz keeps only the Rust API +
+  # the token-gated /eye preview.
 
   viz:
     desc: |
@@ -173,17 +158,6 @@ tasks:
           esac
       - 'wc -c "{{.OUT}}" | awk ''{ printf "size: %.1f KiB (compressed XML + index + graph)\n", $1/1024 }'''
 
-  openapi-codegen-viz:
-    desc: Regenerate the /live frontend's TS types from crates/crabcc-viz/openapi.yaml (issue #170 phase 0)
-    summary: |
-      Runs `openapi-typescript` against `crates/crabcc-viz/openapi.yaml`
-      and writes the generated types into
-      `crates/crabcc-viz/web/src/api.gen.ts`. This is the same step that
-      `bun run build` runs automatically — the standalone task is
-      useful when you've edited the YAML and want to refresh types
-      without a full bundle build.
-    cmds:
-      - 'cd crates/crabcc-viz/web && bun install --silent && bun run codegen'
 
   docs:check:
     desc: Verify c7 + crabcc are on PATH; useful before docs:ingest in CI.
