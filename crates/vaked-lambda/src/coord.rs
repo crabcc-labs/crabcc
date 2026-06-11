@@ -81,6 +81,55 @@ pub fn module_dag_to_coord(modules: Vec<ModuleSpec>) -> CoordGraph {
     CoordGraph { units }
 }
 
+/// Lower a Term's coordination nodes (Seq/Par/Dep) into a CoordGraph. Each
+/// non-coordination operand becomes a Unit (its body). `Seq(a,b)` makes b await
+/// a; `Dep(a,on)` makes a await on; `Par(a,b)` adds no edge between them.
+/// Returns the graph; unit ids are assigned in post-order.
+pub fn term_to_coord(term: &Term, kind: UnitKind) -> CoordGraph {
+    let mut units: Vec<Unit> = Vec::new();
+    // Lower a block, returning (entry_id, exit_id): the first unit to run and
+    // the last to complete. Coordination edges attach entry-to-exit so nested
+    // blocks chain correctly (e.g. Seq(a, Seq(b,c)) => a -> b -> c).
+    fn go(t: &Term, kind: UnitKind, units: &mut Vec<Unit>) -> (u32, u32) {
+        match t {
+            Term::Seq(a, b) => {
+                let (ea, xa) = go(a, kind, units);
+                let (eb, xb) = go(b, kind, units);
+                units[eb as usize].awaits.push(xa); // b's entry awaits a's exit
+                (ea, xb)
+            }
+            Term::Dep(a, on) => {
+                let (_eon, xon) = go(on, kind, units);
+                let (ea, xa) = go(a, kind, units);
+                units[ea as usize].awaits.push(xon); // a's entry awaits on's exit
+                (ea, xa)
+            }
+            Term::Par(a, b) => {
+                let (ea, _xa) = go(a, kind, units);
+                let (_eb, xb) = go(b, kind, units);
+                (ea, xb) // no edge; representative span entry(a)..exit(b)
+            }
+            leaf => {
+                let id = units.len() as u32;
+                units.push(Unit {
+                    id,
+                    body: leaf.clone(),
+                    awaits: vec![],
+                    yields: id,
+                    kind,
+                });
+                (id, id)
+            }
+        }
+    }
+    go(term, kind, &mut units);
+    for u in &mut units {
+        u.awaits.sort_unstable();
+        u.awaits.dedup();
+    }
+    CoordGraph { units }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,6 +187,21 @@ mod tests {
         assert_eq!(g.units[2].awaits, vec![0]); // sched -> base
         assert_eq!(g.units[3].awaits, vec![1]); // net -> mem
         assert_eq!(g.units[4].awaits, vec![1, 2, 3]); // kernel -> mem, sched, net
+    }
+
+    #[test]
+    fn term_to_coord_builds_seq_edge() {
+        // Seq(a, Seq(b, c)) : c awaits b, b awaits a
+        let t = Term::Seq(
+            Box::new(lit("a")),
+            Box::new(Term::Seq(Box::new(lit("b")), Box::new(lit("c")))),
+        );
+        let g = term_to_coord(&t, UnitKind::Runtime);
+        assert_eq!(g.units.len(), 3);
+        // post-order ids: a=0, b=1, c=2
+        assert_eq!(g.units[0].awaits, vec![] as Vec<Timepoint>); // a
+        assert_eq!(g.units[1].awaits, vec![0]); // b awaits a
+        assert_eq!(g.units[2].awaits, vec![1]); // c awaits b
     }
 
     #[test]
