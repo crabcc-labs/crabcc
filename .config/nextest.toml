@@ -35,3 +35,9 @@ store-failure-output = true
 filter = "binary(concurrency)"
 retries = { backoff = "exponential", count = 3, delay = "500ms", max-delay = "10s" }
 slow-timeout = { period = "120s", terminate-after = 2 }
+
+# Wormhole tests: always store output so RUST_LOG=debug traces appear in CI
+# artifacts even on green runs — noise is acceptable, blind failures are not.
+[[profile.ci.overrides]]
+filter = "package(wormhole-node) | package(wormhole-relay) | package(wormhole-proto)"
+store-success-output = true

@@ -338,6 +338,8 @@ jobs:
 
       - name: cargo nextest (scoped)
         if: steps.scope.outputs.scope != ''
+        env:
+          RUST_LOG: wormhole_node=debug,wormhole_relay=debug,wormhole_proto=debug
         run: cargo nextest run ${{ steps.scope.outputs.scope }} --profile ci
 
       - name: upload test report (JUnit XML)
