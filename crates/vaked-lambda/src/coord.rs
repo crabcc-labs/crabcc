@@ -178,7 +178,11 @@ fn fold_build_time(mut graph: CoordGraph, profile: &TargetProfile) -> CoordGraph
 
 /// Build adjacency: unit id -> its direct awaits (after any folding).
 fn adjacency(graph: &CoordGraph) -> HashMap<u32, Vec<u32>> {
-    graph.units.iter().map(|u| (u.id, u.awaits.clone())).collect()
+    graph
+        .units
+        .iter()
+        .map(|u| (u.id, u.awaits.clone()))
+        .collect()
 }
 
 /// Is `target` reachable from `start` following awaits edges (excluding the
@@ -212,7 +216,8 @@ fn transitive_reduce(mut graph: CoordGraph) -> CoordGraph {
     let adj = adjacency(&graph);
     for u in &mut graph.units {
         let id = u.id;
-        u.awaits.retain(|&t| !reachable_excluding_direct(&adj, id, t));
+        u.awaits
+            .retain(|&t| !reachable_excluding_direct(&adj, id, t));
     }
     graph
 }
@@ -255,6 +260,80 @@ pub fn classify_waits(graph: &CoordGraph) -> Vec<(u32, u32, WaitKind)> {
 /// `classify_waits` and consumed by `emit_coord`.)
 pub fn coord_reduce(graph: CoordGraph, profile: &TargetProfile) -> CoordGraph {
     transitive_reduce(fold_build_time(graph, profile))
+}
+
+/// Topological order of unit ids (Kahn's algorithm over awaits edges).
+fn topo_order(graph: &CoordGraph) -> Vec<u32> {
+    let mut indeg: HashMap<u32, usize> =
+        graph.units.iter().map(|u| (u.id, u.awaits.len())).collect();
+    // provider -> consumers
+    let mut consumers: HashMap<u32, Vec<u32>> = HashMap::new();
+    for u in &graph.units {
+        for &t in &u.awaits {
+            consumers.entry(t).or_default().push(u.id);
+        }
+    }
+    let mut ready: Vec<u32> = indeg
+        .iter()
+        .filter(|(_, &d)| d == 0)
+        .map(|(&id, _)| id)
+        .collect();
+    ready.sort_unstable();
+    let mut out = Vec::new();
+    while let Some(n) = ready.pop() {
+        out.push(n);
+        if let Some(cs) = consumers.get(&n) {
+            for &c in cs {
+                let d = indeg.get_mut(&c).unwrap();
+                *d -= 1;
+                if *d == 0 {
+                    ready.push(c);
+                }
+            }
+        }
+        ready.sort_unstable();
+    }
+    out
+}
+
+/// Emit the residual coordination. Static-composition: a build order, no sync
+/// primitives. Otherwise: one wait line per surviving edge (barrier / p2p).
+pub fn emit_coord(graph: &CoordGraph, profile: &TargetProfile) -> String {
+    let name = |id: u32| {
+        graph
+            .units
+            .iter()
+            .find(|u| u.id == id)
+            .map(|u| match &u.body {
+                Term::Lit(s) => s.clone(),
+                _ => format!("unit{id}"),
+            })
+            .unwrap_or_else(|| format!("unit{id}"))
+    };
+
+    let any_residual = graph.units.iter().any(|u| !u.awaits.is_empty());
+    if !any_residual {
+        // coordination-closed: just a build order.
+        let order: Vec<String> = topo_order(graph).into_iter().map(name).collect();
+        return format!(
+            "# build order (0 runtime barriers)\n{}\n",
+            order.join(" -> ")
+        );
+    }
+    let mut out = String::from("# residual coordination\n");
+    for (consumer, provider, kind) in classify_waits(graph) {
+        let tag = match kind {
+            WaitKind::Barrier => "barrier",
+            WaitKind::PointToPoint => "p2p",
+        };
+        out.push_str(&format!(
+            "{} waits-on {} ({tag})\n",
+            name(consumer),
+            name(provider)
+        ));
+    }
+    let _ = profile;
+    out
 }
 
 #[cfg(test)]
@@ -320,9 +399,14 @@ mod tests {
     fn downgrade_marks_shared_provider_as_barrier() {
         // base (id 0) has two consumers (mem, sched) under a runtime profile -> Barrier.
         // net (id 3) has one consumer (kernel) -> PointToPoint.
-        let g = coord_reduce(module_dag_to_coord(example_modules()), &TargetProfile::runtime());
+        let g = coord_reduce(
+            module_dag_to_coord(example_modules()),
+            &TargetProfile::runtime(),
+        );
         let waits = classify_waits(&g);
-        assert!(waits.iter().any(|&(_, p, k)| p == 0 && k == WaitKind::Barrier));
+        assert!(waits
+            .iter()
+            .any(|&(_, p, k)| p == 0 && k == WaitKind::Barrier));
         assert!(waits
             .iter()
             .any(|&(_, p, k)| p == 3 && k == WaitKind::PointToPoint));
@@ -365,6 +449,29 @@ mod tests {
         assert_eq!(g.units[0].awaits, vec![] as Vec<Timepoint>); // a
         assert_eq!(g.units[1].awaits, vec![0]); // b awaits a
         assert_eq!(g.units[2].awaits, vec![1]); // c awaits b
+    }
+
+    #[test]
+    fn emit_static_is_build_order_no_barriers() {
+        let g = coord_reduce(
+            module_dag_to_coord(example_modules()),
+            &TargetProfile::static_composition(),
+        );
+        let out = emit_coord(&g, &TargetProfile::static_composition());
+        assert!(out.contains("0 runtime barriers"));
+        assert!(!out.contains("(barrier)")); // no per-edge barrier tags in a static build order
+        assert!(out.contains("base")); // build order names units
+    }
+
+    #[test]
+    fn emit_runtime_lists_residual_waits() {
+        let g = coord_reduce(
+            module_dag_to_coord(example_modules()),
+            &TargetProfile::runtime(),
+        );
+        let out = emit_coord(&g, &TargetProfile::runtime());
+        assert!(out.contains("residual coordination"));
+        assert!(out.contains("(barrier)")); // base is shared
     }
 
     #[test]
