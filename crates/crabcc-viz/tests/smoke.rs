@@ -180,6 +180,18 @@ fn live_route_redirects_to_app_eye() {
 }
 
 #[test]
+fn eye_preview_is_invisible_without_token() {
+    // The /eye agent-monitor preview is private. With CRABCC_EYE_TOKEN unset
+    // (the default) it MUST 404 — the bundled dashboard never leaks to anyone
+    // who doesn't hold the token. Guards the "preview only for the operator"
+    // contract against an accidental always-on regression.
+    assert!(std::env::var("CRABCC_EYE_TOKEN").is_err(), "test env must not set CRABCC_EYE_TOKEN");
+    let (_dir, port) = boot_test_server();
+    let (status, _body) = http_get(port, "/eye");
+    assert_eq!(status, 404, "/eye must be invisible (404) when CRABCC_EYE_TOKEN is unset");
+}
+
+#[test]
 fn bootstrap_endpoint_returns_repo_summary() {
     let (_dir, port) = boot_test_server();
     let (status, body) = http_get(port, "/api/bootstrap");
