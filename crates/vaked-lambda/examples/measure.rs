@@ -74,6 +74,10 @@ fn main() {
     println!("mirage open  : {} B", emit_mirage(&open).len());
     println!("mirage closed: {} B", emit_mirage(&closed).len());
 
+    println!("\n== OCaml (MirageOS) emit ==");
+    println!("open:\n{}", emit_mirage(&open));
+    println!("closed: {}", emit_mirage(&closed));
+
     // Build+reduce throughput (honest: includes lambda construction per op).
     let n = 1_000_000u32;
     let t0 = Instant::now();
