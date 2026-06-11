@@ -1,0 +1,27 @@
+[package]
+name = "swe-team"
+version = "0.1.0"
+edition = "2021"
+# Standalone — excluded from the crabcc workspace (see root Cargo.toml exclude
+# list), so `version.workspace = true` is unavailable here. This crate shells
+# out to the installed `crabcc` binary and depends on no crabcc crate.
+license = "MIT"
+
+[[bin]]
+name = "swe-team"
+path = "src/main.rs"
+
+[dependencies]
+# rig-core 0.38.2 — the multi-agent LLM framework. Renamed to `rig` because the
+# crate's [lib] name is `rig_core` (not `rig`) in 0.38; the rename lets us write
+# idiomatic `rig::...` paths. The custom-gateway constructor is the type-state
+# builder verified against this exact version:
+#   openai::Client::builder().api_key(k).base_url(u).build()?
+# (rig-core-0.38.2/src/providers/openai/client.rs + src/client/mod.rs).
+rig = { package = "rig-core", version = "0.38" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+clap = { version = "4", features = ["derive"] }
+thiserror = "2"

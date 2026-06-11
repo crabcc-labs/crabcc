@@ -9,6 +9,13 @@ exclude = [
     # wormhole-bpf/bpf: compiles to bpfel-unknown-none; must not join the host
     # workspace build (no_std, aya-bpf, separate toolchain).
     "crates/wormhole-bpf/bpf",
+    # crates/swe-team: a rig-based multi-agent SWE pipeline that shells out to
+    # the installed `crabcc` binary. Excluded so it does not join the crabcc
+    # workspace build — its rig-core dep tree and the workspace's
+    # panic=abort / profile settings conflict. It has its own [package] +
+    # [dependencies] and depends on no crabcc crate. Build standalone:
+    # cd crates/swe-team && cargo build
+    "crates/swe-team",
     # editors/zed/crabcc: the Zed extension compiles to wasm32-wasip1 via
     # zed_extension_api; it must not join the host workspace build. Built by
     # Zed itself (zed: install dev extension) or `cargo build --target
