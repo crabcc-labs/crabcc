@@ -21,7 +21,7 @@ tracing    = { workspace = true }
 tracing-subscriber = { workspace = true }
 ahash      = { workspace = true }
 crabcc-memory = { workspace = true }
-similar    = "2"
+similar    = "3"
 
 [dev-dependencies]
 tempfile = { workspace = true }
