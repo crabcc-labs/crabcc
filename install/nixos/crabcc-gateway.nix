@@ -134,6 +134,47 @@ in {
       };
     };
 
-    # oauth2-proxy, traefik, and firewall wired in subsequent tasks
+    # ── oauth2-proxy (GitHub OAuth2, ForwardAuth mode) ──────────────────────
+    services.oauth2-proxy = {
+      enable = true;
+      provider = "github";
+      clientID = cfg.githubClientId;
+      clientSecretFile = cfg.githubClientSecretFile;
+
+      # ForwardAuth mode: Traefik proxies to crabcc; oauth2-proxy only decides auth
+      upstream = [];
+      redirectURL = "https://${cfg.domain}/oauth2/callback";
+      httpAddress = "http://127.0.0.1:${toString cfg.oauthProxyPort}";
+
+      cookie = {
+        secretFile = cfg.cookieSecretFile;
+        httpOnly = true;
+      };
+
+      # Running behind Traefik — trust X-Forwarded-* headers
+      reverseProxy = true;
+
+      # Forward auth user identity headers to crabcc
+      setXauthrequest = true;
+
+      extraConfig = mkMerge [
+        {
+          # 4h session lifetime; SameSite=lax
+          cookie-expire    = "4h";
+          cookie-samesite  = "lax";
+          # MCP clients (Claude Code) authenticate with Bearer token directly,
+          # bypassing the browser OAuth flow
+          skip-jwt-bearer-tokens = "true";
+        }
+        (mkIf (cfg.allowedGitHubUsers != []) {
+          github-user = concatStringsSep "," cfg.allowedGitHubUsers;
+        })
+        (mkIf (cfg.allowedGitHubOrg != "") {
+          github-org = cfg.allowedGitHubOrg;
+        })
+      ];
+    };
+
+    # traefik and firewall wired in subsequent tasks
   };
 }
