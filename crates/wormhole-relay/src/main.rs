@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
+use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::Router;
@@ -34,6 +35,7 @@ const CHAN_BUF: usize = 64;
 struct RelayState {
     sessions: HashMap<[u8; 32], SessionState>,
     nonces: HashMap<[u8; 16], Instant>,
+    relay_token: Option<String>,
 }
 
 struct SessionState {
@@ -74,8 +76,6 @@ async fn health_handler() -> impl IntoResponse {
 
 // ---- nonce helpers ----
 
-/// Sweep nonces older than NONCE_TTL. Called on each new connection so no
-/// background task is needed.
 fn evict_old_nonces(nonces: &mut HashMap<[u8; 16], Instant>) {
     nonces.retain(|_, seen_at| seen_at.elapsed() < NONCE_TTL);
 }
@@ -164,26 +164,24 @@ async fn handle_ws(socket: WebSocket, state: SharedState) {
             }
         };
 
-        let mut st = state.lock().await;
-        let sess = st.sessions.entry(node_id).or_default();
-
-        match role {
-            0 => {
-                // node -> relay: log the payload, forward raw bytes to operator
-                let seq = sess.node_seq;
-                sess.node_seq += 1;
-                sess.log.push(seq, frame.noise_payload.clone());
-                if let Some(op_tx) = &sess.op_tx {
-                    let _ = op_tx.try_send(Message::Binary(bytes));
+        // Clone the peer sender before dropping the lock so try_send runs outside it.
+        let peer_tx: Option<Sender<Message>> = {
+            let mut st = state.lock().await;
+            let sess = st.sessions.entry(node_id).or_default();
+            match role {
+                0 => {
+                    // node -> relay: log the payload, then forward to operator
+                    let seq = sess.node_seq;
+                    sess.node_seq += 1;
+                    sess.log.push(seq, frame.noise_payload.clone());
+                    sess.op_tx.clone()
                 }
+                1 => sess.node_tx.clone(), // operator -> relay: forward to node
+                _ => unreachable!(),
             }
-            1 => {
-                // operator -> relay: forward raw bytes to node
-                if let Some(node_tx) = &sess.node_tx {
-                    let _ = node_tx.try_send(Message::Binary(bytes));
-                }
-            }
-            _ => unreachable!(),
+        };
+        if let Some(tx) = peer_tx {
+            let _ = tx.try_send(Message::Binary(bytes));
         }
     }
 
@@ -229,6 +227,7 @@ fn encode_hex(b: &[u8]) -> String {
 }
 
 async fn replay_handler(
+    headers: HeaderMap,
     Path(node_id_hex): Path<String>,
     Query(params): Query<ReplayQuery>,
     State(state): State<SharedState>,
@@ -240,6 +239,16 @@ async fn replay_handler(
     let from_seq = params.from.unwrap_or(0);
 
     let st = state.lock().await;
+
+    if let Some(tok) = &st.relay_token {
+        let provided = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if provided != format!("Bearer {tok}") {
+            return (axum::http::StatusCode::UNAUTHORIZED, "unauthorized\n".to_string());
+        }
+    }
     let Some(sess) = st.sessions.get(&node_id) else {
         return (axum::http::StatusCode::NOT_FOUND, "unknown node\n".to_string());
     };
@@ -284,7 +293,25 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(4443);
-    let state: SharedState = Arc::new(Mutex::new(RelayState::default()));
+    let relay_token = std::env::var("RELAY_TOKEN").ok();
+    let state: SharedState = Arc::new(Mutex::new(RelayState {
+        relay_token,
+        ..Default::default()
+    }));
+
+    // Background task: evict stale nonces every NONCE_TTL so bursts of
+    // short-lived connections don't accumulate them indefinitely.
+    tokio::spawn({
+        let state = Arc::clone(&state);
+        async move {
+            let mut interval = tokio::time::interval(NONCE_TTL);
+            loop {
+                interval.tick().await;
+                state.lock().await.nonces.retain(|_, t| t.elapsed() < NONCE_TTL);
+            }
+        }
+    });
+
     let app = build_router(state);
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     info!("wormhole-relay listening on {addr}");
