@@ -98,7 +98,7 @@ jobs:
           command -v mold >/dev/null 2>&1 ||
             sudo apt-get install -y --no-install-recommends clang mold
 
-      - name: cargo bench
+      - name: cargo bench (criterion)
         shell: bash
         run: |
           if [ -n "${{ inputs.crates }}" ]; then
@@ -109,6 +109,15 @@ jobs:
           fi
           # shellcheck disable=SC2086
           cargo bench $ARGS
+
+      # divan benches (alloc profiling). Run after criterion so the
+      # AllocProfiler global doesn't interfere with criterion's timing.
+      # `--features bench` required for crabcc-core divan targets.
+      - name: cargo bench (divan alloc)
+        shell: bash
+        run: |
+          cargo bench -p wormhole-node --bench alloc_profile
+          cargo bench -p crabcc-core  --bench alloc_ops --features bench
 
       - name: upload criterion reports
         if: always()

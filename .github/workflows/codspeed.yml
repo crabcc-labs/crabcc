@@ -1,0 +1,61 @@
+name: codspeed
+
+# CodSpeed: instruction-count benchmarking on every PR and main push.
+# Uses CPU performance counters (valgrind/callgrind) instead of wall-clock
+# time — results are 100% reproducible regardless of runner load.
+#
+# Leaves a comment on each PR showing instruction-count delta per benchmark.
+# No OVH instance required; runs on standard GitHub-hosted runners.
+#
+# ── Required secrets ────────────────────────────────────────────────────
+#   CODSPEED_TOKEN  Obtained from codspeed.io after linking the repo.
+#                   Add via Settings → Secrets → Actions.
+# ────────────────────────────────────────────────────────────────────────
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  codspeed:
+    name: codspeed (${{ matrix.crate }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - crate: wormhole-node
+            bench: alloc_profile
+            features: ""
+          - crate: crabcc-core
+            bench: alloc_ops
+            features: "--features bench"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: install codspeed-divan-compat
+        # Patch Cargo.toml in-place for this run only; not committed.
+        # codspeed-divan-compat is a drop-in shim: it re-exports divan's
+        # #[divan::bench] macros but routes measurements through CodSpeed's
+        # valgrind runner instead of the wall-clock profiler.
+        run: |
+          cargo add codspeed-divan-compat@2 \
+            --dev -p ${{ matrix.crate }} \
+            --rename divan
+
+      - name: run benchmarks (codspeed)
+        uses: CodSpeedHQ/action@v3
+        with:
+          token: ${{ secrets.CODSPEED_TOKEN }}
+          run: >
+            cargo bench
+            -p ${{ matrix.crate }}
+            --bench ${{ matrix.bench }}
+            ${{ matrix.features }}

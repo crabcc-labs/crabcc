@@ -922,6 +922,7 @@ dependencies = [
  "anstyle",
  "clap_lex",
  "strsim",
+ "terminal_size",
 ]
 
 [[package]]
@@ -1011,6 +1012,12 @@ dependencies = [
  "serde",
  "static_assertions",
 ]
+
+[[package]]
+name = "condtype"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "baf0a07a401f374238ab8e2f11a104d2851bf9ce711ec69804834de8af45c7af"
 
 [[package]]
 name = "console"
@@ -1117,7 +1124,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-cli"
-version = "6.4.1"
+version = "6.5.0"
 dependencies = [
  "ahash",
  "anyhow",
@@ -1154,7 +1161,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-compact"
-version = "6.4.1"
+version = "6.5.0"
 dependencies = [
  "ahash",
  "anyhow",
@@ -1174,7 +1181,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-compact-serve"
-version = "6.4.1"
+version = "6.5.0"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
@@ -1191,7 +1198,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-core"
-version = "6.4.1"
+version = "6.5.0"
 dependencies = [
  "ahash",
  "anyhow",
@@ -1200,6 +1207,7 @@ dependencies = [
  "atty",
  "bumpalo",
  "criterion 0.8.2",
+ "divan",
  "fsst-rs",
  "ignore",
  "markdown",
@@ -1235,7 +1243,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-fetch"
-version = "6.4.1"
+version = "6.5.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1256,7 +1264,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-godfather"
-version = "6.4.1"
+version = "6.5.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1276,7 +1284,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-mcp"
-version = "6.4.1"
+version = "6.5.0"
 dependencies = [
  "ahash",
  "anyhow",
@@ -1302,7 +1310,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-memory"
-version = "6.4.1"
+version = "6.5.0"
 dependencies = [
  "ahash",
  "anyhow",
@@ -1321,7 +1329,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-memory-bench"
-version = "6.4.1"
+version = "6.5.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1333,7 +1341,7 @@ dependencies = [
 
 [[package]]
 name = "crabcc-viz"
-version = "6.4.1"
+version = "6.5.0"
 dependencies = [
  "anyhow",
  "crabcc-core",
@@ -1786,6 +1794,31 @@ name = "displaydoc"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ac70aa55017e108007fbaf5aa0f54b021c98f92ff8af59d42eda9da96e3dd4f"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
+name = "divan"
+version = "0.1.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a405457ec78b8fe08b0e32b4a3570ab5dff6dd16eb9e76a5ee0a9d9cbd898933"
+dependencies = [
+ "cfg-if",
+ "clap",
+ "condtype",
+ "divan-macros",
+ "libc",
+ "regex-lite",
+]
+
+[[package]]
+name = "divan-macros"
+version = "0.1.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9556bc800956545d6420a640173e5ba7dfa82f38d3ea5a167eb555bc69ac3323"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4768,6 +4801,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "regex-lite"
+version = "0.1.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cab834c73d247e67f4fae452806d17d3c7501756d98c8808d7c9c7aa7d18f973"
+
+[[package]]
 name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5581,7 +5620,7 @@ dependencies = [
 
 [[package]]
 name = "sshq"
-version = "6.4.1"
+version = "6.5.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -5781,6 +5820,16 @@ checksum = "c4790fc369d5a530f4b544b094e31388b9b3a37c0f4652ade4505945f5660d24"
 dependencies = [
  "new_debug_unreachable",
  "utf-8",
+]
+
+[[package]]
+name = "terminal_size"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
+dependencies = [
+ "rustix",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7764,12 +7813,13 @@ dependencies = [
 
 [[package]]
 name = "wormhole-node"
-version = "6.4.1"
+version = "6.5.0"
 dependencies = [
  "anyhow",
  "blake3",
  "clap",
  "criterion 0.5.1",
+ "divan",
  "ed25519-dalek",
  "futures-util",
  "getrandom 0.2.17",
@@ -7788,14 +7838,14 @@ dependencies = [
 
 [[package]]
 name = "wormhole-op"
-version = "6.4.1"
+version = "6.5.0"
 dependencies = [
  "anyhow",
 ]
 
 [[package]]
 name = "wormhole-proto"
-version = "6.4.1"
+version = "6.5.0"
 dependencies = [
  "postcard",
  "serde",
@@ -7804,7 +7854,7 @@ dependencies = [
 
 [[package]]
 name = "wormhole-relay"
-version = "6.4.1"
+version = "6.5.0"
 dependencies = [
  "anyhow",
  "axum 0.8.9",

@@ -55,6 +55,7 @@ crabcc-viz = { path = "crates/crabcc-viz" }
 wormhole-proto = { path = "crates/wormhole-proto" }
 
 postcard = { version = "1", features = ["alloc"] }
+divan = "0.1"
 blake3 = "1"
 axum = { version = "0.8", features = ["ws"] }
 rand = { version = "0.9", features = ["os_rng"] }

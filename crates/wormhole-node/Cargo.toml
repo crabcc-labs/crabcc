@@ -13,6 +13,11 @@ path = "src/main.rs"
 name = "noise_roundtrip"
 harness = false
 
+# Allocation profiler: verifies zero per-frame heap alloc on the Noise hot path.
+[[bench]]
+name = "alloc_profile"
+harness = false
+
 [dependencies]
 anyhow = { workspace = true }
 wormhole-proto = { workspace = true }
@@ -43,3 +48,4 @@ hardened-alloc = []
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
+divan = { workspace = true }

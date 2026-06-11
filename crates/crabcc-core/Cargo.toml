@@ -66,6 +66,7 @@ markdown = { workspace = true, optional = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 criterion = "0.8"
+divan = { workspace = true }
 # Issue #161 — testcontainers-rs e2e for service_discovery. Pulled
 # in unconditionally as dev-deps; the actual test files are gated by
 # `#[cfg(feature = "testcontainers")]` so a default `cargo test`
@@ -87,5 +88,12 @@ required-features = ["bench"]
 # Tantivy sidecar in v6.x; this quantifies the brute-force scan's scaling.
 [[bench]]
 name = "fts_search"
+harness = false
+required-features = ["bench"]
+
+# Allocation-per-operation profiler (divan). Tracks heap cost of each query
+# shape so regressions show up as alloc count increases, not just latency.
+[[bench]]
+name = "alloc_ops"
 harness = false
 required-features = ["bench"]
