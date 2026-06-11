@@ -47,13 +47,6 @@ use serde::{Deserialize, Serialize};
 use tiny_http::{Header, Method, Request, Response, Server};
 
 const BUNDLED_INDEX: &str = include_str!("../assets/index.html");
-// Phase 1 of #17 ships the React bundle as the dashboard. The legacy
-// hand-rolled `assets/live.html` is kept on disk for one release as a
-// reference and back-compat target — it's no longer referenced from
-// the running server but the file documents the pre-rewrite contract.
-//
-// Regenerate after editing `web/src/`: `cd crates/crabcc-viz/web && bun run build`.
-const BUNDLED_LIVE: &str = include_str!("../web/dist/live.html");
 /// The cross-repo memory browser at `/memory`. Hand-rolled and
 /// self-contained (no React build step) so `crabcc memory ui` can open a
 /// working page on any checkout without running `bun run build`.
@@ -250,11 +243,12 @@ fn handle(request: Request, root: &Path) -> Result<()> {
     }
 
     match path {
-        // Live monitoring dashboard is the front-door for `crabcc serve`
-        // — most users land here to watch agent activity in real time.
-        // The interactive call-graph viewer lives at `/graph`; `/live`
-        // stays as a back-compat alias for the old URL.
-        "/" | "/index.html" | "/live" => respond_html(request, BUNDLED_LIVE),
+        // The live monitoring dashboard moved to the standalone app-eye
+        // deployment (crabcc.app-eye). `crabcc serve` is now API-only;
+        // redirect human visitors to the real dashboard. The
+        // interactive call-graph viewer lives at `/graph`; `/live`
+        // stays as a back-compat alias so old bookmarks redirect too.
+        "/" | "/index.html" | "/live" => redirect_to_app_eye(request),
         "/graph" => respond_html(request, BUNDLED_INDEX),
         // Cross-repo memory browser — the front-door for `crabcc memory ui`.
         "/memory" => respond_html(request, BUNDLED_MEMORY),
@@ -2075,6 +2069,17 @@ fn respond_yaml(request: Request, body: &str) -> Result<()> {
     resp.add_header(header("X-Content-Type-Options", "nosniff"));
     resp.add_header(header("Cache-Control", "no-store"));
     request.respond(resp)?;
+    Ok(())
+}
+
+/// 302-redirect to the standalone app-eye dashboard. The SPA moved out of this
+/// crate (see crabcc.app-eye); `crabcc serve` is now API-only, so a human who
+/// opens the old dashboard URL is sent to the real app instead of a dead page.
+fn redirect_to_app_eye(request: Request) -> Result<()> {
+    let location = Header::from_bytes(&b"Location"[..], &b"https://dashb.crabcc.app"[..])
+        .expect("static header");
+    let response = Response::empty(302).with_header(location);
+    request.respond(response)?;
     Ok(())
 }
 

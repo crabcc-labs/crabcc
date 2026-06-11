@@ -92,20 +92,16 @@ fn health_endpoint_returns_ok() {
 }
 
 #[test]
-fn root_serves_bundled_html() {
-    // PR #78 promoted /live to be the default root. Both / and /live now
-    // serve live.html (the dashboard); the original canvas-based viewer
-    // moved to /graph.
+fn root_redirects_to_app_eye() {
+    // The live dashboard moved to the standalone app-eye deployment.
+    // / (and its aliases) now 302-redirect to dashb.crabcc.app so
+    // human visitors land on the real dashboard. The interactive
+    // call-graph viewer still lives at /graph.
     let (_dir, port) = boot_test_server();
-    let (status, body) = http_get(port, "/");
-    assert_eq!(status, 200, "root should return 200");
-    assert!(
-        body.contains("crabcc · live"),
-        "root body should be the live dashboard: {body:.200}"
-    );
+    let (status, _body) = http_get(port, "/");
+    assert_eq!(status, 302, "root should redirect to app-eye (302)");
 
-    // The interactive graph viewer is now at /graph and is where the
-    // <canvas> + vis-network bootstrap logic lives.
+    // The interactive graph viewer is at /graph and still serves HTML.
     let (graph_status, graph_body) = http_get(port, "/graph");
     assert_eq!(graph_status, 200, "graph endpoint should return 200");
     assert!(
@@ -170,30 +166,17 @@ fn unknown_route_is_404() {
 }
 
 #[test]
-fn live_dashboard_serves_distinct_html() {
+fn live_route_redirects_to_app_eye() {
+    // The live dashboard moved out of crabcc-viz into the standalone
+    // app-eye deployment. /live (and /index.html) must 302-redirect to
+    // dashb.crabcc.app so existing bookmarks still reach the dashboard.
     let (_dir, port) = boot_test_server();
-    let (status, body) = http_get(port, "/live");
-    assert_eq!(status, 200);
-    // The live dashboard advertises the three-column layout via a
-    // grep-able marker — keeps the test from coupling to layout
-    // accidents but catches a serve regression where /live falls back
-    // to /index.html silently.
-    assert!(
-        body.contains("crabcc · live"),
-        "live dashboard must announce itself in the title: {body:.200}"
-    );
-    assert!(
-        body.contains("/api/bootstrap"),
-        "live page must reference the bootstrap endpoint: {body:.500}"
-    );
-    // Per PR #78, / is an explicit alias for /live — both serve the
-    // dashboard. Locking that contract in so a future routing change
-    // surfaces here rather than at user-report time.
-    let (_, idx_body) = http_get(port, "/");
-    assert_eq!(
-        idx_body, body,
-        "/ must alias /live (same dashboard payload)"
-    );
+    let (status, _body) = http_get(port, "/live");
+    assert_eq!(status, 302, "/live should redirect to app-eye (302)");
+
+    // / is an alias; it should also redirect.
+    let (idx_status, _idx_body) = http_get(port, "/");
+    assert_eq!(idx_status, 302, "/ must also redirect to app-eye (302)");
 }
 
 #[test]
