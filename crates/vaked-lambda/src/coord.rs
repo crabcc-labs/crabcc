@@ -475,6 +475,50 @@ mod tests {
     }
 
     #[test]
+    fn spec_static_yields_zero_residual_timepoints() {
+        let g = coord_reduce(
+            module_dag_to_coord(example_modules()),
+            &TargetProfile::static_composition(),
+        );
+        let residual: usize = g.units.iter().map(|u| u.awaits.len()).sum();
+        assert_eq!(
+            residual, 0,
+            "static composition -> zero residual coordination"
+        );
+    }
+
+    #[test]
+    fn spec_runtime_residual_is_transitive_reduction() {
+        // Property: no surviving await is implied by another (transitive reduction holds).
+        let g = coord_reduce(
+            module_dag_to_coord(example_modules()),
+            &TargetProfile::runtime(),
+        );
+        let adj = adjacency(&g);
+        for u in &g.units {
+            for &t in &u.awaits {
+                assert!(
+                    !reachable_excluding_direct(&adj, u.id, t),
+                    "await {}->{} is redundant; transitive reduction failed",
+                    u.id,
+                    t
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn spec_dead_coordination_dropped() {
+        // A unit whose yields has no consumer contributes no wait to anyone.
+        let g = coord_reduce(
+            module_dag_to_coord(example_modules()),
+            &TargetProfile::runtime(),
+        );
+        // kernel (id 4) is a sink: no other unit awaits it.
+        assert!(g.units.iter().all(|u| !u.awaits.contains(&4)));
+    }
+
+    #[test]
     fn unit_yields_its_own_id() {
         let u = Unit {
             id: 3,
