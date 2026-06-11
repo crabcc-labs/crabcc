@@ -3,7 +3,7 @@ use ahash::HashSet;
 use anyhow::Result;
 use rayon::prelude::*;
 use serde::Serialize;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
@@ -265,35 +265,6 @@ fn persist_file(
     store.replace_edges(file_id, &edges)?;
     Ok(PersistOutcome::Indexed)
 }
-#[cfg_attr(test, derive(Debug))]
-struct ExtractCandidate {
-    rel: String,
-    lang: &'static str,
-    mtime: i64,
-    stored_sha: Option<String>,
-    path: PathBuf,
-}
-
-impl ExtractCandidate {
-    fn is_new(&self) -> bool {
-        self.stored_sha.is_none()
-    }
-}
-
-enum RefreshOutcome {
-    Touched {
-        rel: String,
-        mtime: i64,
-    },
-    Indexed {
-        extracted: ExtractedFile,
-        is_new: bool,
-    },
-    SkippedUnreadable,
-    SkippedTooLarge,
-    SkippedParseError,
-}
-
 pub fn refresh_delta(root: &Path, store: &Store) -> Result<RefreshDelta> {
     let started = std::time::Instant::now();
     tracing::info!(target: "crabcc_core::index", path = %root.display(), "refresh_delta: start");
