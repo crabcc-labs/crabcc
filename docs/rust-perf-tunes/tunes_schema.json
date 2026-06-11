@@ -12,7 +12,8 @@
       "type": "object",
       "properties": {
         "ast_node_types": { "type": "array", "items": { "type": "string" } },
-        "anti_pattern_regex": { "type": "string" },
+        "ast_grep_pattern": { "type": "string", "description": "ast-grep structural pattern (tree-sitter AST match) — the proper-AST trigger; preferred over anti_pattern_regex." },
+        "anti_pattern_regex": { "type": "string", "description": "Regex fallback used only when ast_grep_pattern is absent." },
         "explanation": { "type": "string" }
       },
       "required": ["explanation"]

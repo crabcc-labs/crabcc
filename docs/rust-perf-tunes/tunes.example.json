@@ -7,8 +7,9 @@
     "description": "A Vec built by repeated push() in a loop of known/estimable length reallocates and memcpys its buffer O(log n) times as it grows. Reserving capacity up front turns that into a single allocation.",
     "trigger_condition": {
       "ast_node_types": ["let_declaration", "call_expression"],
+      "ast_grep_pattern": "Vec::new()",
       "anti_pattern_regex": "let\\s+mut\\s+\\w+\\s*=\\s*Vec::new\\(\\);",
-      "explanation": "Flag a `Vec::new()` (or `vec![]`) bound to a mutable binding that is subsequently grown with push() inside a loop whose iteration count is derivable from a slice/iterator length."
+      "explanation": "Flag a `Vec::new()` (or `vec![]`) bound to a mutable binding that is subsequently grown with push() inside a loop whose iteration count is derivable from a slice/iterator length. The ast_grep_pattern matches the real call node via tree-sitter, so occurrences in comments/strings are ignored (unlike the regex fallback)."
     },
     "remediation": {
       "before_code": "let mut out = Vec::new();\nfor x in &items {\n    out.push(transform(x));\n}",
