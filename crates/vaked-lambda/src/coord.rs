@@ -38,9 +38,107 @@ pub struct CoordGraph {
     pub units: Vec<Unit>,
 }
 
+/// A module as seen by the lowering: name, what it provides, what it requires.
+/// Mirrors the mcconf-style descriptor (`provides`/`requires`).
+pub struct ModuleSpec {
+    pub name: String,
+    pub provides: Vec<String>,
+    pub requires: Vec<String>,
+    pub body: Term,
+    pub kind: UnitKind,
+}
+
+/// Lower a module dependency graph to a CoordGraph. Each module becomes a Unit
+/// whose id/yields is its index; `requires` map to the ids of the units that
+/// `provide` those names. Unknown requires are skipped (treated as external).
+pub fn module_dag_to_coord(modules: Vec<ModuleSpec>) -> CoordGraph {
+    let mut provider: HashMap<String, u32> = HashMap::new();
+    for (i, m) in modules.iter().enumerate() {
+        for p in &m.provides {
+            provider.insert(p.clone(), i as u32);
+        }
+    }
+    let units = modules
+        .into_iter()
+        .enumerate()
+        .map(|(i, m)| {
+            let mut awaits: Vec<Timepoint> = m
+                .requires
+                .iter()
+                .filter_map(|r| provider.get(r).copied())
+                .collect();
+            awaits.sort_unstable();
+            awaits.dedup();
+            Unit {
+                id: i as u32,
+                body: m.body,
+                awaits,
+                yields: i as u32,
+                kind: m.kind,
+            }
+        })
+        .collect();
+    CoordGraph { units }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn lit(s: &str) -> Term {
+        Term::Lit(s.to_string())
+    }
+
+    fn example_modules() -> Vec<ModuleSpec> {
+        // base -> {mem, sched} -> net -> kernel  (the nushell recursive-build graph)
+        vec![
+            ModuleSpec {
+                name: "base".into(),
+                provides: vec!["base".into()],
+                requires: vec![],
+                body: lit("base"),
+                kind: UnitKind::Static,
+            },
+            ModuleSpec {
+                name: "mem".into(),
+                provides: vec!["mem".into()],
+                requires: vec!["base".into()],
+                body: lit("mem"),
+                kind: UnitKind::Static,
+            },
+            ModuleSpec {
+                name: "sched".into(),
+                provides: vec!["sched".into()],
+                requires: vec!["base".into()],
+                body: lit("sched"),
+                kind: UnitKind::Static,
+            },
+            ModuleSpec {
+                name: "net".into(),
+                provides: vec!["net".into()],
+                requires: vec!["mem".into()],
+                body: lit("net"),
+                kind: UnitKind::Static,
+            },
+            ModuleSpec {
+                name: "kernel".into(),
+                provides: vec!["kernel".into()],
+                requires: vec!["mem".into(), "sched".into(), "net".into()],
+                body: lit("kernel"),
+                kind: UnitKind::Static,
+            },
+        ]
+    }
+
+    #[test]
+    fn module_dag_lowers_to_expected_edges() {
+        let g = module_dag_to_coord(example_modules());
+        // ids: base=0, mem=1, sched=2, net=3, kernel=4
+        assert_eq!(g.units[1].awaits, vec![0]); // mem -> base
+        assert_eq!(g.units[2].awaits, vec![0]); // sched -> base
+        assert_eq!(g.units[3].awaits, vec![1]); // net -> mem
+        assert_eq!(g.units[4].awaits, vec![1, 2, 3]); // kernel -> mem, sched, net
+    }
 
     #[test]
     fn unit_yields_its_own_id() {
