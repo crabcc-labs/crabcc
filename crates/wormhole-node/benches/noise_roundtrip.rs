@@ -36,11 +36,14 @@ impl Transport {
             .unwrap();
 
         let mut buf = vec![0u8; BUF];
+        // Separate read buffer so the handshake message (input) and the
+        // decrypted payload (output) don't alias the same allocation.
+        let mut rbuf = vec![0u8; BUF];
         // IK: initiator writes msg1, responder reads + writes msg2, initiator reads
         let n = init.write_message(&[], &mut buf).unwrap();
-        resp.read_message(&buf[..n].to_vec(), &mut buf).unwrap();
+        resp.read_message(&buf[..n], &mut rbuf).unwrap();
         let n = resp.write_message(&[], &mut buf).unwrap();
-        init.read_message(&buf[..n].to_vec(), &mut buf).unwrap();
+        init.read_message(&buf[..n], &mut rbuf).unwrap();
 
         Self {
             tx: init.into_transport_mode().unwrap(),

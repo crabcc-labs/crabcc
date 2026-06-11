@@ -55,6 +55,12 @@ struct SeqWatermark {
     outbound_next: u64,
 }
 
+/// Stable per-session identity applied to every outbound envelope.
+struct EnvelopeHeader {
+    node_id: [u8; 32],
+    session: u128,
+}
+
 /// Per-session pre-allocated noise I/O scratch space.
 /// Kept on the heap (Box) so it doesn't blow the async-task stack.
 struct NoiseBufs {
@@ -90,7 +96,7 @@ pub async fn run_session(
     getrandom::getrandom(&mut auth[..16]).context("getrandom nonce")?;
     auth[16..48].copy_from_slice(&keys.node_id);
     auth[48] = 0; // role = node
-    sink.send(Message::Binary(auth.to_vec().into()))
+    sink.send(Message::Binary(auth.to_vec()))
         .await
         .context("send auth")?;
     info!(node_id = hex(&keys.node_id), "sent auth");
@@ -107,6 +113,10 @@ pub async fn run_session(
     info!(op_id = hex(&op_id), "operator identity");
 
     let session_id = next_session_id(&keys.node_id);
+    let header = EnvelopeHeader {
+        node_id: keys.node_id,
+        session: session_id,
+    };
 
     let mut seq = SeqState::new();
     let mut _token: Option<Vec<u8>> = None; // stored; verified in Wave 4 (biscuit-auth)
@@ -168,8 +178,7 @@ pub async fn run_session(
                     &mut sink,
                     &mut transport,
                     &mut bufs,
-                    &keys.node_id,
-                    session_id,
+                    &header,
                     &mut seq,
                     Kind::Hello,
                     &[],
@@ -188,8 +197,7 @@ pub async fn run_session(
                     &mut sink,
                     &mut transport,
                     &mut bufs,
-                    &keys.node_id,
-                    session_id,
+                    &header,
                     &mut seq,
                     Kind::Event,
                     &body,
@@ -203,8 +211,7 @@ pub async fn run_session(
                     &mut sink,
                     &mut transport,
                     &mut bufs,
-                    &keys.node_id,
-                    session_id,
+                    &header,
                     &mut seq,
                     Kind::Pong,
                     &[],
@@ -222,8 +229,7 @@ pub async fn run_session(
                     &mut sink,
                     &mut transport,
                     &mut bufs,
-                    &keys.node_id,
-                    session_id,
+                    &header,
                     &mut seq,
                     Kind::TokenAck { expires_at: 0 },
                     &[],
@@ -299,7 +305,7 @@ async fn recv_frame(rx: &mut WsRx) -> Result<OuterFrame> {
 #[inline(always)]
 async fn send_raw(sink: &mut WsSink, frame: &OuterFrame) -> Result<()> {
     let bytes = frame.encode().context("encode outer frame")?;
-    sink.send(Message::Binary(bytes.into()))
+    sink.send(Message::Binary(bytes))
         .await
         .context("send frame")
 }
@@ -309,14 +315,13 @@ async fn send_envelope(
     sink: &mut WsSink,
     transport: &mut snow::TransportState,
     bufs: &mut NoiseBufs,
-    node_id: &[u8; 32],
-    session: u128,
+    header: &EnvelopeHeader,
     seq: &mut SeqState,
     kind: Kind,
     body: &[u8],
 ) -> Result<()> {
     let env = Envelope {
-        session,
+        session: header.session,
         seq: seq.next_send(),
         kind,
         body: body.to_vec(),
@@ -331,7 +336,7 @@ async fn send_envelope(
     send_raw(
         sink,
         &OuterFrame {
-            node_id: *node_id,
+            node_id: header.node_id,
             channel: 0,
             noise_payload,
         },
