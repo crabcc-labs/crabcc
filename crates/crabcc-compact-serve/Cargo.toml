@@ -21,4 +21,4 @@ tracing-subscriber = { workspace = true }
 
 [dev-dependencies]
 http = "1"
-tower = { version = "0.4", features = ["util"] }
+tower = { version = "0.5", features = ["util"] }
