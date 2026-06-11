@@ -128,28 +128,41 @@ pub fn build_index_with_progress(
         })
         .collect();
 
-    // Phase 2 — sequential SQLite writes.
+    // Phase 2 — batched SQLite writes (256 files per write_batch call).
+    // write_batch sets synchronous=OFF for the duration, eliminating per-file
+    // fsync overhead. Each inner transaction still commits atomically per file.
+    const WRITE_BATCH: usize = 256;
     let mut stats = IndexStats::default();
     let mut done = 0usize;
-    for outcome in outcomes {
-        match outcome {
-            FileOutcome::Extracted(f) => {
-                let file_id = store.upsert_file(&f.rel, &f.sha, f.mtime, f.lang)?;
-                store.replace_symbols(file_id, &f.symbols)?;
-                store.replace_edges(file_id, &f.edges)?;
-                stats.files_indexed += 1;
-                stats.symbols += f.symbols.len();
-                stats.edges += f.edges.len();
+    let mut iter = outcomes.into_iter();
+    loop {
+        let chunk: Vec<_> = iter.by_ref().take(WRITE_BATCH).collect();
+        if chunk.is_empty() {
+            break;
+        }
+        store.write_batch(|store| {
+            for outcome in chunk {
+                match outcome {
+                    FileOutcome::Extracted(f) => {
+                        let file_id = store.upsert_file(&f.rel, &f.sha, f.mtime, f.lang)?;
+                        store.replace_symbols(file_id, &f.symbols)?;
+                        store.replace_edges(file_id, &f.edges)?;
+                        stats.files_indexed += 1;
+                        stats.symbols += f.symbols.len();
+                        stats.edges += f.edges.len();
+                    }
+                    FileOutcome::SkippedUnsupported => stats.skipped_unsupported += 1,
+                    FileOutcome::SkippedUnreadable => stats.skipped_unreadable += 1,
+                    FileOutcome::SkippedTooLarge => stats.skipped_too_large += 1,
+                    FileOutcome::SkippedParseError => stats.skipped_parse_error += 1,
+                }
+                done += 1;
+                if let Some(ref p) = progress {
+                    p.store(done, Ordering::Relaxed);
+                }
             }
-            FileOutcome::SkippedUnsupported => stats.skipped_unsupported += 1,
-            FileOutcome::SkippedUnreadable => stats.skipped_unreadable += 1,
-            FileOutcome::SkippedTooLarge => stats.skipped_too_large += 1,
-            FileOutcome::SkippedParseError => stats.skipped_parse_error += 1,
-        }
-        done += 1;
-        if let Some(ref p) = progress {
-            p.store(done, Ordering::Relaxed);
-        }
+            Ok(())
+        })?;
     }
     let _ = total; // reported via progress or caller
     Ok(stats)

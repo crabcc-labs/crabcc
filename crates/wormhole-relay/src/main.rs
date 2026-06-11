@@ -233,7 +233,10 @@ async fn replay_handler(
     State(state): State<SharedState>,
 ) -> impl IntoResponse {
     let Some(node_id) = decode_hex_exact::<32>(&node_id_hex) else {
-        return (axum::http::StatusCode::BAD_REQUEST, "invalid node_id\n".to_string());
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            "invalid node_id\n".to_string(),
+        );
     };
 
     let from_seq = params.from.unwrap_or(0);
@@ -246,11 +249,17 @@ async fn replay_handler(
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
         if provided != format!("Bearer {tok}") {
-            return (axum::http::StatusCode::UNAUTHORIZED, "unauthorized\n".to_string());
+            return (
+                axum::http::StatusCode::UNAUTHORIZED,
+                "unauthorized\n".to_string(),
+            );
         }
     }
     let Some(sess) = st.sessions.get(&node_id) else {
-        return (axum::http::StatusCode::NOT_FOUND, "unknown node\n".to_string());
+        return (
+            axum::http::StatusCode::NOT_FOUND,
+            "unknown node\n".to_string(),
+        );
     };
 
     let mut lines: Vec<String> = Vec::new();
@@ -307,7 +316,11 @@ async fn main() -> anyhow::Result<()> {
             let mut interval = tokio::time::interval(NONCE_TTL);
             loop {
                 interval.tick().await;
-                state.lock().await.nonces.retain(|_, t| t.elapsed() < NONCE_TTL);
+                state
+                    .lock()
+                    .await
+                    .nonces
+                    .retain(|_, t| t.elapsed() < NONCE_TTL);
             }
         }
     });

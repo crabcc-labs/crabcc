@@ -1,17 +1,27 @@
 use wormhole_proto::{
-    Envelope, Kind, MAX_BODY_BYTES, OuterFrame, PairingError, PairingHello, PairingRole,
-    PairingResult, ReplayLog, Route, SeqState, SessionId, SessionRecord, PAIRING_VERSION,
-    persist_session_record,
+    persist_session_record, Envelope, Kind, OuterFrame, PairingError, PairingHello, PairingResult,
+    PairingRole, ReplayLog, Route, SeqState, SessionId, SessionRecord, MAX_BODY_BYTES,
+    PAIRING_VERSION,
 };
 
 // ---- helpers ----
 
 fn env(session: SessionId, seq: u64, kind: Kind) -> Envelope {
-    Envelope { session, seq, kind, body: vec![] }
+    Envelope {
+        session,
+        seq,
+        kind,
+        body: vec![],
+    }
 }
 
 fn env_body(session: SessionId, seq: u64, kind: Kind, body: Vec<u8>) -> Envelope {
-    Envelope { session, seq, kind, body }
+    Envelope {
+        session,
+        seq,
+        kind,
+        body,
+    }
 }
 
 // ---- Envelope roundtrip: every Kind variant (including redshift + lensing) ----
@@ -84,14 +94,22 @@ fn roundtrip_large_session_id() {
 // redshift
 #[test]
 fn roundtrip_token_refresh() {
-    let token: Vec<u8> = (0..64).map(|i| if i % 2 == 0 { 0xbe } else { 0xef }).collect();
+    let token: Vec<u8> = (0..64)
+        .map(|i| if i % 2 == 0 { 0xbe } else { 0xef })
+        .collect();
     let e = env_body(1, 0, Kind::TokenRefresh { token }, vec![]);
     assert_eq!(Envelope::decode(&e.encode().unwrap()).unwrap(), e);
 }
 
 #[test]
 fn roundtrip_token_ack() {
-    let e = env(1, 1, Kind::TokenAck { expires_at: 1_700_003_600 });
+    let e = env(
+        1,
+        1,
+        Kind::TokenAck {
+            expires_at: 1_700_003_600,
+        },
+    );
     assert_eq!(Envelope::decode(&e.encode().unwrap()).unwrap(), e);
 }
 
@@ -101,7 +119,11 @@ fn roundtrip_path_probe() {
     let e = env_body(
         42,
         7,
-        Kind::PathProbe { id: 99, sent_ms: 1_700_000_000_000, payload_size: 1024 },
+        Kind::PathProbe {
+            id: 99,
+            sent_ms: 1_700_000_000_000,
+            payload_size: 1024,
+        },
         vec![0u8; 1024],
     );
     assert_eq!(Envelope::decode(&e.encode().unwrap()).unwrap(), e);
@@ -109,7 +131,14 @@ fn roundtrip_path_probe() {
 
 #[test]
 fn roundtrip_path_probe_reply() {
-    let e = env(42, 8, Kind::PathProbeReply { id: 99, node_recv_ms: 1_700_000_000_012 });
+    let e = env(
+        42,
+        8,
+        Kind::PathProbeReply {
+            id: 99,
+            node_recv_ms: 1_700_000_000_012,
+        },
+    );
     assert_eq!(Envelope::decode(&e.encode().unwrap()).unwrap(), e);
 }
 
@@ -362,21 +391,28 @@ fn replay_after_gap_gives_surviving_tail() {
     let tail_start = gap_to + 1;
     let replayed: Vec<_> = log.replay_from(tail_start).collect();
     for (seq, _) in &replayed {
-        assert!(*seq >= tail_start, "tail entry has seq {seq} < tail_start {tail_start}");
+        assert!(
+            *seq >= tail_start,
+            "tail entry has seq {seq} < tail_start {tail_start}"
+        );
     }
     // And the tail must be contiguous (no internal gaps).
     for window in replayed.windows(2) {
-        assert_eq!(window[1].0, window[0].0 + 1, "tail entries are not contiguous");
+        assert_eq!(
+            window[1].0,
+            window[0].0 + 1,
+            "tail entries are not contiguous"
+        );
     }
 }
 
 #[test]
 fn replay_push_returns_false_on_eviction() {
     let mut log = ReplayLog::new(30);
-    assert!(log.push(0, vec![0u8; 10]));  // 10 bytes, no eviction
-    assert!(log.push(1, vec![0u8; 10]));  // 20 bytes, no eviction
-    assert!(log.push(2, vec![0u8; 10]));  // 30 bytes, at cap, no eviction
-    let r = log.push(3, vec![0u8; 10]);   // 40 bytes, must evict -> false
+    assert!(log.push(0, vec![0u8; 10])); // 10 bytes, no eviction
+    assert!(log.push(1, vec![0u8; 10])); // 20 bytes, no eviction
+    assert!(log.push(2, vec![0u8; 10])); // 30 bytes, at cap, no eviction
+    let r = log.push(3, vec![0u8; 10]); // 40 bytes, must evict -> false
     assert!(!r, "push beyond cap should return false");
 }
 
@@ -459,9 +495,18 @@ fn pairing_hello_operator_roundtrip() {
 fn pairing_hello_versions_differ_abort_check() {
     // Simulate version mismatch detection: if peer's version != ours, error.
     let ours = PairingHello::node();
-    let theirs = PairingHello { version: PAIRING_VERSION + 1, role: PairingRole::Operator };
-    assert_ne!(ours.version, theirs.version, "version mismatch must be detectable");
-    let err = PairingError::VersionMismatch { ours: ours.version, theirs: theirs.version };
+    let theirs = PairingHello {
+        version: PAIRING_VERSION + 1,
+        role: PairingRole::Operator,
+    };
+    assert_ne!(
+        ours.version, theirs.version,
+        "version mismatch must be detectable"
+    );
+    let err = PairingError::VersionMismatch {
+        ours: ours.version,
+        theirs: theirs.version,
+    };
     let bytes = err.encode().unwrap();
     assert_eq!(PairingError::decode(&bytes).unwrap(), err);
 }
@@ -516,7 +561,11 @@ fn outer_frame_roundtrip() {
 
 #[test]
 fn outer_frame_empty_payload() {
-    let frame = OuterFrame { node_id: [0u8; 32], channel: 0, noise_payload: vec![] };
+    let frame = OuterFrame {
+        node_id: [0u8; 32],
+        channel: 0,
+        noise_payload: vec![],
+    };
     assert_eq!(OuterFrame::decode(&frame.encode().unwrap()).unwrap(), frame);
 }
 
@@ -534,11 +583,15 @@ fn outer_frame_large_payload() {
 fn outer_frame_and_envelope_are_structurally_independent() {
     // A valid OuterFrame must not accidentally decode as Envelope and vice-versa.
     // This tests that the type discriminants differ at the byte level.
-    let outer = OuterFrame { node_id: [1u8; 32], channel: 0, noise_payload: vec![9, 8, 7] };
+    let outer = OuterFrame {
+        node_id: [1u8; 32],
+        channel: 0,
+        noise_payload: vec![9, 8, 7],
+    };
     let outer_bytes = outer.encode().unwrap();
     // Decoding outer bytes as Envelope must fail (different schema).
     let _ = Envelope::decode(&outer_bytes); // we only care it doesn't panic; pass/fail both ok
-    // Encoding an Envelope must not accidentally decode as OuterFrame.
+                                            // Encoding an Envelope must not accidentally decode as OuterFrame.
     let env = env(0, 0, Kind::Hello);
     let env_bytes = env.encode().unwrap();
     let _ = OuterFrame::decode(&env_bytes); // same — just must not panic
@@ -571,19 +624,34 @@ fn make_record(session: SessionId, route: Route) -> SessionRecord {
 
 #[test]
 fn session_record_roundtrip_relay() {
-    let r = make_record(42, Route::Relay { relay_addr: "relay.crabcc.app:443".to_string() });
+    let r = make_record(
+        42,
+        Route::Relay {
+            relay_addr: "relay.crabcc.app:443".to_string(),
+        },
+    );
     assert_eq!(SessionRecord::decode(&r.encode().unwrap()).unwrap(), r);
 }
 
 #[test]
 fn session_record_roundtrip_direct() {
-    let r = make_record(99, Route::Direct { peer_addr: "100.73.72.35:9999".to_string() });
+    let r = make_record(
+        99,
+        Route::Direct {
+            peer_addr: "100.73.72.35:9999".to_string(),
+        },
+    );
     assert_eq!(SessionRecord::decode(&r.encode().unwrap()).unwrap(), r);
 }
 
 #[test]
 fn session_record_filename_is_deterministic() {
-    let r = make_record(0x1234_5678_9abc_def0_u128, Route::Relay { relay_addr: "r".into() });
+    let r = make_record(
+        0x1234_5678_9abc_def0_u128,
+        Route::Relay {
+            relay_addr: "r".into(),
+        },
+    );
     let name = r.filename();
     assert!(name.starts_with("wormhole-"));
     assert!(name.ends_with(".session"));
@@ -593,8 +661,18 @@ fn session_record_filename_is_deterministic() {
 
 #[test]
 fn session_record_filename_differs_across_sessions() {
-    let a = make_record(1, Route::Relay { relay_addr: "r".into() });
-    let b = make_record(2, Route::Relay { relay_addr: "r".into() });
+    let a = make_record(
+        1,
+        Route::Relay {
+            relay_addr: "r".into(),
+        },
+    );
+    let b = make_record(
+        2,
+        Route::Relay {
+            relay_addr: "r".into(),
+        },
+    );
     // Low 32 bits differ -> different filenames.
     assert_ne!(a.filename(), b.filename());
 }
@@ -603,21 +681,33 @@ fn session_record_filename_differs_across_sessions() {
 fn persist_session_record_writes_and_reads_back() {
     let r = make_record(
         0xdeadbeef_cafebabe_u128,
-        Route::Relay { relay_addr: "relay.crabcc.app:443".into() },
+        Route::Relay {
+            relay_addr: "relay.crabcc.app:443".into(),
+        },
     );
     let dir = tempfile::tempdir().unwrap();
     let path = persist_session_record(&r, dir.path()).unwrap();
     let bytes = std::fs::read(&path).unwrap();
     let recovered = SessionRecord::decode(&bytes).unwrap();
     assert_eq!(recovered, r);
-    assert!(path.file_name().unwrap().to_str().unwrap().starts_with("wormhole-"));
+    assert!(path
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .starts_with("wormhole-"));
 }
 
 #[test]
 fn persist_session_record_fallback_path() {
     // We can't reliably make /tmp unwritable in a test, so instead verify that
     // the fallback dir is used when given a path that doesn't yet exist.
-    let r = make_record(0xffff_0000, Route::Direct { peer_addr: "100.1.2.3:7777".into() });
+    let r = make_record(
+        0xffff_0000,
+        Route::Direct {
+            peer_addr: "100.1.2.3:7777".into(),
+        },
+    );
     let dir = tempfile::tempdir().unwrap();
     let fallback = dir.path().join("nested").join("sessions");
     let path = persist_session_record(&r, &fallback).unwrap();

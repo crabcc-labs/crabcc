@@ -181,22 +181,27 @@ debug           = 1
 incremental     = false
 split-debuginfo = "off"
 
+# CPU-native build — enables all instructions available on the build host
+# (AVX2, SSE4.2, NEON, etc.). NEVER distribute this binary: it will SIGILL
+# on CPUs missing the extended features. Use: cargo build --profile release-native
+# with RUSTFLAGS="-C target-cpu=native" set in the environment.
 [profile.release-native]
 inherits = "release"
 
-# Nightly hyper-optimized build profile. Used by `.github/workflows/
-# nightly.yml` to produce per-target tarballs every second night from
-# `main`.
+# Nightly hyper-optimized build profile. Pairs with nightly toolchain +
+# RUSTFLAGS below for maximum throughput at the cost of stability guarantees.
 #
-# Today this profile is identical to `release` — the wins come from
-# CI-side `RUSTFLAGS` (`-C target-cpu=x86-64-v3` on Linux x86_64,
-# `-C target-cpu=apple-m1` on aarch64-apple-darwin) and post-link UPX
-# packing on Linux. The named profile exists so future tweaks
-# (PGO, BOLT, opt-level=z experiments) can be opted into for nightlies
-# without touching the stable release path.
+# Build command:
+#   RUSTFLAGS="-C target-cpu=native -Z mir-opt-level=4 -Z inline-mir=true" \
+#   cargo +nightly build --profile release-nightly
 #
-# DO NOT inline RUSTFLAGS here — they're target-specific, so they
-# belong in the workflow matrix where each leg sets its own.
+# Flags explained:
+#   -C target-cpu=native        — use all instructions the build host supports
+#   -Z mir-opt-level=4          — max MIR optimization passes (nightly only)
+#   -Z inline-mir=true          — cross-crate MIR inlining (nightly only)
+#
+# Stable proxy (no nightly required):
+#   RUSTFLAGS="-C target-cpu=native" cargo build --profile release-native
 [profile.release-nightly]
 inherits = "release"
 

@@ -15,8 +15,8 @@
 ///   - Relay log overflow: GapNotice delivery
 use std::collections::VecDeque;
 use wormhole_proto::{
-    Envelope, Kind, MAX_BODY_BYTES, PairingError, PairingHello, PairingRole, ReplayLog, SeqState,
-    SessionId, PAIRING_VERSION,
+    Envelope, Kind, PairingError, PairingHello, PairingRole, ReplayLog, SeqState, SessionId,
+    MAX_BODY_BYTES, PAIRING_VERSION,
 };
 
 // ---------------------------------------------------------------------------
@@ -108,7 +108,11 @@ struct Peer {
 
 impl Peer {
     fn new(session: SessionId) -> Self {
-        Self { inbound: SeqState::new(), outbound: SeqState::new(), session }
+        Self {
+            inbound: SeqState::new(),
+            outbound: SeqState::new(),
+            session,
+        }
     }
 
     fn send(&mut self, kind: Kind) -> Envelope {
@@ -116,7 +120,12 @@ impl Peer {
     }
 
     fn send_body(&mut self, kind: Kind, body: Vec<u8>) -> Envelope {
-        Envelope { session: self.session, seq: self.outbound.next_send(), kind, body }
+        Envelope {
+            session: self.session,
+            seq: self.outbound.next_send(),
+            kind,
+            body,
+        }
     }
 
     fn accept(&mut self, env: &Envelope) -> bool {
@@ -160,14 +169,22 @@ fn full_hello_and_cmd_event_ack_cycle() {
         let cmd_seq = cmd.seq;
         relay.op_send(cmd);
         let received_cmd = relay.node_recv().unwrap();
-        assert!(node.accept(&received_cmd), "node rejected cmd at seq {}", received_cmd.seq);
+        assert!(
+            node.accept(&received_cmd),
+            "node rejected cmd at seq {}",
+            received_cmd.seq
+        );
 
         // Node → Operator: Event
         let event = node.send_body(Kind::Event, vec![i + 100; 16]);
         let event_seq = event.seq;
         relay.node_send(event);
         let received_event = relay.op_recv().unwrap();
-        assert!(op.accept(&received_event), "op rejected event at seq {}", received_event.seq);
+        assert!(
+            op.accept(&received_event),
+            "op rejected event at seq {}",
+            received_event.seq
+        );
         assert_eq!(received_event.body, vec![i + 100; 16]);
 
         // Operator → Node: Ack the event (seq advances in op→node direction)
@@ -179,7 +196,11 @@ fn full_hello_and_cmd_event_ack_cycle() {
         // Node → Operator: Ack the cmd (seq advances in node→op direction)
         relay.node_send(node.send(Kind::Ack { seq: cmd_seq }));
         let cmd_ack = relay.op_recv().unwrap();
-        assert!(op.accept(&cmd_ack), "op rejected cmd_ack at seq {}", cmd_ack.seq);
+        assert!(
+            op.accept(&cmd_ack),
+            "op rejected cmd_ack at seq {}",
+            cmd_ack.seq
+        );
         assert_eq!(cmd_ack.kind, Kind::Ack { seq: cmd_seq });
     }
 
@@ -223,15 +244,24 @@ fn disconnect_and_resume_zero_frames_lost() {
     // Operator receives replayed frames 13..=20 (8 events).
     let mut replayed_count = 0u8;
     while let Some(e) = relay.op_recv() {
-        if matches!(e.kind, Kind::GapNotice { .. }) { continue; } // shouldn't happen in this test
+        if matches!(e.kind, Kind::GapNotice { .. }) {
+            continue;
+        } // shouldn't happen in this test
         assert!(op.accept(&e), "replayed frame at seq {} rejected", e.seq);
-        assert_eq!(e.body, vec![replayed_count + 12; 8],
-            "body mismatch at replayed_count={replayed_count}");
+        assert_eq!(
+            e.body,
+            vec![replayed_count + 12; 8],
+            "body mismatch at replayed_count={replayed_count}"
+        );
         replayed_count += 1;
     }
 
     assert_eq!(replayed_count, 8, "should have replayed exactly 8 frames");
-    assert_eq!(op.watermark(), Some(20), "operator should have all 20 events");
+    assert_eq!(
+        op.watermark(),
+        Some(20),
+        "operator should have all 20 events"
+    );
 }
 
 /// Resume where the relay log was capped and a GapNotice is emitted.
@@ -256,9 +286,12 @@ fn resume_with_relay_log_gap() {
     let first = relay.op_recv().unwrap();
     assert!(
         matches!(first.kind, Kind::GapNotice { .. }),
-        "expected GapNotice when log was truncated, got {:?}", first.kind
+        "expected GapNotice when log was truncated, got {:?}",
+        first.kind
     );
-    let Kind::GapNotice { from, to } = first.kind else { unreachable!() };
+    let Kind::GapNotice { from, to } = first.kind else {
+        unreachable!()
+    };
     assert_eq!(from, 0, "gap must start at seq 0");
     assert!(to >= from);
 
@@ -266,7 +299,12 @@ fn resume_with_relay_log_gap() {
     let tail_start = to + 1;
     let mut last_seq = tail_start - 1;
     while let Some(e) = relay.op_recv() {
-        assert!(e.seq >= tail_start, "got seq {} before tail_start {}", e.seq, tail_start);
+        assert!(
+            e.seq >= tail_start,
+            "got seq {} before tail_start {}",
+            e.seq,
+            tail_start
+        );
         assert_eq!(e.seq, last_seq + 1, "gap in tail (non-contiguous)");
         last_seq = e.seq;
     }
@@ -289,7 +327,12 @@ fn token_refresh_redshift_lifecycle() {
     let fake_token: Vec<u8> = (0..64).collect();
     let new_expiry = 1_700_003_600u64;
 
-    let refresh = op.send_body(Kind::TokenRefresh { token: fake_token.clone() }, vec![]);
+    let refresh = op.send_body(
+        Kind::TokenRefresh {
+            token: fake_token.clone(),
+        },
+        vec![],
+    );
     relay.op_send(refresh);
 
     // Node receives, "verifies" (mocked), sends TokenAck.
@@ -300,12 +343,19 @@ fn token_refresh_redshift_lifecycle() {
         other => panic!("expected TokenRefresh, got {other:?}"),
     }
 
-    relay.node_send(node.send(Kind::TokenAck { expires_at: new_expiry }));
+    relay.node_send(node.send(Kind::TokenAck {
+        expires_at: new_expiry,
+    }));
 
     // Operator receives ack with correct expiry.
     let ack = relay.op_recv().unwrap();
     assert!(op.accept(&ack));
-    assert_eq!(ack.kind, Kind::TokenAck { expires_at: new_expiry });
+    assert_eq!(
+        ack.kind,
+        Kind::TokenAck {
+            expires_at: new_expiry
+        }
+    );
 }
 
 /// PathProbe / PathProbeReply (lensing): all five standard sizes, id matching.
@@ -321,9 +371,16 @@ fn path_probe_lensing_five_sizes() {
 
     // Operator sends one probe per size.
     for (i, &size) in PROBE_SIZES.iter().enumerate() {
-        assert!(size as usize <= MAX_BODY_BYTES, "size {size} exceeds MAX_BODY_BYTES");
+        assert!(
+            size as usize <= MAX_BODY_BYTES,
+            "size {size} exceeds MAX_BODY_BYTES"
+        );
         let probe = op.send_body(
-            Kind::PathProbe { id: i as u32, sent_ms: base_ms + i as u64, payload_size: size },
+            Kind::PathProbe {
+                id: i as u32,
+                sent_ms: base_ms + i as u64,
+                payload_size: size,
+            },
             vec![0u8; size as usize],
         );
         relay.op_send(probe);
@@ -335,7 +392,11 @@ fn path_probe_lensing_five_sizes() {
         let probe = relay.node_recv().unwrap();
         assert!(node.accept(&probe));
         let (id, sent_ms, payload_size) = match probe.kind {
-            Kind::PathProbe { id, sent_ms, payload_size } => (id, sent_ms, payload_size),
+            Kind::PathProbe {
+                id,
+                sent_ms,
+                payload_size,
+            } => (id, sent_ms, payload_size),
             _ => panic!("expected PathProbe"),
         };
         assert_eq!(id, i as u32);
@@ -386,7 +447,10 @@ fn pairing_hello_version_match() {
     // Both peers accept: same version.
     assert_eq!(received_by_op.version, PAIRING_VERSION);
     assert_eq!(received_by_node.version, PAIRING_VERSION);
-    assert_ne!(received_by_op.role, received_by_node.role, "roles must differ");
+    assert_ne!(
+        received_by_op.role, received_by_node.role,
+        "roles must differ"
+    );
 }
 
 /// PairingHello version mismatch: higher-version side aborts.
@@ -403,7 +467,10 @@ fn pairing_hello_version_mismatch_aborts() {
     assert!(mismatch);
 
     // Higher version aborts — no downgrade.
-    let err = PairingError::VersionMismatch { ours: theirs.version, theirs: ours.version };
+    let err = PairingError::VersionMismatch {
+        ours: theirs.version,
+        theirs: ours.version,
+    };
     let bytes = err.encode().unwrap();
     match PairingError::decode(&bytes).unwrap() {
         PairingError::VersionMismatch { ours: o, theirs: t } => {

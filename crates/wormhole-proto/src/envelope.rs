@@ -20,18 +20,25 @@ pub enum Kind {
     /// First frame from the initiator after the Noise handshake completes.
     Hello,
     /// Operator requests replay of events starting at `from_seq` (inclusive).
-    Resume { from_seq: u64 },
+    Resume {
+        from_seq: u64,
+    },
     /// Operator-to-node command. Body is opaque to the relay.
     Cmd,
     /// Node-to-operator event. Body is opaque to the relay.
     Event,
     /// Positive acknowledgment of the frame with `seq`.
-    Ack { seq: u64 },
+    Ack {
+        seq: u64,
+    },
     Ping,
     Pong,
     /// Relay log was truncated; frames `from..=to` are unavailable.
     /// Operator must handle this as a gap in the event stream.
-    GapNotice { from: u64, to: u64 },
+    GapNotice {
+        from: u64,
+        to: u64,
+    },
     /// Relay-pushed node presence update. `node_id` is BLAKE3(node_static_pub).
     Presence {
         node_id: [u8; 32],
@@ -40,7 +47,6 @@ pub enum Kind {
     },
 
     // ---- redshift: biscuit TTL refresh without re-pairing ----
-
     /// Operator re-mints the node's biscuit (new TTL = now + 1h) and sends it
     /// over the existing Noise session. The node MUST verify the signature
     /// against its cached `op_root_pub` before replacing the active token.
@@ -56,7 +62,6 @@ pub enum Kind {
     },
 
     // ---- lensing: connection diagnostics / "traceroute" ----
-
     /// Operator-initiated path probe. Body is padded to `payload_size` zero
     /// bytes so RTT can be measured at different effective payload sizes
     /// (detects queuing/shaping at the relay or on-path buffers).
@@ -178,7 +183,10 @@ impl SessionRecord {
     /// Suggested filename for the on-disk record.
     /// Uses the low 32 bits of the session ID as a short discriminator.
     pub fn filename(&self) -> String {
-        format!("wormhole-{:08x}.session", (self.session & 0xffff_ffff) as u32)
+        format!(
+            "wormhole-{:08x}.session",
+            (self.session & 0xffff_ffff) as u32
+        )
     }
 }
 

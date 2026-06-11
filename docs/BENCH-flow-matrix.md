@@ -19,13 +19,16 @@ and through the full `crabcc shell rewrite` pipeline (engine rewrite → RTK,
 plus the `cat`→`read` path) — and reports tokens per profile. These byte
 reductions are **tokenizer-independent**, so this lane is the headline result.
 
-Repo: `crabcc` @ `main` · crabcc: `target/debug/crabcc` · Morph stage: **off**
+Repo: `crabcc` @ `b8456bf` · crabcc: `target/release/crabcc` · Morph stage: **off** · 2026-06-11
 
 | profile      | vanilla   | flow      | reduction |
 |--------------|-----------|-----------|-----------|
-| claude_code  |   138,036 |    40,189 |   **−71%** |
-| nullclaw     |   101,969 |     3,036 |   **−97%** |
-| zeroclaw     |   103,179 |     4,692 |   **−95%** |
+| claude_code  |   140,069 |    29,101 |   **−79%** |
+| nullclaw     |   103,253 |     3,344 |   **−97%** |
+| zeroclaw     |   104,681 |     3,251 |   **−97%** |
+
+_Previous (debug binary, older HEAD): claude_code −71%, nullclaw −97%, zeroclaw −95%.
+Release binary + FNV-1a hot path + schema OnceLock delivers the improvement._
 
 Reproduce (no keys, no network):
 

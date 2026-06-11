@@ -67,9 +67,9 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     // Initialize the Python interpreter once. Must happen before any
-    // Python::with_gil call — and before spawning threads that might
+    // Python::attach call — and before spawning threads that might
     // call into Python.
-    pyo3::prepare_freethreaded_python();
+    pyo3::Python::initialize();
 
     let ctx = Ctx {
         python_path: Arc::new(cli.python_path),
@@ -130,17 +130,17 @@ fn with_path<T>(
     path: &str,
     f: impl FnOnce(Python<'_>) -> PyResult<T>,
 ) -> PyResult<T> {
-    py.import_bound("sys")?
+    py.import("sys")?
         .getattr("path")?
         .call_method1("insert", (0, path))?;
     f(py)
 }
 
 fn py_compact(python_path: &str, text: &str, ratio: f64) -> Result<CompactResp> {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         with_path(py, python_path, |py| {
             let r = py
-                .import_bound("compress")?
+                .import("compress")?
                 .call_method1("compact", (text, ratio))?;
             Ok(CompactResp {
                 compressed: r.get_item("compressed")?.extract()?,
@@ -153,10 +153,10 @@ fn py_compact(python_path: &str, text: &str, ratio: f64) -> Result<CompactResp> 
 }
 
 fn py_enrich(python_path: &str, text: &str, query: &str) -> Result<EnrichResp> {
-    Python::with_gil(|py| {
+    Python::attach(|py| {
         with_path(py, python_path, |py| {
             let plan: String = py
-                .import_bound("enrich")?
+                .import("enrich")?
                 .call_method1("enrich", (text, query))?
                 .extract()?;
             Ok(EnrichResp { plan })

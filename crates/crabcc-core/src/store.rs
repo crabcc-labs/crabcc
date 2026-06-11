@@ -219,6 +219,23 @@ impl Store {
         Ok(())
     }
 
+    /// Run `f` inside a bulk-write window with `synchronous=OFF`.
+    ///
+    /// Each per-file transaction inside `f` still commits atomically, but
+    /// without fsync. Reduces cold-index wall time on large repos: 61 k
+    /// per-file transactions × no-sync commit vs the default NORMAL mode.
+    /// Acceptable for an index: a crash during bulk load is recovered by
+    /// re-running `crabcc index`.
+    pub fn write_batch<F>(&self, f: F) -> Result<()>
+    where
+        F: FnOnce(&Self) -> Result<()>,
+    {
+        self.conn.pragma_update(None, "synchronous", "OFF")?;
+        let result = f(self);
+        self.conn.pragma_update(None, "synchronous", "NORMAL")?;
+        result
+    }
+
     /// Iterate every call-kind edge (src_symbol_id, dst_symbol_id, line).
     /// Used by graph.rs's `walk` / `cycles` / `orphans` upgrade in v4 where
     /// we walk the symbol-ID-keyed call graph. Streams the full table — fine

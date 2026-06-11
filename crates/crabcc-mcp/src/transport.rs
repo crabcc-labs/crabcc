@@ -54,8 +54,8 @@ use crabcc_core::store::Store;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use serde_json::{json, Value};
-use std::io::{BufRead, BufReader, Write};
 use sonic_rs;
+use std::io::{BufRead, BufReader, Write};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -189,8 +189,7 @@ fn serialize_body(value: &Value, fmt: Format) -> Result<Vec<u8>, String> {
 /// Uses sonic-rs SIMD path (to_vec) with serde_json fallback, matching `deserialize_body`.
 #[inline]
 fn write_json<W: Write>(writer: &mut W, value: &Value) -> anyhow::Result<()> {
-    let bytes = sonic_rs::to_vec(value)
-        .or_else(|_| serde_json::to_vec(value))?;
+    let bytes = sonic_rs::to_vec(value).or_else(|_| serde_json::to_vec(value))?;
     writer.write_all(&bytes).map_err(Into::into)
 }
 

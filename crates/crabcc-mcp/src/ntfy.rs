@@ -46,7 +46,11 @@ fn config() -> Option<&'static NtfyConfig> {
             let endpoint = format!("{base}/{topic}");
             let user = std::env::var("NTFY_USER").ok().filter(|s| !s.is_empty());
             let token = std::env::var("NTFY_TOKEN").ok().filter(|s| !s.is_empty());
-            Some(NtfyConfig { endpoint, user, token })
+            Some(NtfyConfig {
+                endpoint,
+                user,
+                token,
+            })
         })
         .as_ref()
 }
@@ -116,8 +120,16 @@ fn base64_encode(input: &[u8]) -> String {
         let n = (b0 << 16) | (b1 << 8) | b2;
         out.push(CHARS[(n >> 18) & 0x3f] as char);
         out.push(CHARS[(n >> 12) & 0x3f] as char);
-        out.push(if chunk.len() > 1 { CHARS[(n >> 6) & 0x3f] as char } else { '=' });
-        out.push(if chunk.len() > 2 { CHARS[n & 0x3f] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            CHARS[(n >> 6) & 0x3f] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            CHARS[n & 0x3f] as char
+        } else {
+            '='
+        });
     }
     out
 }

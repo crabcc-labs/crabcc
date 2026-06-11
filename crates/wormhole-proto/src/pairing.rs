@@ -22,11 +22,17 @@ pub struct PairingHello {
 
 impl PairingHello {
     pub fn node() -> Self {
-        Self { version: PAIRING_VERSION, role: PairingRole::Node }
+        Self {
+            version: PAIRING_VERSION,
+            role: PairingRole::Node,
+        }
     }
 
     pub fn operator() -> Self {
-        Self { version: PAIRING_VERSION, role: PairingRole::Operator }
+        Self {
+            version: PAIRING_VERSION,
+            role: PairingRole::Operator,
+        }
     }
 
     pub fn encode(&self) -> Result<Vec<u8>, postcard::Error> {
