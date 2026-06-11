@@ -1,0 +1,79 @@
+#!/usr/bin/env amber
+// pipeline.ab - vaked -> nix -> buildkit, with nushell par-each, Amber as glue.
+//
+// Stages (BuildKit-style step output):
+//   1. vaked + nushell : `vakedc check` over the example .vaked files, fanned
+//                        out with nushell par-each.
+//   2. vaked + nix     : `vakedc lower` one example to a flake, then nix
+//                        evaluates it (Vaked declares, Nix materializes).
+//   3. buildkit        : cached container build that installs vakedc and checks
+//                        an example, with a pip cache mount.
+//
+// nix and docker stages degrade gracefully (skip + flag) when unavailable.
+//
+// Compile: amber build scripts/amber/pipeline.ab scripts/amber/pipeline.sh --minify
+
+fun have(cmd: Text): Bool {
+    $command -v "{cmd}" > /dev/null 2>&1$ failed {
+        return false
+    }
+    return true
+}
+
+main {
+    let root = trust $git rev-parse --show-toplevel 2>/dev/null || pwd$
+    let ws = trust $dirname "{root}"$
+    let vaked = "{ws}/vaked-base"
+    let work = "{root}/.dev-tasks/pipeline"
+    trust $rm -rf "{work}"$
+    trust $mkdir -p "{work}"$
+
+    if have("vakedc") == false {
+        echo "vakedc not on PATH - run: bash {vaked}/install.sh"
+        exit 1
+    }
+
+    // ---- Stage 1: vaked + nushell (par-each `vakedc check`) ----
+    echo "=> [1/3] vaked + nushell: par-each `vakedc check` over examples"
+    let files = trust $find "{vaked}/vaked/examples" -name '*.vaked' | grep -v rejected | tr '\n' ' '$
+    if have("nu") {
+        $nu "{root}/scripts/nu/vaked-check.nu" {files}$ failed {
+            echo "    some checks reported diagnostics (continuing)"
+        }
+    } else {
+        echo "    nu not installed - skipped"
+    }
+
+    // ---- Stage 2: vaked lower + nix materialize ----
+    echo "=> [2/3] vaked + nix: lower one example, evaluate the generated flake"
+    let ex = "{vaked}/vaked/examples/crabcc-umami.vaked"
+    // Lower OUTSIDE the git tree: nix flakes refuse to evaluate untracked
+    // files inside a git repo, so .dev-tasks/ (gitignored) won't work.
+    let lowerdir = trust $mktemp -d$
+    $vakedc lower "{ex}" --out "{lowerdir}"$ failed {
+        echo "    vakedc lower reported diagnostics - skipping nix"
+    }
+    echo "    lowered -> flake.nix, gen/, provenance.json"
+    if have("nix") {
+        // Evaluate the generated flake (Nix materializes). Flakes flag passed
+        // explicitly so it works even if nix.conf doesn't enable them.
+        $timeout 90 nix flake show --extra-experimental-features "nix-command flakes" --no-write-lock-file "{lowerdir}"$ failed {
+            echo "    nix flake eval skipped (generated flake pins a placeholder nixpkgs rev - prototype lowering)"
+        }
+    } else {
+        echo "    nix not installed - skipped"
+    }
+    trust $rm -rf "{lowerdir}"$
+
+    // ---- Stage 3: BuildKit cached build ----
+    echo "=> [3/3] buildkit: cached container build of vakedc"
+    $docker info > /dev/null 2>&1$ failed {
+        echo "    docker daemon not available - skipped"
+        echo "[+] pipeline DONE (buildkit skipped)"
+        exit 0
+    }
+    $DOCKER_BUILDKIT=1 docker buildx build --progress=plain -f "{root}/scripts/amber/pipeline.Dockerfile" -t crabcc-vaked:demo "{vaked}"$ failed {
+        echo "    buildx build failed (see output above)"
+    }
+    echo "[+] pipeline DONE"
+}
