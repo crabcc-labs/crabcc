@@ -189,3 +189,41 @@ fn post_mcp_with_wrong_token_returns_401() {
     );
     assert_eq!(status, 401);
 }
+
+#[test]
+fn cross_origin_request_returns_403() {
+    // DNS-rebinding defense (MCP transport spec MUST): a browser request carrying a
+    // non-loopback Origin is rejected with 403 before auth/dispatch. Without the
+    // Origin check this would reach dispatch and return 200.
+    let (addr, _root, _tmp) = spawn_server(None);
+    let (status, body) = http_request(
+        addr,
+        "POST",
+        "/mcp",
+        &[
+            ("Content-Type", "application/json"),
+            ("Origin", "http://evil.example.com"),
+        ],
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+    );
+    assert_eq!(status, 403, "cross-origin expected 403, got {status}: {body}");
+    assert!(body.contains("forbidden origin"), "body: {body}");
+}
+
+#[test]
+fn loopback_origin_is_allowed() {
+    // A same-host browser Origin (e.g. the embedded dashboard) must still work.
+    let (addr, _root, _tmp) = spawn_server(None);
+    let origin = format!("http://{addr}");
+    let (status, resp) = http_request(
+        addr,
+        "POST",
+        "/mcp",
+        &[("Content-Type", "application/json"), ("Origin", &origin)],
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}"#,
+    );
+    assert_eq!(
+        status, 200,
+        "loopback-origin expected 200, got {status}: {resp}"
+    );
+}

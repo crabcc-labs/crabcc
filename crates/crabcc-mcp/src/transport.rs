@@ -296,6 +296,11 @@ where
 /// Auth: when `token` is `Some(t)`, every `POST /mcp` and `GET /sse`
 /// must carry `Authorization: Bearer <t>`.
 ///
+/// Origin: every request's `Origin` header is validated (MCP transport spec
+/// MUST, DNS-rebinding defense). Requests with no `Origin` (non-browser clients
+/// like Claude Code / curl) pass; a present `Origin` must be loopback or listed
+/// in the comma-separated `MCP_ALLOWED_ORIGINS` env var.
+///
 /// Concurrency: tiny_http's default thread pool serves each request,
 /// so multiple in-flight calls don't head-of-line each other.
 pub fn serve_http(addr: SocketAddr, root: &Path, dev: bool, token: Option<String>) -> Result<()> {
@@ -310,6 +315,16 @@ pub fn serve_http(addr: SocketAddr, root: &Path, dev: bool, token: Option<String
     );
 
     for req in server.incoming_requests() {
+        // MCP transport spec MUST: validate Origin to prevent DNS rebinding.
+        if !check_origin(&req) {
+            warn!(target: "crabcc_mcp::http", "rejected request: disallowed Origin");
+            let _ = req.respond(add_common_headers(
+                Response::from_string(r#"{"error":"forbidden origin"}"#)
+                    .with_status_code(403)
+                    .with_header(content_type_json()),
+            ));
+            continue;
+        }
         match (req.method(), req.url()) {
             (&Method::Get, "/") | (&Method::Get, "/dashboard") => {
                 let html = include_str!("dashboard.html");
@@ -442,6 +457,60 @@ fn check_bearer(req: &Request, expected: Option<&str>) -> bool {
         .map(|h| h.value.as_str())
         .unwrap_or_default();
     got == format!("Bearer {expected}").as_str()
+}
+
+/// Validate the `Origin` header (MCP transport spec MUST, DNS-rebinding defense).
+/// Browsers send `Origin` on cross-origin / fetch / POST requests; non-browser
+/// MCP clients (Claude Code, curl) send none. Delegates to the pure
+/// [`origin_allowed`] so the policy is unit-testable without a live `Request`.
+fn check_origin(req: &Request) -> bool {
+    let origin = req
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("origin"))
+        .map(|h| h.value.as_str());
+    let allowlist = std::env::var("MCP_ALLOWED_ORIGINS").ok();
+    origin_allowed(origin, allowlist.as_deref())
+}
+
+/// Pure `Origin` policy: an absent `Origin` is allowed (non-browser client); a
+/// present `Origin` is allowed only if it is loopback or an exact match in the
+/// comma-separated `MCP_ALLOWED_ORIGINS` allowlist. A cross-site browser request
+/// carries the attacker's `Origin`, which is neither loopback nor allowlisted, so
+/// it is rejected — blocking DNS rebinding.
+fn origin_allowed(origin: Option<&str>, allowlist: Option<&str>) -> bool {
+    let Some(origin) = origin else {
+        return true;
+    };
+    if is_loopback_origin(origin) {
+        return true;
+    }
+    match allowlist {
+        Some(list) => list
+            .split(',')
+            .map(str::trim)
+            .any(|a| !a.is_empty() && a == origin),
+        None => false,
+    }
+}
+
+/// True for `http(s)://localhost|127.0.0.1|[::1]` with an optional port.
+fn is_loopback_origin(origin: &str) -> bool {
+    let host_port = match origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))
+    {
+        Some(h) => h,
+        None => return false,
+    };
+    let host = if let Some(rest) = host_port.strip_prefix('[') {
+        // IPv6 literal: [::1]:port -> ::1
+        rest.split(']').next().unwrap_or("")
+    } else {
+        // host:port -> host
+        host_port.split(':').next().unwrap_or("")
+    };
+    matches!(host, "localhost" | "127.0.0.1" | "::1")
 }
 
 fn handle_post_mcp(
@@ -724,4 +793,55 @@ fn respond_error(req: Request, status: u16, msg: &str, fmt: Format, want_sse: bo
 #[doc(hidden)]
 pub fn compress_gzip_for_bench(data: &[u8]) -> Vec<u8> {
     compress_gzip(data)
+}
+
+#[cfg(test)]
+mod origin_tests {
+    use super::{is_loopback_origin, origin_allowed};
+
+    #[test]
+    fn absent_origin_is_allowed() {
+        // Non-browser MCP clients (Claude Code, curl) send no Origin header.
+        assert!(origin_allowed(None, None));
+    }
+
+    #[test]
+    fn loopback_origins_allowed() {
+        for o in [
+            "http://localhost",
+            "http://localhost:8091",
+            "http://127.0.0.1:3000",
+            "https://127.0.0.1",
+            "http://[::1]:8091",
+        ] {
+            assert!(origin_allowed(Some(o), None), "should allow {o}");
+            assert!(is_loopback_origin(o), "should be loopback: {o}");
+        }
+    }
+
+    #[test]
+    fn cross_site_origin_rejected_without_allowlist() {
+        // The DNS-rebinding case: a malicious page's fetch carries its own Origin.
+        // This is what the fix blocks; before it, no Origin check ran at all.
+        assert!(!origin_allowed(Some("http://evil.example.com"), None));
+        assert!(!origin_allowed(Some("https://attacker.test:443"), None));
+        assert!(!is_loopback_origin("http://evil.example.com"));
+        // A loopback-lookalike suffix must not pass.
+        assert!(!is_loopback_origin("http://127.0.0.1.evil.com"));
+    }
+
+    #[test]
+    fn allowlisted_origin_allowed() {
+        let list = Some("https://mcp.crabcc.app, https://dash.example.com");
+        assert!(origin_allowed(Some("https://mcp.crabcc.app"), list));
+        assert!(origin_allowed(Some("https://dash.example.com"), list));
+        assert!(!origin_allowed(Some("https://evil.example.com"), list));
+    }
+
+    #[test]
+    fn null_empty_and_non_http_origins_rejected() {
+        assert!(!origin_allowed(Some("null"), None));
+        assert!(!origin_allowed(Some(""), None));
+        assert!(!origin_allowed(Some("ftp://127.0.0.1"), None));
+    }
 }
