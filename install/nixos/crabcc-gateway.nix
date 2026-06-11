@@ -176,6 +176,47 @@ in {
       ];
     };
 
-    # traefik and firewall wired in subsequent tasks
+    # ── Traefik (TLS termination, ForwardAuth, security middleware) ─────────
+    services.traefik = {
+      enable = true;
+
+      staticConfigOptions = {
+        entryPoints = {
+          web = {
+            address = ":80";
+          };
+          websecure = {
+            address = ":443";
+          };
+        };
+
+        certificatesResolvers = {
+          letsencrypt = {
+            acme = {
+              email = cfg.acmeEmail;
+              storage = "/var/lib/traefik/acme.json";
+              tlsChallenge = {};
+            };
+          };
+        };
+
+        # Disable the Traefik dashboard — no admin UI exposed
+        api = {
+          insecure = false;
+          dashboard = false;
+        };
+
+        log = {
+          level = "WARN";
+        };
+
+        # Log every request for audit trail
+        accessLog = {};
+      };
+
+      # dynamicConfigOptions added in Task 5
+    };
+
+    # firewall wired in subsequent tasks
   };
 }
