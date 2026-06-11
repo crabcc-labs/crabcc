@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "RustPerformanceTune",
+  "type": "object",
+  "properties": {
+    "id": { "type": "string", "pattern": "^RUST-OPT-\\d{3}$" },
+    "title": { "type": "string" },
+    "impact_level": { "type": "string", "enum": ["HIGH", "MEDIUM", "LOW"] },
+    "category": { "type": "string", "enum": ["Memory", "Async", "Collections", "I/O", "Compiler"] },
+    "description": { "type": "string" },
+    "trigger_condition": {
+      "type": "object",
+      "properties": {
+        "ast_node_types": { "type": "array", "items": { "type": "string" } },
+        "anti_pattern_regex": { "type": "string" },
+        "explanation": { "type": "string" }
+      },
+      "required": ["explanation"]
+    },
+    "remediation": {
+      "type": "object",
+      "properties": {
+        "before_code": { "type": "string" },
+        "after_code": { "type": "string" },
+        "dependencies": { "type": "array", "items": { "type": "string" } }
+      },
+      "required": ["before_code", "after_code"]
+    },
+    "references": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" },
+          "url": { "type": "string", "format": "uri" }
+        },
+        "required": ["title", "url"]
+      }
+    }
+  },
+  "required": ["id", "title", "impact_level", "category", "description", "trigger_condition", "remediation", "references"]
+}
