@@ -20,10 +20,41 @@ use crate::tools::{CrabccOutline, CrabccRefs, CrabccSym, ReadFile};
 /// Chat-Completions model with the default (no-op) prompt hook.
 pub type SweAgent = Agent<openai::CompletionModel>;
 
-/// Tool-using agents may need several turns (think -> call tool -> think ->
-/// answer); cap the loop so a misbehaving model can't spin forever.
-const TOOL_MAX_TURNS: usize = 8;
-pub const MAX_TURNS: usize = TOOL_MAX_TURNS;
+/// Default per-agent tool-loop cap. Tool-using agents need several turns
+/// (think -> call tool -> think -> answer); 8 starved real tasks — the Planner
+/// alone burns several turns grounding the plan in the repo tools before it can
+/// even draft. 25 gives headroom while still stopping a model that spins.
+const DEFAULT_TOOL_MAX_TURNS: usize = 25;
+
+/// The effective tool-loop cap, read once from `SWE_MAX_TURNS` (falling back to
+/// [`DEFAULT_TOOL_MAX_TURNS`]). A zero/garbage value is ignored.
+pub fn max_turns() -> usize {
+    use std::sync::OnceLock;
+    static CAP: OnceLock<usize> = OnceLock::new();
+    *CAP.get_or_init(|| parse_max_turns(std::env::var("SWE_MAX_TURNS").ok()))
+}
+
+/// Pure parse of the `SWE_MAX_TURNS` value: a positive integer wins, anything
+/// else (missing, non-numeric, zero) falls back to the default.
+fn parse_max_turns(raw: Option<String>) -> usize {
+    raw.and_then(|v| v.parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_TOOL_MAX_TURNS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_max_turns, DEFAULT_TOOL_MAX_TURNS};
+
+    #[test]
+    fn parse_max_turns_honors_valid_override_else_defaults() {
+        assert_eq!(parse_max_turns(Some("25".into())), 25);
+        assert_eq!(parse_max_turns(Some("1".into())), 1);
+        assert_eq!(parse_max_turns(None), DEFAULT_TOOL_MAX_TURNS);
+        assert_eq!(parse_max_turns(Some("0".into())), DEFAULT_TOOL_MAX_TURNS);
+        assert_eq!(parse_max_turns(Some("nope".into())), DEFAULT_TOOL_MAX_TURNS);
+    }
+}
 
 const PLANNER_PREAMBLE: &str = "\
 You are the Planner on a software-engineering team. Given a task and a target \

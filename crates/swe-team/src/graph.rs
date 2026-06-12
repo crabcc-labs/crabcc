@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use rig::completion::Prompt;
 use rig::providers::openai;
 
-use crate::agents::{self, CoderLens, MAX_TURNS};
+use crate::agents::{self, CoderLens};
 use crate::lead::{self, Gate, TeamConfig};
 use crate::trace::{Decision, Span};
 
@@ -123,14 +123,14 @@ impl<'a> GraphState<'a> {
 
     // ---- 1. PLAN ------------------------------------------------------
     async fn node_plan(&mut self) -> Result<()> {
-        let span = Span::start("plan", "planner", &self.models.coder);
-        let planner = agents::planner(self.client, &self.models.coder, self.repo);
+        let span = Span::start("plan", "planner", &self.models.lead);
+        let planner = agents::planner(self.client, &self.models.lead, self.repo);
         let res = planner
             .prompt(format!(
                 "Task:\n{}\n\nDraft an implementation plan for this task in the repo.",
                 self.task
             ))
-            .max_turns(MAX_TURNS)
+            .max_turns(agents::max_turns())
             .await;
         match res {
             Ok(plan) => {
@@ -197,15 +197,15 @@ impl<'a> GraphState<'a> {
     }
 
     async fn revise_plan(&mut self, notes: &str) -> Result<()> {
-        let span = Span::start("plan", "planner", &self.models.coder);
-        let planner = agents::planner(self.client, &self.models.coder, self.repo);
+        let span = Span::start("plan", "planner", &self.models.lead);
+        let planner = agents::planner(self.client, &self.models.lead, self.repo);
         let res = planner
             .prompt(format!(
                 "Task:\n{}\n\nYour previous plan:\n{}\n\nThe Lead Dev asked for these \
                  revisions:\n{}\n\nReturn the revised plan.",
                 self.task, self.plan, notes
             ))
-            .max_turns(MAX_TURNS)
+            .max_turns(agents::max_turns())
             .await;
         match res {
             Ok(plan) => {
@@ -261,9 +261,9 @@ impl<'a> GraphState<'a> {
         let s_simp = Span::start("fanout.simplicity", "coder-simplicity", &self.models.coder);
 
         let (r_safety, r_perf, r_simp) = tokio::join!(
-            safety.prompt(coder_prompt.clone()).max_turns(MAX_TURNS),
-            perf.prompt(coder_prompt.clone()).max_turns(MAX_TURNS),
-            simplicity.prompt(coder_prompt.clone()).max_turns(MAX_TURNS),
+            safety.prompt(coder_prompt.clone()).max_turns(agents::max_turns()),
+            perf.prompt(coder_prompt.clone()).max_turns(agents::max_turns()),
+            simplicity.prompt(coder_prompt.clone()).max_turns(agents::max_turns()),
         );
 
         let safety_diff = finish_coder(s_safety, r_safety, "safety coder")?;
