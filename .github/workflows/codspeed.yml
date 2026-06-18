@@ -34,7 +34,7 @@ jobs:
             bench: alloc_ops
             features: "--features bench"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -57,7 +57,7 @@ jobs:
         # blocks the merge. continue-on-error keeps the check green so a perf
         # regression can't block a correctness merge.
         continue-on-error: true
-        uses: CodSpeedHQ/action@v3
+        uses: CodSpeedHQ/action@v4
         with:
           token: ${{ secrets.CODSPEED_TOKEN }}
           run: >
