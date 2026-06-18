@@ -77,7 +77,7 @@ snow = "0.9"
 spake2 = "0.4"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
 tokio-tungstenite = "0.24"
-getrandom = "0.2"
+getrandom = "0.4"
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 
 anyhow = "1"
