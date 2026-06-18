@@ -29,7 +29,7 @@ flate2        = { workspace = true }
 rusqlite      = { workspace = true }
 sonic-rs      = { workspace = true }
 # OTel (optional, gated behind `otel` feature)
-tracing-opentelemetry = { version = "0.28", optional = true }
+tracing-opentelemetry = { version = "0.33", optional = true }
 opentelemetry         = { version = "0.27", optional = true, features = ["trace"] }
 opentelemetry-otlp    = { version = "0.27", optional = true, features = ["tonic"] }
 opentelemetry_sdk     = { version = "0.27", optional = true, features = ["rt-tokio"] }
