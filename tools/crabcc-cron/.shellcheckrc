@@ -1,3 +1,0 @@
-# Bash 5 target; allow source-without-extension.
-shell=bash
-external-sources=true

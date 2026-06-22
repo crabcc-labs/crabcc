@@ -1,5 +1,0 @@
-# -*- mode:toml; -*-
-[module.base]
-    provides = ["base"]
-    requires = []
-    srcfiles = ["base.cc"]

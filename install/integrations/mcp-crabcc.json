@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "crabcc": {
-      "command": "crabcc",
-      "args": ["--mcp"]
-    }
-  }
-}

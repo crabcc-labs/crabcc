@@ -1,5 +1,0 @@
-# -*- mode:toml; -*-
-[module.kernel]
-    provides = ["kernel"]
-    requires = ["mem", "sched", "net"]
-    srcfiles = ["kernel.cc"]

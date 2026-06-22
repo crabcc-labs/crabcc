@@ -1,5 +1,0 @@
-# -*- mode:toml; -*-
-[module.mem]
-    provides = ["mem"]
-    requires = ["base"]
-    srcfiles = ["mem.cc"]

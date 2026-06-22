@@ -1,5 +1,0 @@
-# -*- mode:toml; -*-
-[module.net]
-    provides = ["net"]
-    requires = ["mem"]
-    srcfiles = ["net.cc"]

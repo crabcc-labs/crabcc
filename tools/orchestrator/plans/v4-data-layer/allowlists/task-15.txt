@@ -1,2 +1,0 @@
-crates/crabcc-cli/tests/integration/graph_v4.rs
-crates/crabcc-cli/tests/integration/mod.rs

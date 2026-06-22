@@ -1,2 +1,0 @@
-crates/crabcc-core/src/resolve.rs
-crates/crabcc-core/src/lib.rs

@@ -1,3 +1,0 @@
-Cargo.toml
-CHANGELOG.md
-AGENTS.md
