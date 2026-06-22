@@ -1,9 +1,0 @@
-[package]
-name = "vaked-lambda"
-description = "Lambda IR + reduction passes for compiled Amber functions — bridge to unikernel dispatch"
-version.workspace = true
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
-
-[dependencies]

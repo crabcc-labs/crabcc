@@ -32,36 +32,20 @@ mimalloc = ["dep:mimalloc"]
 # build (`task build`/`install`/release) so users get semantic RAG while
 # plain `cargo build` + CI stay lean and offline-safe.
 memory-embed = ["crabcc-memory/memory-embed"]
-# Optional dashboard / SSE viewer (`crabcc serve`). Pulls in tiny_http +
-# tokio-rt + the entire `crabcc-viz` crate (~3500 LOC). Off by default
-# so `cargo install crabcc-cli` is fast for users who only want the
-# CLI surface (sym/refs/callers/outline/etc.) and the MCP server.
-viz = ["dep:crabcc-viz"]
 # Opt-in OTLP / Telegram / file-rotation tracing layers
 # (telemetry::init's full pipeline). The base `tracing` macros remain
 # compiled (they're cheap no-ops without a subscriber); only the heavy
 # `tracing-subscriber` + `tracing-appender` init pulls in. Off by
 # default for a lean default install.
 telemetry = ["dep:tracing-subscriber", "dep:tracing-appender", "dep:flate2"]
-# Lightpanda CDP rendered-DOM transport for `crabcc crawl` (JS-built pages
-# render to real DOM). Adds a minimal ws:// CDP client (no TLS) to the
-# build; the transport auto-detects a `lightpanda` binary / endpoint and
-# falls back to the native HTTP fetch when absent. Off by default to keep
-# the base install lean — enable with
-# `cargo install --features crawl-lightpanda` (or `task` config).
-crawl-lightpanda = ["crabcc-fetch/crawl-lightpanda"]
-# Shared Postgres crawl frontier for `crabcc crawl` (multi-worker queue via
-# $CRABCC_CRAWL_PG). Off by default — without it, open_frontier always uses
-# the local SQLite frontier. Enable with `cargo install --features crawl-postgres`.
-crawl-postgres = ["crabcc-fetch/crawl-postgres"]
 
 [dependencies]
 walkdir = "2.5.0"
 crabcc-core    = { workspace = true }
-crabcc-fetch   = { workspace = true, features = ["crawl"] }
 crabcc-mcp     = { workspace = true }
 crabcc-memory  = { workspace = true }
 crabcc-compact = { workspace = true }
+crabcc-fetch   = { workspace = true, features = ["crawl"] }
 # Image downscaling for the Read hook (`crabcc media downscale`): bound
 # oversized screenshots/photos to Anthropic's effective vision resolution
 # before the model reads them. png+jpeg only -> avoids the avif/exr/webp
@@ -71,9 +55,6 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg"]
 # Optional global allocator — only built under the `mimalloc` feature
 # (allocator bench candidate). See main.rs for the #[global_allocator] cfg.
 mimalloc = { version = "0.1", optional = true, default-features = false }
-# `viz` feature — see [features]. Drops the dashboard / SSE viewer + its
-# tokio-rt + tiny_http + html2md transitive cost from the default install.
-crabcc-viz    = { workspace = true, optional = true }
 ahash         = { workspace = true }
 anyhow        = { workspace = true }
 clap          = { workspace = true }
