@@ -28,7 +28,7 @@ postcard = { version = "1", features = ["alloc"] }
 divan = "0.1"
 blake3 = "1"
 axum = { version = "0.8", features = ["ws"] }
-rand = { version = "0.9", features = ["os_rng"] }
+rand = { version = "0.10", features = ["os_rng"] }
 snow = "0.9"
 spake2 = "0.4"
 ed25519-dalek = { version = "2", features = ["rand_core"] }
