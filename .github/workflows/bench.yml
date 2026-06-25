@@ -54,7 +54,7 @@ jobs:
       instance_id:  ${{ steps.spawn.outputs.instance_id }}
       runner_label: ${{ steps.spawn.outputs.runner_label }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
@@ -87,7 +87,7 @@ jobs:
       - ${{ needs.provision.outputs.runner_label }}
     timeout-minutes: 50
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
 
