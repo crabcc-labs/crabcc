@@ -147,7 +147,7 @@ jobs:
     runs-on: [self-hosted, linux, hetzner]
     steps:
       - name: Checkout PR head
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.triage.outputs.head_ref }}
           # Need a real (not shallow) clone so the auto-commit lands on top

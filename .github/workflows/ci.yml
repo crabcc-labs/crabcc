@@ -61,7 +61,7 @@ jobs:
     env:
       RUSTC_WRAPPER: ""  # override global; cargo fmt never invokes rustc
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 1
       - uses: ./.github/actions/disk-guard
@@ -82,7 +82,7 @@ jobs:
     name: lint (clippy)
     runs-on: [self-hosted, linux, hetzner, gh-runner]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # Full history so the PR diff (base..head) resolves. Must be a literal
           # 0, not `event == 'pull_request' && 0 || 1`: that ternary always
@@ -220,7 +220,7 @@ jobs:
     name: test (ubuntu, scoped)
     runs-on: [self-hosted, linux, hetzner, gh-runner]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # Full history so the PR diff (base..head) resolves. Must be a literal
           # 0, not `event == 'pull_request' && 0 || 1`: that ternary always
